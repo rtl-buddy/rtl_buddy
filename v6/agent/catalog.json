@@ -1205,6 +1205,24 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/floorplan-controls.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#place-individual-macros",
+          "slug": "place-individual-macros",
+          "title": "Place individual macros",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/place-individual-macros.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#size-the-die-and-core",
+          "slug": "size-the-die-and-core",
+          "title": "Size the die and core",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/size-the-die-and-core.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#plan-the-power-grid-per-run",
+          "slug": "plan-the-power-grid-per-run",
+          "title": "Plan the power grid per run",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/plan-the-power-grid-per-run.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#constrain-boundary-pins",
           "slug": "constrain-boundary-pins",
           "title": "Constrain boundary pins",
@@ -1215,6 +1233,12 @@
           "slug": "pdk-setup-notes",
           "title": "PDK setup notes",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/pdk-setup-notes.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#follow-routing-progress",
+          "slug": "follow-routing-progress",
+          "title": "Follow routing progress",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/follow-routing-progress.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#openroad-threads",

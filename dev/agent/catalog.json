@@ -1205,6 +1205,24 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/floorplan-controls.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#place-individual-macros",
+          "slug": "place-individual-macros",
+          "title": "Place individual macros",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/place-individual-macros.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#size-the-die-and-core",
+          "slug": "size-the-die-and-core",
+          "title": "Size the die and core",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/size-the-die-and-core.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#plan-the-power-grid-per-run",
+          "slug": "plan-the-power-grid-per-run",
+          "title": "Plan the power grid per run",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/plan-the-power-grid-per-run.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#constrain-boundary-pins",
           "slug": "constrain-boundary-pins",
           "title": "Constrain boundary pins",
@@ -1215,6 +1233,12 @@
           "slug": "pdk-setup-notes",
           "title": "PDK setup notes",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/pdk-setup-notes.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#follow-routing-progress",
+          "slug": "follow-routing-progress",
+          "title": "Follow routing progress",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/follow-routing-progress.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#openroad-threads",
@@ -2601,6 +2625,12 @@
           "slug": "readverilog-drops-an-interface-instances-own-port-connections",
           "title": "read_verilog drops an interface instance's own port connections",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/readverilog-drops-an-interface-instances-own-port-connections.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#an-overridden-blackbox-needs-a-lef-and-liberty-master-under-openroad",
+          "slug": "an-overridden-blackbox-needs-a-lef-and-liberty-master-under-openroad",
+          "title": "An overridden blackbox needs a LEF and Liberty master under OpenROAD",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/an-overridden-blackbox-needs-a-lef-and-liberty-master-under-openroad.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#unknown-synthesis-overrides-are-ignored-after-a-warning",

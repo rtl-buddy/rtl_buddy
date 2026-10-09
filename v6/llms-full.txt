@@ -2769,10 +2769,10 @@ The generated `pnr.tcl` runs these steps in order:
 
 1. Source `platform-tcl` when set, read Liberty, LEF, the synthesis netlist and the SDC, set the design's max fanout when `max-fanout` is set, then source `layer-rc-tcl` when set.
 2. Initialize the floorplan, create routing tracks and run `insert_tiecells` for the PDK's `tie-hi` and `tie-lo` ports, one tie cell per constant net.
-3. Place macros, insert tap and endcap cells when `tapcell-tcl` is set, build the power grid and place the IO pins.
+3. Place macros, insert tap and endcap cells when `tapcell-tcl` is set, build the power grid and place the IO pins, then run `buffer_ports -inputs -outputs` when the run buffers its ports (`buffer-ports`, on by default for `harden: true`; see [Harden a block](#harden-a-block)).
 4. Run global placement, with `-reference_hpwl` when `placement.reference-hpwl` is set and `-routability_driven` / `-routability_use_grt` when `placement.routability-driven` / `placement.routability-use-grt` are `true`, then `repair_tie_fanout` for each tie port, which gives every constant-driven load its own tie cell `placement.tie-separation` microns away (default 0).
 5. Run `repair_design`, legalization, clock-tree synthesis (with `-apply_ndr` when `cts-apply-ndr` is set), setup repair when `post-cts-setup-repair` is set, hold repair and a final legalization.
-6. Route globally, after `set_global_routing_layer_adjustment` when `routing-layer-adjustment` is set, repair hold on the global-route parasitics when `global-route-hold-repair` is set, route in detail, insert fill, extract parasitics when `rcx-rules` is set, then write reports and outputs.
+6. Route globally with `-verbose` and a congestion report, after `set_global_routing_layer_adjustment` when `routing-layer-adjustment` is set, repair hold on the global-route parasitics when `global-route-hold-repair` is set, route in detail at the run's `detailed-route-verbose` level, insert fill, extract parasitics when `rcx-rules` is set, then write reports and outputs.
 
 A tie port the PDK leaves unset gets neither tie step.
 
@@ -2790,7 +2790,9 @@ The flow prints the last two after `>>> Final reports` as `RB-CELL-COUNT: routed
 
 A pass is qualified with `pnr.no_wire_rc` when the pre-route steps had no wire RC; see [Set wire RC](#set-wire-rc).
 
-A run passes when OpenROAD exits 0 with no `[ERROR ...]` line and, under `gds-mode: strict`, the requested export was delivered complete. It skips when `reglvl` filters it out or `tool:` is unsupported. Timing violations and DRC counts are metrics only; gate signoff on them in your project.
+`max_slew_violation_count`, `max_capacitance_violation_count` and `max_fanout_violation_count` count the routed design's pins that break a Liberty or SDC max-slew, max-capacitance or max-fanout limit, over every corner, as ORFS's `report_metrics` counts them. The summary shows them as the Slew/Cap/Fanout column, `pnr.log` prints them as `RB-ELECTRICAL: max_<check> <n>` after `>>> Final reports`, and `electrical.rpt` lists the violating pins. A pass with any violator is qualified `electrical N max-slew, ... violator(s)` and logs the warning `pnr.electrical_violators`. A count OpenROAD cannot report is left out.
+
+A run passes when OpenROAD exits 0 with no `[ERROR ...]` line and, under `gds-mode: strict`, the requested export was delivered complete. With `fail-on-electrical: true` a run with any electrical violator also fails, with no `fail_stage`, so `xfail:` can excuse it; it keeps its routed outputs and publishes no abstract. It skips when `reglvl` filters it out or `tool:` is unsupported. Timing violations and DRC counts are metrics only; gate signoff on them in your project.
 
 On a multi-corner platform, `wns_setup_ps`, `wns_hold_ps`, `tns_ps` and `tns_hold_ps` are the worst across corners. The result also names the `worst_setup_corner` and `worst_hold_corner` and lists each corner's own four values under `corners`, so setup at the slow corner and hold at the fast corner can be read separately; `pnr.log` has them after `>>> Per-corner timing`.
 
@@ -2805,12 +2807,14 @@ Outputs land under `<pnr-dir>/artefacts/<run>/`.
 | `<top>.routed.odb` | OpenROAD database read by post-P&R `rb power` |
 | `<top>.routed.spef` | Extracted parasitics; only when the PDK sets `rcx-rules` |
 | `timing.rpt` | Worst-path timing across all corners |
+| `electrical.rpt` | Max-slew, max-capacitance and max-fanout violators across all corners |
 | `route.drc.rpt`, `route.maze.log` | DRC summary and detailed-route log |
+| `congestion.rpt` | Overflowing global-route tiles; written only when global routing overflows |
 | `<top>.gds`, `<top>.png`, `klayout.*.log` | Optional KLayout outputs and logs |
 | `export.provenance.json` | What the last `rb pnr-export` read and produced |
 | `checkpoints/`, `abstract/` | Optional [stage checkpoints](#keep-stage-checkpoints) and [hardened-block abstract](#harden-a-block) |
 
-Each run deletes the previous run's outputs first, and a run that fails after writing the routed database removes it again, so `rb power` never reads a stale one. `pnr.log` and `pnr.tcl` are kept from a failed run.
+Each run deletes the previous run's outputs first, and a run that fails after writing the routed database removes it again, so `rb power` never reads a stale one. `pnr.log`, `pnr.tcl` and `congestion.rpt` are kept from a failed run.
 
 On failure, read `pnr.log`. If only KLayout failed, read the matching `klayout.*.log`, fix the installation and rerun with `--gds` or `--png`.
 
@@ -2883,13 +2887,14 @@ cfg-pnr-platforms:
 - **`placement.reference-hpwl`** (positive number, unset by default) passes `-reference_hpwl` to `global_placement`. Unset, the placer's density-penalty controller derives its reference HPWL from the design size, which on a large design spreads cells less and ends routability inflation early, so global route can overflow. A fixed value such as `446000000` spreads cells further and can clear the overflow.
 - **`placement.routability-driven`** (default `false`) adds `-routability_driven` to `global_placement`: the placer estimates congestion, inflates cells in congested regions and re-spreads them. Turn it on for a congested block whose global route overflows. **`placement.routability-use-grt`** (default `false`) adds `-routability_use_grt`, which estimates that congestion with the global router instead of RUDY; slower, closer to the real route. It takes effect only in routability mode, so a platform whose resolved settings enable it without `routability-driven` fails to load. Like the other `placement.*` keys, each is set on the PDK and overridden per platform.
 - **`cts-buffer`** takes a name or a list. With a list, the first entry is the root buffer.
+- **`port-buffer`** (unset by default) is the cell `buffer_ports` inserts on each port of a run with `buffer-ports` on, passed as `-buffer_cell`; unset lets OpenROAD choose. See [Harden a block](#harden-a-block).
 - **`cts-sink-clustering`** (default `true`) passes `-sink_clustering_enable` to CTS. Set it to `false` when CTS fails with `CTS-0080 Sink not found`, as it can on coincident clock pins or a large ASAP7 clock tree.
 - **`cts-apply-ndr`** (unset by default) passes `-apply_ndr` (`none`, `root_only`, `half` or `full`) to CTS; unset keeps OpenROAD's default, `half`. Set `none` when the global router detours clock nets that carry non-default rules to several times their Manhattan length, which shows as large hold violations and `GRT-0273 Disabled NDR` in the log.
 - **`max-fanout`** (positive integer, unset by default) adds `set_max_fanout <n> [current_design]` after each `read_sdc` in `rb pnr` and `rb power`, replacing a design-level limit from the SDC. When neither the Liberty nor the SDC sets a limit, `repair_design` uses 50 and buffers every larger net; on a library without one, such as SKY130 HD, that costs setup timing. A large value such as `100000` stops repair buffering for fanout alone.
 - **`post-cts-setup-repair`** (default `false`) runs `repair_timing -setup` after CTS, before hold repair. Turn it on when the post-CTS netlist misses setup; it adds buffers and resizes cells, so QoR changes.
 - **`global-route-hold-repair`** (default `false`) repairs hold again after global route, on `estimate_parasitics -global_routing`, then legalizes and reroutes the new buffers before detail route, as ORFS does; see [Set wire RC](#set-wire-rc).
 - **`routing-layer-adjustment`** (0 to 1, unset by default) withholds that fraction of each signal layer's capacity from the global router (`set_global_routing_layer_adjustment`, ORFS `ROUTING_LAYER_ADJUSTMENT`, 0.25 on ASAP7). Raise it when detailed routing ends with DRCs in congested areas; unset leaves the router's default.
-- **`pdn-config`** is a path, resolved from `root_config.yaml`, to a Tcl snippet that declares the power grid (`add_global_connection`, `set_voltage_domain`, `define_pdn_grid`, `add_pdn_stripe`, `add_pdn_connect`). The flow sources it after macro placement and calls `pdngen` itself, so the snippet must not. Unset means no power grid.
+- **`pdn-config`** is a path, resolved from `root_config.yaml`, to a Tcl snippet that declares the power grid (`add_global_connection`, `set_voltage_domain`, `define_pdn_grid`, `add_pdn_stripe`, `add_pdn_connect`). The flow sources it after macro placement and calls `pdngen` itself, so the snippet must not. Unset means no power grid. A run can replace it or its core grid; see [Plan the power grid per run](#plan-the-power-grid-per-run).
 - **`dont-use-cells`** and **`rcx-rules`** are described below, and the platform Tcl hooks under [Source platform Tcl hooks](#source-platform-tcl-hooks).
 
 ## Exclude cells with dont-use-cells
@@ -2965,6 +2970,7 @@ A netlist that instantiates hard macros, such as an SRAM or a partition hardened
 - The packer sorts macros tallest first, then widest, and packs them left to right into rows starting at the core's lower-left corner, or at the corner [`floorplan.macro-anchor`](#floorplan-controls) names.
 - It keeps `placement.macro-halo` between neighbours and at every core edge, and snaps each origin to the standard-cell site grid.
 - Placed macros are `FIRM`; global and detailed placement leave them where they are.
+- To fix, orient or halo a single macro, see [Place individual macros](#place-individual-macros).
 
 When macros do not fit, the run fails with `N macros do not fit the W x H um floorplan core`, followed by the largest footprint, the macro and core areas, and the smallest core at the run's aspect ratio that would fit. Lower the floorplan utilization, change its aspect ratio, or lower `placement.macro-halo`.
 
@@ -3000,30 +3006,144 @@ Two optional `floorplan` keys steer where macros and standard cells may go.
           max-density: 0.4
 ```
 
-**Macro anchor.** `macro-anchor` is the core corner the [macro packer](#macro-placement) starts from: `lower-left` (default), `lower-right`, `upper-left` or `upper-right`. Rows fill away from that corner, so the opposite edges stay clear of macros where possible. Point `pin-constraints` at those edges when a neighbouring block abuts one side. Set it per run, not per platform.
+**Macro anchor.** `macro-anchor` is the core corner the [macro packer](#macro-placement) starts from: `lower-left` (default), `lower-right`, `upper-left` or `upper-right`. Rows fill away from that corner, so the opposite edges stay clear of macros where possible. Constrain pins to those edges with [`floorplan.pins`](#constrain-boundary-pins) when a neighbouring block abuts one side. Set it per run, not per platform.
 
 **Placement blockages.** Each `blockages` entry is `rect: [x0, y0, x1, y1]` in die microns plus a `type`:
 
 | `type` | Effect |
 | --- | --- |
-| `hard` (default) | No standard cell is placed inside. The packer moves overlapping macros past it. |
+| `hard` (default) | No standard cell is placed inside. The rows under it are cut before tap insertion, so no tap or endcap lands inside and the cut row ends get endcaps. The packer moves overlapping macros past it. |
 | `soft` | Global placement keeps cells out; later repair and legalization may use the area. Macros may sit on it, except under `rtl-mp`. |
 | `partial` | Global placement caps cell density at `max-density` (strictly between 0 and 1); legalization then treats the area as fully blocked. Macros may sit on it, except under `rtl-mp`. |
 
+A row cut rounds outward to whole sites, so the remnants stay on the site grid. A remnant narrower than twice the row height is dropped. The power grid's followpins follow the cut rows.
+
 Blockages need OpenROAD 26Q1 or newer; on an older build the run fails at setup. A malformed rectangle (`x0 >= x1`, `y0 >= y1`, a side under 0.001 µm, a negative coordinate, or not four numbers), an unknown type, or `max-density` on anything but `partial` fails when `pnr.yaml` loads.
+
+## Place individual macros
+
+`floorplan.macros` gives individual macros a fixed location, an orientation or their own standard-cell halo. Each entry names an `instance`, by its full hierarchical name or a glob over the names:
+
+```yaml
+    floorplan:
+      macros:
+        - instance: u_inner/u_hist_mem/u_sram
+          location: [200, 290]         # lower-left corner, die microns
+          orientation: MX
+          halo: [3, 3]                 # standard-cell keep-out, x and y, microns
+        - instance: "*/u_c*"           # every matching macro
+          orientation: R180
+```
+
+| Key | Meaning |
+| --- | --- |
+| `instance` | A macro instance name as OpenROAD reads it from the netlist, such as `u_inner/u_hist_mem/u_sram`. A name that is not an instance is matched as a glob, where `*` also crosses `/`. |
+| `location` | `[x, y]`, the macro's lower-left corner in die microns, after orientation. The macro is fixed (`LOCKED`) before the packer or RTL-MP runs, and both leave it there. The pattern must match exactly one macro. |
+| `orientation` | `R0`, `R180`, `MX` or `MY`. Applied before placement, so a packed macro keeps it. |
+| `halo` | `[x, y]` in microns. Replaces `placement.macro-cell-halo` for the matched macros: no standard cell is placed within `x` of the macro's left and right edges or `y` of its top and bottom. `[0, 0]` removes the halo. |
+
+- A location snaps to the nearest standard-cell site and row from the core's lower-left corner, the grid the packer also uses, so the macro's bottom edge lies on a row boundary. A macro that fits the core before snapping still fits after. The log shows `fixed <inst> at (x, y) um <orientation> (requested (x, y))`.
+- A fixed macro must lie inside the core and must not overlap another fixed macro; either fails the run naming the entry. Overlap with a placement blockage is allowed.
+- With the [packer](#macro-placement), fixed macros are keep-outs: the other macros stay `placement.macro-halo` away from them, as from each other. With `rtl-mp`, RTL-MP treats them as fixed obstacles.
+- Rotations by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) are refused: they swap the macro's width and height off the site grid and turn its pins across the routing tracks. Under `rtl-mp`, an `orientation` without a `location` is refused, because RTL-MP picks each placed macro's orientation itself.
+- A macro may be matched by several entries, but only one entry may set each key for it.
+- At run time a pattern that matches no instance, or that matches a standard cell, fails the run: `floorplan.macros[i]: no instance matches '<pattern>'`.
+- `floorplan.macros` is part of a hardened block's configuration. For a [hardened block](#assemble-hardened-blocks) placed with a `location`, check that its supply pins land on the parent's straps, and that a mirrored block's net order still fits the parent's grid.
+
+## Size the die and core
+
+By default `utilization`, `aspect` and `core-margin` size the floorplan from the netlist's cell area. To give exact dimensions instead, set both rectangles in die microns:
+
+```yaml
+    floorplan:
+      die-area: [0, 0, 160, 160]       # x0 y0 x1 y1
+      core-area: [20, 20, 140, 140]
+      core-cutouts:
+        - [80, 80, 140, 140]           # an L-shaped core
+```
+
+- `die-area` and `core-area` go together and run `initialize_floorplan -die_area -core_area`. They exclude `utilization`, `aspect` and `core-margin`; setting any of those with them is a load error. The core must lie inside the die. OpenROAD snaps the core edges inward onto the site grid and logs `IFP-0028`.
+- `core-cutouts` carves rectangles out of the core for an L, T or other rectilinear core. Each is a hard placement blockage whose rows are cut before tap insertion, like a `hard` [blockage](#floorplan-controls), and a keep-out for the macro packer. With `core-area` set, a cut-out must lie inside it; at run time, one that does not overlap the core fails the run. It works with utilization sizing too, but the core is still sized for the whole cell area, so lower `utilization` to leave room.
+- The die stays rectangular: OpenROAD has no non-rectangular die. A cut-out keeps standard cells, rows, taps, followpin rails and macros out; it does not block routing. Core-grid straps still cross it and stay connected through the rows on either side, so `check_power_grid` passes. IO pins are still placed along the whole die edge; keep them off the edges next to a cut-out with [`floorplan.pins`](#constrain-boundary-pins).
+- All three keys are part of a hardened block's configuration when set.
+
+## Plan the power grid per run
+
+The PDK's `pdn-config` declares the power grid for every run on it. A run can replace or reshape it:
+
+- **`pdn-config:`** on the run is a Tcl file, relative to `pnr.yaml`, sourced instead of the PDK's. It follows the same contract: declare the grid, never call `pdngen`.
+- **`pdn:`** on the run declares the core grid in YAML. It replaces the core grid of the pdn-config in effect (the run's or the PDK's), which must exist. Everything else in that file still runs: global connections, voltage domains and macro grids.
+
+```yaml
+    pdn:
+      ring: {layers: [met5, met4], width: 1.6, spacing: 1.7, offset: 2}
+      stripes:
+        - {layer: met1, width: 0.48, followpins: true}
+        - {layer: met4, width: 1.6, pitch: 20, offset: 5}
+        - {layer: met5, width: 1.6, pitch: 20, offset: 5}
+      # connect: [[met1, met4], [met4, met5]]   # default: each stripe layer to the next
+```
+
+| Key | Meaning |
+| --- | --- |
+| `ring` | Optional core ring: `layers` `[horizontal, vertical]`, `width`, `spacing` between the power and ground rings, and `offset` from the core edge, all in microns (`add_pdn_ring -core_offsets`). It needs `offset + 2 x width + spacing` of room between core and die, which is checked against `core-margin` or the explicit areas when the run loads. With a ring, every stripe extends to it. |
+| `stripes` | The core grid's stripes, bottom layer first. A `followpins: true` entry gives the rails along the standard-cell rows and takes only `width`. Any other stripe needs `pitch`, and takes optional `offset` and `spacing` (`add_pdn_stripe`). |
+| `connect` | Optional `[lower, upper]` layer pairs to join with vias (`add_pdn_connect`). By default each stripe layer is joined to the next one listed. A ring on layers that also carry stripes needs nothing more; put other ring layers in `connect`. |
+
+While it sources the pdn-config, the flow skips each `define_pdn_grid` that is neither `-macro` nor `-existing`, and that grid's stripes, rings and connects, and logs `pdn: core grid '<name>' from the pdn-config replaced by the run's pdn: block`. The run's grid keeps the skipped grid's name, voltage domains, `-pins` layers and starting net; without one it is `rb_core` on OpenROAD's default domain. Macro grids that connect to the core straps, as the template's `-grid_over_boundary` grids do, keep working only if `pdn:` still has straps on the layers they connect to.
+
+- `pdn:` with no pdn-config at all (for example on Nangate45) fails at setup: the global connections and voltage domain have to come from Tcl.
+- Malformed entries fail at load: a stripe without `pitch`, two stripes wider than their pitch, `pitch` on a followpins entry, a ring without two layers, or a ring too wide for the core-to-die gap.
+- Switchable power domains are not supported: they need power-intent (UPF) support, which `rb pnr` does not have. Use one always-on domain.
+- `pdn-config` and `pdn` are part of a hardened block's configuration when set.
 
 ## Constrain boundary pins
 
-Set `pin-constraints: pins.tcl` on a run to assign pins to boundary edges or groups. The path is relative to `pnr.yaml` and a missing file fails the run. Without the key, pin placement is unconstrained.
+`floorplan.pins` constrains IO pins in `pnr.yaml`. Each entry names ports by name or glob in `names`, and either constrains them to an edge, keeps them together, or places one pin exactly:
 
-```tcl
-set_io_pin_constraint -pin_names {req_* clk} -region left:*
-set_io_pin_constraint -pin_names {rsp_*} -region right:*
+```yaml
+    floorplan:
+      pins:
+        - names: [req_*, clk]          # the whole left edge
+          side: left
+        - names: rsp_*
+          side: right
+          start: 10                    # microns, die y from 10 to 80
+          end: 80
+        - names: pwdata                # a bus: every bit, together, in bit order
+          side: top
+          group: true
+          order: true
+        - names: irq
+          location: [0, 42.5]          # pin centre, die microns
+          layer: met3                  # optional
+          size: [0.3, 0.6]             # optional, microns
 ```
 
-- Put these commands here, not in SDC. The file is sourced just before pin placement, after macro placement and the power grid.
-- Keep clock pin layers compatible with the platform's clock-routing range.
-- To keep a pin edge clear of macros, anchor the packer at the opposite corner with [`floorplan.macro-anchor`](#floorplan-controls).
+| Key | Meaning |
+| --- | --- |
+| `names` | Port names or globs, one string or a list. A bus name matches every bit. |
+| `side` | `left`, `right`, `top` or `bottom`: `set_io_pin_constraint -region <side>:<start>-<end>`. |
+| `start` / `end` | Optional range along the side in die microns: y for `left` and `right`, x for `top` and `bottom`. Either one alone leaves the other end open. Without both the whole edge is allowed. |
+| `group` / `order` | `group: true` keeps the matched pins next to each other (`-group`); `order: true` also keeps them in the order matched. With no `side` the group may land on any edge. |
+| `location` | `[x, y]` pin centre in die microns. Places exactly one pin with `place_pin -force_to_die_boundary`, so it moves onto the nearest die edge for its layer's direction and onto the nearest routing track; the log reports the requested and the final centre. The pin is fixed, and pin placement leaves it there. |
+| `layer` | With `location` only. Default: the PDK's horizontal pin layer on a left or right edge, its vertical one on a top or bottom edge, judged by the nearest edge. |
+| `size` | With `location` only. `[width, height]` in microns. Default: the layer's minimum width and area. |
+
+- Exact pins are placed first, then the edge and group constraints, then the `pin-constraints` file below, all just before `place_pins`. A pin both placed and matched by a side keeps its location.
+- A name or glob that matches no port fails the run with `floorplan.pins[i]: no port matches '<pattern>'`, where `set_io_pin_constraint` alone would only warn. A `location` entry whose name matches more than one port fails too.
+- A malformed entry fails when `pnr.yaml` loads, naming `floorplan.pins[i]`: an unknown side, `start` at or above `end`, a negative coordinate, `start` or `end` without `side`, `order` without `group`, `location` with `side`, `group` or more than one name, `layer` or `size` without `location`, or an entry that sets none of `side`, `group` and `location`.
+- A `harden: true` run places its pins the same way, and the published abstract carries them. `floorplan.pins` is part of a hardened block's configuration, so changing it makes the block's abstract stale.
+- Keep clock pins on layers inside the platform's clock-routing range. To keep a pin edge clear of macros, anchor the packer at the opposite corner with [`floorplan.macro-anchor`](#floorplan-controls).
+
+For anything `floorplan.pins` does not cover, such as `-mirrored_pins` or `exclude_io_pin_region`, set `pin-constraints: pins.tcl` on the run. The path is relative to `pnr.yaml` and a missing file fails the run. The file is sourced just before pin placement, after macro placement, the power grid and `floorplan.pins`:
+
+```tcl
+exclude_io_pin_region -region bottom:0-20
+set_io_pin_constraint -mirrored_pins {a_in a_out}
+```
+
+Put these commands here, not in SDC, which is read before the die exists.
 
 ## PDK setup notes
 
@@ -3032,6 +3152,21 @@ The same flow runs on any PDK the root config declares. Switching PDKs is a `pla
 - **Nangate45 (FreePDK45).** All defaults are calibrated on it. Set `site`, one Liberty corner, `tech-lef`, `macro-lef`, the tie and fill cells and `cts-buffer: BUF_X4`, and leave every process key unset. It has no PDN snippet, so runs have no power grid. For extraction, set `rcx-rules` to ORFS' `flow/platforms/nangate45/rcx_patterns.rules`; its LEF has no via resistance, so vias extract as 0 Ω.
 - **sky130hd.** The template's `sky130hd` PDK entry is a worked example, used by the `demo_tiny_alu_subsys_hier` runs. Beyond Nangate45's fields it needs `pin-layers` (`met3` / `met2`), `routing-layers` in `met*` names, a `pdn-config`, `placement.density: 0.60`, a `dont-use-cells` list for the probe and `lpflow` cells, and a `cts-buffer` list. Use ORFS' `flow/platforms/sky130hs/rcx_patterns.rules` for `rcx-rules`.
 - **ASAP7.** Follow ORFS' `flow/platforms/asap7`. Set the four [platform Tcl hooks](#source-platform-tcl-hooks) to its `liberty_suppressions.tcl`, `setRC.tcl`, `openRoad/make_tracks.tcl` and a copy of `openRoad/tapcell.tcl` with `TAP_CELL_NAME` and `MACRO_ROWS_HALO_X` / `_Y` filled in; without `tracks-tcl` the run stops at `make_tracks` with `IFP-0039`. List each corner's split Liberty files under that corner. `macro-lef` takes one path, so list the extra LEFs in `lef-paths`.
+
+## Follow routing progress
+
+`pnr.log` is OpenROAD's output, written as it happens, so `tail -f artefacts/<run>/pnr.log` follows a running flow.
+
+- Every global route runs with `-verbose`. After it, `pnr.log` has the per-layer resource and usage table (`[INFO GRT-0096] Final congestion report:`), which shows the congestion margin of a passing run. With `global-route-hold-repair`, the incremental reroute prints the table again.
+- When global routing overflows, each overflowing tile, with its capacity, usage and nets, goes to `congestion.rpt`, in the DRC-report format the OpenROAD GUI's DRC viewer loads. A route that fails with `GRT-0116` keeps it.
+- Detailed routing logs each optimization iteration (`[INFO DRT-0195] Start 1st optimization iteration.`), its progress (`Completing 30% with 88 violations.`) and its result (`[INFO DRT-0199] Number of violations = 16.`), so a converging route can be told from a stalled one. Set `detailed-route-verbose:` on the run to change the level: `0` silences the iterations; higher levels add more router detail.
+
+```yaml
+runs:
+  - name: demo_pnr_nangate45
+    # ...
+    detailed-route-verbose: 0    # default 1
+```
 
 ## OpenROAD threads
 
@@ -3140,6 +3275,8 @@ runs:
 - `harden` implies `--gds` and forces `gds-mode: strict`, so it needs KLayout.
 - The run also elaborates the block's top in Yosys, with the frontend, sources, defines and Liberty of the block's synthesis, and records the values of its parameters and localparams as `<top>.params.json`. Only names the top declares in its own scope are recorded: a generate loop's genvar, or a localparam inside a generate block, function or procedural block, is not. Parents' overrides are checked against it (see [Instance a parameterised block](#instance-a-parameterised-block)). The probe's script, log and output stay in `param_probe/` of the artefact directory until the next run. If Yosys cannot elaborate the top, the abstract is published without the record and the run warns `pnr.block_params_unrecorded`.
 - The views are published together or not at all. If one cannot be produced, the run fails with `fail_stage: abstract` and leaves no `abstract/`; the routed DEF and ODB stay. Each rerun removes the previous abstract first.
+- `harden` turns on `buffer-ports`: `buffer_ports -inputs -outputs` runs after IO pin placement and before global placement, as ORFS `global_place.tcl` does, and `repair_design` sizes the buffers. Each input then drives one buffer instead of its internal loads, and each output is driven by one, so the abstract's pin capacitance and drive do not depend on the block's internals. Without it, an input fanning out to a thousand loads carries their whole capacitance into the Liberty model for the parent to drive. OpenROAD leaves clock, constant and special nets unbuffered. The platform's `port-buffer` names the buffer cell; unset, OpenROAD picks one, and on sky130hd it picks the delay cell `sky130_fd_sc_hd__clkdlybuf4s50_1`, so set `port-buffer` there (ORFS uses `sky130_fd_sc_hd__buf_4` as its minimum buffer). Set `buffer-ports: false` to turn it off, or `buffer-ports: true` on a run that does not harden.
+- `buffer-ports` is part of the block's configuration only when on, and `port-buffer` only when it is set and ports are buffered, so an abstract hardened by an rtl_buddy without it is stale (`config changed (buffer_ports)`) until the block is re-hardened, and one hardened with `buffer-ports: false` is not.
 - An abstract carries one corner's timing model, so `harden` on a multi-corner platform is refused before OpenROAD starts.
 - The model has timing arcs only, so a parent's `rb power` sees the block as drawing 0 W. Run `rb power` on the block itself.
 
@@ -9436,7 +9573,7 @@ cfg-pnr-platforms:
 | `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `abc-script`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, and `unresolved-interfaces`. OpenROAD also accepts `strategy` |
 | `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical` (default `metal3` / `metal2`), `placement.*`, `dont-use-cells`, `pdn-config`, `rcx-rules`, `tracks-tcl`, `layer-rc-tcl`, `tapcell-tcl`, and `platform-tcl`. `corners` maps a corner name to its standard-cell Liberty: one path, or a list for cells split across files. `cell-gds` takes one path or a list. Each path resolves on its own from `root_config.yaml` |
 | `cfg-synth-platforms` | `name`, `pdk`; optional `corner` (the first declared corner by default) and `dont-use-cells` |
-| `cfg-pnr-platforms` | `name`, `pdk`; optional `corner` or `corners`, `cts-buffer`, `cts-sink-clustering` (default `true`), `cts-apply-ndr`, `post-cts-setup-repair` (default `false`), `global-route-hold-repair` (default `false`), `routing-layer-adjustment`, `max-fanout`, `routing-layers.signal` / `.clock`, `placement.*`, and `dont-use-cells`. `corners` is a non-empty list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; it excludes `corner`. See [multi-corner signoff](../concepts/pnr.md#sign-off-at-several-corners) |
+| `cfg-pnr-platforms` | `name`, `pdk`; optional `corner` or `corners`, `cts-buffer`, `port-buffer`, `cts-sink-clustering` (default `true`), `cts-apply-ndr`, `post-cts-setup-repair` (default `false`), `global-route-hold-repair` (default `false`), `routing-layer-adjustment`, `max-fanout`, `routing-layers.signal` / `.clock`, `placement.*`, and `dont-use-cells`. `corners` is a non-empty list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; it excludes `corner`. See [multi-corner signoff](../concepts/pnr.md#sign-off-at-several-corners) |
 | `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `yosys.abc-script`, `openroad.run`, `openroad.pre-sta-tcl`, and `openroad.repair` settings. `openroad.repair` (default `false`) runs `repair_design` and `repair_timing -setup` before the synthesis STA reports. The built-in default is `standard`. Precedence is per-run override, then effort, then tool config |
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
@@ -9456,13 +9593,14 @@ The process-dependent P&R keys are all optional:
 | `placement.routability-driven` | `cfg-pdks`, `cfg-pnr-platforms` | Boolean, default `false`. `true` adds `-routability_driven` to `global_placement`, which inflates cells in congested regions and re-spreads them; for congested blocks |
 | `placement.routability-use-grt` | `cfg-pdks`, `cfg-pnr-platforms` | Boolean, default `false`. `true` adds `-routability_use_grt`, so routability mode estimates congestion with the global router instead of RUDY. Requires `placement.routability-driven: true` after platform-over-PDK resolution; otherwise the platform fails to load |
 | `dont-use-cells` | `cfg-pdks`, `cfg-synth-platforms`, `cfg-pnr-platforms` | Cell names or patterns (`*` and `?` wildcards only), one per list entry. Empty by default. See below for scope |
-| `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid. P&R sources it and calls `pdngen`. Unset by default |
+| `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid. P&R sources it and calls `pdngen`. Unset by default. A `pnr.yaml` run's own `pdn-config` replaces it |
 | `rcx-rules` | `cfg-pdks` | Path to an OpenRCX extraction-rules file. P&R extracts the routed design, writes `<top>.routed.spef`, and times its final reports on it. A `netlist-source: pnr` power run reads that SPEF instead of estimating. Unset by default |
 | `tracks-tcl` | `cfg-pdks` | Path to a Tcl script of `make_tracks` commands (ORFS `MAKE_TRACKS`). P&R sources it after `initialize_floorplan` in place of the bare `make_tracks`. Unset by default |
 | `layer-rc-tcl` | `cfg-pdks` | Path to a Tcl script of `set_layer_rc` / `set_wire_rc` commands (ORFS `SET_RC_TCL`). P&R sources it after `read_sdc`, before placement-time parasitics estimates and CTS, and warns `pnr.no_wire_rc` when it is unset; a `netlist-source: pnr` power run sources it after `read_sdc` too and digests its contents when it estimates parasitics. A synthesis effort with `openroad.repair` sources it before the repair. Unset by default |
 | `tapcell-tcl` | `cfg-pdks` | Path to a Tcl script that inserts tap and endcap cells (ORFS `TAPCELL_TCL`). P&R sources it after macro placement, before the power grid. Unset by default |
 | `platform-tcl` | `cfg-pdks` | Path to a Tcl script that `rb pnr` and `rb power` source before reading Liberty (ORFS `PLATFORM_TCL`), such as `suppress_message` lines. Unset by default |
 | `cts-buffer` | `cfg-pnr-platforms` | One buffer name or a list. A list becomes the CTS `-buf_list`, with its first entry as `-root_buf` |
+| `port-buffer` | `cfg-pnr-platforms` | One buffer cell name, the `buffer_ports -buffer_cell` of runs with `buffer-ports` on. Unset lets OpenROAD choose; on sky130hd it chooses a delay cell. Part of a hardened block's config digest when set and ports are buffered. See [Harden a block](../concepts/pnr.md#harden-a-block) |
 | `cts-sink-clustering` | `cfg-pnr-platforms` | Boolean. Passes `-sink_clustering_enable` to `clock_tree_synthesis`. Default `true`; set `false` when CTS fails with `CTS-0080` |
 | `cts-apply-ndr` | `cfg-pnr-platforms` | One of `none`, `root_only`, `half`, `full`. Passed as `clock_tree_synthesis -apply_ndr`. Unset by default, which keeps OpenROAD's default (`half`); set `none` when global route detours clock nets |
 | `post-cts-setup-repair` | `cfg-pnr-platforms` | Boolean. Runs `repair_timing -setup` after CTS, before hold repair. Default `false` |
@@ -10046,8 +10184,10 @@ runs:
 | `synth` | Required | Upstream synthesis entry |
 | `synth-path` | Required | Upstream `synth.yaml`, relative to `pnr.yaml` |
 | `constraints` | Required | SDC path relative to `pnr.yaml` |
-| `pin-constraints` | Optional | Tcl file relative to `pnr.yaml`, sourced immediately before pin placement, which runs after macro placement and the PDN. A missing file fails the run |
+| `pin-constraints` | Optional | Tcl file relative to `pnr.yaml`, sourced immediately before pin placement, which runs after macro placement, the PDN and `floorplan.pins`. A missing file fails the run |
 | `platform` | Required | `cfg-pnr-platforms` entry |
+| `pdn-config` | Optional | Tcl file relative to `pnr.yaml` that replaces the PDK's `pdn-config` for this run. A missing file fails the run at setup |
+| `pdn` | Optional | Declarative core power grid that replaces the core grid of the pdn-config in effect. See below |
 | `desc` | Required | Human-readable description |
 | `lef-paths` / `lib-paths` | Optional | Design-specific macro files relative to `pnr.yaml` |
 | `gds-paths` | Optional | Layout of the macros `lef-paths` names, relative to `pnr.yaml`. P&R never reads it; KLayout stream-out does |
@@ -10055,14 +10195,21 @@ runs:
 | `gds-mode` | Default `preview` | `strict` fails the run when a requested export is not delivered complete. `preview` keeps an incomplete layout and reports it. `--gds-mode` overrides |
 | `gds-allow-empty` | Optional | Cell names or `fnmatch` globs, matched case-sensitively, that are empty on purpose. Such a cell is not missing in either mode |
 | `threads` | Default unset (1) | OpenROAD worker threads: a positive integer, or `auto` for the CPUs of the current allocation (1 outside one). Clamped with a warning to a detected Slurm or affinity allocation. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
+| `detailed-route-verbose` | Default 1 | `detailed_route -verbose` level, a non-negative integer. 1 logs each iteration's progress and violation count to `pnr.log`; 0 silences them; higher levels add more router detail. Not part of a hardened block's config digest. See [Follow routing progress](../concepts/pnr.md#follow-routing-progress) |
 | `checkpoints` | Default `false` | `true`, a stage name, or a list of `floorplan`, `place`, `cts`, `global_route`. Writes a stage-named ODB, DEF, and SDC (plus route guides and segments after `global_route`) under `artefacts/<run>/checkpoints/<run-id>/`, with a manifest and a `progress.jsonl` of step events. `[]` keeps progress only. See [Keep stage checkpoints](../concepts/pnr.md#keep-stage-checkpoints) |
 | `harden` | Default `false` | Publishes the routed result as a hard-macro abstract under `artefacts/<run>/abstract/`: `<top>.lef`, `<top>.lib` (OpenSTA timing model), `<top>.gds`, and `abstract.manifest.json`. Implies `--gds` with `gds-mode: strict`; needs a single-corner platform. See [Harden a block](../concepts/pnr.md#harden-a-block) |
+| `buffer-ports` | Default: the value of `harden` | `true` runs `buffer_ports -inputs -outputs` after IO pin placement and before global placement, so each port drives or is driven by one buffer. Part of a hardened block's config digest when `true`. See [Harden a block](../concepts/pnr.md#harden-a-block) |
+| `fail-on-electrical` | Default `false` | Fails a routed run with any max-slew, max-capacitance or max-fanout violator. Without it such a run passes, qualified with the counts. Not part of a hardened block's config digest. See [Interpret results](../concepts/pnr.md#interpret-results) |
 | `floorplan.utilization` | Default 0.55 | Core utilization from 0 to 1 |
 | `floorplan.aspect` | Default 1.0 | Die aspect ratio |
 | `floorplan.core-margin` | Default 2.0 | Core-to-die margin in microns |
+| `floorplan.die-area` / `floorplan.core-area` | Optional | `[x0, y0, x1, y1]` in microns, set together, core inside die. They size the floorplan exactly and exclude `utilization`, `aspect` and `core-margin`. See [Size the die and core](../concepts/pnr.md#size-the-die-and-core) |
+| `floorplan.core-cutouts` | Optional | `[x0, y0, x1, y1]` rectangles carved out of the core for an L, T or other rectilinear core: hard blockages with their rows cut. Inside `core-area` when it is set |
 | `floorplan.macro-anchor` | Default `lower-left` | Core corner the macro packer starts from: `lower-left`, `lower-right`, `upper-left`, or `upper-right`. Cannot be set with `macro-placement: rtl-mp`. See [Floorplan controls](../concepts/pnr.md#floorplan-controls) |
 | `floorplan.macro-placement` | Default `pack` | Who places hard macros: `pack` (rtl_buddy's size-aware packer) or `rtl-mp` (OpenROAD's `rtl_macro_placer`, which keeps macros out of every blockage type). See [RTL-MP macro placement](../concepts/pnr.md#rtl-mp-macro-placement) |
 | `floorplan.blockages` | Optional | List of standard-cell placement blockages. See below |
+| `floorplan.macros` | Optional | Per-macro directives: a fixed `location`, an `orientation`, or a standard-cell `halo`. See below |
+| `floorplan.pins` | Optional | List of IO pin constraints: ports by name or glob on a side, within a range, as a group, or one pin at an exact location. See below |
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
@@ -10073,7 +10220,31 @@ Each `floorplan.blockages` entry has:
 - `type: hard` (default), `soft`, or `partial`.
 - For `partial` only, `max-density` strictly between 0 and 1. Only global placement honors it; legalization clears a partial blockage like a hard one.
 
-Blockages need OpenROAD 26Q1 or later. Macros are kept out of `hard` blockages.
+Blockages need OpenROAD 26Q1 or later. Macros are kept out of `hard` blockages, and the rows under them are cut before tap insertion. See [Placement blockages](../concepts/pnr.md#floorplan-controls).
+
+`pdn` has:
+
+- `ring` (optional): `layers: [horizontal, vertical]`, `width`, `spacing`, `offset` in microns. `offset + 2 x width + spacing` must fit between core and die.
+- `stripes` (required): each `layer` and `width`, plus either `followpins: true` or a `pitch` with optional `offset` and `spacing`.
+- `connect` (optional): `[lower, upper]` layer pairs; default each stripe layer to the next.
+
+It needs a pdn-config (the PDK's or the run's) for the global connections and voltage domain. See [Plan the power grid per run](../concepts/pnr.md#plan-the-power-grid-per-run).
+
+Each `floorplan.macros` entry has an `instance` (a full instance name, or a glob over instance names) and at least one of:
+
+- `location: [x, y]`, the lower-left corner in die microns. Snapped to the site grid, it must fit inside the core and clear of other fixed macros. The macro is fixed before macro placement and is a keep-out for the packer. The instance pattern must match exactly one macro.
+- `orientation: R0`, `R180`, `MX` or `MY`. Under `macro-placement: rtl-mp` it needs a `location`.
+- `halo: [x, y]` in microns, non-negative, replacing `placement.macro-cell-halo` for the matched macros.
+
+A pattern that matches no instance, or a standard cell, fails the run. See [Place individual macros](../concepts/pnr.md#place-individual-macros).
+
+Each `floorplan.pins` entry has `names` (port names or globs, a string or a list) and one of:
+
+- `side: left`, `right`, `top` or `bottom`, with optional `start` and `end` in die microns along that edge (`start < end`, both non-negative).
+- `group: true`, optionally with `order: true`, alone or with a `side`.
+- `location: [x, y]`, the pin centre in die microns, for a single port, with optional `layer` (default: the PDK pin layer of the nearest edge) and `size: [width, height]` in microns (default: the layer's minimum).
+
+A name or glob that matches no port fails the run. A `location` pin is fixed and placed first, before the side and group constraints and the `pin-constraints` file. See [Constrain boundary pins](../concepts/pnr.md#constrain-boundary-pins).
 
 The run consumes `<synth dir>/artefacts/<synth>/synth_netlist.v`. The selected PDK and platform provide Liberty, LEF, site, tie and fill cells, CTS buffer, and routing layers.
 
