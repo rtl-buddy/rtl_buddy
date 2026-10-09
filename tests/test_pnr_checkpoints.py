@@ -221,16 +221,14 @@ def _backend(tmp_path, monkeypatch, *, checkpoints=CHECKPOINT_STAGES, env=None):
 
     def _run(cmd, **kwargs):
         cmd = list(cmd)
-        log = cmd[cmd.index("-log") + 1]
-        with open(log, "w") as out:
-            done = _REAL_RUN(
-                _tcl_command(harness, cmd[-1]),
-                stdout=out,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-                env={**os.environ, **(env or {})},
-            )
+        done = _REAL_RUN(
+            _tcl_command(harness, cmd[-1]),
+            stdout=kwargs["stdout"],
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            env={**os.environ, **(env or {})},
+        )
         return subprocess.CompletedProcess(cmd, done.returncode, None, done.stderr)
 
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _run)

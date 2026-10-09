@@ -78,8 +78,9 @@ PROGRESS_STEPS = (
 #: Why a checkpoint has no congestion grid; readers must see "unavailable", not an empty grid that reads as zero congestion.
 _CONGESTION_PRE_ROUTE = "no global route at this stage"
 _CONGESTION_GR = (
-    "the flow's global_route writes no congestion report; the route guides "
-    "and segments are the retained routing state"
+    "the checkpoint carries no congestion grid; the run's congestion.rpt lists "
+    "overflowing tiles only, and the route guides and segments are the "
+    "retained routing state"
 )
 
 #: Run id: timestamp and pid, optionally de-duplicated; one safe path segment.

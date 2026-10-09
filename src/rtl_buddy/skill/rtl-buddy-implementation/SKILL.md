@@ -37,6 +37,10 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   running or killed flow is in. A checkpoint is never a routed or final result:
   report it as the stage it names. `pnr-export --checkpoint <stage>` labels its
   layout `checkpoint_final: false`.
+- **Route progress.** `pnr.log` is written live. Before calling a long route
+  hung, check its detailed-route iterations and violation counts (`DRT-0195`,
+  level set by `detailed-route-verbose:`, default 1) and the global-route
+  congestion table (`GRT-0096`).
 - **`pnr-export`.** It runs the KLayout export over a saved P&R result and
   starts no P&R or synthesis. The export is the whole job, so any export not
   delivered is a `FAIL`, unlike `rb pnr`, where a failed `preview` export leaves

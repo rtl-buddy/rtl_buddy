@@ -149,10 +149,8 @@ def _fake_tools(backend, monkeypatch, *, lef=True, lib=True, missing=()):
         result = MagicMock()
         result.stdout = ""
         result.stderr = ""
-        if "-log" in cmd:
-            Path(cmd[cmd.index("-log") + 1]).write_text(
-                "Design area 100.0 um^2 10% utilization\n"
-            )
+        if hasattr(_kwargs.get("stdout"), "write"):
+            _kwargs["stdout"].write("Design area 100.0 um^2 10% utilization\n")
             (artefacts / "demo_top.routed.odb").write_bytes(b"\x00odb\x00")
             (artefacts / "demo_top.def").write_text("DESIGN demo_top ;\n")
             staging.mkdir(exist_ok=True)

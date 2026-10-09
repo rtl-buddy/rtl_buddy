@@ -206,6 +206,25 @@ def _normalise_checkpoints(run: str, value) -> tuple[str, ...] | None:
     return tuple(s for s in CHECKPOINT_STAGES if s in names)
 
 
+#: `detailed_route -verbose` level when a run sets none: iteration and violation counts, no per-net detail.
+DEFAULT_DETAILED_ROUTE_VERBOSE = 1
+
+
+def _validate_detailed_route_verbose(run: str, value) -> int:
+    """Return the `detailed-route-verbose` level, default 1, or raise FatalRtlBuddyError.
+
+    ``bool`` is refused because it is an ``int`` subclass.
+    """
+    if value is None:
+        return DEFAULT_DETAILED_ROUTE_VERBOSE
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    raise FatalRtlBuddyError(
+        f"pnr run '{run}': 'detailed-route-verbose' must be a non-negative "
+        f"integer (the detailed_route -verbose level), got {value!r}"
+    )
+
+
 @serde
 class PnrConfigFile:
     name: str
@@ -234,6 +253,10 @@ class PnrConfigFile:
     tool_overrides: dict | None = None
     # OpenROAD threads: a positive integer or `auto`; unset means single-threaded.
     threads: int | str | None = None
+    # `detailed_route -verbose` level; unset means 1. Typed loosely so `initialise` names a bad value.
+    detailed_route_verbose: int | float | str | None = field(
+        rename="detailed-route-verbose", default=None
+    )
     # Either flag marks the run expected-to-fail; `xfail_strict` fails on an unexpected pass. See docs/concepts/expected-failures.md.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
@@ -261,6 +284,9 @@ class PnrConfigFile:
                 f"(expected one of {', '.join(m.value for m in GdsMode)})"
             ) from None
         threads = validate_threads(self.threads, where=f"pnr run '{self.name}'")
+        detailed_route_verbose = _validate_detailed_route_verbose(
+            self.name, self.detailed_route_verbose
+        )
 
         try:
             macro_anchor = MacroAnchor(self.floorplan.macro_anchor)
@@ -357,6 +383,7 @@ class PnrConfigFile:
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             threads=threads,
+            detailed_route_verbose=detailed_route_verbose,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
         )
@@ -381,6 +408,7 @@ class PnrConfig:
     gds_mode: GdsMode = GdsMode.PREVIEW
     gds_allow_empty: list[str] = dc_field(default_factory=list)
     threads: int | str | None = None
+    detailed_route_verbose: int = DEFAULT_DETAILED_ROUTE_VERBOSE
     checkpoints: tuple[str, ...] | None = None
     harden: bool = False
     blocks: list[BlockRef] = dc_field(default_factory=list)
@@ -436,6 +464,10 @@ class PnrConfig:
     def get_threads(self) -> int | str | None:
         """Validated `threads:`: a positive int, `auto`, or None."""
         return self.threads
+
+    def get_detailed_route_verbose(self) -> int:
+        """Validated `detailed-route-verbose:`, the `detailed_route -verbose` level."""
+        return self.detailed_route_verbose
 
     def get_checkpoints(self) -> tuple[str, ...] | None:
         """The stages to checkpoint, in flow order; ``None`` when off."""

@@ -78,6 +78,10 @@ _FIXED_OUTPUT_NAMES = tuple(
 
 # An input, not an output: cleared up front only (see `_clear_stale_outputs`).
 _SCRIPT_NAME = "pnr.tcl"
+
+# Written by global routing only when it overflows. It explains a failed route, so like the script it is cleared up front only.
+_CONGESTION_REPORT_NAME = "congestion.rpt"
+
 # Where `harden: true` elaborates the top to record its parameter values; see `_record_block_parameters`.
 _PARAM_PROBE_DIR = "param_probe"
 # The synth netlist with `blocks:` parameter overrides stripped, read in its place; an input like the script.
@@ -175,7 +179,7 @@ def _hook_block(title: str, path: str) -> str:
 def _global_route_hold_repair_tcl(platform) -> str:
     """Return the post-global-route hold repair, as ORFS runs it, or `""` when the platform leaves it off.
 
-    The global-route estimate includes the wires that post-CTS repair (on placement parasitics) could not see. The resizer reroutes the nets it changes; the cells it adds are legalized and their nets rerouted incrementally before detail route.
+    The global-route estimate includes the wires that post-CTS repair (on placement parasitics) could not see. The resizer reroutes the nets it changes; the cells it adds are legalized and their nets rerouted incrementally before detail route. The incremental route ends `-verbose`, so the log repeats the congestion table after the repair.
     """
     if not platform.get_global_route_hold_repair():
         return ""
@@ -185,7 +189,7 @@ def _global_route_hold_repair_tcl(platform) -> str:
         "repair_timing -hold\n"
         "global_route -start_incremental\n"
         "detailed_placement\n"
-        "global_route -end_incremental\n"
+        "global_route -end_incremental -congestion_report_file $CONGESTION_RPT -verbose\n"
         "check_placement -verbose\n"
     )
 
@@ -234,6 +238,7 @@ def run_output_paths(artefact_dir: str, design: str) -> list[str]:
     ] + [
         os.path.join(artefact_dir, _DEF2STREAM_REPORT_NAME),
         os.path.join(artefact_dir, _EXPORT_PROVENANCE_NAME),
+        os.path.join(artefact_dir, _CONGESTION_REPORT_NAME),
     ]
 
 
@@ -746,6 +751,7 @@ class OpenRoadPnr:
             ),
             "layer_adjustment": _layer_adjustment_tcl(platform),
             "global_route_hold_repair": _global_route_hold_repair_tcl(platform),
+            "detailed_route_verbose": str(self.pnr_cfg.get_detailed_route_verbose()),
             "cell_count_tag": _CELL_COUNT_TAG,
             "cts_clustering_option": (
                 "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
@@ -1609,9 +1615,9 @@ class OpenRoadPnr:
     def _clear_stale_outputs(self, *, include_script: bool = False) -> None:
         """Remove the previous run's outputs; the first thing `run` does.
 
-        Every exit from `run` must leave them absent: the DRC count, `rb power` and the GDS/PNG checks all trust presence. Design-named outputs are matched by suffix so this needs no synth back-reference and strands nothing from a previous design. The stream-out report and any `rb pnr-export` record go too. Logs are left to OpenROAD's `-log`, which truncates them.
+        Every exit from `run` must leave them absent: the DRC count, `rb power` and the GDS/PNG checks all trust presence. Design-named outputs are matched by suffix so this needs no synth back-reference and strands nothing from a previous design. The stream-out report and any `rb pnr-export` record go too. `pnr.log` is truncated when OpenROAD launches.
 
-        `include_script` also clears `pnr.tcl` and the stream-out input manifest so a rerun that dies before `_write_script` leaves no stale script. Only `run` sets it; `_fail_after_openroad` keeps them because they are what the tools read.
+        `include_script` also clears `pnr.tcl`, the stream-out input manifest and `congestion.rpt` so a rerun that dies before `_write_script` leaves no stale script. Only `run` sets it; `_fail_after_openroad` keeps them because they are what the tools read and why a route failed.
         """
         stale = clear_stale_artefacts(
             [
@@ -1621,7 +1627,12 @@ class OpenRoadPnr:
                     _DEF2STREAM_REPORT_NAME,
                     _EXPORT_PROVENANCE_NAME,
                     *(
-                        (_SCRIPT_NAME, _DEF2STREAM_INPUTS_NAME, _BLOCK_NETLIST_NAME)
+                        (
+                            _SCRIPT_NAME,
+                            _DEF2STREAM_INPUTS_NAME,
+                            _BLOCK_NETLIST_NAME,
+                            _CONGESTION_REPORT_NAME,
+                        )
                         if include_script
                         else ()
                     ),
@@ -2332,20 +2343,15 @@ class OpenRoadPnr:
             )
 
         log_path = self._log_path()
-        # OpenROAD truncates the log only once running; remove it so a failed launch leaves no old violation lines.
-        try:
-            os.unlink(log_path)
-        except FileNotFoundError:
-            pass
         env = os.environ.copy()
         env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
+        # No `-log`: OpenROAD block-buffers that file, so a long route showed nothing for minutes.
+        # Its stdout is flushed per message, so it goes to the log directly instead.
         cmd = [
             self.openroad_executable,
             "-no_init",
             "-exit",
-            "-log",
-            log_path,
             script_path,
         ]
         log_event(
@@ -2354,12 +2360,17 @@ class OpenRoadPnr:
             "pnr.run_cmd",
             pnr=self.pnr_cfg.get_name(),
             cmd=" ".join(cmd),
+            log=log_path,
         )
 
-        with task_status(f"pnr {self.pnr_cfg.get_name()} [openroad]"):
+        # Opened before launch, so a failed launch leaves an empty log, not an old run's violation lines.
+        with (
+            task_status(f"pnr {self.pnr_cfg.get_name()} [openroad]"),
+            open(log_path, "w") as log_file,
+        ):
             result = subprocess.run(
                 cmd,
-                stdout=subprocess.DEVNULL,
+                stdout=log_file,
                 stderr=subprocess.PIPE,
                 text=True,
                 check=False,
@@ -2367,7 +2378,7 @@ class OpenRoadPnr:
             )
         self._openroad_returncode = result.returncode
 
-        # Tcl errors go to stderr, not `-log`; append them so the diagnostic survives.
+        # Tcl errors go to stderr; append them so the diagnostic survives.
         stderr_text = (result.stderr or "").strip()
         if stderr_text:
             try:

@@ -159,9 +159,7 @@ def test_a_block_power_problem_fails_the_run_naming_the_pin(tmp_path, monkeypatc
     ]
 
     def _run(cmd, **_kw):
-        Path(cmd[cmd.index("-log") + 1]).write_text(
-            "".join(f"RB-BLOCK-POWER-ERROR: {p}\n" for p in problems)
-        )
+        _kw["stdout"].write("".join(f"RB-BLOCK-POWER-ERROR: {p}\n" for p in problems))
         return MagicMock(returncode=1, stdout="", stderr="")
 
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _run)
@@ -183,7 +181,7 @@ def test_a_stray_off_track_shape_is_a_warning_not_a_failure(
     stray = "u_blk/VDD (VDD, met5 y=44.540 um, R0) is not on a parent VDD strap"
 
     def _run(cmd, **_kw):
-        Path(cmd[cmd.index("-log") + 1]).write_text(
+        _kw["stdout"].write(
             f"RB-BLOCK-POWER-WARNING: {stray}; the pin's other shapes are joined\n"
         )
         return MagicMock(returncode=0, stdout="", stderr="")
