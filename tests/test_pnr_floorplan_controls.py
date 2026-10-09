@@ -306,10 +306,14 @@ def test_blockages_render_after_the_floorplan_and_feed_hard_ones_to_the_packer(
         " [$blockage_box xMax] [$blockage_box yMax]]\n"
         "create_blockage -region {10 10 20.123 20} -soft\n"
         "create_blockage -region {1 2 3 4} -max_density 35\n"
-        "\n"
-        'puts ">>> Tie cells"\n'
     )
     assert block in text
+    assert (
+        'puts ">>>   cut [rb::rows::cut_under [ord::get_db_block] $MACRO_KEEPOUTS]'
+        ' row(s) under hard placement blockages"\n'
+        "\n"
+        'puts ">>> Tie cells"\n'
+    ) in text
     assert (
         "      $footprints $halo_dbu $site_grid_dbu $dbu_per_micron \\\n"
         "      lower-left $MACRO_KEEPOUTS]\n"
@@ -331,7 +335,46 @@ def test_soft_and_partial_blockages_alone_leave_the_packer_call_alone(tmp_path):
     assert "create_blockage -region {10 10 20 20} -soft\n" in text
     assert "create_blockage -region {1 2 3 4} -max_density 50\n" in text
     assert "MACRO_KEEPOUTS" not in text
+    assert "rb::rows" not in text
     assert _DEFAULT_SOLVE in text
+
+
+def test_unset_controls_cut_no_rows(tmp_path):
+    assert "rb::rows" not in _render(tmp_path)
+
+
+def test_hard_blockages_cut_rows_after_every_blockage_and_before_tap_insertion(
+    tmp_path, monkeypatch
+):
+    """Rows under hard blockages are cut before the `tapcell-tcl` hook (rtl_buddy#773)."""
+    tapcell = tmp_path / "tapcell.tcl"
+    tapcell.write_text("tapcell -distance 14\n")
+    pdn = tmp_path / "pdn.tcl"
+    pdn.write_text("# grid\n")
+    monkeypatch.setattr(PdkConfig, "get_tapcell_tcl", lambda self: str(tapcell))
+    monkeypatch.setattr(PdkConfig, "get_pdn_config", lambda self: str(pdn))
+    text = _render(
+        tmp_path,
+        _floorplan(
+            blockages=[
+                PnrBlockage((5.0, 5.0, 50.0, 50.0), BlockageType.HARD),
+                PnrBlockage((60.0, 5.0, 70.0, 50.0), BlockageType.SOFT),
+                PnrBlockage((80.0, 5.0, 90.0, 50.0), BlockageType.HARD),
+            ]
+        ),
+    )
+
+    call = "[rb::rows::cut_under [ord::get_db_block] $MACRO_KEEPOUTS]"
+    assert text.count(call) == 1
+    assert text.count("proc rb::rows::cut_under") == 1
+    assert (
+        text.rindex("create_blockage")
+        < text.index("proc rb::rows::segments")
+        < text.index(call)
+        < text.index('puts ">>> Macro placement"')
+        < text.index('puts ">>> Tap and endcap cells (tapcell-tcl)"')
+        < text.index("pdngen")
+    )
 
 
 def test_an_anchor_and_hard_blockages_render_together(tmp_path):
