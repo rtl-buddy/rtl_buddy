@@ -67,6 +67,16 @@ def _validate_max_fanout(value, where: str) -> int | None:
     return value
 
 
+def _validate_port_buffer(value, where: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip() or len(value.split()) != 1:
+        raise FatalRtlBuddyError(
+            f"{where}: port-buffer must be one buffer cell name, got {value!r}"
+        )
+    return value
+
+
 def _first_set(*values):
     """Return the first value that is not `None`."""
     return next(v for v in values if v is not None)
@@ -100,6 +110,8 @@ class PnrPlatformConfigFile:
     )
     # `clock_tree_synthesis -apply_ndr`; `None` leaves the tool's default.
     cts_apply_ndr: str | None = field(rename="cts-apply-ndr", default=None)
+    # `buffer_ports -buffer_cell` for runs that buffer their ports; `None` lets OpenROAD pick. Typed loosely so the validator names a bad value.
+    port_buffer: str | list | None = field(rename="port-buffer", default=None)
     # `set_max_fanout` after each `read_sdc`; `None` leaves the Liberty/SDC/tool default. `float` is admitted so the validator, not pyserde, refuses a fraction.
     max_fanout: int | float | None = field(rename="max-fanout", default=None)
     routing_layers: PnrRoutingLayersFile = field(
@@ -129,6 +141,9 @@ class PnrPlatformConfig:
         )
         self._cts_apply_ndr = _validate_cts_apply_ndr(
             cfg.cts_apply_ndr, f"pnr platform '{self._name}'"
+        )
+        self._port_buffer = _validate_port_buffer(
+            cfg.port_buffer, f"pnr platform '{self._name}'"
         )
         self._max_fanout = _validate_max_fanout(
             cfg.max_fanout, f"pnr platform '{self._name}'"
@@ -339,6 +354,10 @@ class PnrPlatformConfig:
     def get_cts_apply_ndr(self) -> str | None:
         """The `clock_tree_synthesis -apply_ndr` value, or `None` for the tool's default."""
         return self._cts_apply_ndr
+
+    def get_port_buffer(self) -> str | None:
+        """The `buffer_ports -buffer_cell` cell, or `None` for OpenROAD's choice."""
+        return self._port_buffer
 
     def get_max_fanout(self) -> int | None:
         """The design max fanout set after `read_sdc`, or `None` to leave it unset."""

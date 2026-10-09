@@ -47,6 +47,7 @@ _BLOCK_POWER_FILE = "block_power.tcl"
 _FLOW_OUTPUT_NAMES = (
     "route.drc.rpt",
     "timing.rpt",
+    "electrical.rpt",
     "{design}.def",
     "{design}.routed.v",
     "{design}.routed.sdc",
@@ -115,6 +116,19 @@ _CELL_COUNT_RE = re.compile(
     rf"^{re.escape(_CELL_COUNT_TAG)} routed (\d+) physical (\d+)\s*$", re.MULTILINE
 )
 
+# Printed once per check by the final reports: the routed design's max-slew, max-capacitance and max-fanout violator counts.
+_ELECTRICAL_TAG = "RB-ELECTRICAL:"
+_ELECTRICAL_RE = re.compile(
+    rf"^{re.escape(_ELECTRICAL_TAG)} max_(slew|capacitance|fanout) (\d+)\s*$",
+    re.MULTILINE,
+)
+# Result field per check, and the word a description uses for it.
+_ELECTRICAL_FIELDS = {
+    "slew": ("max_slew_violation_count", "max-slew"),
+    "capacitance": ("max_capacitance_violation_count", "max-capacitance"),
+    "fanout": ("max_fanout_violation_count", "max-fanout"),
+}
+
 # OpenROAD's warnings that a pre-route step saw zero wire R/C: EST-0018 from `estimate_parasitics -placement`, CTS-0104 from clock-tree latency balancing.
 _NO_WIRE_RC_CODES = ("EST-0018", "CTS-0104")
 
@@ -174,6 +188,17 @@ def _hook_block(title: str, path: str) -> str:
     if not path:
         return ""
     return f'\nputs ">>> {title}"\n{tcl_source(path)}\n'
+
+
+def _buffer_ports_tcl(enabled: bool, buffer_cell: str | None) -> str:
+    """Return the port-buffering step, or `""` when the run leaves ports unbuffered.
+
+    As ORFS `global_place.tcl` does by default: `buffer_ports` after IO placement and before global placement, which places the new buffers, and `repair_design` then sizes them. A port's internal loads then hang off a buffer, so the port sees one buffer input and a hardened block's Liberty pin capacitance stops depending on its fanout. OpenROAD skips clock, constant and special nets. Without the platform's `port-buffer` it picks its own buffer, which on sky130hd is the delay cell `clkdlybuf4s50_1`.
+    """
+    if not enabled:
+        return ""
+    cell = f" -buffer_cell {buffer_cell}" if buffer_cell else ""
+    return f'\nputs ">>> Port buffers"\nbuffer_ports -inputs -outputs{cell}\n'
 
 
 def _global_route_hold_repair_tcl(platform) -> str:
@@ -753,6 +778,10 @@ class OpenRoadPnr:
             "global_route_hold_repair": _global_route_hold_repair_tcl(platform),
             "detailed_route_verbose": str(self.pnr_cfg.get_detailed_route_verbose()),
             "cell_count_tag": _CELL_COUNT_TAG,
+            "electrical_tag": _ELECTRICAL_TAG,
+            "buffer_ports_block": _buffer_ports_tcl(
+                self.pnr_cfg.get_buffer_ports(), platform.get_port_buffer()
+            ),
             "cts_clustering_option": (
                 "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
             ),
@@ -805,6 +834,25 @@ class OpenRoadPnr:
         if not m:
             return None, None
         return int(m.group(1)), int(m.group(2))
+
+    def _parse_electrical(self, log_text: str) -> dict:
+        """Return the final reports' max-slew, max-capacitance and max-fanout violator counts as result fields.
+
+        A check whose count was not printed, as on an OpenROAD without the `sta::` counter, is left out.
+        """
+        fields = {}
+        for m in _ELECTRICAL_RE.finditer(log_text):
+            fields[_ELECTRICAL_FIELDS[m.group(1)][0]] = int(m.group(2))
+        return fields
+
+    def _describe_electrical(self, fields: dict) -> str:
+        """Return `"N max-slew, M max-capacitance violator(s)"` for the nonzero counts, or `""` when there are none."""
+        parts = [
+            f"{fields[key]} {word}"
+            for key, word in _ELECTRICAL_FIELDS.values()
+            if fields.get(key)
+        ]
+        return f"{', '.join(parts)} violator(s)" if parts else ""
 
     def _parse_wns(self, log_text: str, kind: str) -> float | None:
         m = re.search(rf"^worst slack {kind}\s+([-\d.]+)", log_text, re.MULTILINE)
@@ -2491,8 +2539,24 @@ class OpenRoadPnr:
             "tns_ps": tns * ps_per_unit if tns is not None else None,
             "tns_hold_ps": tns_hold * ps_per_unit if tns_hold is not None else None,
             "drc_count": drcs,
+            **self._parse_electrical(log_text),
         }
         corner_fields = self._corner_fields(platform, log_text)
+        # Logged whether or not it fails the run, so a pass with violators never reads as clean.
+        electrical = self._describe_electrical(metrics)
+        if electrical:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.electrical_violators",
+                pnr=self.pnr_cfg.get_name(),
+                **{
+                    key: metrics.get(key, 0)
+                    for key, _word in _ELECTRICAL_FIELDS.values()
+                },
+                fail_on_electrical=self.pnr_cfg.get_fail_on_electrical(),
+                report=os.path.join(self.artefact_dir, "electrical.rpt"),
+            )
 
         export: GdsExport | None = None
         if self.emit_gds:
@@ -2513,6 +2577,26 @@ class OpenRoadPnr:
                     **self._blocks_fields(),
                     **self._threads_fields(),
                     **(self._close_checkpoints("FAIL", export.desc) or {}),
+                },
+            )
+
+        if electrical and self.pnr_cfg.get_fail_on_electrical():
+            # A verdict on the design, so no `fail_stage`: an `xfail:` may excuse it. The routed outputs stay for inspection; no abstract is published.
+            pnr_abstract.clear_abstract(self.artefact_dir)
+            desc = (
+                f"electrical violators in the routed design: {electrical} "
+                "(fail-on-electrical; see electrical.rpt)"
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=desc,
+                fields={
+                    **metrics,
+                    **corner_fields,
+                    **(export.result_fields() if export else {}),
+                    **self._blocks_fields(),
+                    **self._threads_fields(),
+                    **(self._close_checkpoints("FAIL", desc) or {}),
                 },
             )
 
@@ -2552,6 +2636,7 @@ class OpenRoadPnr:
                 export.desc if export else "",
                 pnr_abstract.stale_qualifier(self._blocks),
                 no_wire_rc,
+                f"electrical {electrical}" if electrical else "",
             )
             if q
         ]

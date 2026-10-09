@@ -10866,6 +10866,9 @@ class RtlBuddy:
             "tns_ps",
             "tns_hold_ps",
             "drc_count",
+            "max_slew_violation_count",
+            "max_capacitance_violation_count",
+            "max_fanout_violation_count",
             "worst_setup_corner",
             "worst_hold_corner",
             "corners",
@@ -11530,6 +11533,14 @@ class RtlBuddy:
         has_setup = any("wns_setup_ps" in r["results"].results for r in pnr_results)
         has_hold = any("wns_hold_ps" in r["results"].results for r in pnr_results)
         has_drcs = any("drc_count" in r["results"].results for r in pnr_results)
+        electrical_keys = (
+            "max_slew_violation_count",
+            "max_capacitance_violation_count",
+            "max_fanout_violation_count",
+        )
+        has_electrical = any(
+            k in r["results"].results for r in pnr_results for k in electrical_keys
+        )
         has_corners = any("corners" in r["results"].results for r in pnr_results)
         has_outputs = any(
             "gds_path" in r["results"].results
@@ -11572,6 +11583,12 @@ class RtlBuddy:
             if has_drcs:
                 drcs = res.get("drc_count")
                 row["drcs"] = str(drcs) if drcs is not None else "-"
+            if has_electrical:
+                # Max-slew / max-capacitance / max-fanout violators, `-` where uncounted.
+                row["electrical"] = "/".join(
+                    str(res[k]) if res.get(k) is not None else "-"
+                    for k in electrical_keys
+                )
             if has_outputs:
                 row["outputs"] = _pnr_outputs_cell(res)
             rows.append(row)
@@ -11593,6 +11610,8 @@ class RtlBuddy:
             columns.append(("worst_corner", "Worst Corner"))
         if has_drcs:
             columns.append(("drcs", "DRCs"))
+        if has_electrical:
+            columns.append(("electrical", "Slew/Cap/Fanout"))
         if has_outputs:
             columns.append(("outputs", "Outputs"))
         render_summary(

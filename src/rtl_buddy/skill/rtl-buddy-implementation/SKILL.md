@@ -59,7 +59,11 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
 ## Hierarchical P&R
 
 - A `harden: true` run publishes a block's abstract. A top names it under
-  `blocks:` in `pnr.yaml` and in its `synth.yaml` entry.
+  `blocks:` in `pnr.yaml` and in its `synth.yaml` entry. It buffers the
+  block's ports (`buffer-ports:`, default on when hardening).
+- A `PASS` is not electrically clean while `max_slew_violation_count` or
+  `max_capacitance_violation_count` is nonzero; quote them with the timing.
+  `fail-on-electrical: true` makes them fail the run.
 - `rb pnr` with no run name runs blocks before the runs that consume them.
   `--synth` also runs each upstream synthesis in that order, so a clean tree
   builds in one command. `-j N` hardens independent blocks side by side.

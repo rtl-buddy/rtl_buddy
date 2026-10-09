@@ -100,6 +100,7 @@ SIBLING_OUTPUT_NAMES = (
     "route.drc.rpt",
     "congestion.rpt",
     "timing.rpt",
+    "electrical.rpt",
     # rb pnr-export: provenance of the exported layout; nothing regenerates it.
     "export.provenance.json",
     # Stream-out input manifest and KLayout completeness report; a strict re-render reads the report.

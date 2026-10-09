@@ -230,6 +230,14 @@ def abstract_config(pnr_cfg, platform) -> dict:
             if isinstance(platform.get_max_fanout(), int)
             else {}
         ),
+        # Emitted only when on: abstracts hardened before `buffer-ports` existed have
+        # unbuffered pins, so they go stale, and an explicit `false` keeps their digest.
+        **({"buffer_ports": True} if pnr_cfg.get_buffer_ports() else {}),
+        **(
+            {"port_buffer": platform.get_port_buffer()}
+            if pnr_cfg.get_buffer_ports() and platform.get_port_buffer()
+            else {}
+        ),
         # Emitted only when a PDK Tcl hook is set so existing digests do not change.
         **({"tcl_hooks": {k: _rel(v) for k, v in hooks.items()}} if hooks else {}),
     }
