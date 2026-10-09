@@ -364,7 +364,7 @@ class ModelConfig:
 
     def get_model_name(self):
         """The model name."""
-        return self.model_name
+        return self.name
 
     def get_model_path(self):
         """The path to the models.yaml file."""
