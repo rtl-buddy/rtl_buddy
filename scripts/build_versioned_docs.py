@@ -38,8 +38,27 @@ def latest_stable_tag(major: str) -> str:
     return stable[0]
 
 
+def _ref_has_path(ref: str, path: str) -> bool:
+    result = subprocess.run(
+        ["git", "cat-file", "-e", f"{ref}:{path}"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
 def _extract_snapshot(ref: str, destination: Path, *paths: str) -> Path:
+    """Extract ``paths`` of ``ref`` under ``destination``.
+
+    ``static/`` rides along whenever the ref has one: pages reference their
+    images as ``../static/img/...`` (the form GitHub renders too), and
+    Docusaurus resolves that relative to the page, so a ``docs/`` snapshot
+    without its sibling ``static/`` fails the build. Majors that predate the
+    Docusaurus site have no ``static/`` and no such links.
+    """
     destination.mkdir(parents=True)
+    if "static" not in paths and _ref_has_path(ref, "static"):
+        paths = (*paths, "static")
     archive = destination / "snapshot.tar"
     with archive.open("wb") as stream:
         subprocess.run(
