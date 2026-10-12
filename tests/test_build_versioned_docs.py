@@ -1,4 +1,5 @@
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -60,3 +61,46 @@ def test_release_dev_snapshot_uses_main_docs_and_sidebar(tmp_path, monkeypatch):
     assert records[1][1].name == "docs"
     assert records[1][2].name == "sidebars.js"
     assert records[1][3] is False
+
+
+def _git(repo, *args):
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+
+def _commit_all(repo, message):
+    _git(repo, "add", "-A")
+    _git(
+        repo,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.com",
+        "commit",
+        "-q",
+        "-m",
+        message,
+    )
+
+
+def test_extract_snapshot_carries_static_when_the_ref_has_it(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "docs").mkdir()
+    (repo / "docs/index.md").write_text("# docs\n")
+    _commit_all(repo, "docs only")
+    _git(repo, "tag", "no-static")
+    (repo / "static/img").mkdir(parents=True)
+    (repo / "static/img/shot.png").write_bytes(b"png")
+    (repo / "docs/tour.md").write_text("![shot](../static/img/shot.png)\n")
+    _commit_all(repo, "docs with static")
+    _git(repo, "tag", "with-static")
+    monkeypatch.setattr(MODULE, "REPO_ROOT", repo)
+
+    older = MODULE._extract_snapshot("no-static", tmp_path / "older", "docs")
+    assert (older / "docs/index.md").is_file()
+    assert not (older / "static").exists()
+
+    newer = MODULE._extract_snapshot("with-static", tmp_path / "newer", "docs")
+    assert (newer / "docs/tour.md").is_file()
+    assert (newer / "static/img/shot.png").read_bytes() == b"png"
