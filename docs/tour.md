@@ -115,7 +115,7 @@ cd verif/demo_tiny_alu
 uv run rb wave basic
 ```
 
-![Surfer view of the basic test: op, a, b, the ALU result y, the four flags, and the scoreboard counters](/img/tour/wave-tiny-alu-basic.png)
+![Surfer view of the basic test: op, a, b, the ALU result y, the four flags, and the scoreboard counters](../static/img/tour/wave-tiny-alu-basic.png)
 
 Stimulus, DUT outputs, and the scoreboard's mismatch counter sit in three named groups because `tb_top.surfer` says so; a new engineer opening the test sees the same thing you do. See [Waveform Viewing](concepts/wave.md).
 
@@ -142,7 +142,7 @@ demo_tiny_alu_subsys_top
 └── u_sync_empty : ip_cdc_sync
 ```
 
-![Block diagram of demo_tiny_alu_subsys_top: the PeakRDL CSR block on the APB clock feeding a handshake and an async FIFO into the ALU datapath on the compute clock, with results returning through a second handshake](/img/tour/subsys-block-diagram.png)
+![Block diagram of demo_tiny_alu_subsys_top: the PeakRDL CSR block on the APB clock feeding a handshake and an async FIFO into the ALU datapath on the compute clock, with results returning through a second handshake](../static/img/tour/subsys-block-diagram.png)
 
 Parameter values on each block come from the elaborated design, not from a drawing. `rb hier-query` answers the same questions as JSON (see [Ask the design questions](#ask-the-design-questions) below), and `rb hub` serves an interactive schematic of the same hierarchy in the browser. See [Hierarchy Rendering](concepts/hier.md).
 
@@ -278,7 +278,7 @@ uv run rb pnr-export demo_tiny_alu_subsys_pnr_nangate45 -c pnr/demo_tiny_alu_sub
                                                    Results: 1 PASS (1 total)
 ```
 
-![KLayout render of the routed demo_tiny_alu_subsys GDS on Nangate45](/img/tour/subsys-nangate45-routed.png)
+![KLayout render of the routed demo_tiny_alu_subsys GDS on Nangate45](../static/img/tour/subsys-nangate45-routed.png)
 
 The description column names the warnings the flow saw (here, pre-route steps estimated without wire RC) and points at the concept page that explains each one. The routed DEF, ODB, netlist, SDC, and reports stay in the run's artefact directory for the next step. See [Place-and-Route](concepts/pnr.md).
 
