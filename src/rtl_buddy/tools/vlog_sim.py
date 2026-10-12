@@ -4043,8 +4043,8 @@ class VlogSim:
         # Cross-process single writer: several `rb` processes against a cold shared tree
         # would otherwise compile into it at once. The stamp check is inside the lock so
         # a waiter reuses the build it waited for. Lock ordering is in build_dir_lock.
-        with build_dir_lock(plan.shared_dir, test=self.test_name):
-            return self._compile_with_plan(plan)
+        with build_dir_lock(plan.shared_dir, test=self.test_name) as locked:
+            return self._compile_with_plan(plan, build_lock_held=locked)
 
     def _reuse_shared_build(self, plan, *, quiet=False):
         """Reuse the stamped build in ``plan.shared_dir`` if it validates.
@@ -4062,7 +4062,86 @@ class VlogSim:
         self._record_compile(duration_sec=0.0, reused=True)
         return True
 
-    def _compile_with_plan(self, plan):
+    def _prune_shared_build(self, build_dir):
+        """Drop known Verilator intermediates under the held build lock."""
+        root = Path(build_dir)
+        fields = {"test": self.test_name, **_build_dir_fields(root, shared=True)}
+        removed_files = removed_bytes = 0
+
+        def remove(path):
+            nonlocal removed_files, removed_bytes
+            size = path.lstat().st_size
+            path.unlink()
+            removed_files += 1
+            removed_bytes += size
+
+        try:
+            # Neither split builds nor --skip-identical may trust deleted sources.
+            self._verilate_marker_path(root).unlink(missing_ok=True)
+            entries = list(root.iterdir())
+            prefixes = set()
+            for path in entries:
+                for suffix in ("__verFiles.dat", "__ver.d", "_classes.mk"):
+                    if path.name.endswith(suffix):
+                        prefix = path.name.removesuffix(suffix)
+                        if prefix:
+                            prefixes.add(prefix)
+            for path in entries:
+                if path.name.endswith("__verFiles.dat"):
+                    remove(path)
+        except OSError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "compile.shared_build_prune_failed",
+                **fields,
+                error=str(exc),
+            )
+            return
+
+        for path in entries:
+            name = path.name
+            generated = any(
+                name.startswith((prefix + ".", prefix + "__"))
+                or name == prefix + "_classes.mk"
+                for prefix in prefixes
+            )
+            try:
+                metadata = path.lstat()
+                if (
+                    not generated
+                    and S_ISREG(metadata.st_mode)
+                    and name.endswith((".cpp", ".h"))
+                    and any(name.startswith(prefix + "_") for prefix in prefixes)
+                ):
+                    with path.open("rb") as source:
+                        generated = source.readline(128).startswith(b"// Verilated")
+                intermediate = name.endswith((".o", ".a", ".d", ".gch", ".pch")) or (
+                    generated and name.endswith((".cpp", ".h", ".mk"))
+                )
+                if intermediate and (path.is_symlink() or S_ISREG(metadata.st_mode)):
+                    remove(path)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "compile.shared_build_prune_failed",
+                    **fields,
+                    path=str(path),
+                    error=str(exc),
+                )
+        log_event(
+            logger,
+            logging.INFO,
+            "compile.shared_build_pruned",
+            **fields,
+            removed_files=removed_files,
+            removed_bytes=removed_bytes,
+        )
+
+    def _compile_with_plan(self, plan, *, build_lock_held=False):
         """Check the stamp, compile if it does not validate, stamp the result.
 
         Split from :meth:`compile` so the shared-build case can hold
@@ -4383,6 +4462,18 @@ class VlogSim:
                         tracked_deps=None if deps is None else len(deps),
                     )
                     self._record_build_stamp(stamp_dir)
+                    if (
+                        build_lock_held
+                        and plan.shared_dir is not None
+                        and plan.is_verilator
+                        and self._get_simulator_family() == "verilator"
+                        and self.build_phase != BUILD_PHASE_VERILATE
+                        and getattr(
+                            self.root_cfg, "get_shared_build_prune", lambda: False
+                        )()
+                        and Path(self._get_simv_path()).is_file()
+                    ):
+                        self._prune_shared_build(stamp_dir)
             if self.build_phase == BUILD_PHASE_BUILD:
                 # A consumed marker must not outlive the build it cleared. Also removed
                 # after a fallback build.

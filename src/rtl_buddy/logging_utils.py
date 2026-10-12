@@ -563,6 +563,18 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "build job will verilate this key as well as building it. "
                 "Check the build directory's permissions and free space."
             )
+        case "compile.shared_build_prune_failed":
+            return (
+                f"{fields.get('test')}: could not prune Verilator intermediates "
+                f"in {fields.get('build_path')} ({fields.get('error')}); "
+                "the compiled simulation remains available."
+            )
+        case "compile.shared_build_pruned":
+            return (
+                f"{fields.get('test')}: pruned {fields.get('removed_files')} "
+                f"Verilator intermediates ({fields.get('removed_bytes')} bytes) "
+                f"from {fields.get('build_path')}"
+            )
         case "build_job.group_adoption_declined":
             return (
                 f"{fields.get('test')}: could not adopt the build "

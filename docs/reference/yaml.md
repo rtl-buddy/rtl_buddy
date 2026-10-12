@@ -292,6 +292,8 @@ cfg-tools:
 
 See [Persistent build cache](../concepts/tests.md#persistent-build-cache).
 
+`cfg-rtl-reg.shared-build-prune` is a boolean, default `false`. With shared builds enabled, `true` removes known Verilator intermediates after a new successful compile and stamp write, while holding the build lock. It applies to both in-tree and persistent shared builds. It does not clean cache hits, unshared builds, other simulators, or verilate-only jobs. The executable and its stamp remain reusable; a subsequent recompile regenerates all removed intermediates. See [Pruning Verilator intermediates](../concepts/tests.md#pruning-verilator-intermediates) for preserved assets, diagnostics and debugging tradeoffs.
+
 ### Parallel dispatch
 
 ```yaml
