@@ -48,6 +48,8 @@ External tools stay optional until you run the workflow that uses them.
 
 Run `rb tool-check` to diagnose missing or incompatible tools. Each command's concept page has setup and recovery details.
 
+For large Verilator builds, optional [intermediate pruning](concepts/tests.md#pruning-verilator-intermediates) reduces shared-build disk usage without additional dependencies. Keep pruning disabled when generated C++ is needed for debugging or incremental recompilation.
+
 ## Slurm dispatch tools
 
 `--dispatch slurm` needs `sbatch`, `squeue`, and `scancel` on the submit host. Two more are recommended:

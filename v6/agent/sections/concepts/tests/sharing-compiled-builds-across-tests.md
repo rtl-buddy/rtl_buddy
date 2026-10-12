@@ -36,4 +36,4 @@ If a Verilator build directory was compiled by a different Verilator (an upgrade
 basic: dropped 12 stale object/dependency files from … (built by …, now …); the C++ build starts clean
 ```
 
-An ordinary source edit keeps the objects and stays incremental.
+An ordinary source edit keeps the objects and stays incremental unless [intermediate pruning](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/tests/#pruning-verilator-intermediates) is enabled.

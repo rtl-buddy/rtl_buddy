@@ -17,7 +17,7 @@ rb regression --share-build --shared-build-root /shared/nfs/rb-build-cache
 - Builds land in `<root>/<suite-namespace>/obj_dir_<key>/`, where the namespace is the suite directory relative to the project root with `/` replaced by `__`.
 - Every checkout on the host shares the cache. Checkouts with identical inputs reuse each other's build.
 - Switching the cache on or off recompiles once.
-- Nothing prunes the cache. Prune between runs, never during one (see [Known issues](https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/)):
+- [Intermediate pruning](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/tests/#pruning-verilator-intermediates) can reduce each entry's size; entries themselves are never expired automatically. Remove old entries between runs, never during one (see [Known issues](https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/)):
 
 ```bash
 find /shared/nfs/rb-build-cache -mindepth 2 -maxdepth 2 -name 'obj_dir_*' -mtime +14 -exec rm -rf {} +

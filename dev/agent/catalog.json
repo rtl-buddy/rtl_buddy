@@ -1817,6 +1817,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tests/sharing-compiled-builds-across-tests.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/#pruning-verilator-intermediates",
+          "slug": "pruning-verilator-intermediates",
+          "title": "Pruning Verilator intermediates",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tests/pruning-verilator-intermediates.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/#persistent-build-cache",
           "slug": "persistent-build-cache",
           "title": "Persistent build cache",

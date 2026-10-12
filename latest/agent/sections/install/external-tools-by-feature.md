@@ -21,3 +21,5 @@
 | Coverview packaging | Coverview and its `info-process` dependency | Basic coverage collection does not need Coverview. |
 
 Run `rb tool-check` to diagnose missing or incompatible tools. Each command's concept page has setup and recovery details.
+
+For large Verilator builds, optional [intermediate pruning](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/tests/#pruning-verilator-intermediates) reduces shared-build disk usage without additional dependencies. Keep pruning disabled when generated C++ is needed for debugging or incremental recompilation.
