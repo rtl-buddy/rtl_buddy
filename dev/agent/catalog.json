@@ -3728,6 +3728,99 @@
       "slug": "reference/yaml",
       "title": "YAML Formats",
       "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/reference/yaml.md"
+    },
+    {
+      "description": "A command-by-command tour of what RTL Buddy produces on the template project, from a single test through regression, coverage, waveforms, CDC lint, formal proofs, mutation testing, synthesis, place-and-route, power, and agent queries.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#run-one-test",
+          "slug": "run-one-test",
+          "title": "Run one test",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/run-one-test.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#run-a-regression",
+          "slug": "run-a-regression",
+          "title": "Run a regression",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/run-a-regression.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#measure-coverage",
+          "slug": "measure-coverage",
+          "title": "Measure coverage",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/measure-coverage.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#look-at-the-waveform",
+          "slug": "look-at-the-waveform",
+          "title": "Look at the waveform",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/look-at-the-waveform.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#draw-the-hierarchy",
+          "slug": "draw-the-hierarchy",
+          "title": "Draw the hierarchy",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/draw-the-hierarchy.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#lint-clock-domain-crossings",
+          "slug": "lint-clock-domain-crossings",
+          "title": "Lint clock-domain crossings",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/lint-clock-domain-crossings.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#prove-properties",
+          "slug": "prove-properties",
+          "title": "Prove properties",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/prove-properties.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#score-the-testbench-with-mutants",
+          "slug": "score-the-testbench-with-mutants",
+          "title": "Score the testbench with mutants",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/score-the-testbench-with-mutants.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#synthesize",
+          "slug": "synthesize",
+          "title": "Synthesize",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/synthesize.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#place-and-route",
+          "slug": "place-and-route",
+          "title": "Place and route",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/place-and-route.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#analyze-power",
+          "slug": "analyze-power",
+          "title": "Analyze power",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/analyze-power.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#profile-an-interconnect",
+          "slug": "profile-an-interconnect",
+          "title": "Profile an interconnect",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/profile-an-interconnect.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#ask-the-design-questions",
+          "slug": "ask-the-design-questions",
+          "title": "Ask the design questions",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/ask-the-design-questions.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#where-to-next",
+          "slug": "where-to-next",
+          "title": "Where to next",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/where-to-next.md"
+        }
+      ],
+      "slug": "tour",
+      "title": "Tour",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/tour.md"
     }
   ],
   "rtl_buddy_version": "dev",
