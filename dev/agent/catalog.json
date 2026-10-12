@@ -3730,7 +3730,7 @@
       "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/reference/yaml.md"
     },
     {
-      "description": "A command-by-command tour of what RTL Buddy produces on the template project, from a single test through regression, coverage, waveforms, CDC lint, formal proofs, mutation testing, synthesis, place-and-route, power, and agent queries.",
+      "description": "A command-by-command tour of what RTL Buddy produces on the template project, from a single test through regression, coverage, waveforms, CDC lint, formal proofs, mutation testing, synthesis, place-and-route, power, the hub's browser panes, Neovim annotations, and agent queries.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/",
       "sections": [
         {
@@ -3804,6 +3804,18 @@
           "slug": "profile-an-interconnect",
           "title": "Profile an interconnect",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/profile-an-interconnect.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#browse-it-live-in-the-hub",
+          "slug": "browse-it-live-in-the-hub",
+          "title": "Browse it live in the hub",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/browse-it-live-in-the-hub.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#annotate-your-editor",
+          "slug": "annotate-your-editor",
+          "title": "Annotate your editor",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/tour/annotate-your-editor.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/tour/#ask-the-design-questions",
