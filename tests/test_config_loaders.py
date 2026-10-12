@@ -2285,3 +2285,19 @@ def test_the_lenient_reg_block_loader_does_not_flag_the_shared_build_root(
         for record in caplog.records
         if getattr(record, "rtl_event", None) == "root_config.reg_cfg_unknown_keys"
     ] == []
+
+
+def test_root_config_shared_build_pruning_is_opt_in(minimal_project):
+    from rtl_buddy.config.root import load_reg_cfg_paths
+
+    cfg = minimal_project / "root_config.yaml"
+    assert RootConfig(name="default").get_shared_build_prune() is False
+    cfg.write_text(
+        cfg.read_text().replace(
+            "cfg-rtl-reg:\n",
+            "cfg-rtl-reg:\n  shared-build-prune: true\n",
+            1,
+        )
+    )
+    assert RootConfig(name="prune").get_shared_build_prune() is True
+    assert load_reg_cfg_paths(cfg).shared_build_prune is True

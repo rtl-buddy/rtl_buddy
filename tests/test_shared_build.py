@@ -194,6 +194,7 @@ def _make_sim(
     run_id=None,
     build_phase="full",
     run_tag=None,
+    shared_build_prune=None,
 ):
     monkeypatch.chdir(tmp_path)
     builder_cfg = DummyBuilderCfg(
@@ -203,9 +204,12 @@ def _make_sim(
         model_path or (tmp_path / "models.yaml"), filelist=filelist or ["src/top.sv"]
     )
     test_cfg = DummyTestCfg(test_name, model_cfg, pd=pd, pa=pa)
+    root_cfg = DummyRootCfg(builder_cfg, project_root=project_root)
+    if shared_build_prune is not None:
+        root_cfg.get_shared_build_prune = lambda: shared_build_prune
     return vlog_sim_module.VlogSim(
         name="rtl_buddy/vlog_sim",
-        root_cfg=DummyRootCfg(builder_cfg, project_root=project_root),
+        root_cfg=root_cfg,
         test_cfg=test_cfg,
         rtl_builder_mode="sim",
         sim_mode={"sim_to_stdout": True},
@@ -7517,4 +7521,263 @@ def test_a_scrub_explains_itself(tmp_path, monkeypatch, caplog):
     )
     assert f"now Verilator 5.050 2026-09-01 ({os.path.realpath(node)}, " in (
         caplog.text
+    )
+
+
+_PRUNABLE = {
+    "Vtop.cpp",
+    "Vtop.h",
+    "Vtop___024root__DepSet_h123.cpp",
+    "Vtop.mk",
+    "Vtop_classes.mk",
+    "Vtop__verFiles.dat",
+    "Vtop__ver.d",
+    "Vtop__ALL.a",
+    "Vtop.o",
+    "verilated.o",
+    "verilated.d",
+    "Vtop__pch.h.fast.gch",
+    "Vtop__pch.h.slow.pch",
+    "Vtop_Pkg.h",
+    "Vtop_Pkg__03a__03aClass__Vclpkg__0.cpp",
+}
+_PRESERVED = {
+    "runtime.bin",
+    "libcustom.so",
+    "user.cpp",
+    "custom.h",
+    "custom.mk",
+    "Vtop_runtime.h",
+    "Vtop_runtime.cpp",
+}
+
+
+def _install_prunable_builder(monkeypatch, calls, **kwargs):
+    _install_fake_builder(monkeypatch, calls, **kwargs)
+    original = vlog_sim_module.run_managed_process
+
+    def build(*args, **kwargs):
+        result = original(*args, **kwargs)
+        cmd, cwd = calls[-1]["cmd"], calls[-1]["cwd"]
+        if "--Mdir" in cmd:
+            directory = Path(cwd) / cmd[cmd.index("--Mdir") + 1]
+            for name in _PRUNABLE | _PRESERVED:
+                path = directory / name
+                if not path.exists():
+                    path.write_text(
+                        "// Verilated -*- C++ -*-\n" if name in _PRUNABLE else "asset\n"
+                    )
+        return result
+
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", build)
+
+
+def test_shared_build_pruning_preserves_runtime_and_stamp_dependencies(
+    tmp_path, monkeypatch, caplog
+):
+    _write_source(tmp_path)
+    header = tmp_path / "src" / "config.svh"
+    header.write_text("`define VALUE 1\n")
+    calls = []
+    _install_prunable_builder(monkeypatch, calls, depends=[str(header)])
+    first = _make_sim(tmp_path, monkeypatch, test_name="a", shared_build_prune=True)
+    directory = _shared_dir_of(first)
+    directory.mkdir(parents=True)
+    lock = directory / artifact_lock_module.BUILD_LOCK_FILENAME
+    lock.touch()
+    inode = lock.stat().st_ino
+    marker = first._verilate_marker_path(directory)
+    marker.write_text("{}")
+    original_unlink = Path.unlink
+
+    def checked_unlink(path, *args, **kwargs):
+        if path.name == "Vtop.cpp":
+            assert not marker.exists()
+            assert not (directory / "Vtop__verFiles.dat").exists()
+            with lock.open() as other:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", checked_unlink)
+    with caplog.at_level(logging.INFO):
+        assert first.compile() == 0
+    assert not (_PRUNABLE & {p.name for p in directory.iterdir()})
+    assert _PRESERVED <= {p.name for p in directory.iterdir()}
+    assert lock.stat().st_ino == inode
+    for name in (
+        "simv",
+        vlog_sim_module.SHARED_BUILD_STAMP_NAME,
+        vlog_sim_module.BUILD_TOOLCHAIN_MARKER_NAME,
+    ):
+        assert (directory / name).is_file()
+    stamp = json.loads(
+        (directory / vlog_sim_module.SHARED_BUILD_STAMP_NAME).read_text()
+    )
+    assert str(header) in [entry[0] for entry in stamp["deps"]]
+    event = next(
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.shared_build_pruned"
+    )
+    assert event.rtl_fields["removed_files"] == len(_PRUNABLE)
+    assert event.rtl_fields["removed_bytes"] > 0
+    second = _make_sim(tmp_path, monkeypatch, test_name="b", shared_build_prune=True)
+    assert second.compile() == 0
+    assert len(calls) == 1
+    header.write_text("`define VALUE 2\n")
+    third = _make_sim(tmp_path, monkeypatch, test_name="c", shared_build_prune=True)
+    assert third.compile() == 0
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {},
+        {"shared_build_prune": False},
+        {"shared_build_prune": True, "share_build": False},
+        {
+            "shared_build_prune": True,
+            "build_phase": "verilate",
+            "compile_opts": ["--binary"],
+        },
+    ],
+)
+def test_shared_build_pruning_only_applies_to_opted_in_completed_shared_builds(
+    tmp_path, monkeypatch, settings
+):
+    _write_source(tmp_path)
+    calls = []
+    _install_prunable_builder(monkeypatch, calls)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="a", **settings)
+    assert sim.compile() == 0
+    directory = (
+        Path(calls[0]["cwd"]) / calls[0]["cmd"][calls[0]["cmd"].index("--Mdir") + 1]
+    )
+    assert _PRUNABLE <= {p.name for p in directory.iterdir()}
+
+
+@pytest.mark.parametrize("family", ["vcs", "icarus", "questa"])
+def test_other_simulators_do_not_prune(tmp_path, monkeypatch, family):
+    _write_source(tmp_path)
+    _install_fake_builder(monkeypatch, [])
+    sim = _make_sim(
+        tmp_path, monkeypatch, test_name="a", family=family, shared_build_prune=True
+    )
+    monkeypatch.setattr(sim, "_prune_shared_build", lambda *_: pytest.fail("pruned"))
+    assert sim.compile() == 0
+
+
+@pytest.mark.parametrize("failure", ["compile", "stamp", "lock", "marker", "verfiles"])
+def test_shared_build_pruning_requires_success_stamp_lock_and_marker_invalidation(
+    tmp_path, monkeypatch, failure, caplog
+):
+    _write_source(tmp_path)
+    _install_prunable_builder(
+        monkeypatch, [], returncode=1 if failure == "compile" else 0
+    )
+    sim = _make_sim(tmp_path, monkeypatch, test_name="a", shared_build_prune=True)
+    if failure == "stamp":
+        original = sim._replace_text
+
+        def fail_stamp(path, text):
+            if Path(path).name == vlog_sim_module.SHARED_BUILD_STAMP_NAME:
+                raise PermissionError("stamp denied")
+            return original(path, text)
+
+        monkeypatch.setattr(sim, "_replace_text", fail_stamp)
+    if failure == "lock":
+        monkeypatch.setattr(
+            vlog_sim_module, "build_dir_lock", lambda *_a, **_k: nullcontext(False)
+        )
+    if failure in ("marker", "verfiles"):
+        original_unlink = Path.unlink
+        denied = (
+            vlog_sim_module.VERILATE_MARKER_NAME
+            if failure == "marker"
+            else "Vtop__verFiles.dat"
+        )
+
+        def fail_remove(path, *args, **kwargs):
+            if path.name == denied:
+                raise PermissionError("cleanup denied")
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_remove)
+    assert sim.compile() == (1 if failure == "compile" else 0)
+    directory = Path(sim._get_simv_path()).parent
+    assert (directory / "Vtop.cpp").exists()
+    assert (directory / "Vtop__verFiles.dat").exists()
+    if failure in ("marker", "verfiles"):
+        assert any(
+            getattr(r, "rtl_event", None) == "compile.shared_build_prune_failed"
+            for r in caplog.records
+        )
+
+
+def test_pruning_never_cleans_an_existing_cache_hit(tmp_path, monkeypatch):
+    _write_source(tmp_path)
+    calls = []
+    _install_prunable_builder(monkeypatch, calls)
+    first = _make_sim(tmp_path, monkeypatch, test_name="a")
+    assert first.compile() == 0
+    second = _make_sim(tmp_path, monkeypatch, test_name="b", shared_build_prune=True)
+    assert second.compile() == 0
+    assert len(calls) == 1
+    assert (Path(first._get_simv_path()).parent / "Vtop.cpp").exists()
+
+
+def test_pruned_split_build_regenerates_sources_on_rebuild(tmp_path, monkeypatch):
+    _write_source(tmp_path)
+    calls = []
+    _install_prunable_builder(monkeypatch, calls)
+    first = _split_sim(tmp_path, monkeypatch, phase="full", shared_build_prune=True)
+    assert first.compile() == 0
+    directory = Path(first._get_simv_path()).parent
+    assert not (directory / "Vtop.cpp").exists()
+    second = _split_sim(
+        tmp_path,
+        monkeypatch,
+        phase="build",
+        name="b",
+        rebuild=True,
+        shared_build_prune=True,
+    )
+    assert second.compile() == 0
+    assert len(calls) == 2
+    assert "--no-verilate" not in calls[1]["cmd"]
+    assert not (directory / "Vtop.cpp").exists()
+
+
+def test_prune_unlinks_symlinks_without_following_them_and_continues_after_failure(
+    tmp_path, monkeypatch, caplog
+):
+    _write_source(tmp_path)
+    calls = []
+    _install_prunable_builder(monkeypatch, calls)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="a", shared_build_prune=True)
+    directory = _shared_dir_of(sim)
+    directory.mkdir(parents=True)
+    outside = tmp_path / "outside.cpp"
+    outside.write_text("keep me\n")
+    (directory / "Vtop.cpp").symlink_to(outside)
+    (directory / "runtime-assets").symlink_to(tmp_path, target_is_directory=True)
+    original_unlink = Path.unlink
+
+    def fail_one(path, *args, **kwargs):
+        if path.name == "Vtop.o":
+            raise PermissionError("object denied")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_one)
+    assert sim.compile() == 0
+    assert outside.read_text() == "keep me\n"
+    assert not (directory / "Vtop.cpp").exists()
+    assert (directory / "runtime-assets").is_symlink()
+    assert (directory / "Vtop.o").is_file()
+    assert not (directory / "Vtop__ALL.a").exists()
+    assert any(
+        getattr(r, "rtl_event", None) == "compile.shared_build_prune_failed"
+        for r in caplog.records
     )

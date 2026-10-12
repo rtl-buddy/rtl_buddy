@@ -112,10 +112,11 @@ class RootRtlField:
     lint_path: str | None = field(rename="lint-reg-cfg-path", default=None)
     elab_path: str | None = field(rename="elab-reg-cfg-path", default=None)
     shared_build_root: str | None = field(rename="shared-build-root", default=None)
+    shared_build_prune: bool = field(rename="shared-build-prune", default=False)
 
 
 #: ``cfg-rtl-reg`` keys that are not a manifest path; exempt from the unknown-key warning.
-_REG_CFG_NON_PATH_KEYS = frozenset({"shared-build-root"})
+_REG_CFG_NON_PATH_KEYS = frozenset({"shared-build-root", "shared-build-prune"})
 
 #: ``cfg-rtl-reg`` YAML key and :class:`RootRtlField` attribute per flow.
 REG_CFG_PATH_KEYS: dict[str, tuple[str, str]] = {
@@ -843,6 +844,11 @@ class RootConfig:
         """
         reg = getattr(self, "cfg_rtl_reg", None)
         return getattr(reg, "shared_build_root", None) if reg is not None else None
+
+    def get_shared_build_prune(self) -> bool:
+        """Whether completed Verilator shared builds drop their intermediates."""
+        reg = self.cfg_rtl_reg
+        return getattr(reg, "shared_build_prune", False) if reg is not None else False
 
     def get_project_path(self, subpath: str):
         """Return the absolute path of `subpath` under the project root; raises FatalRtlBuddyError if it is not a directory."""
