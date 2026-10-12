@@ -1,5 +1,5 @@
 ---
-description: A command-by-command tour of what RTL Buddy produces on the template project, from a single test through regression, coverage, waveforms, CDC lint, formal proofs, mutation testing, synthesis, place-and-route, power, and agent queries.
+description: A command-by-command tour of what RTL Buddy produces on the template project, from a single test through regression, coverage, waveforms, CDC lint, formal proofs, mutation testing, synthesis, place-and-route, power, the hub's browser panes, Neovim annotations, and agent queries.
 ---
 
 # Tour
@@ -323,6 +323,54 @@ wrote artefacts/axi/basic_traffic/axi-perf.json (4 bundles, 3210 cycles, clock=t
 ```
 
 For the `in0` bundle of the 2×2 crossbar, the write-data channel reports 55% back-pressure against 4.8% utilization, which is the deliberate stall the testbench injects. `rb axi-profile notebook` opens the same data in a packaged marimo notebook, and the hub overlays it on the schematic. See [AXI Interconnect Profiling](concepts/axi-profile.md).
+
+## Browse it live in the hub
+
+`rb hub` is a small daemon that serves four browser panes over the artefacts the sections above produced, and keeps them, Surfer, and your editor pointed at the same thing. One client per pane; a click in any of them selects in the others.
+
+```bash
+uv run rb graph build
+uv run rb hub start --serve-viewer --model demo_tiny_alu_subsys_top \
+    --models-file design/demo_tiny_alu_subsys/models.yaml
+```
+
+![The hub landing page: four cards for the schematic, graph, coverage, and area/power panes, plus the project root, active model, and graph build age](../static/img/tour/hub-index.png)
+
+**Schematic** (`/sch`). The hierarchy from `rb hier`, drawn by [rtl-buddy-sch](https://github.com/rtl-buddy/rtl-buddy-sch) with a DUT or testbench root, an instance filter, and overlays. The coverage overlay below colours each block by line coverage from the latest run; only the ALU under `u_compute` has a coverage run behind it, so only it is green:
+
+![Hub schematic of demo_tiny_alu_subsys_top with the coverage overlay on and the instance tree in the left panel](../static/img/tour/hub-sch.png)
+
+**Knowledge graph** (`/gph`). The 800-node graph from `rb graph build`, laid out by tier: spec, design, test config, synthesis config, formal config, CDC config, and cocotb. Clicking a node selects it in the schematic and opens its source in the editor:
+
+![Hub graph pane showing every tier of the design knowledge graph with per-tier node counts and the inspector panel](../static/img/tour/hub-gph.png)
+
+**Coverage** (`/cov`). The same manifest `rb cov summary` reads, with per-test columns, per-file bars, and every cover point with its hit count. A click on a source line sets the coverage focus everywhere else:
+
+![Hub coverage pane: five metric tiles, the four ALU tests, the four source files, and the twenty-two cover points with hit counts](../static/img/tour/hub-cov.png)
+
+**Area and power** (`/phy`). The physical model that `rb synth` and `rb power` wrote, ranked by cells and by instance power, with the run selector at the top switching between the four power runs:
+
+![Hub phys pane for the paired Nangate45 synthesis and static power run: cells, area, leakage and dynamic tiles, modules ranked by cell count, instances ranked by total power](../static/img/tour/hub-phy.png)
+
+Every pane is one self-contained HTML file served from the wheel, so the hub needs no network access and no build step. `rb hub send` scripts the same selections from a terminal, and `rb mcp` exposes the hub's state to an agent. See [Hub](concepts/hub.md).
+
+## Annotate your editor
+
+The Neovim plugin is the editor side of the hub. `rb nvim-install` clones [rtl-buddy-nvim](https://github.com/rtl-buddy/rtl-buddy-nvim) and wires it in with one command; the plugin composes with `verible-verilog-ls` rather than replacing it.
+
+```bash
+uv run rb nvim-install
+```
+
+Two annotations appear without any hub running. `rb wave` launches Neovim with the selected signal's value as virtual text at its declaration, and `<leader>wa` adds the signal under the cursor to the Surfer waveform:
+
+![Neovim showing the tb_top testbench with the selected signal's value 8'h46 rendered inline after the declaration of y](../static/img/tour/nvim-wave-annotation.png)
+
+Every `module` declaration carries its synthesized cell count and area, read from the same physical model the `/phy` pane shows, through one `rb --machine phys summary` call per project:
+
+![Neovim showing demo_tiny_alu_subsys_compute with 84 cells and 468.4 µm² rendered inline after the module declaration](../static/img/tour/nvim-phys-annotation.png)
+
+With the hub connected, a click on a schematic instance opens its file at the right line, `:RtlBuddyShow` pans the schematic and Surfer to the cursor, and `:RtlBuddyToWave` adds the symbol under the cursor to the waveform. Both captures above are the real Neovim screen grid, rendered through the UI protocol. See [Install the nvim integration](concepts/wave.md#install-the-nvim-integration).
 
 ## Ask the design questions
 
