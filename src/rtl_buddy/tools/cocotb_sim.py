@@ -136,7 +136,7 @@ class CocotbSim(VlogSim):
         user's choice is never overridden.
         """
         vpi_lib = _cocotb_config("--lib-name-path", "vpi", "vcs")
-        opts = self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
+        opts = self._get_builder_compile_opts()
         flags = []
         if not any(o.startswith("-debug_access") for o in opts):
             flags.append("-debug_access+all")
