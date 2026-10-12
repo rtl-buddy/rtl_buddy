@@ -17,7 +17,14 @@ publish = MODULE.publish
 def _build(path: Path, marker: str) -> Path:
     path.mkdir()
     (path / "index.html").write_text(marker)
-    (path / "asset.js").write_text(marker)
+    (path / "404.html").write_text(marker)
+    (path / "llms.txt").write_text(marker)
+    (path / "concepts/tests").mkdir(parents=True)
+    (path / "concepts/tests/index.html").write_text(marker)
+    (path / "agent").mkdir()
+    (path / "agent/catalog.json").write_text(marker)
+    (path / "assets/js").mkdir(parents=True)
+    (path / "assets/js/main.js").write_text(marker)
     return path
 
 
@@ -45,8 +52,17 @@ def test_publish_preserves_old_versions_and_updates_latest(tmp_path):
 
     assert (pages / "v5/index.html").read_text() == "v5"
     assert (pages / "v6/index.html").read_text() == "v6"
-    assert (pages / "latest/index.html").read_text() == "v6"
+    assert (pages / "v6/assets/js/main.js").read_text() == "v6"
     assert "latest/" in (pages / "index.html").read_text()
+    # The alias is a redirect tree: a build routes only from its own baseUrl.
+    root = (pages / "latest/index.html").read_text()
+    assert 'url=../v6/"' in root and 'replace("../v6/"' in root
+    nested = (pages / "latest/concepts/tests/index.html").read_text()
+    assert 'url=../../../v6/concepts/tests/"' in nested
+    assert 'url=../v6/404.html"' in (pages / "latest/404.html").read_text()
+    assert (pages / "latest/llms.txt").read_text() == "v6"
+    assert (pages / "latest/agent/catalog.json").read_text() == "v6"
+    assert not (pages / "latest/assets").exists()
     versions = json.loads((pages / "versions.json").read_text())
     assert [item["version"] for item in versions] == ["dev", "v6", "v5"]
     assert next(item for item in versions if item["version"] == "v6")["aliases"] == [
