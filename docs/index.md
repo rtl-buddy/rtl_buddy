@@ -21,6 +21,7 @@ Each workflow needs its own external tools. See [Installation](install.md#extern
 
 ## Start here
 
+- [Tour](tour.md) — see the real output of every workflow on the template project before setting one up
 - [Installation](install.md) — install RTL Buddy and the tools your workflow needs
 - [Quick Start](quickstart.md) — run a test, regression, or synthesis entry in an existing project
 - [Root Config](concepts/root-config.md) — configure platforms and tools

@@ -9,6 +9,8 @@
 
 It covers simulation and randomized regressions, filelist generation, synthesis, place-and-route, power analysis, formal property verification, mutation testing, waveform viewing, hierarchy rendering, AXI profiling, and spec traceability.
 
+To see what each of those produces before installing anything, take the **[Tour](https://rtl-buddy.github.io/rtl_buddy/latest/tour/)**: every command on it ran unchanged against the [project template](https://github.com/rtl-buddy/rtl-buddy-project-template), and every table and image is that run's real output.
+
 ```bash
 uv run rb test basic
 uv run rb test smoke --repeat 20
@@ -87,6 +89,6 @@ Artefacts go under `artefacts/{sanitized_test_name}/`. A single run writes `test
 
 ## Documentation
 
-Full documentation: **[rtl-buddy.github.io/rtl_buddy](https://rtl-buddy.github.io/rtl_buddy/)**. Each version also publishes `<version>/llms.txt` and `<version>/agent/catalog.json` for agents. Offline, use `rb docs list` and `rb docs show`.
+Full documentation: **[rtl-buddy.github.io/rtl_buddy](https://rtl-buddy.github.io/rtl_buddy/)**. Start with the [Tour](https://rtl-buddy.github.io/rtl_buddy/latest/tour/) for real output of every workflow, then [Installation](https://rtl-buddy.github.io/rtl_buddy/latest/install/) and the [Quick Start](https://rtl-buddy.github.io/rtl_buddy/latest/quickstart/). Each version also publishes `<version>/llms.txt` and `<version>/agent/catalog.json` for agents. Offline, use `rb docs list` and `rb docs show`.
 
 Known limitations are on the [known issues page](https://rtl-buddy.github.io/rtl_buddy/latest/known-issues/).

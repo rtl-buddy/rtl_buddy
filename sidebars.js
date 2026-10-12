@@ -4,6 +4,7 @@ const sidebars = {
     'index',
     'install',
     'quickstart',
+    'tour',
     {
       type: 'category',
       label: 'Concepts',
