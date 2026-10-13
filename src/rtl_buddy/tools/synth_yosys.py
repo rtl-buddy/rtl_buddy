@@ -583,6 +583,71 @@ def abc_period_arg(period_ps: int | None) -> str:
     return "" if period_ps is None else f" -D {period_ps}"
 
 
+#: The ABC constraints file a mapped run writes when its platform sets a driving cell or output load.
+ABC_CONSTR_FILENAME = "abc.constr"
+
+
+def resolve_abc_constr(synth_cfg, root_cfg) -> dict | None:
+    """Return the platform's ``{"driving_cell", "output_load"}`` for ``abc -constr``, or None when it sets neither (#787)."""
+    platform = synth_cfg.get_platform()
+    if not platform or root_cfg is None:
+        return None
+    platform_cfg = root_cfg.get_synth_platform_cfg(platform)
+    get_cell = getattr(platform_cfg, "get_abc_driving_cell", None)
+    get_load = getattr(platform_cfg, "get_abc_output_load", None)
+    cell = get_cell() if get_cell is not None else ""
+    load = get_load() if get_load is not None else None
+    if not cell and load is None:
+        return None
+    return {"driving_cell": cell or None, "output_load": load}
+
+
+def abc_constr_arg(constr: dict | None, artefact_dir: str) -> str:
+    """Write ``abc.constr`` for `constr` and return the `` -constr <file>`` argument, or ``""`` for None.
+
+    Yosys runs ``read_constr`` on the file ahead of the ABC script, so the driving cell and output
+    load reach ``buffer``, ``upsize``, ``dnsize`` and ``stime`` in any ``abc-script``.
+    """
+    path = os.path.join(os.path.abspath(artefact_dir), ABC_CONSTR_FILENAME)
+    if constr is None:
+        # A stale file would mislead someone reading the artefacts.
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        return ""
+    lines = []
+    if constr["driving_cell"]:
+        lines.append(f"set_driving_cell {constr['driving_cell']}")
+    if constr["output_load"] is not None:
+        lines.append(f"set_load {constr['output_load']:g}")
+    Path(path).write_text("\n".join(lines) + "\n")
+    return f" -constr {path}"
+
+
+_ABC_DRIVING_CELL_MISSING_RE = re.compile(
+    r"Cannot find the default PI driving cell \((?P<cell>[^)]*)\)"
+)
+
+
+def warn_abc_driving_cell_missing(
+    log_text: str, constr: dict | None, synth_name: str, log_path: str
+) -> None:
+    """Warn when ABC did not find the platform's ``abc-driving-cell`` in the mapped library; ABC only logs it and carries on."""
+    if not constr or not constr.get("driving_cell"):
+        return
+    m = _ABC_DRIVING_CELL_MISSING_RE.search(log_text)
+    if m:
+        log_event(
+            logger,
+            logging.WARNING,
+            "synth.abc_driving_cell_missing",
+            synth=synth_name,
+            cell=m.group("cell"),
+            log=log_path,
+        )
+
+
 def liberty_args(paths: list[str]) -> str:
     """Return one `` -liberty <file>`` per path, the form `dfflibmap`, `abc` and `stat` take for split cell libraries."""
     return "".join(f" -liberty {path}" for path in paths)
@@ -874,6 +939,8 @@ class YosysSynth:
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
         self._period_ps: int | None = None
+        # The platform's `abc -constr` settings `_write_script` used; None without them.
+        self._abc_constr: dict | None = None
         self._ps_per_unit: float | None = None
         # The `-D` table `_write_script` fed the frontend, read by `_phys_options`.
         self._script_defines: dict[str, str | None] | None = None
@@ -1081,7 +1148,12 @@ class YosysSynth:
                 self._time_unit_ps,
                 self.synth_cfg.get_name(),
             )
-            abc_cmd = f"abc{cell_libs}{dont_use}{abc_period_arg(period_ps)}"
+            self._abc_constr = resolve_abc_constr(self.synth_cfg, self.root_cfg)
+            abc_cmd = (
+                f"abc{cell_libs}{dont_use}"
+                f"{abc_constr_arg(self._abc_constr, self.artefact_dir)}"
+                f"{abc_period_arg(period_ps)}"
+            )
             self._period_ps = period_ps
 
             if period_ps is not None:
@@ -1338,6 +1410,10 @@ class YosysSynth:
                 f"{len(error_lines)} ERROR(s) in synthesis log"
             )
 
+        warn_abc_driving_cell_missing(
+            log_text, self._abc_constr, self.synth_cfg.get_name(), log_path
+        )
+
         conflicting = find_conflicting_driver_warnings(log_text)
         if conflicting and conflicting_mode == "error":
             log_event(
@@ -1443,7 +1519,8 @@ class YosysSynth:
           received (:func:`elaboration_defines`), not `synth.yaml`'s field alone.
         - `mapped` branch: `abc_script` (:func:`mapped_abc_script`),
           `abc_period_ps` (null when the SDC names no clock),
-          `libs` (:func:`library_fingerprint`) and `dont_use`.
+          `libs` (:func:`library_fingerprint`), `dont_use`, and `abc_constr`
+          (:func:`resolve_abc_constr`) when the platform sets one.
         - unmapped branch: `abc_args`. Mapped runs ignore `abc_args`.
 
         `strategy` is never included. Values only, not the files they came from.
@@ -1462,6 +1539,10 @@ class YosysSynth:
             fed["abc_period_ps"] = self._period_ps
             fed["libs"] = library_fingerprint(self._resolve_lib_paths(), self.root_cfg)
             fed["dont_use"] = resolve_dont_use_cells(self.synth_cfg, self.root_cfg)
+            # Absent without a driving cell or load, so such a run keeps its digest.
+            constr = resolve_abc_constr(self.synth_cfg, self.root_cfg)
+            if constr is not None:
+                fed["abc_constr"] = constr
         else:
             fed["abc_args"] = opts.abc_args
         return fed

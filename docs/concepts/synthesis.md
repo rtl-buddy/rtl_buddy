@@ -296,6 +296,24 @@ cfg-synth-efforts:
 - `abc-args` applies only to unmapped `tool: yosys` runs, as `abc <abc-args>`. A mapped run ignores it and warns `synth.abc_args_ignored`.
 - `synth` runs Yosys' generic `abc`, whose script includes `dc2`, before the mapped-run ABC step. Add `-noabc` to `synth-args` to keep log-depth carry networks.
 
+### Give ABC a driving cell and output load
+
+Without one, ABC treats every primary input of the logic it maps, including every flop output, as an ideal driver. `buffer -p` then leaves a flop driving thousands of pins, and OpenROAD's synthesis-stage `repair_design` does not split the net before placement. Set a driving cell and output load on the synth platform:
+
+```yaml
+cfg-synth-platforms:
+  - name: asap7_rvt_ff
+    pdk: asap7
+    abc-driving-cell: BUFx2_ASAP7_75t_R
+    abc-output-load: 1.0      # femtofarads on each primary output
+```
+
+- rtl_buddy writes them to `abc.constr` in the artefact directory and passes `abc -constr abc.constr` on both backends. Yosys reads the file before `abc-script`, so it applies to any script.
+- They matter to ABC's buffering, sizing and timing commands. Add them to the script, for example `...; &nf {D}; &put; buffer -p; upsize {D}; dnsize {D}`.
+- Either key works alone. Both are off by default because no cell name suits every PDK. Pick a small buffer from the corner's Liberty.
+- A driving cell ABC cannot find in the mapped library is only an ABC log line; rtl_buddy warns `synth.abc_driving_cell_missing`.
+- Both values join the run's options fingerprint only when set.
+
 ### Keep prefix adders log-depth with the `delay` preset
 
 `synth-args: -noabc -extra-map +/choices/kogge-stone.v` asks Yosys for a Kogge-Stone carry network; `sklansky.v` and `han-carlson.v` are the other `+/choices/` maps. The `default` preset can undo it:
@@ -369,6 +387,7 @@ Outputs land under `<synth-dir>/artefacts/<run>/`.
 | `synth.log` | Yosys-only | Yosys output |
 | `synth_yosys.log` | OpenROAD | First-stage Yosys output |
 | `synth.tcl`, `synth.log` | OpenROAD | STA script and OpenROAD output |
+| `abc.constr` | Mapped runs | ABC driving cell and output load, when the platform sets them |
 | `yosys-tmp/` | Both | Yosys `TMPDIR`: temp files and the merged Liberty SCL cache that `abc` builds from several cell libraries. It replaces any inherited `TMPDIR`. Every Yosys launch also gets `COLUMNS=100000`, so `yosys-abc` does not hang on a long temp path when `TERM` is unset. |
 | `synth_stat.json` | Both | Yosys `stat -json`: per-module cell count and area |
 | `phys-model.json`, `phys-manifest.json` | Both | Physical model and its manifest; query with `rb phys` ([Physical Metrics](phys.md)) |
