@@ -537,6 +537,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "marker-stale": (
                     "the verilate job's record is for different compile inputs"
                 ),
+                "marker-foreign": (
+                    "the verilate output in the shared build directory belongs "
+                    "to another checkout"
+                ),
                 "no-verilate-unsupported": (
                     "this Verilator does not support --no-verilate"
                 ),
@@ -1024,6 +1028,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f"{target or 'compile'}: reused {shared}shared build "
                 f"{_build_location(fields)} ({built}); nothing compiled"
+            )
+        case "compile.verilate_marker_foreign":
+            return (
+                f"{target or 'compile'}: {_build_location(fields)} holds "
+                f"another checkout's verilation ({fields.get('marker_root')}), "
+                "still waiting for its build; verilating for this checkout"
             )
         case "compile.verilate_reused":
             # Verilate-job counterpart of build_reused: there is no stamp yet, so the

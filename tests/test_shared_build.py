@@ -7296,6 +7296,228 @@ def test_a_sibling_on_one_key_does_not_verilate_it_twice(tmp_path, monkeypatch):
     assert second.last_compile["reused"] is True
 
 
+# --- split builds across checkouts sharing one cache root (#795) ---
+
+
+def _install_checkout_aware_split_builder(monkeypatch, calls):
+    """The phase-aware fake, plus the dependency file a real verilation leaves.
+
+    Verilation writes `Vtop__ver.d` naming the verilating checkout's sources and
+    `run.f` by absolute path; a `--no-verilate` make leaves it alone, as Verilator does.
+    """
+
+    def _fake_run(cmd, capture_output, text, cwd, env=None):
+        calls.append({"cmd": list(cmd), "cwd": cwd})
+        mdir = Path(cmd[cmd.index("--Mdir") + 1])
+        mdir = mdir if mdir.is_absolute() else Path(cwd) / mdir
+        mdir.mkdir(parents=True, exist_ok=True)
+        if "--no-verilate" not in cmd:
+            (mdir / "Vtop.mk").write_text("default:\n\t@true\n")
+            checkout = next(
+                parent
+                for parent in Path(cwd).resolve().parents
+                if (parent / "rtl" / "a.sv").is_file()
+            )
+            prerequisites = [str(checkout / "rtl" / "a.sv")]
+            if "-f" in cmd:
+                run_f = Path(cmd[cmd.index("-f") + 1])
+                prerequisites.append(str(run_f if run_f.is_absolute() else cwd / run_f))
+            (mdir / "Vtop__ver.d").write_text(
+                f"{mdir / 'Vtop.cpp'} : {' '.join(prerequisites)}\n"
+            )
+        if "--binary" in cmd or "--build" in cmd or "--no-verilate" in cmd:
+            (mdir / "simv").write_text("binary\n")
+        return ManagedProcessResult(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
+    )
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
+
+
+def _cache_split_sim(checkout, monkeypatch, *, cache_root, phase, name="t"):
+    suite = checkout / "verif" / "blk"
+    sim = _make_sim(
+        checkout,
+        monkeypatch,
+        test_name=name,
+        suite_dir=suite,
+        project_root=checkout,
+        model_path=suite / "models.yaml",
+        filelist=["../../rtl/a.sv"],
+        shared_build_root=cache_root,
+        compile_opts=["--binary"],
+        build_phase=phase,
+    )
+    vlog_sim_module._NO_VERILATE_SUPPORT[sim.rtl_builder_cfg.get_exe()] = True
+    return sim
+
+
+def _two_cache_checkouts(tmp_path):
+    cache = tmp_path / "cache"
+    _write_checkout(tmp_path / "wt-a")
+    _write_checkout(tmp_path / "wt-b")
+    return cache, tmp_path / "wt-a", tmp_path / "wt-b"
+
+
+def _assert_stamp_names_no_path_in(stamp_path, foreign_root):
+    stored = json.loads(stamp_path.read_text())
+    foreign = os.path.realpath(foreign_root)
+    named = [entry[0] for entry in stored["deps"]] + [stored["simv"][0]]
+    assert not [path for path in named if path.startswith(foreign + os.sep)], named
+    return stored
+
+
+def test_a_build_job_never_makes_over_another_checkouts_verilation(
+    tmp_path, monkeypatch, caplog
+):
+    """Checkout B's build job finds checkout A's verilate marker (A's build job still pending): it verilates for itself instead of a `--no-verilate` make over A's output, so its stamp names no path in A."""
+    cache, wt_a, wt_b = _two_cache_checkouts(tmp_path)
+    calls = []
+    _install_checkout_aware_split_builder(monkeypatch, calls)
+
+    verilate_a = _cache_split_sim(wt_a, monkeypatch, cache_root=cache, phase="verilate")
+    assert verilate_a.compile() == 0
+    shared = _shared_dir_of(verilate_a)
+    marker = json.loads((shared / _MARKER).read_text())
+    assert marker["root"] == os.path.realpath(wt_a)
+
+    build_b = _cache_split_sim(wt_b, monkeypatch, cache_root=cache, phase="build")
+    assert _shared_dir_of(build_b) == shared
+    with caplog.at_level(logging.WARNING):
+        assert build_b.compile() == 0
+
+    assert "--no-verilate" not in calls[-1]["cmd"]
+    reasons = [
+        record.__dict__["rtl_fields"]["reason"]
+        for record in caplog.records
+        if record.__dict__.get("rtl_event") == "compile.build_phase_fallback"
+    ]
+    assert reasons == ["marker-foreign"]
+    stored = _assert_stamp_names_no_path_in(
+        shared / vlog_sim_module.SHARED_BUILD_STAMP_NAME, wt_a
+    )
+    assert stored["root"] == os.path.realpath(wt_b)
+    assert [entry[0] for entry in stored["deps"]] == ["rtl/a.sv"]
+
+    # A's own build job then reuses B's completed stamp, which re-anchors in A.
+    build_a = _cache_split_sim(wt_a, monkeypatch, cache_root=cache, phase="build")
+    count = len(calls)
+    assert build_a.compile() == 0
+    assert len(calls) == count
+    assert build_a.last_compile["reused"] is True
+
+
+def test_a_verilate_job_re_verilates_over_another_checkouts_pending_split_build(
+    tmp_path, monkeypatch, caplog
+):
+    """B's verilate job does not count A's verilation as its own; whichever build job runs first stamps a build that names only its own checkout, and the other reuses it."""
+    cache, wt_a, wt_b = _two_cache_checkouts(tmp_path)
+    calls = []
+    _install_checkout_aware_split_builder(monkeypatch, calls)
+
+    assert (
+        _cache_split_sim(
+            wt_a, monkeypatch, cache_root=cache, phase="verilate"
+        ).compile()
+        == 0
+    )
+    verilate_b = _cache_split_sim(wt_b, monkeypatch, cache_root=cache, phase="verilate")
+    shared = _shared_dir_of(verilate_b)
+    with caplog.at_level(logging.INFO):
+        assert verilate_b.compile() == 0
+    assert len(calls) == 2, "B adopted A's verilation"
+    assert verilate_b.last_compile["reused"] is False
+    assert "compile.verilate_marker_foreign" in [
+        record.__dict__.get("rtl_event") for record in caplog.records
+    ]
+    assert json.loads((shared / _MARKER).read_text())["root"] == os.path.realpath(wt_b)
+
+    # A's build job runs before B's: the marker is B's now, so A compiles in full.
+    build_a = _cache_split_sim(wt_a, monkeypatch, cache_root=cache, phase="build")
+    assert build_a.compile() == 0
+    assert "--no-verilate" not in calls[-1]["cmd"]
+    _assert_stamp_names_no_path_in(
+        shared / vlog_sim_module.SHARED_BUILD_STAMP_NAME, wt_b
+    )
+
+    # B's build job reuses A's completed stamp.
+    build_b = _cache_split_sim(wt_b, monkeypatch, cache_root=cache, phase="build")
+    count = len(calls)
+    assert build_b.compile() == 0
+    assert len(calls) == count
+    assert build_b.last_compile["reused"] is True
+
+
+def test_a_checkouts_own_split_build_still_skips_the_front_end_in_cache_mode(
+    tmp_path, monkeypatch
+):
+    """Same checkout, same cache root: the marker is its own, so the build job runs the make alone."""
+    cache, wt_a, _ = _two_cache_checkouts(tmp_path)
+    calls = []
+    _install_checkout_aware_split_builder(monkeypatch, calls)
+    assert (
+        _cache_split_sim(
+            wt_a, monkeypatch, cache_root=cache, phase="verilate"
+        ).compile()
+        == 0
+    )
+    assert (
+        _cache_split_sim(
+            wt_a, monkeypatch, cache_root=cache, phase="verilate", name="u"
+        ).compile()
+        == 0
+    )
+    assert len(calls) == 1
+    build = _cache_split_sim(wt_a, monkeypatch, cache_root=cache, phase="build")
+    assert build.compile() == 0
+    assert "--no-verilate" in calls[-1]["cmd"]
+
+
+def test_a_whole_compile_over_a_pending_verilation_retires_its_marker(
+    tmp_path, monkeypatch
+):
+    """An unsplit compile from another checkout re-runs the front end in the shared directory, so the first checkout's marker no longer describes it and must not send a later build job to `--no-verilate`."""
+    cache, wt_a, wt_b = _two_cache_checkouts(tmp_path)
+    calls = []
+    _install_checkout_aware_split_builder(monkeypatch, calls)
+    verilate_a = _cache_split_sim(wt_a, monkeypatch, cache_root=cache, phase="verilate")
+    assert verilate_a.compile() == 0
+    shared = _shared_dir_of(verilate_a)
+    assert (shared / _MARKER).exists()
+
+    full_b = _cache_split_sim(wt_b, monkeypatch, cache_root=cache, phase="full")
+    assert full_b.compile() == 0
+    assert "--binary" in calls[-1]["cmd"]
+    assert not (shared / _MARKER).exists()
+
+
+def test_a_cache_mode_marker_without_a_root_is_not_adopted(tmp_path, monkeypatch):
+    """A marker written before roots were recorded cannot say whose output it describes, so a cache-mode build job does not make over it."""
+    cache, wt_a, _ = _two_cache_checkouts(tmp_path)
+    calls = []
+    _install_checkout_aware_split_builder(monkeypatch, calls)
+    verilate = _cache_split_sim(wt_a, monkeypatch, cache_root=cache, phase="verilate")
+    assert verilate.compile() == 0
+    marker_path = _shared_dir_of(verilate) / _MARKER
+    marker = json.loads(marker_path.read_text())
+    del marker["root"]
+    marker_path.write_text(json.dumps(marker))
+
+    build = _cache_split_sim(wt_a, monkeypatch, cache_root=cache, phase="build")
+    assert build.compile() == 0
+    assert "--no-verilate" not in calls[-1]["cmd"]
+
+
+def test_an_in_tree_marker_records_no_root(tmp_path, monkeypatch):
+    """Without a cache root the shared directory is one checkout's own, and the marker says so with a null root."""
+    _write_source(tmp_path)
+    _install_phase_aware_builder(monkeypatch, [])
+    sim = _split_sim(tmp_path, monkeypatch, phase="verilate")
+    assert sim.compile() == 0
+    assert json.loads((_shared_dir_of(sim) / _MARKER).read_text())["root"] is None
+
+
 def test_a_compile_line_with_no_build_step_is_run_whole_by_the_verilate_phase(
     tmp_path, monkeypatch
 ):
