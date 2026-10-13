@@ -24,7 +24,7 @@ Dispatched `test`, `randtest`, `regression` exit 0 with no real failure, 1 when 
 - One build job per suite compiles its distinct builds, `compile.parallel` at a time (default 1; a suite's `compile:` overrides `cfg-dispatch`).
 - Above 1, every config's `preproc` runs before any builder starts, so no hook may mutate another config's inputs.
 - Under Slurm, a Verilator suite splits the job in two. `rb-verilate-<hash>` (reserved from `compile.verilate`) emits C++ only, then `rb-build-<hash>` (reserved from `compile`) builds it on `afterok`. `compile.split-verilate: false` runs one job.
-- `compile.build_phase_fallback` (WARNING): the build job verilated a key itself (marker missing or stale, or no `--no-verilate`). Correct but unsplit.
+- `compile.build_phase_fallback` (WARNING): the build job verilated a key itself (marker missing, stale or another checkout's, or no `--no-verilate`). Correct but unsplit.
 - A group larger than the cluster's array limit is split into arrays with logs under `slice-N/`. `max-jobs-per-array` throttles each slice, so peak concurrency is the cap times the slice count.
 - If the submit host cannot run `scontrol`, or Slurm answers `Invalid job array specification`, set `cfg-dispatch.max-array-size`, and `max-array-tasks` where tasks per array are capped lower.
 

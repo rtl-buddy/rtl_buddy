@@ -3381,6 +3381,7 @@ class VlogSim:
 
         Best-effort: a missing marker makes the build half do the whole compile.
         ``duration_sec`` lets the build half report the whole compile's cost.
+        ``root`` names the checkout that verilated (see :meth:`_marker_root`).
         """
         path = self._verilate_marker_path(stamp_dir)
         try:
@@ -3389,6 +3390,7 @@ class VlogSim:
                 json.dumps(
                     {
                         "fingerprint_sha": _fingerprint_sha(fingerprint),
+                        "root": self._marker_root(),
                         "status": status,
                         "transcript": transcript,
                         "duration_sec": duration_sec,
@@ -3424,6 +3426,27 @@ class VlogSim:
         own = _fingerprint_sha(fingerprint)
         return recorded is not None and own is not None and recorded == own
 
+    def _marker_root(self):
+        """The checkout a verilate marker belongs to: the project root in cache mode.
+
+        ``None`` otherwise, since the shared directory then lives in one checkout's
+        own artefact tree.
+        """
+        return self._project_root if self.shared_build_root is not None else None
+
+    def _verilate_marker_is_foreign(self, marker):
+        """Was ``marker`` written by another checkout sharing this cache root?
+
+        Verilation output names the verilating checkout's absolute paths (its
+        ``run.f``, sources and headers) in the Makefile and dependency files. A
+        ``--no-verilate`` make over another checkout's output stamps a build whose
+        ``deps`` point into that checkout, and once that tree is cleaned every run
+        on the key fails validation. A marker with no ``root`` (written before roots
+        were recorded) counts as foreign in cache mode. Only a finished stamp is
+        portable across checkouts, because its ``deps`` are re-anchored per root.
+        """
+        return isinstance(marker, dict) and marker.get("root") != self._marker_root()
+
     def _settle_verilate_phase(self, stamp_dir, fingerprint, *, forced):
         """Has this key already been verilated? ``0`` = done, ``None`` = do it.
 
@@ -3432,10 +3455,27 @@ class VlogSim:
         """
         if forced:
             return None
-        if not self._verilate_marker_is_ok(
-            self._read_verilate_marker(stamp_dir), fingerprint
-        ):
+        marker = self._read_verilate_marker(stamp_dir)
+        if not self._verilate_marker_is_ok(marker, fingerprint):
             return None
+        if self._verilate_marker_is_foreign(marker):
+            # Another checkout's split build is in progress here. Defer: leave its
+            # verilation and marker alone, so its build job keeps the make-only path
+            # and no further checkout verilates on top. This checkout's build job then
+            # reuses whichever stamp exists, or compiles in full (`marker-foreign`), so
+            # N racing checkouts cost at most two front ends and never wait on each other.
+            log_event(
+                logger,
+                logging.INFO,
+                "compile.verilate_deferred",
+                test=self.test_name,
+                marker_root=marker.get("root"),
+                **_build_dir_fields(
+                    stamp_dir, shared=self._shared_build_dir is not None
+                ),
+            )
+            self._record_compile(duration_sec=0.0, reused=True)
+            return 0
         log_event(
             logger,
             logging.INFO,
@@ -3457,6 +3497,10 @@ class VlogSim:
         - Marker ``failed`` for these inputs: fail here carrying its transcript,
           since re-running would fail again and overwrite the errors.
         - No marker, or one from other inputs: verilate and build here.
+        - A marker another checkout wrote (:meth:`_verilate_marker_is_foreign`):
+          verilate and build here, since that checkout's output names its paths. This
+          checkout's verilate job deferred to it (:meth:`_settle_verilate_phase`), so
+          the stamp check before this has already ruled out reusing its finished build.
         - A Verilator without ``--no-verilate``: the same full compile, reported
           differently.
         """
@@ -3468,6 +3512,11 @@ class VlogSim:
         own = _fingerprint_sha(fingerprint)
         if recorded is None or own is None or recorded != own:
             self._report_build_phase_fallback("marker-stale")
+            return None
+        if self._verilate_marker_is_foreign(marker):
+            # Checked before the status: another checkout's failure transcript is not
+            # this checkout's verdict either.
+            self._report_build_phase_fallback("marker-foreign")
             return None
         if marker.get("status") != "ok":
             return self._decline_failed_verilation(marker)
@@ -4320,6 +4369,12 @@ class VlogSim:
         # being true.
         if stale_stamp is not None:
             stale_stamp.unlink(missing_ok=True)
+        if self._shared_build_dir is not None and not self._skip_verilate:
+            # Likewise the verilate marker: this compile re-runs the front end, so the
+            # verilation the marker vouched for (possibly another checkout's) is gone.
+            # A verilate-only compile writes a fresh one when it finishes.
+            with contextlib.suppress(OSError):
+                self._verilate_marker_path(stamp_dir).unlink(missing_ok=True)
         self._prepare_build_dir_toolchain(plan, forced=forced)
         log_event(
             logger,
