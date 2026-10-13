@@ -1654,6 +1654,63 @@ def test_the_suite_log_is_never_listed_in_an_include_directory(tmp_path, monkeyp
     assert len(calls) == 1
 
 
+def test_a_coverage_runs_outputs_in_the_command_root_are_never_listed(
+    tmp_path, monkeypatch
+):
+    """`cov_dir/` and the coverage reports a run writes beside it in the command root are excluded, so a coverage run between two builds of an `+incdir+.` suite does not invalidate the stamp (#793)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _incdir_dot_sim(tmp_path, monkeypatch, "test_a")
+    assert sim_a.compile() == 0
+    before = _dir_entry(sim_a, "+incdir+")[-1]
+    assert "src/top.sv" in [entry[0] for entry in before]  # the walk did happen
+
+    # What a coverage run with a raw merge, HTML and Coverview leaves in the command root.
+    cov_dir = tmp_path / "cov_dir"
+    cov_dir.mkdir()
+    for name in ("coverage-model.json", "manifest.json", "coverage_merged.dat"):
+        (cov_dir / name).write_text("{}\n")
+    for html_dir in (
+        "coverage_merge.html",
+        "coverage_tests__test_a__html",
+        "coverage.coverage_html",
+    ):
+        (tmp_path / html_dir).mkdir()
+        (tmp_path / html_dir / "index.html").write_text("<html/>\n")
+    for name in (
+        "coverview_tests.zip",
+        "coverview_tests_per_test.zip",
+        "coverview_tests.config.json",
+        "coverage_line_tests.info",
+        "coverage_branch_tests.info",
+        "coverage_toggle_tests.dat",
+        "coverage_toggle_tests.info",
+        "coverage_expression_tests.info",
+        "coverage_tests.desc",
+        "covrby_branch_tests.desc",
+        "tests__test_a.coverage.info",
+    ):
+        (tmp_path / name).write_text("x\n")
+
+    sim_b = _incdir_dot_sim(tmp_path, monkeypatch, "test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 1
+    assert sim_b.last_compile["reused"] is True
+    assert _dir_entry(sim_b, "+incdir+")[-1] == before
+
+
+def test_a_cov_dir_writer_and_the_listing_prune_share_one_name():
+    """The coverage writer's directory name is the one the listing prunes."""
+    from rtl_buddy.tools import coverage as coverage_module
+
+    assert vlog_sim_module._is_pruned_walk_dir(coverage_module.COV_DIRNAME)
+    assert vlog_sim_module._is_pruned_walk_dir("coverage_merge.html")
+    assert not vlog_sim_module._is_pruned_walk_dir("coverage")
+    assert not vlog_sim_module._is_non_input_file("coverage_defs.svh")
+
+
 def test_a_real_input_named_like_the_suite_log_stays_tracked(tmp_path, monkeypatch):
     """Only the suite's own `rtl_buddy.log` is skipped; a same-named file in another include directory is a compile input."""
     _write_source(tmp_path)

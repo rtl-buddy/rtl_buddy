@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 from ..errors import FatalRtlBuddyError
 from ..tools.artifact_paths import (
+    COV_DIRNAME,
     COV_MANIFEST_NAME,
     COV_MODEL_NAME,
     atomic_tmp_name,
@@ -85,7 +86,7 @@ def clear_previous_outputs(calls) -> list[str]:
     removed = []
     seen = set()
     for call in calls:
-        cov_dir = os.path.join(str(call["outdir"]), "cov_dir")
+        cov_dir = os.path.join(str(call["outdir"]), COV_DIRNAME)
         for name in (COV_MANIFEST_NAME, COV_MODEL_NAME):
             path = os.path.join(cov_dir, name)
             if path in seen:
