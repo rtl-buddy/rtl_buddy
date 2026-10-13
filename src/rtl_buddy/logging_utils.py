@@ -1764,6 +1764,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'Liberty-mapped run "{fields.get("synth")}"; set abc-script to '
                 "change its ABC script"
             )
+        case "synth.abc_driving_cell_missing":
+            return (
+                f"synth {fields.get('synth')}: ABC found no cell "
+                f"{fields.get('cell')!r} (the platform's abc-driving-cell) in the "
+                "mapped library, so primary inputs have no driving cell; see "
+                f"{fields.get('log')}"
+            )
         case "synth.sdc_no_clock":
             if fields.get("abc_delay_target"):
                 return (

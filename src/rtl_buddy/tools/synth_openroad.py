@@ -12,6 +12,7 @@ from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps, open_libe
 from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 from .synth_yosys import (
     MAX_EVENT_FINDINGS,
+    abc_constr_arg,
     abc_period_arg,
     apply_effort,
     clean_block_netlist,
@@ -29,10 +30,12 @@ from .synth_yosys import (
     mapped_abc_script,
     parse_area_um2,
     parse_gate_count,
+    resolve_abc_constr,
     resolve_abc_period_ps,
     resolve_dont_use_cells,
     slang_handles_params,
     validate_frontend,
+    warn_abc_driving_cell_missing,
     warn_mapped_abc_args,
     yosys_env,
     yosys_read_lib_paths,
@@ -90,6 +93,8 @@ class OpenRoadSynth:
         self._ps_per_unit: float | None = None
         # Stage 1's ABC `-D` in picoseconds; None before scripting or when the SDC names no clock.
         self._period_ps: int | None = None
+        # The platform's `abc -constr` settings stage 1 used; None without them.
+        self._abc_constr: dict | None = None
         self._or_opts: SynthToolOpts | None = None
         # The `-D` table `_write_yosys_script` fed the frontend.
         self._script_defines: dict[str, str | None] | None = None
@@ -282,8 +287,11 @@ class OpenRoadSynth:
                 self._time_unit_ps,
                 self.synth_cfg.get_name(),
             )
+            self._abc_constr = resolve_abc_constr(self.synth_cfg, self.root_cfg)
             lines.append(
-                f"abc{cell_libs}{dont_use}{abc_period_arg(self._period_ps)}"
+                f"abc{cell_libs}{dont_use}"
+                f"{abc_constr_arg(self._abc_constr, self.artefact_dir)}"
+                f"{abc_period_arg(self._period_ps)}"
                 f' -script "+{abc_script}"'
             )
             warn_mapped_abc_args(opts, self.synth_cfg.get_name())
@@ -401,6 +409,10 @@ class OpenRoadSynth:
         error_lines = [ln for ln in log_text.splitlines() if ln.startswith("ERROR:")]
         if error_lines:
             return None, False, None
+
+        warn_abc_driving_cell_missing(
+            log_text, self._abc_constr, self.synth_cfg.get_name(), log_path
+        )
 
         conflicting = find_conflicting_driver_warnings(log_text)
         if conflicting and conflicting_mode == "error":
@@ -826,7 +838,8 @@ class OpenRoadSynth:
         - `elaborate`: the shared frontend subset (:func:`elaboration_fingerprint`) plus the resolved
           `synth_args`. `abc-args` is ignored on this backend, so it is not digested.
         - `abc_script`: the stage 1 ABC script (:func:`mapped_abc_script`), and `abc_period_ps`, its
-          `-D` delay target (null when the SDC names no clock).
+          `-D` delay target (null when the SDC names no clock), plus `abc_constr` when the platform
+          sets an ABC driving cell or output load.
         - `map`: `resynth` (from `_resynth_cmd`), the sha256 of the effort's pre-STA Tcl (stripped as
           the script writer strips it), and the resolved `lefs`. With the effort's `openroad.repair`
           on, also `repair: true` and the sha256 of the `layer-rc-tcl` it sources; both are absent
@@ -855,6 +868,11 @@ class OpenRoadSynth:
             ),
             "abc_script": mapped_abc_script(self._resolve_yosys_opts()),
             "abc_period_ps": self._period_ps,
+            **(
+                {"abc_constr": constr}
+                if (constr := resolve_abc_constr(self.synth_cfg, self.root_cfg))
+                else {}
+            ),
             "map": map_options,
             "libs": library_fingerprint(self._resolve_lib_paths(), self.root_cfg),
             # Both stages read the PDK's excluded cells; different exclusions are different experiments.

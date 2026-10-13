@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import pprint
 from dataclasses import dataclass, field as dc_field, fields as dc_fields
@@ -25,6 +26,40 @@ class SynthPlatformConfigFile:
     corner: str = ""
     # Added to the PDK's `dont-use-cells`, not replacing them.
     dont_use_cells: list[str] = field(rename="dont-use-cells", default_factory=list)
+    # ABC's driving cell for primary inputs and load (fF) on primary outputs, passed as `abc -constr` (#787).
+    abc_driving_cell: str = field(rename="abc-driving-cell", default="")
+    abc_output_load: float | int | None = field(rename="abc-output-load", default=None)
+
+
+def _validate_abc_driving_cell(cell, where: str) -> str:
+    """Check `abc-driving-cell`: one Liberty cell name, or empty for none."""
+    if cell is None or cell == "":
+        return ""
+    if not isinstance(cell, str) or not cell.strip():
+        raise FatalRtlBuddyError(f"{where}: abc-driving-cell must be a cell name")
+    if any(ch.isspace() or ch in "\"'*?[]{};" for ch in cell):
+        raise FatalRtlBuddyError(
+            f"{where}: abc-driving-cell {cell!r} must be one Liberty cell name, "
+            "without whitespace, quotes or wildcards"
+        )
+    return cell
+
+
+def _validate_abc_output_load(load, where: str) -> float | None:
+    """Check `abc-output-load`: a non-negative number of femtofarads, or None for none."""
+    if load is None:
+        return None
+    if isinstance(load, bool) or not isinstance(load, (int, float)):
+        raise FatalRtlBuddyError(
+            f"{where}: abc-output-load must be a number of femtofarads, got {load!r}"
+        )
+    value = float(load)
+    if not math.isfinite(value) or value < 0:
+        raise FatalRtlBuddyError(
+            f"{where}: abc-output-load must be a non-negative number of "
+            f"femtofarads, got {load!r}"
+        )
+    return value
 
 
 class SynthPlatformConfig:
@@ -48,6 +83,9 @@ class SynthPlatformConfig:
                 cfg.dont_use_cells, f"synth platform '{self._name}'"
             ),
         )
+        where = f"synth platform '{self._name}'"
+        self._abc_driving_cell = _validate_abc_driving_cell(cfg.abc_driving_cell, where)
+        self._abc_output_load = _validate_abc_output_load(cfg.abc_output_load, where)
 
     def get_name(self) -> str:
         return self._name
@@ -71,6 +109,14 @@ class SynthPlatformConfig:
     def get_layer_rc_tcl(self) -> str:
         """The PDK's `layer-rc-tcl` path, or `""` when unset; sourced before an effort's `openroad.repair`."""
         return self._layer_rc_tcl
+
+    def get_abc_driving_cell(self) -> str:
+        """The cell ABC assumes drives every primary input (`abc-driving-cell`), or `""`."""
+        return self._abc_driving_cell
+
+    def get_abc_output_load(self) -> float | None:
+        """The load in femtofarads ABC puts on every primary output (`abc-output-load`), or None."""
+        return self._abc_output_load
 
 
 @dataclass
