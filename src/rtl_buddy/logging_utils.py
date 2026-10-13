@@ -2501,6 +2501,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('verification')!r} — the campaign top wins for "
                 "the baseline and every mutant"
             )
+        case "mut_runner.user_mutant_not_applied":
+            return (
+                f"campaign {fields.get('campaign')!r}: user mutant "
+                f"{fields.get('mutant')!r} is ERRORED — {fields.get('patch')} "
+                f"no longer applies to the model tree: {fields.get('error')}"
+            )
         case "model_config.invalid_model_name":
             return (
                 f"{fields.get('path')}: model name {fields.get('name')!r} is "
