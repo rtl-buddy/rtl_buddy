@@ -25,6 +25,7 @@ from ..logging_utils import log_event
 from ..seeding import resolve_test_seed
 from .fpv_runner import FpvRunner
 from .mut_results import ERRORED, KILLED, SURVIVED, MutantOutcome, MutResults
+from .xfail import FAIL_STAGE_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -586,7 +587,11 @@ class MutRunner:
         return results.results.get("result", "NA")
 
     def _eval_fpv(self, fpv_cfg, mutant_model, mutant_root, mutant_id, baseline):
-        """Return (outcome, "fpv=<verdict>") for the FPV oracle."""
+        """Return (outcome, "fpv=<verdict>") for the FPV oracle.
+
+        A FAIL that carries ``fail_stage`` (sby errored, timed out or gave a non-induction UNKNOWN) reached no verdict on
+        the mutant, so it is errored, not killed.
+        """
         try:
             mutant_fpv_cfg = dataclasses.replace(
                 fpv_cfg,
@@ -600,9 +605,10 @@ class MutRunner:
                 suite_dir=os.path.join(mutant_root, "fpv"),
             ).run()
             verdict = results.results.get("result", "NA")
+            fail_stage = results.results.get(FAIL_STAGE_KEY)
         except FatalRtlBuddyError:
             return ERRORED, "fpv=ERROR"
-        if verdict in ("NA", "ERROR"):
+        if verdict in ("NA", "ERROR") or fail_stage:
             return ERRORED, "fpv=ERROR"
         outcome = KILLED if verdict != baseline else SURVIVED
         return outcome, f"fpv={verdict}"

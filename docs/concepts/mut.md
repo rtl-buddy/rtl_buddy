@@ -119,7 +119,7 @@ Each mutant has one outcome:
 
 - `KILLED`: an oracle caught the change.
 - `SURVIVED`: every oracle passed. Inspect these verification gaps first.
-- `ERRORED`: the mutant did not elaborate or compile. It is excluded from scoring.
+- `ERRORED`: the mutant did not elaborate or compile, or the proof ended without a verdict (an sby error, a timeout, or an `UNKNOWN` other than a failed induction step). It is excluded from scoring.
 
 ```text
 mutation score = killed / (killed + survived)
