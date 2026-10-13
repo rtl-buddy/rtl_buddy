@@ -450,17 +450,27 @@ def emit_frontend_read_cmds(
 
 
 YOSYS_TMP_DIRNAME = "yosys-tmp"
+#: Screen width `yosys-abc`'s readline assumes. Without `TERM` it assumes 80 columns and echoes a
+#: long `source <TMPDIR>/.../abc.script` line scrolled sideways, so Yosys never sees the prompt it
+#: waits for and both processes block (#797).
+YOSYS_ABC_COLUMNS = "100000"
+
+
+def yosys_process_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Return `env` (default: this process's environment) with ``COLUMNS`` set for every Yosys launch (#797)."""
+    return {**(os.environ if env is None else env), "COLUMNS": YOSYS_ABC_COLUMNS}
 
 
 def yosys_env(artefact_dir: str) -> dict[str, str]:
     """Return the environment for a Yosys run, with ``TMPDIR`` set to the run's own directory.
 
     Yosys keeps temp files and its merged Liberty SCL cache under ``TMPDIR``; the default
-    cache directory under ``/tmp`` belongs to whichever user created it first.
+    cache directory under ``/tmp`` belongs to whichever user created it first. ``COLUMNS``
+    is set as :func:`yosys_process_env` sets it.
     """
     tmp_dir = os.path.join(os.path.abspath(artefact_dir), YOSYS_TMP_DIRNAME)
     os.makedirs(tmp_dir, exist_ok=True)
-    return {**os.environ, "TMPDIR": tmp_dir}
+    return {**yosys_process_env(), "TMPDIR": tmp_dir}
 
 
 def liberty_args(paths: list[str]) -> str:

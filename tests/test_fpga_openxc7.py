@@ -211,6 +211,24 @@ def test_openxc7_skips_when_prjxray_db_unresolved(tmp_path, monkeypatch):
     assert "prjxray" in res.results["desc"]
 
 
+def test_openxc7_yosys_stage_sets_columns(tmp_path, monkeypatch):
+    from rtl_buddy.tools.synth_yosys import YOSYS_ABC_COLUMNS
+
+    envs: dict = {}
+    inner = _fake_pipeline()
+
+    def _run(cmd, **kwargs):
+        envs[os.path.basename(cmd[0])] = kwargs.get("env")
+        return inner(cmd, **kwargs)
+
+    backend = _make_backend(tmp_path, tool_overrides=_CHIPDB_OVERRIDES)
+    _mock_toolchain(monkeypatch, _run)
+    backend.run()
+    # yosys-abc's readline must not wrap long command echoes (#797).
+    assert envs["yosys"]["COLUMNS"] == YOSYS_ABC_COLUMNS
+    assert envs["nextpnr-xilinx"] is None
+
+
 def test_openxc7_mocked_pipeline_passes(tmp_path, monkeypatch):
     calls: list = []
     backend = _make_backend(tmp_path, tool_overrides=_CHIPDB_OVERRIDES)

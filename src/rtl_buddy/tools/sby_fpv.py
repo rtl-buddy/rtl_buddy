@@ -20,6 +20,7 @@ from ..config.fpv import FpvConfig, FpvToolConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
+from .synth_yosys import yosys_process_env
 from ..runner.fpv_results import FpvFailResults, FpvPassResults, FpvResults
 from .fpv_vacuity import (
     VacuityCandidate,
@@ -711,4 +712,6 @@ class SbyFpv:
                 stdout=logf,
                 stderr=subprocess.STDOUT,
                 cwd=self.artefact_dir,
+                # sby starts Yosys and yosys-abc, which inherit this environment (#797).
+                env=yosys_process_env(),
             )
