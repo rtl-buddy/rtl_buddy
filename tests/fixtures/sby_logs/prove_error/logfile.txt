@@ -1,0 +1,12 @@
+SBY 15:20:15 [err_wd] Removing directory '/work/demo/err_wd'.
+SBY 15:20:15 [err_wd] Copy '/work/demo/err.sv' to '/work/demo/err_wd/src/err.sv'.
+SBY 15:20:15 [err_wd] engine_0: smtbmc yices
+SBY 15:20:15 [err_wd] base: starting process "cd err_wd/src; yosys -ql ../model/design.log ../model/design.ys"
+SBY 15:20:15 [err_wd] base: err.sv:1: ERROR: syntax error, unexpected ';'
+SBY 15:20:15 [err_wd] base: finished (returncode=1)
+SBY 15:20:15 [err_wd] base: task failed. ERROR.
+SBY 15:20:15 [err_wd] summary: Elapsed clock time [H:MM:SS (secs)]: 0:00:00 (0)
+SBY 15:20:15 [err_wd] summary: Elapsed process time [H:MM:SS (secs)]: 0:00:00 (0)
+SBY 15:20:15 [err_wd] summary: engine_0 (smtbmc yices) did not return a status
+SBY 15:20:15 [err_wd] summary: engine_0 did not produce any traces
+SBY 15:20:15 [err_wd] DONE (ERROR, rc=16)

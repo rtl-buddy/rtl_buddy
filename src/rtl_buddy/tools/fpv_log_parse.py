@@ -21,6 +21,10 @@ _ENGINE_TRACE_RE = re.compile(
     r"summary:\s+engine_(?P<idx>\d+)\s+"
     r"(?P<msg>did not produce any traces|produced (?P<count>\d+) traces?)"
 )
+# sby's per-step summary lines for a k-induction (smtbmc) engine in `mode prove`.
+_STEP_VERDICT_RE = re.compile(
+    r"summary:\s+engine_(?P<idx>\d+)\s+\([^)]*\)\s+returned\s+(?P<verdict>\S+)\s+for\s+(?P<step>basecase|induction)\b"
+)
 _ELAPSED_RE = re.compile(
     r"summary:\s+Elapsed clock time \[H:MM:SS \(secs\)\]:\s+\S+\s+\((?P<secs>\d+)\)"
 )
@@ -64,6 +68,20 @@ def parse_engine_summary(log_text: str) -> list[dict]:
             elif m["count"]:
                 entry.trace_count = int(m["count"])
     return [engines[i].to_dict() for i in sorted(engines)]
+
+
+def induction_failed(log_text: str) -> bool:
+    """Return True when one engine's summary reports ``returned pass for basecase`` and ``returned FAIL for induction``.
+
+    sby then reports ``UNKNOWN`` for ``mode prove``: no counterexample within ``depth``, but the property is not k-inductive.
+    """
+    steps: dict[str, dict[str, str]] = {}
+    for m in _STEP_VERDICT_RE.finditer(log_text):
+        steps.setdefault(m["idx"], {})[m["step"]] = m["verdict"]
+    return any(
+        s.get("basecase") == "pass" and s.get("induction") == "FAIL"
+        for s in steps.values()
+    )
 
 
 def parse_elapsed_seconds(log_text: str) -> int | None:
