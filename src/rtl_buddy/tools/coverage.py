@@ -10,6 +10,7 @@ import os
 from ..cov import manifest as manifest_mod
 from ..cov import model as model_mod
 from ..cov.raw import METRICS as cov_metrics
+from .artifact_paths import COV_DIRNAME
 from .coverview import CoverviewPacker
 from .vlog_cov import CoverageMetrics, VlogCov, aggregate_cover_records
 
@@ -104,7 +105,7 @@ class CoverageReporter:
 
     def _cov_dir(self, outdir):
         """Return (creating it) the `cov_dir` intermediate artifact directory under ``outdir``."""
-        cov_dir = os.path.join(outdir, "cov_dir")
+        cov_dir = os.path.join(outdir, COV_DIRNAME)
         os.makedirs(cov_dir, exist_ok=True)
         return cov_dir
 

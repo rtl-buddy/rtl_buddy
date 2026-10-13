@@ -37,6 +37,9 @@ from .vlog_cov import VlogCov
 from .artifact_paths import (
     ARTIFACT_DIRNAME,
     BUILD_DIR_PREFIX,
+    COV_DIRNAME,
+    COV_REPORT_DIR_PATTERNS,
+    COV_REPORT_FILE_PATTERNS,
     DISPATCH_OUTPUT_PATTERNS,
     RESULT_JSON_NAME,
     SHARED_BUILDS_DIRNAME,
@@ -478,10 +481,13 @@ def _is_macro_shaped(token: str) -> bool:
 # `__pycache__` is included because a `preproc` hook can write bytecode during the
 # fingerprint phase.
 # Dot-directories hold no compile input.
+# A coverage run writes `cov_dir/` and its HTML reports into the command root, which is
+# often an include dir itself (`+incdir+.`), so those are pruned by name as well.
 _PRUNED_WALK_DIRNAMES = frozenset(
-    {ARTIFACT_DIRNAME, SHARED_BUILDS_DIRNAME, "__pycache__"}
+    {ARTIFACT_DIRNAME, SHARED_BUILDS_DIRNAME, COV_DIRNAME, "__pycache__"}
 )
 _PRUNED_WALK_DIR_PREFIXES = (BUILD_DIR_PREFIX,)
+_PRUNED_WALK_DIR_PATTERNS = COV_REPORT_DIR_PATTERNS
 
 # Editor and VCS bookkeeping files (fnmatch patterns) that no simulator reads.
 # A name-based denylist, not "every dot-file": a dot-file can be a real include.
@@ -536,10 +542,13 @@ _MANAGED_OUTPUT_TMP_PATTERNS = tuple(
     for tmp_pattern in atomic_tmp_patterns(pattern)
 )
 
+# A coverage run's report files beside `cov_dir/` in the command root are written
+# in place, not via a temp file, so they need no temp patterns.
 _NON_INPUT_FILE_PATTERNS = (
     _BOOKKEEPING_FILE_PATTERNS
     + _MANAGED_OUTPUT_FILE_PATTERNS
     + _MANAGED_OUTPUT_TMP_PATTERNS
+    + COV_REPORT_FILE_PATTERNS
 )
 
 # The stamp's own keys, as opposed to the compile fingerprint it wraps.
@@ -853,13 +862,16 @@ def _hashed_stat_entry(
 def _is_pruned_walk_dir(name: str) -> bool:
     """Should an ``+incdir+`` walk refuse to descend into ``name``?
 
-    True for rtl_buddy's own artefact trees and for dot-directories. See
-    :data:`_PRUNED_WALK_DIRNAMES`.
+    True for rtl_buddy's own artefact trees (including a coverage run's ``cov_dir/``
+    and HTML reports) and for dot-directories. See :data:`_PRUNED_WALK_DIRNAMES`.
     """
     return (
         name.startswith(".")
         or name in _PRUNED_WALK_DIRNAMES
         or name.startswith(_PRUNED_WALK_DIR_PREFIXES)
+        or any(
+            fnmatch.fnmatchcase(name, pattern) for pattern in _PRUNED_WALK_DIR_PATTERNS
+        )
     )
 
 

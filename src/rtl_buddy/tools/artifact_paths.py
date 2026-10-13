@@ -49,6 +49,30 @@ RESULTS_OVERLAY_NAME = "results-overlay.json"
 COV_MANIFEST_NAME = "manifest.json"
 COV_MODEL_NAME = "coverage-model.json"
 
+#: The coverage directory a coverage run writes under its command root.
+COV_DIRNAME = "cov_dir"
+
+#: Coverage report directories a coverage run writes beside ``cov_dir/`` in its command
+#: root (fnmatch): genhtml's merged and per-test HTML trees.
+COV_REPORT_DIR_PATTERNS = (
+    "coverage_merge.html",
+    "coverage_*__html",
+    "*.coverage_html",
+)
+
+#: Coverage report files a coverage run can write beside ``cov_dir/`` in its command root
+#: (fnmatch): Coverview archives, their configs, and the typed LCOV, raw-metric and
+#: description files packed into them.
+COV_REPORT_FILE_PATTERNS = (
+    "coverview_*.zip",
+    "coverview_*.config.json",
+    "coverage_*.info",
+    "coverage_*.dat",
+    "coverage_*.desc",
+    "covrby_*.desc",
+    "*.coverage.info",
+)
+
 #: The physical-metrics model and manifest, written into the producing run's artefact
 #: directory (`rb synth` or `rb power`). The manifest is prefixed because discovery
 #: matches on filename and must not read a coverage manifest as a physical one.
