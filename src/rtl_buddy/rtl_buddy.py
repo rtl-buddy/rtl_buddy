@@ -107,6 +107,7 @@ from .config.dispatch import (
     resolve_verilate_resources,
     resolve_resources,
     cpu_request_overrides,
+    mem_to_bytes,
 )
 from .dispatch import (
     LocalProcessBackend,
@@ -3136,6 +3137,12 @@ class RtlBuddy:
             result_json=str(result_path),
         )
         run_token, calls, tests = load_tail_spec(spec_path)
+        # The raw merge shards over this job's reservation (#783).
+        reservation = resolve_coverage_resources(
+            self.root_cfg.get_dispatch_cfg(), builder_mode=self.rtl_builder_mode
+        )
+        self.coverage.merge_jobs = reservation.cpus
+        self.coverage.merge_mem_bytes = mem_to_bytes(reservation.mem)
         outcomes = [
             self.coverage.build_metadata(
                 call["suite_results"],

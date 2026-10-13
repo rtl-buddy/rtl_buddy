@@ -2160,6 +2160,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "functional coverage have no other source and are reported "
                 "as FAIL, not UNSP"
             )
+        case "coverage.merge.unsharded":
+            return (
+                f"coverage merge: could not create a shard directory under "
+                f"{fields.get('outdir')} ({fields.get('error')}); merging every "
+                "database in one verilator_coverage --write instead"
+            )
         case "coverage.tail_submitted":
             return (
                 f"coverage: merge, model and LCOV exports submitted as job "
