@@ -66,6 +66,11 @@ class BuildJobSpec:
     phase: str = BUILD_PHASE_FULL
     # The head's `--run-tag` artefact namespace, or None for the flat tree.
     run_tag: str | None = None
+    # The shared-build cache directory this suite's builds live in, set only under
+    # `cfg-dispatch.compile.serialise-checkouts` with a cache root. The Slurm job name
+    # then hashes it instead of ``suite_dir``, so every checkout sharing the cache gets
+    # one name and `singleton` queues them (#821).
+    serialise_key: str | None = None
 
 
 @dataclass

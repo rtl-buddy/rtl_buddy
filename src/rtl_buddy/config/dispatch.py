@@ -85,6 +85,8 @@ class DispatchCompileFile:
     verilate: CompileVerilateFile | None = None
     # True chains a verilate job and a build job with `afterok`; False keeps one `verilator --binary` job. Inert off Slurm.
     split_verilate: bool = field(rename="split-verilate", default=True)
+    # True names a suite's Slurm build and verilate jobs after its shared-build cache directory rather than the checkout, so checkouts sharing a cache root queue behind each other on `singleton` instead of racing (#821). Inert without a cache root, and off Slurm.
+    serialise_checkouts: bool = field(rename="serialise-checkouts", default=False)
 
 
 def _validate_time(value):
@@ -635,6 +637,7 @@ class DispatchConfigFile:
                 parallel=res.parallel,
                 verilate=_validate_verilate_block(getattr(res, "verilate", None)),
                 split_verilate=getattr(res, "split_verilate", True),
+                serialise_checkouts=bool(getattr(res, "serialise_checkouts", False)),
                 modes=validate_modes_block(
                     getattr(res, "modes", None),
                     where="cfg-dispatch.compile.",
@@ -1119,6 +1122,16 @@ def compile_split_verilate(dispatch_cfg, suite_compile=None) -> bool:
     if dispatch_cfg is None or dispatch_cfg.compile is None:
         return True
     return bool(getattr(dispatch_cfg.compile, "split_verilate", True))
+
+
+def compile_serialise_checkouts(dispatch_cfg) -> bool:
+    """Whether ``cfg-dispatch.compile.serialise-checkouts`` is on.
+
+    Project-wide only: whether checkouts share builds is a property of the cache root, not of one suite.
+    """
+    if dispatch_cfg is None or dispatch_cfg.compile is None:
+        return False
+    return bool(getattr(dispatch_cfg.compile, "serialise_checkouts", False))
 
 
 def mem_to_bytes(value) -> int | None:

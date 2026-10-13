@@ -23,6 +23,7 @@ from rtl_buddy.config.dispatch import (
     combine_for_in_job_compile,
     compile_parallel,
     compile_resource_origins,
+    compile_serialise_checkouts,
     compile_split_verilate,
     greedy_schedule,
     aggregate_compile_resources,
@@ -1710,6 +1711,31 @@ def test_split_verilate_defaults_on_and_the_suite_may_override_it():
         compile_split_verilate(_SPLIT_CFG, SuiteCompileFile(split_verilate=False))
         is False
     )
+
+
+def test_serialise_checkouts_defaults_off_and_parses_from_yaml():
+    """Opt-in, because naming jobs by the cache serialises unrelated builds of one suite (#821)."""
+    from serde.yaml import from_yaml
+
+    assert compile_serialise_checkouts(None) is False
+    assert compile_serialise_checkouts(DispatchConfigFile().initialise()) is False
+    on = from_yaml(
+        DispatchConfigFile, "compile:\n  serialise-checkouts: true\n"
+    ).initialise()
+    assert compile_serialise_checkouts(on) is True
+    # The rest of the compile block keeps its defaults.
+    assert compile_split_verilate(on) is True
+
+
+def test_a_mode_block_refuses_serialise_checkouts():
+    """It names the suite's one build job, so no builder mode can set it."""
+    with pytest.raises(FatalRtlBuddyError):
+        from serde.yaml import from_yaml
+
+        from_yaml(
+            DispatchConfigFile,
+            "compile:\n  modes:\n    cov:\n      serialise-checkouts: true\n",
+        ).initialise()
 
 
 def test_a_testbench_compile_block_refuses_split_verilate():

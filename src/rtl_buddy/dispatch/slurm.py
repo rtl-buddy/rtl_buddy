@@ -389,12 +389,16 @@ def build_job_name(spec: BuildJobSpec, *, tag: str | None = None) -> str:
 
     The verilate and build halves of a split compile use ``rb-verilate-<hash>`` and
     ``rb-build-<hash>`` over one digest.
+
+    Under ``serialise-checkouts`` (``spec.serialise_key``) the identity is the suite's
+    shared-build cache directory instead, which every checkout sharing the cache root
+    resolves alike. Their jobs then share names, so a later checkout's verilate and build
+    jobs pend behind an earlier checkout's and reuse its stamp (#821).
     """
+    identity = spec.serialise_key or os.path.abspath(spec.suite_dir)
     # os.fsencode, not .encode("utf-8"): a non-UTF-8 path byte arrives surrogate-escaped
     # and would raise UnicodeEncodeError.
-    digest = hashlib.sha256(os.fsencode(os.path.abspath(spec.suite_dir))).hexdigest()[
-        :12
-    ]
+    digest = hashlib.sha256(os.fsencode(identity)).hexdigest()[:12]
     prefix = (
         _VERILATE_JOB_NAME_PREFIX
         if getattr(spec, "phase", None) == BUILD_PHASE_VERILATE
