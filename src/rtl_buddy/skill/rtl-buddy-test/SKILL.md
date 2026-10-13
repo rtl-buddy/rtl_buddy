@@ -49,7 +49,7 @@ Verilator elaboration of large generated structures can be OOM-killed. A Slurm `
 
 ## Shared builds
 
-`--share-build` reuses a build only for identical compile inputs. Source or header changes, filelists, plusdefines, compile options (a suite's per-family `compile-opts` included), configured extra compile environment, builder or toolchain changes rebuild. Plusargs, seeds and `sim_timeout` do not.
+`--share-build` reuses a build only for identical compile inputs. Source or header changes, filelists, plusdefines, compile options (a suite's per-family, per-mode `compile-opts` included), configured extra compile environment, builder or toolchain changes rebuild. Plusargs, seeds and `sim_timeout` do not.
 
 - Every builder's stamp lists each `+incdir+` tree (recursively) and `-y` directory (flat). Verilator reports the files it consumed, so its listing is compared by name only: an added or removed file rebuilds, an edit rebuilds only if the build read that file.
 - VCS/Icarus report no header dependencies, so any edited, added or removed file in a listed directory rebuilds.

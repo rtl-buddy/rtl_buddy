@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from rtl_buddy import artifact_lock as artifact_lock_module
+from rtl_buddy.config.rtl import select_compile_opts
 from rtl_buddy.process_utils import ManagedProcessResult
 from rtl_buddy.runner.test_results import CompileFailResults, TestResults
 from rtl_buddy.runner.test_runner import RunDepth, TestRunner as RtlBuddyTestRunner
@@ -7784,8 +7785,10 @@ def test_prune_unlinks_symlinks_without_following_them_and_continues_after_failu
 
 
 def _with_suite_compile_opts(sim, opts_by_family):
-    """Give the sim's test the suite ``compile-opts`` that TestConfig carries."""
-    sim.test_cfg.get_compile_opts = lambda family: list(opts_by_family.get(family, []))
+    """Give the sim's test the suite ``compile-opts`` that TestConfig carries (normalized form)."""
+    sim.test_cfg.get_compile_opts = lambda family, mode=None: select_compile_opts(
+        opts_by_family, family, mode
+    )
     return sim
 
 
@@ -7858,3 +7861,48 @@ def test_suite_compile_opts_expand_like_compile_time(tmp_path, monkeypatch):
     )
     plan = sim._build_compile_plan()
     assert str(tmp_path.resolve() / "rtl" / "waive.vlt") in plan.builder_opts
+
+
+def test_suite_compile_opts_select_the_compiling_modes_entry(tmp_path, monkeypatch):
+    """A per-mode map gives the compiling mode its own entry, else `default`."""
+    _write_source(tmp_path)
+    by_mode = {
+        "verilator": {
+            "default": ["-MAKEFLAGS", "OPT_FAST=-O0"],
+            "nightly": ["-MAKEFLAGS", "OPT_FAST=-Os"],
+            "bare": [],
+        }
+    }
+
+    def opts_in(mode):
+        sim = _with_suite_compile_opts(
+            _make_sim(tmp_path, monkeypatch, test_name="t", compile_opts=["--binary"]),
+            by_mode,
+        )
+        sim.rtl_builder_mode = mode
+        return sim._build_compile_plan().builder_opts
+
+    assert opts_in("sim") == ["--binary", "-MAKEFLAGS", "OPT_FAST=-O0"]
+    assert opts_in("nightly") == ["--binary", "-MAKEFLAGS", "OPT_FAST=-Os"]
+    assert opts_in("bare") == ["--binary"]
+
+
+def test_suite_compile_opts_per_mode_are_part_of_the_shared_build_key(
+    tmp_path, monkeypatch
+):
+    """Only the compiling mode's selected entry reaches the shared-build key."""
+    _write_source(tmp_path)
+    nightly_only = {"verilator": {"nightly": ["-MAKEFLAGS", "OPT_FAST=-Os"]}}
+
+    def key(mode, name, opts=None):
+        sim = _make_sim(tmp_path, monkeypatch, test_name=name)
+        if opts is not None:
+            _with_suite_compile_opts(sim, opts)
+        sim.rtl_builder_mode = mode
+        return sim.compile_group_dir()
+
+    # A mode the map does not name (and no default) keeps its plain key.
+    assert key("sim", "a", nightly_only) == key("sim", "b")
+    # The named mode's options change its key.
+    assert key("nightly", "c", nightly_only) != key("nightly", "d")
+    assert key("nightly", "e", nightly_only) == key("nightly", "f", nightly_only)

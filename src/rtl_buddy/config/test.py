@@ -10,6 +10,7 @@ from .dispatch import (
     validate_testbench_compile_block,
 )
 from .model import ModelConfig, ModelConfigLoader
+from .rtl import CompileOptsValue, select_compile_opts
 from .uvm import UVMConfig
 
 import pprint
@@ -131,8 +132,8 @@ class TestConfig:
     timeout: int | None
     covers: list[str] | None = None
     builder_name: str | None = None
-    # The suite's `compile-opts`: options per simulator family, appended after the builder mode's compile-time.
-    compile_opts: dict[str, list[str]] | None = None
+    # The suite's `compile-opts`: options per simulator family (optionally per builder mode), appended after the builder mode's compile-time.
+    compile_opts: "dict[str, CompileOptsValue] | None" = None
     assertions: bool = False
     # Layered over the testbench's `resources:` and cfg-dispatch defaults by config.dispatch.resolve_resources().
     resources: "DispatchResourcesFile | None" = None
@@ -155,11 +156,12 @@ class TestConfig:
         """Return the ``cfg-rtl-builder`` name selected for this test, or None for the suite/platform default."""
         return self.builder_name
 
-    def get_compile_opts(self, family: str) -> list[str]:
-        """Return the suite's ``compile-opts`` for simulator ``family``; empty when it names none."""
-        if not self.compile_opts:
-            return []
-        return list(self.compile_opts.get(family.lower(), []))
+    def get_compile_opts(self, family: str, mode: str | None = None) -> list[str]:
+        """Return the suite's ``compile-opts`` for simulator ``family`` compiling in builder ``mode``.
+
+        See :func:`~.rtl.select_compile_opts`; empty when it names none.
+        """
+        return select_compile_opts(self.compile_opts, family, mode)
 
     def is_xfail(self) -> bool:
         """Whether this test is expected to fail."""
