@@ -583,7 +583,7 @@ model-configs:
 
 ## tests.yaml
 
-Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default, optional top-level `compile-opts` adds compile options for one simulator family, and optional top-level `compile` sizes this suite's dispatched build jobs.
+Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default, optional top-level `compile-opts` adds compile options for one simulator family, optional top-level `filelist-modes` adds compile inputs for one builder mode, and optional top-level `compile` sizes this suite's dispatched build jobs.
 
 ```yaml
 rtl-buddy-filetype: test_config
@@ -614,6 +614,7 @@ Top-level fields:
 | `tests` | Required | Test definitions |
 | `builder` | Optional | Suite default builder name |
 | `compile-opts` | Optional | Compile options per simulator family, optionally per builder mode, appended after the builder mode's `compile-time`. See below |
+| `filelist-modes` | Optional | Filelist entries per builder mode, compiled for every testbench in that mode only. See [Per-mode compile inputs](#per-mode-compile-inputs) |
 | `compile` | Optional | This suite's whole-job dispatch compile reservation: `cpus`, `mem`, quoted `time`, `parallel`, `split-verilate`, a `verilate` sub-block, and a [`modes`](#per-mode-reservations) sub-block. See below |
 | `preproc-sets-plusdefines` | Default true | Suite default for the test field of the same name |
 
@@ -648,6 +649,7 @@ Testbench fields:
 |---|---|---|
 | `name` | Required | Testbench identifier |
 | `filelist` | Required | Sources appended to the model filelist |
+| `filelist-modes` | Optional | Filelist entries per builder mode, compiled for this testbench in that mode only. See [Per-mode compile inputs](#per-mode-compile-inputs) |
 | `resources` | Optional | Dispatch `cpus`, `mem`, and quoted `time`, plus a [`modes`](#per-mode-reservations) sub-block. Inherited by tests |
 | `compile` | Optional | This testbench's per-build dispatch compile reservation. See below |
 | `toplevel` | Required for cocotb and SystemC, optional otherwise | Module the compile elaborates from. Not defaulted to `name`. See [Elaboration top](#elaboration-top) |
@@ -692,6 +694,25 @@ Test fields:
 Builder precedence is CLI `--builder`, test `builder`, suite `builder`, then the active platform default. A `reglvl` map resolves against the effective builder.
 
 Coverage processing uses the platform-selected builder unless `--builder` is supplied. If a suite or test overrides the builder, pass `--builder` on coverage runs so simulation and coverage select the same family.
+
+### Per-mode compile inputs
+
+`filelist-modes` maps a builder mode (the `builder-opts` key `--builder-mode` names), or `default`, to extra filelist entries compiled only in that mode. It is accepted at the suite top level, for every testbench, and on a testbench:
+
+```yaml
+filelist-modes:                  # suite level: every testbench
+  cov: [cov_waivers.vlt]
+
+testbenches:
+  - name: tb_a
+    filelist: [tb_a.sv]
+    filelist-modes:              # this testbench only
+      cov: [a_scope.vlt]         # scopes coverage under -M cov; -M reg never sees it
+```
+
+Each level takes the compiling mode's entry, else its `default`, else nothing; an entry present but empty selects nothing. Mode names match exactly. Entries take the same filelist syntax as `filelist` (sources, `.vlt` files, `+incdir+`, `+define+`, `-v`, `-y`, `-F`) and resolve against the suite directory. They follow the testbench `filelist` in `run.f`, suite entries before the testbench's.
+
+The entries are compile inputs of that mode's build only, so they are in that mode's shared-build key and in no other's: adding a `cov` entry leaves the `reg` build and its key unchanged. Entries are not keyed by simulator family, so a mode that more than one builder defines passes them to each; name a Verilator-only file under a mode only Verilator builders use. Options per mode go in [`compile-opts`](#testsyaml) instead. Tools that read a testbench's sources without compiling it, such as the hierarchy view and the waveform source resolver, read only `filelist`.
 
 ### Elaboration top
 

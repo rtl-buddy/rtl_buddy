@@ -1738,6 +1738,17 @@ class VlogSim:
             for line in instance_seeds:
                 randseed_fp.write(line)
 
+    def _get_test_filelist(self) -> list:
+        """The testbench ``filelist``, then the ``filelist-modes`` entries for this builder mode.
+
+        Mode entries reach only that mode's run.f, so only its compile key.
+        """
+        entries = list(self.testbench.get_filelist())
+        get_mode_filelist = getattr(self.test_cfg, "get_mode_filelist", None)
+        if get_mode_filelist is not None:
+            entries += get_mode_filelist(self.rtl_builder_mode)
+        return entries
+
     def _write_filelist(self, output_path):
         """Generate run.f for the sim."""
         self.vlog_fl = VlogFilelist(
@@ -1751,7 +1762,7 @@ class VlogSim:
             strip=False,
             deduplicate=True,
             absolute_sources=True,
-            test_filelist=self.testbench.get_filelist(),
+            test_filelist=self._get_test_filelist(),
             suite_dir=self.suite_work_dir,
         )
 

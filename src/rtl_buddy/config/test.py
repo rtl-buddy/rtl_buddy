@@ -10,7 +10,12 @@ from .dispatch import (
     validate_testbench_compile_block,
 )
 from .model import ModelConfig, ModelConfigLoader
-from .rtl import CompileOptsValue, select_compile_opts
+from .rtl import (
+    CompileOptsValue,
+    normalize_filelist_modes,
+    select_compile_opts,
+    select_mode_entry,
+)
 from .uvm import UVMConfig
 
 import pprint
@@ -69,8 +74,13 @@ class TestbenchConfig:
     systemc: SystemCTestbenchConfig | None = None
     resources: DispatchResourcesFile | None = None
     compile: TestbenchCompileFile | None = None
+    # Extra filelist entries per builder mode, compiled only in that mode; Any so the load error names the key.
+    filelist_modes: Any = field(rename="filelist-modes", default=None)
 
     def __post_init__(self):
+        self.filelist_modes = normalize_filelist_modes(
+            self.filelist_modes, where=f"testbench '{self.name}'"
+        )
         # Validated at load, as the suite-level block is: an unquoted `4:00:00` parses as an integer.
         try:
             self.compile = validate_testbench_compile_block(self.compile)
@@ -107,6 +117,13 @@ class TestbenchConfig:
     def get_filelist(self):
         return self.filelist
 
+    def get_mode_filelist(self, mode: str | None) -> list[str]:
+        """Return this testbench's ``filelist-modes`` entries for builder ``mode``.
+
+        The mode's entry, else ``default``, else none; see :func:`~.rtl.select_mode_entry`.
+        """
+        return select_mode_entry(self.filelist_modes, mode)
+
     def __str__(self):
         return pprint.pformat(self)
 
@@ -134,6 +151,8 @@ class TestConfig:
     builder_name: str | None = None
     # The suite's `compile-opts`: options per simulator family (optionally per builder mode), appended after the builder mode's compile-time.
     compile_opts: "dict[str, CompileOptsValue] | None" = None
+    # The suite's `filelist-modes`: extra filelist entries per builder mode, before the testbench's own.
+    filelist_modes: dict[str, list[str]] | None = None
     assertions: bool = False
     # Layered over the testbench's `resources:` and cfg-dispatch defaults by config.dispatch.resolve_resources().
     resources: "DispatchResourcesFile | None" = None
@@ -162,6 +181,18 @@ class TestConfig:
         See :func:`~.rtl.select_compile_opts`; empty when it names none.
         """
         return select_compile_opts(self.compile_opts, family, mode)
+
+    def get_mode_filelist(self, mode: str | None) -> list[str]:
+        """Return the extra filelist entries compiled only in builder ``mode``.
+
+        The suite's ``filelist-modes`` selection, then the testbench's; each selects the
+        mode's entry, else ``default``, else none. Both resolve against the suite
+        directory, as the testbench ``filelist`` does.
+        """
+        tb_entries = getattr(self.tb, "get_mode_filelist", None)
+        return select_mode_entry(self.filelist_modes, mode) + (
+            tb_entries(mode) if tb_entries is not None else []
+        )
 
     def is_xfail(self) -> bool:
         """Whether this test is expected to fail."""
@@ -359,6 +390,7 @@ class TestConfig:
             "covers": self.covers,
             "builder_name": self.builder_name,
             "compile_opts": self.compile_opts,
+            "filelist_modes": self.filelist_modes,
             "assertions": self.assertions,
             "resources": to_dict(self.resources)
             if self.resources is not None
@@ -393,6 +425,7 @@ class TestConfig:
             covers=d["covers"],
             builder_name=d["builder_name"],
             compile_opts=d.get("compile_opts"),
+            filelist_modes=d.get("filelist_modes"),
             assertions=d["assertions"],
             resources=from_dict(DispatchResourcesFile, d["resources"])
             if d["resources"] is not None
@@ -471,6 +504,7 @@ class TestConfigFile:
         suite_builder=None,
         suite_preproc_sets_plusdefines=None,
         suite_compile_opts=None,
+        suite_filelist_modes=None,
     ):
         validate_preproc_sets_plusdefines(
             self.preproc_sets_plusdefines, where=f"test {self.name!r}"
@@ -515,6 +549,7 @@ class TestConfigFile:
             covers=self.covers,
             builder_name=self.builder_name or suite_builder,
             compile_opts=suite_compile_opts,
+            filelist_modes=suite_filelist_modes,
             assertions=self.assertions,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
