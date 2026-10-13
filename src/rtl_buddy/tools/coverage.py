@@ -18,9 +18,15 @@ from .vlog_cov import CoverageMetrics, VlogCov, aggregate_cover_records
 class CoverageReporter:
     """Per-test and merged coverage reporting for rtl-buddy summaries."""
 
-    def __init__(self, root_cfg):
-        """Build a reporter for the currently selected builder."""
+    def __init__(self, root_cfg, *, merge_jobs=None, merge_mem_bytes=None):
+        """Build a reporter for the currently selected builder.
+
+        ``merge_jobs`` and ``merge_mem_bytes`` are a dispatched tail's reservation, which
+        bounds the parallel raw merge (:meth:`VlogCov._merge_jobs`); None in the head.
+        """
         self.root_cfg = root_cfg
+        self.merge_jobs = merge_jobs
+        self.merge_mem_bytes = merge_mem_bytes
 
     def _get_cov_tool(self):
         """Create a `VlogCov` for the platform-selected builder's simulator family.
@@ -33,6 +39,8 @@ class CoverageReporter:
             simulator_name=simulator_family,
             use_lcov=self.root_cfg.get_use_lcov(simulator_family),
             root_cfg=self.root_cfg,
+            merge_jobs=self.merge_jobs,
+            merge_mem_bytes=self.merge_mem_bytes,
         )
 
     def _get_coverview_tool(self):

@@ -13,7 +13,10 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
+import time
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from collections import defaultdict
@@ -46,6 +49,56 @@ def _fmt_cov(value, failed=False):
 
 # Distinguishes an omitted argument from an explicit None.
 _UNSET = object()
+
+#: Fewest raw databases one merge shard is given. A merge of fewer than twice this runs
+#: as one process: the extra final merge would outweigh what the parallelism saves.
+MERGE_SHARD_MIN_INPUTS = 16
+
+#: Most merge processes a coverage tail running in the head starts at once. Each holds the
+#: whole point set (about 270 MB at 290k points). A dispatched tail uses its reservation.
+LOCAL_MERGE_JOBS_CAP = 8
+
+#: Argument bytes one ``verilator_coverage --write`` may carry before its inputs are
+#: split over several commands, well below Linux's and macOS's ``ARG_MAX``.
+MERGE_ARGV_BUDGET = 256 * 1024
+
+#: Memory one merge process is assumed to need: this multiple of its largest input
+#: (measured at about 7x), and never less than :data:`MERGE_MEM_FLOOR`.
+MERGE_MEM_PER_INPUT_BYTE = 8
+MERGE_MEM_FLOOR = 256 * 1024 * 1024
+
+
+def usable_cpu_count() -> int:
+    """CPUs this process may run on: its affinity mask where the OS has one."""
+    try:
+        return len(os.sched_getaffinity(0)) or 1
+    except AttributeError:
+        return os.cpu_count() or 1
+
+
+def plan_merge_shards(raw_paths, jobs) -> list[list[str]]:
+    """Split ``raw_paths`` into contiguous groups, one ``verilator_coverage --write`` each.
+
+    At most ``jobs`` groups of at least :data:`MERGE_SHARD_MIN_INPUTS` inputs, so a single
+    group (today's one merge) when ``jobs`` is 1 or the run is small. A list whose
+    arguments exceed :data:`MERGE_ARGV_BUDGET` is split further whatever ``jobs`` is;
+    the extra groups then queue behind the ``jobs`` running ones. Input order is kept.
+    """
+    count = len(raw_paths)
+    if count == 0:
+        return []
+    by_cpu = min(jobs, count // MERGE_SHARD_MIN_INPUTS) if jobs > 1 else 1
+    argv_bytes = sum(len(os.fsencode(path)) + 1 for path in raw_paths)
+    by_argv = -(-argv_bytes // MERGE_ARGV_BUDGET)
+    groups = min(count, max(1, by_cpu, by_argv))
+    size, extra = divmod(count, groups)
+    shards = []
+    start = 0
+    for index in range(groups):
+        end = start + size + (1 if index < extra else 0)
+        shards.append(list(raw_paths[start:end]))
+        start = end
+    return shards
 
 
 def aggregate_cover_records(records):
@@ -154,10 +207,21 @@ class VlogCov:
         "functional": "user",
     }
 
-    def __init__(self, simulator_name, use_lcov=False, root_cfg=None):
+    def __init__(
+        self,
+        simulator_name,
+        use_lcov=False,
+        root_cfg=None,
+        merge_jobs=None,
+        merge_mem_bytes=None,
+    ):
         self.simulator_name = simulator_name
         self.use_lcov = use_lcov
         self.root_cfg = root_cfg
+        # The tail's CPU and memory reservation when it runs as a dispatched job; None
+        # in the head, which uses this host's CPUs up to LOCAL_MERGE_JOBS_CAP.
+        self.merge_jobs = merge_jobs
+        self.merge_mem_bytes = merge_mem_bytes
 
     def _get_repo_root(self):
         """Return the absolute project root directory for path normalization."""
@@ -714,47 +778,9 @@ class VlogCov:
         if len(raw_paths) == 0:
             return None
 
-        merged_path = os.path.join(outdir, f"{merge_basename}.dat")
-        run_cmd = ["verilator_coverage", "--write", merged_path] + raw_paths
-        timeout = self._merge_timeout()
-        log_event(
-            logger,
-            logging.INFO,
-            "coverage.merge.start",
-            simulator=self.simulator_name,
-            merged_path=merged_path,
-            inputs=raw_paths,
-            command=" ".join(run_cmd),
-            timeout=timeout,
+        merged_path = self._merge_raw(
+            raw_paths, os.path.join(outdir, f"{merge_basename}.dat"), outdir=outdir
         )
-        # Managed so an interrupt or a head shutdown takes the merge down with it.
-        result = run_managed_process(
-            run_cmd, capture_output=True, text=True, timeout=timeout
-        )
-        if result.returncode != 0 or result.timed_out:
-            log_event(
-                logger,
-                logging.ERROR,
-                "coverage.merge.failed",
-                simulator=self.simulator_name,
-                merged_path=merged_path,
-                inputs=raw_paths,
-                returncode=result.returncode,
-                # Present only when cfg-coverage merge-timeout stopped the merge.
-                timeout=timeout if result.timed_out else None,
-                stderr=(result.stderr or "").strip(),
-                stdout=(result.stdout or "").strip(),
-            )
-            merged_path = None
-        else:
-            log_event(
-                logger,
-                logging.INFO,
-                "coverage.merge.completed",
-                simulator=self.simulator_name,
-                merged_path=merged_path,
-                inputs=raw_paths,
-            )
 
         metrics = CoverageMetrics(raw_paths=list(raw_paths), merged_path=merged_path)
 
@@ -866,6 +892,197 @@ class VlogCov:
             return None
 
         return metrics
+
+    def _merge_jobs(self, raw_paths):
+        """How many merge processes may run at once for ``raw_paths``.
+
+        The tail's CPU reservation when dispatched (bounded by the CPUs this process
+        may run on), else this host's CPUs up to :data:`LOCAL_MERGE_JOBS_CAP`; then no
+        more than its memory reservation fits at the per-process estimate
+        (:data:`MERGE_MEM_PER_INPUT_BYTE`).
+        """
+        if self.merge_jobs is not None:
+            # Never more than the job can run on, should its allocation be narrower.
+            jobs = min(self.merge_jobs, usable_cpu_count())
+        else:
+            jobs = min(usable_cpu_count(), LOCAL_MERGE_JOBS_CAP)
+        jobs = max(1, int(jobs))
+        if self.merge_mem_bytes:
+            largest = 0
+            for path in raw_paths:
+                try:
+                    largest = max(largest, os.path.getsize(path))
+                except OSError:
+                    continue
+            per_process = max(MERGE_MEM_FLOOR, largest * MERGE_MEM_PER_INPUT_BYTE)
+            jobs = min(jobs, max(1, self.merge_mem_bytes // per_process))
+        return jobs
+
+    def _merge_raw(self, raw_paths, merged_path, *, outdir):
+        """Merge ``raw_paths`` into ``merged_path``; return it, or None on failure.
+
+        One ``verilator_coverage --write`` when :func:`plan_merge_shards` gives one
+        group. Otherwise each group is merged into a partial database, up to
+        :meth:`_merge_jobs` at once (the tool is single-threaded), and the partials are
+        merged into ``merged_path``. Counts add, so the result is the same database.
+        ``cfg-coverage`` ``merge-timeout`` bounds the whole merge.
+        """
+        jobs = self._merge_jobs(raw_paths)
+        shards = plan_merge_shards(raw_paths, jobs)
+        timeout = self._merge_timeout()
+        deadline = None if timeout is None else time.monotonic() + timeout
+        log_event(
+            logger,
+            logging.INFO,
+            "coverage.merge.start",
+            simulator=self.simulator_name,
+            merged_path=merged_path,
+            inputs=raw_paths,
+            command=(
+                " ".join(["verilator_coverage", "--write", merged_path] + raw_paths)
+                if len(shards) == 1
+                else f"verilator_coverage --write over {len(shards)} shards, "
+                f"{jobs} at a time, then over their partials"
+            ),
+            timeout=timeout,
+            shards=len(shards),
+            jobs=jobs,
+        )
+        if len(shards) == 1:
+            ok = self._run_merge_command(
+                raw_paths, merged_path, deadline=deadline, timeout=timeout
+            )
+        else:
+            ok = self._merge_sharded(
+                shards,
+                merged_path,
+                jobs=jobs,
+                outdir=outdir,
+                deadline=deadline,
+                timeout=timeout,
+            )
+        if not ok:
+            return None
+        log_event(
+            logger,
+            logging.INFO,
+            "coverage.merge.completed",
+            simulator=self.simulator_name,
+            merged_path=merged_path,
+            inputs=raw_paths,
+            shards=len(shards),
+        )
+        return merged_path
+
+    def _merge_sharded(self, shards, merged_path, *, jobs, outdir, deadline, timeout):
+        """Merge each shard into a partial, then the partials into ``merged_path``.
+
+        The partials live in a dot-directory under ``outdir`` (as large as one merged
+        database each, so not on a node-local ``/tmp``) and are removed afterwards.
+        Stops starting shards after the first failure.
+        """
+        try:
+            shard_dir = tempfile.mkdtemp(prefix=".merge-shards-", dir=outdir)
+        except OSError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "coverage.merge.unsharded",
+                simulator=self.simulator_name,
+                outdir=outdir,
+                error=str(exc),
+            )
+            return self._run_merge_command(
+                [path for shard in shards for path in shard],
+                merged_path,
+                deadline=deadline,
+                timeout=timeout,
+            )
+        try:
+            partials = [
+                os.path.join(shard_dir, f"part-{index:04d}.dat")
+                for index in range(len(shards))
+            ]
+            failed = threading.Event()
+
+            def run(index):
+                if failed.is_set():
+                    return
+                if not self._run_merge_command(
+                    shards[index],
+                    partials[index],
+                    deadline=deadline,
+                    timeout=timeout,
+                    shard=f"{index + 1}/{len(shards)}",
+                    merged_path=merged_path,
+                ):
+                    failed.set()
+
+            with ThreadPoolExecutor(
+                max_workers=min(jobs, len(shards)),
+                thread_name_prefix="rb-cov-merge",
+            ) as pool:
+                for future in [pool.submit(run, index) for index in range(len(shards))]:
+                    future.result()
+            if failed.is_set():
+                return False
+            return self._run_merge_command(
+                partials,
+                merged_path,
+                deadline=deadline,
+                timeout=timeout,
+                shard="final",
+            )
+        finally:
+            shutil.rmtree(shard_dir, ignore_errors=True)
+
+    def _run_merge_command(
+        self, inputs, output, *, deadline, timeout, shard=None, merged_path=None
+    ):
+        """Run one ``verilator_coverage --write``; log ``coverage.merge.failed`` and return False if it fails.
+
+        ``merged_path`` is the final database a shard's failure leaves unwritten.
+        """
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        run_cmd = ["verilator_coverage", "--write", output] + list(inputs)
+        if remaining == 0.0:
+            # The budget went on earlier shards; this one would be stopped at once.
+            returncode, timed_out, stderr, stdout = None, True, "", ""
+        else:
+            # Managed so an interrupt or a head shutdown takes the merge down with it.
+            result = run_managed_process(
+                run_cmd, capture_output=True, text=True, timeout=remaining
+            )
+            returncode, timed_out = result.returncode, result.timed_out
+            stderr, stdout = result.stderr or "", result.stdout or ""
+        if returncode == 0 and not timed_out:
+            if shard is not None:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "coverage.merge.shard_completed",
+                    simulator=self.simulator_name,
+                    shard=shard,
+                    output=output,
+                    inputs=len(inputs),
+                )
+            return True
+        fields = {"shard": shard} if shard is not None else {}
+        log_event(
+            logger,
+            logging.ERROR,
+            "coverage.merge.failed",
+            simulator=self.simulator_name,
+            merged_path=merged_path or output,
+            inputs=list(inputs),
+            returncode=returncode,
+            # Present only when cfg-coverage merge-timeout stopped the merge.
+            timeout=timeout if timed_out else None,
+            stderr=stderr.strip(),
+            stdout=stdout.strip(),
+            **fields,
+        )
+        return False
 
     def _merge_lcov_files(self, input_paths, output_path):
         """Merge multiple LCOV files by summing line and branch hit counts per source file."""
