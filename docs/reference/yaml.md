@@ -116,6 +116,7 @@ cfg-synth-tools:
       static-functions: error
       conflicting-drivers: error
       unresolved-interfaces: warn
+      clock-gating-min-flops: 0
 
 cfg-pdks:
   - name: sky130hd
@@ -151,11 +152,11 @@ cfg-pnr-platforms:
 
 | Block | Fields and behavior |
 |---|---|
-| `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `abc-script`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, and `unresolved-interfaces`. OpenROAD also accepts `strategy` |
+| `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `abc-script`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, `unresolved-interfaces`, and `clock-gating-min-flops`. OpenROAD also accepts `strategy` |
 | `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical` (default `metal3` / `metal2`), `placement.*`, `dont-use-cells`, `pdn-config`, `rcx-rules`, `tracks-tcl`, `layer-rc-tcl`, `tapcell-tcl`, and `platform-tcl`. `corners` maps a corner name to its standard-cell Liberty: one path, or a list for cells split across files. `cell-gds` takes one path or a list. Each path resolves on its own from `root_config.yaml` |
-| `cfg-synth-platforms` | `name`, `pdk`; optional `corner` (the first declared corner by default), `dont-use-cells`, `abc-driving-cell` (the Liberty cell ABC assumes drives every primary input) and `abc-output-load` (femtofarads on every primary output). The two `abc-*` keys are written to `abc.constr` and passed as `abc -constr` on mapped runs; see [Synthesis](../concepts/synthesis.md#give-abc-a-driving-cell-and-output-load) |
+| `cfg-synth-platforms` | `name`, `pdk`; optional `corner` (the first declared corner by default), `dont-use-cells`, `abc-driving-cell` (the Liberty cell ABC assumes drives every primary input), `abc-output-load` (femtofarads on every primary output) and `clock-gating-cell` (`'<cell> <enable>:<clock>:<gated clock>'`, the ICG `clockgate` uses instead of choosing one from the Liberty). The two `abc-*` keys are written to `abc.constr` and passed as `abc -constr` on mapped runs; see [Synthesis](../concepts/synthesis.md#give-abc-a-driving-cell-and-output-load) and [clock gating](../concepts/synthesis.md#gate-enable-flops-with-clock-gating-cells) |
 | `cfg-pnr-platforms` | `name`, `pdk`; optional `corner` or `corners`, `cts-buffer`, `port-buffer`, `cts-sink-clustering` (default `true`), `cts-apply-ndr`, `post-cts-setup-repair` (default `false`), `global-route-hold-repair` (default `false`), `routing-layer-adjustment`, `max-fanout`, `routing-layers.signal` / `.clock`, `placement.*`, and `dont-use-cells`. `corners` is a non-empty list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; it excludes `corner`. See [multi-corner signoff](../concepts/pnr.md#sign-off-at-several-corners) |
-| `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `yosys.abc-script`, `openroad.run`, `openroad.pre-sta-tcl`, and `openroad.repair` settings. `openroad.repair` (default `false`) runs `repair_design` and `repair_timing -setup` before the synthesis STA reports. The built-in default is `standard`. Precedence is per-run override, then effort, then tool config |
+| `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `yosys.abc-script`, `yosys.clock-gating-min-flops`, `openroad.run`, `openroad.pre-sta-tcl`, and `openroad.repair` settings. `openroad.repair` (default `false`) runs `repair_design` and `repair_timing -setup` before the synthesis STA reports. The built-in default is `standard`. Precedence is per-run override, then effort, then tool config |
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
 
@@ -200,6 +201,8 @@ A `placement:` block on a P&R platform overrides its PDK's block field by field:
 For synthesis, `frontend: verilog` is the default. `frontend: slang` requires `plugin-path` or `RTL_BUDDY_SLANG_PLUGIN`; relative plugin paths resolve from the project root. `single-unit` and `best-effort-hierarchy` are slang-only booleans. `best-effort-hierarchy: true` asks yosys-slang to keep module instances as hierarchy instead of inlining them, which a design that relies on `(* keep_hierarchy *)` for mapping needs. See [Synthesis](../concepts/synthesis.md#systemverilog-frontend).
 
 `abc-args` is the argument string of the `abc` command an unmapped `tool: yosys` run adds after `synth`; empty adds none. `abc-script` is the ABC script of a Liberty-mapped run's `abc -liberty` command, on both backends; `default` and `delay` name the built-in presets. Empty selects `delay`, which also omits `&dch -f`, when the run's `synth-args` pass `-extra-map +/choices/<map>`, and otherwise `default`, which omits `dc2` and `&fraig -x`. A script is one line of `;`-separated ABC commands without double quotes, and `{D}` in it takes the SDC delay target. A mapped run ignores `abc-args` and warns. See [Synthesis](../concepts/synthesis.md#choose-the-mapped-run-abc-script).
+
+`clock-gating-min-flops` (default `0`, off) makes a Liberty-mapped run insert integrated clock-gating cells with Yosys `clockgate` after `synth` and `chformal -remove`, before `dfflibmap`, for each set of at least that many rising-edge flops sharing a clock and enable. An unmapped run warns `synth.clock_gating_ignored` and gates nothing. See [Synthesis](../concepts/synthesis.md#gate-enable-flops-with-clock-gating-cells).
 
 In `synth.yaml` overrides, use snake-case keys such as `plugin_path` and `single_unit`. Unknown keys warn and are ignored; a non-mapping override or a wrong `single_unit` type is fatal. The elaboration override key is `yosys` for both Yosys and OpenROAD runs. An OpenROAD run's Yosys stage also reads `tool_overrides.openroad`, with `yosys` winning per key, and takes its tool options from the `yosys` entry of `cfg-synth-tools`, or from the `openroad` entry when there is no `yosys` entry. `strategy` is read only from `openroad`. Keys that no stage reads warn. See [Synthesis](../concepts/synthesis.md#systemverilog-frontend).
 
@@ -731,7 +734,7 @@ syntheses:
 | `lef-paths` / `lib-paths` | Optional lists | Block-specific LEF and Liberty files, appended after platform data |
 | `blocks` | Optional list | Hardened blocks the design instances. Each has `name` (the module), `pnr` (a `harden: true` P&R run), and `pnr-path` (its `pnr.yaml`, relative to `synth.yaml`); all three are required. The abstract's `.lib` and `.lef` are appended to `lib-paths` and `lef-paths`. The model's filelist must still leave the module a blackbox. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
 | `reglvl` | Optional | Regression level |
-| `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `abc_script`, `strategy`, `frontend`, `plugin_path`, `single_unit`, `best_effort_hierarchy`, `static_functions`, `conflicting_drivers`, `unresolved_interfaces` |
+| `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `abc_script`, `strategy`, `frontend`, `plugin_path`, `single_unit`, `best_effort_hierarchy`, `static_functions`, `conflicting_drivers`, `unresolved_interfaces`, `clock_gating_min_flops` |
 | `effort` | Default `standard` | `cfg-synth-efforts` entry. CLI `--effort` wins |
 | `threads` | Default unset (1) | OpenROAD worker threads for the `tool: openroad` timing stage, as in `pnr.yaml`. No effect on Yosys. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |

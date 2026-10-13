@@ -17,6 +17,7 @@ from .synth_yosys import (
     apply_effort,
     clean_block_netlist,
     clean_stat_json,
+    clock_gating_cmds,
     dont_use_args,
     elaboration_defines,
     liberty_args,
@@ -32,6 +33,7 @@ from .synth_yosys import (
     parse_gate_count,
     resolve_abc_constr,
     resolve_abc_period_ps,
+    resolve_clock_gating,
     resolve_dont_use_cells,
     slang_handles_params,
     validate_frontend,
@@ -273,11 +275,19 @@ class OpenRoadSynth:
         # Strip formal cells ($assert/$assume/$cover from unguarded immediate assertions): OpenROAD's structural `read_verilog` rejects them.
         lines.append("chformal -remove")
 
-        if lib_paths:
-            dont_use = dont_use_args(
-                resolve_dont_use_cells(self.synth_cfg, self.root_cfg)
+        dont_use = dont_use_args(resolve_dont_use_cells(self.synth_cfg, self.root_cfg))
+        cell_libs = liberty_args(self._resolve_cell_lib_paths())
+        lines.extend(
+            clock_gating_cmds(
+                resolve_clock_gating(opts, self.synth_cfg, self.root_cfg),
+                cell_libs,
+                dont_use,
+                self.synth_cfg.get_name(),
+                bool(lib_paths),
             )
-            cell_libs = liberty_args(self._resolve_cell_lib_paths())
+        )
+
+        if lib_paths:
             lines.append(f"dfflibmap{dont_use}{cell_libs}")
             abc_script = mapped_abc_script(opts)
             # The SDC's shortest period becomes ABC's `-D`, which `{D}` in the script takes (#788).
@@ -839,7 +849,7 @@ class OpenRoadSynth:
           `synth_args`. `abc-args` is ignored on this backend, so it is not digested.
         - `abc_script`: the stage 1 ABC script (:func:`mapped_abc_script`), and `abc_period_ps`, its
           `-D` delay target (null when the SDC names no clock), plus `abc_constr` when the platform
-          sets an ABC driving cell or output load.
+          sets an ABC driving cell or output load, and `clock_gating` when stage 1 gates clocks.
         - `map`: `resynth` (from `_resynth_cmd`), the sha256 of the effort's pre-STA Tcl (stripped as
           the script writer strips it), and the resolved `lefs`. With the effort's `openroad.repair`
           on, also `repair: true` and the sha256 of the `layer-rc-tcl` it sources; both are absent
@@ -871,6 +881,15 @@ class OpenRoadSynth:
             **(
                 {"abc_constr": constr}
                 if (constr := resolve_abc_constr(self.synth_cfg, self.root_cfg))
+                else {}
+            ),
+            **(
+                {"clock_gating": gating}
+                if (
+                    gating := resolve_clock_gating(
+                        self._resolve_yosys_opts(), self.synth_cfg, self.root_cfg
+                    )
+                )
                 else {}
             ),
             "map": map_options,
