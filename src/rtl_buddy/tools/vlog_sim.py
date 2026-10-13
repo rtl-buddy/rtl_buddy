@@ -1678,7 +1678,7 @@ class VlogSim:
 
     def _get_builder_compile_opts(self) -> list:
         """The builder mode's ``compile-time`` opts, then the suite's ``compile-opts``
-        for this simulator family, variables expanded.
+        for this simulator family and builder mode, variables expanded.
 
         ``${RTL_BUDDY_PROJECT_ROOT}`` names the project root; see
         :func:`expand_compile_opts`. The suite's options come last, so a flag that
@@ -1687,7 +1687,7 @@ class VlogSim:
         opts = list(self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode))
         get_suite_opts = getattr(self.test_cfg, "get_compile_opts", None)
         if get_suite_opts is not None:
-            opts += get_suite_opts(self._get_simulator_family())
+            opts += get_suite_opts(self._get_simulator_family(), self.rtl_builder_mode)
         return expand_compile_opts(opts, getattr(self, "_project_root", None))
 
     def _filter_builder_opts(self, opts: list) -> list:

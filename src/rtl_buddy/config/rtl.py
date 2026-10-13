@@ -16,13 +16,36 @@ def process_opts(opts):
     return re.sub(r"\s+", " ", opts).split(" ")
 
 
-def normalize_compile_opts(value, *, where) -> dict[str, list[str]] | None:
-    """Validate a suite's ``compile-opts`` and return it as ``{family: [token, ...]}``.
+#: The ``compile-opts`` mode-map entry that applies when the compiling mode has none.
+COMPILE_OPTS_DEFAULT_MODE = "default"
+
+#: A family's normalized ``compile-opts``: tokens for every mode, or tokens per builder mode.
+CompileOptsValue = list[str] | dict[str, list[str]]
+
+
+def _compile_opts_tokens(opts, *, where, key) -> list[str]:
+    """Return one ``compile-opts`` string or list as tokens; raises FatalRtlBuddyError naming ``key``."""
+    if opts is None:
+        return []
+    if isinstance(opts, str):
+        return [t for t in process_opts(opts.strip()) if t]
+    if isinstance(opts, list) and all(isinstance(t, str) for t in opts):
+        return list(opts)
+    raise FatalRtlBuddyError(
+        f"{where}: compile-opts.{key} must be a string or a list of strings"
+    )
+
+
+def normalize_compile_opts(value, *, where) -> dict[str, CompileOptsValue] | None:
+    """Validate a suite's ``compile-opts`` and return it as ``{family: tokens}``.
 
     ``value`` maps a simulator family (``verilator``, ``vcs``, ``icarus`` or a builder's
     ``simulator-family``) to options appended after the builder mode's ``compile-time``
     for that family only. A string is split on whitespace as ``compile-time`` is; a
-    list is taken token by token. Raises FatalRtlBuddyError naming ``where``.
+    list is taken token by token; both apply in every builder mode. A map keyed by
+    builder mode, with an optional ``default`` entry, holds a string or list per mode
+    and normalizes to ``{mode: [token, ...]}``; :func:`select_compile_opts` picks the
+    entry. Raises FatalRtlBuddyError naming ``where``.
     """
     if value is None:
         return None
@@ -31,24 +54,51 @@ def normalize_compile_opts(value, *, where) -> dict[str, list[str]] | None:
             f"{where}: compile-opts must map a simulator family to options, "
             f"got {type(value).__name__}"
         )
-    normalized: dict[str, list[str]] = {}
+    normalized: dict[str, CompileOptsValue] = {}
     for family, opts in value.items():
         if not isinstance(family, str) or not family.strip():
             raise FatalRtlBuddyError(
                 f"{where}: compile-opts keys must be simulator family names, got {family!r}"
             )
-        if opts is None:
-            tokens: list[str] = []
-        elif isinstance(opts, str):
-            tokens = [t for t in process_opts(opts.strip()) if t]
-        elif isinstance(opts, list) and all(isinstance(t, str) for t in opts):
-            tokens = list(opts)
+        if isinstance(opts, dict):
+            by_mode: dict[str, list[str]] = {}
+            for mode, mode_opts in opts.items():
+                # Mode names are the builder-opts keys, matched exactly as --builder-mode is.
+                if not isinstance(mode, str) or not mode.strip():
+                    raise FatalRtlBuddyError(
+                        f"{where}: compile-opts.{family} keys must be builder mode "
+                        f"names or `{COMPILE_OPTS_DEFAULT_MODE}`, got {mode!r}"
+                    )
+                by_mode[mode] = _compile_opts_tokens(
+                    mode_opts, where=where, key=f"{family}.{mode}"
+                )
+            normalized[family.strip().lower()] = by_mode
         else:
-            raise FatalRtlBuddyError(
-                f"{where}: compile-opts.{family} must be a string or a list of strings"
+            normalized[family.strip().lower()] = _compile_opts_tokens(
+                opts, where=where, key=family
             )
-        normalized[family.strip().lower()] = tokens
     return normalized
+
+
+def select_compile_opts(
+    compile_opts: dict[str, CompileOptsValue] | None, family: str, mode: str | None
+) -> list[str]:
+    """Return the ``compile-opts`` tokens for simulator ``family`` compiling in builder ``mode``.
+
+    A string or list applies in every mode. A mode map selects ``mode``'s entry, then
+    ``default``, then no options; an entry present but empty means no options. Empty
+    when ``compile_opts`` names no ``family``.
+    """
+    if not compile_opts:
+        return []
+    opts = compile_opts.get(family.lower())
+    if opts is None:
+        return []
+    if isinstance(opts, dict):
+        if mode is not None and mode in opts:
+            return list(opts[mode])
+        return list(opts.get(COMPILE_OPTS_DEFAULT_MODE, []))
+    return list(opts)
 
 
 #: Set by rtl_buddy, not read from the caller's environment, when ``compile-time`` tokens are expanded.
