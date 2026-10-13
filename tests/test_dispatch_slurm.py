@@ -3084,6 +3084,56 @@ def test_the_build_job_name_is_derived_from_the_suite_directory(monkeypatch):
     assert name == slurm_module.build_job_name(_build_spec())
 
 
+def test_serialise_checkouts_names_jobs_by_the_shared_cache_directory():
+    """Two checkouts of one suite get one name when they share a cache directory (#821).
+
+    Without a serialise key each checkout's suite path names its jobs, so `singleton`
+    never orders them; with one, both resolve to the cache directory's name. The two
+    phases keep their own prefixes, since one name across phases deadlocks overlapping runs.
+    """
+    key = "/cache/verif__blk"
+    a = _build_spec(suite_dir="/ci/run-1/verif/blk")
+    b = _build_spec(suite_dir="/ci/run-2/verif/blk")
+    assert slurm_module.build_job_name(a) != slurm_module.build_job_name(b)
+    a_keyed = _build_spec(suite_dir="/ci/run-1/verif/blk", serialise_key=key)
+    b_keyed = _build_spec(suite_dir="/ci/run-2/verif/blk", serialise_key=key)
+    assert slurm_module.build_job_name(a_keyed) == slurm_module.build_job_name(b_keyed)
+    assert slurm_module.build_job_name(a_keyed).startswith("rb-build-")
+    verilate = slurm_module.build_job_name(
+        _build_spec(
+            suite_dir="/ci/run-2/verif/blk", serialise_key=key, phase="verilate"
+        )
+    )
+    assert verilate.startswith("rb-verilate-")
+    assert (
+        verilate.split("-")[-1] == slurm_module.build_job_name(b_keyed).split("-")[-1]
+    )
+    # Another suite in the same cache keeps its own name.
+    other = _build_spec(
+        suite_dir="/ci/run-1/verif/blk2", serialise_key="/cache/verif__blk2"
+    )
+    assert slurm_module.build_job_name(other) != slurm_module.build_job_name(a_keyed)
+
+
+def test_a_serialised_build_job_is_submitted_under_the_shared_name_with_singleton(
+    monkeypatch,
+):
+    """The shared name is the one sbatch sees, beside `--dependency=singleton`."""
+    calls = []
+    monkeypatch.setattr(
+        slurm_module.subprocess, "run", _fake_run(calls, _dedup_results(""))
+    )
+    monkeypatch.delenv("SBATCH_DEPENDENCY", raising=False)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    spec = _build_spec(
+        suite_dir="/ci/run-2/verif/blk", serialise_key="/cache/verif__blk"
+    )
+    backend.submit_build(spec)
+    sbatch = next(cmd for cmd in calls if cmd[0] == "sbatch")
+    assert f"--job-name={slurm_module.build_job_name(spec)}" in sbatch
+    assert any(arg.startswith("--dependency=") and "singleton" in arg for arg in sbatch)
+
+
 def test_a_regression_and_a_single_test_share_one_build_job_name():
     """`rb regression` over a suite and `rb test alpha` inside it compile the same key
     into the same `obj_dir_<key>`, so they share one job name and dedup. A name

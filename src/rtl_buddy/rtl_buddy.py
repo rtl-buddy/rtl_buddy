@@ -99,6 +99,7 @@ from .config.dispatch import (
     compile_parallel,
     compile_parallel_origin,
     compile_resource_origins,
+    compile_serialise_checkouts,
     compile_split_verilate,
     aggregate_compile_resources,
     mode_governed_fields,
@@ -229,6 +230,7 @@ from .tools.coverage import CoverageReporter
 from .tools.artifact_paths import (
     RESULT_JSON_NAME,
     run_artifact_root,
+    shared_build_namespace,
     test_artifact_dir,
     validate_run_tag,
 )
@@ -1314,6 +1316,24 @@ class RtlBuddy:
             )
         # A value was given but resolved to nothing: a disable, not an absence.
         return root, root is None and raw is not None
+
+    def _build_serialise_key(self, dispatch_cfg, suite_dir) -> str | None:
+        """The shared-build cache directory that names this suite's build jobs, or ``None``.
+
+        Set under ``cfg-dispatch.compile.serialise-checkouts`` with a cache root in
+        force: ``<real cache root>/<suite namespace>``, the directory every checkout of
+        the suite builds into, so their Slurm jobs share names and queue on `singleton`
+        (#821). ``None`` keeps the per-checkout name.
+        """
+        if not compile_serialise_checkouts(dispatch_cfg):
+            return None
+        root, _ = self._resolve_shared_build_root()
+        if root is None:
+            return None
+        project_root = self.root_cfg.get_project_rootdir()
+        return os.path.join(
+            os.path.realpath(root), shared_build_namespace(suite_dir, project_root)
+        )
 
     @property
     def shared_build_root_for_jobs(self) -> str | None:
@@ -6310,6 +6330,7 @@ class RtlBuddy:
             # directory, so a forced recompile costs one compile, not one per element.
             rebuild=self.rebuild,
             shared_build_root=self.shared_build_root_for_jobs,
+            serialise_key=self._build_serialise_key(dispatch_cfg, suite_dir),
             reg_level=reg_level,
             start_level=start_level,
             builder_mode=self.rtl_builder_mode,

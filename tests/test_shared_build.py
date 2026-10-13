@@ -6842,6 +6842,45 @@ def test_an_explicit_disable_reaches_the_dispatched_jobs(monkeypatch):
     assert app.shared_build_root_for_jobs is None
 
 
+def test_the_serialise_key_is_the_suites_cache_directory(tmp_path, monkeypatch):
+    """Under serialise-checkouts the head keys a suite's build jobs by `<cache>/<namespace>` (#821).
+
+    Two checkouts resolve the same key, the directory both build into. With the option
+    off, or with no cache root, no key is set and job names stay per checkout.
+    """
+    from rtl_buddy.config.dispatch import DispatchCompileFile, DispatchConfigFile
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    cache = tmp_path / "cache"
+    on = DispatchConfigFile(
+        compile=DispatchCompileFile(serialise_checkouts=True)
+    ).initialise()
+    off = DispatchConfigFile().initialise()
+    monkeypatch.delenv("RTL_BUDDY_SHARED_BUILD_ROOT", raising=False)
+
+    def _app(checkout, cache_root):
+        class _Root:
+            def get_project_rootdir(self):
+                return str(checkout)
+
+            def get_shared_build_root(self):
+                return None if cache_root is None else str(cache_root)
+
+        app = RtlBuddy(name="test_serialise_key")
+        app.root_cfg = _Root()
+        return app
+
+    keys = []
+    for checkout in (tmp_path / "wt-a", tmp_path / "wt-b"):
+        suite = checkout / "verif" / "blk"
+        suite.mkdir(parents=True)
+        app = _app(checkout, cache)
+        keys.append(app._build_serialise_key(on, str(suite)))
+        assert app._build_serialise_key(off, str(suite)) is None
+        assert _app(checkout, None)._build_serialise_key(on, str(suite)) is None
+    assert keys[0] == keys[1] == os.path.join(os.path.realpath(cache), "verif__blk")
+
+
 def test_a_job_given_an_empty_shared_build_root_keeps_the_cache_off(monkeypatch):
     """An empty `--shared-build-root` in a job overrides the environment and the config."""
     from rtl_buddy.rtl_buddy import RtlBuddy
