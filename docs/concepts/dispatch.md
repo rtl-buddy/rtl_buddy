@@ -210,7 +210,7 @@ Verilation is single-threaded and the C++ build is not, so one job wastes cores 
 Simulation arrays still wait on the build job. `compile.verilate.cpus` defaults to 2; its `mem` and `time` inherit the resolved `compile` values, and `compile.parallel` applies to each phase.
 
 - If the verilate output is missing or stale, or the Verilator lacks `--no-verilate`, the build job verilates that build itself and warns `compile.build_phase_fallback`.
-- With a `shared-build-root` shared by several checkouts, only a finished, stamped build is reused across checkouts. Verilate output from another checkout whose build job has not finished is never built on: the verilate job verilates again (`compile.verilate_marker_foreign`) and a build job that finds it compiles in full (`marker-foreign`).
+- With a `shared-build-root` shared by several checkouts, only a finished, stamped build is reused across checkouts. Verilate output from another checkout whose build job has not finished is never built on. The verilate job defers to it (`compile.verilate_deferred`) without verilating or overwriting it. The build job then reuses that checkout's stamp if it has finished by then, and otherwise compiles in full (`marker-foreign`). However many checkouts race on one key, the key is verilated at most twice, and no job waits for another checkout.
 - Set `compile.split-verilate: false` in `cfg-dispatch.compile` or a suite's `compile:` block to run one build job instead.
 
 An `OUT_OF_MEMORY` on a large design is normally a `compile.verilate.mem` edit; `compile.mem` then only needs one compiler process's memory. Size the build job's `cpus` at the Verilator `-j` or `--build-jobs` value in `builder-opts.<mode>.compile-time` times `compile.parallel`.

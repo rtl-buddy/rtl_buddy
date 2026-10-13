@@ -7408,45 +7408,132 @@ def test_a_build_job_never_makes_over_another_checkouts_verilation(
     assert build_a.last_compile["reused"] is True
 
 
-def test_a_verilate_job_re_verilates_over_another_checkouts_pending_split_build(
-    tmp_path, monkeypatch, caplog
+def _front_ends(calls):
+    """The fake builder calls that ran Verilator's front end (everything but a `--no-verilate` make)."""
+    return [call for call in calls if "--no-verilate" not in call["cmd"]]
+
+
+@pytest.mark.parametrize(
+    ("checkouts", "build_order", "front_ends"),
+    [
+        # The verilating checkout's build job runs first: make only, everyone reuses.
+        (2, [0, 1], 1),
+        (3, [0, 1, 2], 1),
+        (3, [0, 2, 1], 1),
+        # A deferring checkout's build job wins the lock: one full compile, everyone reuses.
+        (2, [1, 0], 2),
+        (3, [1, 0, 2], 2),
+        (3, [2, 1, 0], 2),
+        (5, [4, 3, 2, 1, 0], 2),
+    ],
+)
+def test_racing_checkouts_defer_to_the_pending_split_build(
+    tmp_path, monkeypatch, caplog, checkouts, build_order, front_ends
 ):
-    """B's verilate job does not count A's verilation as its own; whichever build job runs first stamps a build that names only its own checkout, and the other reuses it."""
-    cache, wt_a, wt_b = _two_cache_checkouts(tmp_path)
+    """N checkouts reach their verilate jobs while checkout 0's build job is still pending.
+
+    Each later verilate job defers to checkout 0's verilation: no front end, marker
+    untouched. Whatever order the build jobs then take the lock in, the key is verilated
+    at most twice, compiled once, and every stamp names only the checkout that wrote it.
+    """
+    cache = tmp_path / "cache"
+    roots = [tmp_path / f"wt-{index}" for index in range(checkouts)]
+    for root in roots:
+        _write_checkout(root)
     calls = []
     _install_checkout_aware_split_builder(monkeypatch, calls)
 
+    verilate_0 = _cache_split_sim(
+        roots[0], monkeypatch, cache_root=cache, phase="verilate"
+    )
+    assert verilate_0.compile() == 0
+    shared = _shared_dir_of(verilate_0)
+    owner = os.path.realpath(roots[0])
+
+    for root in roots[1:]:
+        verilate = _cache_split_sim(
+            root, monkeypatch, cache_root=cache, phase="verilate"
+        )
+        assert _shared_dir_of(verilate) == shared
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            assert verilate.compile() == 0
+        assert "compile.verilate_deferred" in [
+            record.__dict__.get("rtl_event") for record in caplog.records
+        ]
+        assert verilate.last_compile["reused"] is True
+        # Deferring never overwrites the pending checkout's marker.
+        assert json.loads((shared / _MARKER).read_text())["root"] == owner
+    assert len(calls) == 1, "a deferring verilate job ran the front end"
+
+    stamp_path = shared / vlog_sim_module.SHARED_BUILD_STAMP_NAME
+    first, *rest = build_order
+    build = _cache_split_sim(roots[first], monkeypatch, cache_root=cache, phase="build")
+    assert build.compile() == 0
+    assert build.last_compile["reused"] is False
+    # The owner makes over its own verilation; anyone else compiles in full.
+    assert ("--no-verilate" in calls[-1]["cmd"]) == (first == 0)
+    stored = json.loads(stamp_path.read_text())
+    assert stored["root"] == os.path.realpath(roots[first])
+    for index, root in enumerate(roots):
+        if index != first:
+            _assert_stamp_names_no_path_in(stamp_path, root)
+
+    count = len(calls)
+    for index in rest:
+        build = _cache_split_sim(
+            roots[index], monkeypatch, cache_root=cache, phase="build"
+        )
+        assert build.compile() == 0
+        assert build.last_compile["reused"] is True
+    assert len(calls) == count, "a build job compiled after the key was stamped"
+    assert len(_front_ends(calls)) == front_ends
+
+
+def test_a_deferred_checkout_builds_alone_when_the_pending_one_never_finishes(
+    tmp_path, monkeypatch
+):
+    """Checkout A verilates and is then cancelled: B defers, B's build job compiles in full and stamps, and nothing waits on A."""
+    cache, wt_a, wt_b = _two_cache_checkouts(tmp_path)
+    calls = []
+    _install_checkout_aware_split_builder(monkeypatch, calls)
+    verilate_a = _cache_split_sim(wt_a, monkeypatch, cache_root=cache, phase="verilate")
+    assert verilate_a.compile() == 0
+    shared = _shared_dir_of(verilate_a)
+
     assert (
         _cache_split_sim(
-            wt_a, monkeypatch, cache_root=cache, phase="verilate"
+            wt_b, monkeypatch, cache_root=cache, phase="verilate"
         ).compile()
         == 0
     )
-    verilate_b = _cache_split_sim(wt_b, monkeypatch, cache_root=cache, phase="verilate")
-    shared = _shared_dir_of(verilate_b)
-    with caplog.at_level(logging.INFO):
-        assert verilate_b.compile() == 0
-    assert len(calls) == 2, "B adopted A's verilation"
-    assert verilate_b.last_compile["reused"] is False
-    assert "compile.verilate_marker_foreign" in [
-        record.__dict__.get("rtl_event") for record in caplog.records
-    ]
-    assert json.loads((shared / _MARKER).read_text())["root"] == os.path.realpath(wt_b)
-
-    # A's build job runs before B's: the marker is B's now, so A compiles in full.
-    build_a = _cache_split_sim(wt_a, monkeypatch, cache_root=cache, phase="build")
-    assert build_a.compile() == 0
-    assert "--no-verilate" not in calls[-1]["cmd"]
-    _assert_stamp_names_no_path_in(
-        shared / vlog_sim_module.SHARED_BUILD_STAMP_NAME, wt_b
-    )
-
-    # B's build job reuses A's completed stamp.
     build_b = _cache_split_sim(wt_b, monkeypatch, cache_root=cache, phase="build")
-    count = len(calls)
     assert build_b.compile() == 0
+    assert "--no-verilate" not in calls[-1]["cmd"]
+    assert len(calls) == 2
+    stored = _assert_stamp_names_no_path_in(
+        shared / vlog_sim_module.SHARED_BUILD_STAMP_NAME, wt_a
+    )
+    assert stored["root"] == os.path.realpath(wt_b)
+    # The full compile retired A's marker, so a later checkout neither defers nor makes over it.
+    assert not (shared / _MARKER).exists()
+
+
+def test_a_deferring_verilate_job_still_reuses_a_finished_stamp(tmp_path, monkeypatch):
+    """Once any checkout has stamped the key, a later verilate job reuses the stamp before looking at a marker."""
+    cache, wt_a, wt_b = _two_cache_checkouts(tmp_path)
+    calls = []
+    _install_checkout_aware_split_builder(monkeypatch, calls)
+    for phase in ("verilate", "build"):
+        assert (
+            _cache_split_sim(wt_a, monkeypatch, cache_root=cache, phase=phase).compile()
+            == 0
+        )
+    count = len(calls)
+    verilate_b = _cache_split_sim(wt_b, monkeypatch, cache_root=cache, phase="verilate")
+    assert verilate_b.compile() == 0
+    assert verilate_b.last_compile["reused"] is True
     assert len(calls) == count
-    assert build_b.last_compile["reused"] is True
 
 
 def test_a_checkouts_own_split_build_still_skips_the_front_end_in_cache_mode(

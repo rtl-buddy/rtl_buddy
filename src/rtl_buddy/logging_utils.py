@@ -1029,11 +1029,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{target or 'compile'}: reused {shared}shared build "
                 f"{_build_location(fields)} ({built}); nothing compiled"
             )
-        case "compile.verilate_marker_foreign":
+        case "compile.verilate_deferred":
             return (
                 f"{target or 'compile'}: {_build_location(fields)} holds "
                 f"another checkout's verilation ({fields.get('marker_root')}), "
-                "still waiting for its build; verilating for this checkout"
+                "still waiting for its build; not verilating over it. The build "
+                "job reuses that build if it has finished, else compiles in full"
             )
         case "compile.verilate_reused":
             # Verilate-job counterpart of build_reused: there is no stamp yet, so the

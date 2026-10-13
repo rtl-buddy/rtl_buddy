@@ -3459,20 +3459,23 @@ class VlogSim:
         if not self._verilate_marker_is_ok(marker, fingerprint):
             return None
         if self._verilate_marker_is_foreign(marker):
-            # Another checkout's split build is in progress here. Verilate for this
-            # checkout under the lock instead; that checkout's build job then sees a
-            # foreign marker and compiles in full, or reuses this checkout's stamp.
+            # Another checkout's split build is in progress here. Defer: leave its
+            # verilation and marker alone, so its build job keeps the make-only path
+            # and no further checkout verilates on top. This checkout's build job then
+            # reuses whichever stamp exists, or compiles in full (`marker-foreign`), so
+            # N racing checkouts cost at most two front ends and never wait on each other.
             log_event(
                 logger,
                 logging.INFO,
-                "compile.verilate_marker_foreign",
+                "compile.verilate_deferred",
                 test=self.test_name,
                 marker_root=marker.get("root"),
                 **_build_dir_fields(
                     stamp_dir, shared=self._shared_build_dir is not None
                 ),
             )
-            return None
+            self._record_compile(duration_sec=0.0, reused=True)
+            return 0
         log_event(
             logger,
             logging.INFO,
@@ -3495,7 +3498,9 @@ class VlogSim:
           since re-running would fail again and overwrite the errors.
         - No marker, or one from other inputs: verilate and build here.
         - A marker another checkout wrote (:meth:`_verilate_marker_is_foreign`):
-          verilate and build here, since that checkout's output names its paths.
+          verilate and build here, since that checkout's output names its paths. This
+          checkout's verilate job deferred to it (:meth:`_settle_verilate_phase`), so
+          the stamp check before this has already ruled out reusing its finished build.
         - A Verilator without ``--no-verilate``: the same full compile, reported
           differently.
         """
