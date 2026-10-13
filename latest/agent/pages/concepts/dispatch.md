@@ -113,6 +113,8 @@ cfg-dispatch:
       cov: {mem: 8G}
 ```
 
+The raw merge runs as many `verilator_coverage --write` processes at once as the job has `cpus`, fewer when `mem` is set and would not fit them at about eight times the largest raw database each (see [Merge and export results](coverage.md#merge-and-export-results)). With the default single CPU it is one merge, as before.
+
 The job writes `cov_dir/` under the head's command root, logs to `.dispatch/coverage/` under the artefact root, and is named `rb:coverage`. If it fails, see [Read a failed merge](coverage.md#read-a-failed-merge).
 
 Once accepted, the job is recorded in `.dispatch/coverage/run-<pid>-<token>.json`, like a fleet. If the head dies while waiting on it, the next run finds it there (see [Interrupted runs](#interrupted-runs-warn-cancel-adopt)).
@@ -210,6 +212,8 @@ Verilation is single-threaded and the C++ build is not, so one job wastes cores 
 Simulation arrays still wait on the build job. `compile.verilate.cpus` defaults to 2; its `mem` and `time` inherit the resolved `compile` values, and `compile.parallel` applies to each phase.
 
 - If the verilate output is missing or stale, or the Verilator lacks `--no-verilate`, the build job verilates that build itself and warns `compile.build_phase_fallback`.
+- With a `shared-build-root` shared by several checkouts, only a finished, stamped build is reused across checkouts. Verilate output from another checkout whose build job has not finished is never built on. The verilate job defers to it (`compile.verilate_deferred`) without verilating or overwriting it. The build job then reuses that checkout's stamp if it has finished by then, and otherwise compiles in full (`marker-foreign`). However many checkouts race on one key, the key is verilated at most twice, and no job waits for another checkout.
+- To have checkouts queue instead of race, set `compile.serialise-checkouts: true` in `cfg-dispatch.compile`. With a cache root in force, a suite's verilate and build jobs are then named after its cache directory (`<cache root>/<suite namespace>`) rather than the checkout. Every checkout sharing the cache submits under the same names, so `--dependency=singleton` holds a later checkout's jobs in the queue, with no allocation, until the earlier checkout's jobs end. The later build job then reuses the earlier stamp: one verilation and one C++ build per key. If the earlier checkout fails or is cancelled, its jobs end and the later one builds for itself. It is off by default because the name covers the whole suite: a checkout with different sources queues behind an unrelated build of the same suite. `singleton` only orders jobs of one user, so checkouts run by different users still race. The setting does nothing without a cache root or off Slurm.
 - Set `compile.split-verilate: false` in `cfg-dispatch.compile` or a suite's `compile:` block to run one build job instead.
 
 An `OUT_OF_MEMORY` on a large design is normally a `compile.verilate.mem` edit; `compile.mem` then only needs one compiler process's memory. Size the build job's `cpus` at the Verilator `-j` or `--build-jobs` value in `builder-opts.<mode>.compile-time` times `compile.parallel`.
@@ -412,7 +416,7 @@ A test whose retries ran under different cpu requests gets no `cpus` row (`right
 - **`build_job.group_failure_adoption_declined`:** a config shares a build whose first compile failed, but its inputs differ, the compiler was killed by a signal, or the failure may be transient (a license wait or an out-of-memory signature in the transcript), so it compiles again. A hook that rewrites a listed input per test causes the first; for an out-of-memory failure, raise `compile.mem` or lower `compile.parallel`.
 - **`compile.build_stamp_rejected`, `compile.stamp_write_failed`, `compile.prebuilt_stamp_invalid`:** see [Recover when a gated job cannot use the build](#recover-when-a-gated-job-cannot-use-the-build).
 - **`dispatch.binary_mismatch`:** runs of one build directory did not all use the same executable, because one run rebuilt it while others used it. Results are scored as they ran; re-run to confirm.
-- **`compile.build_phase_fallback`** (`marker-missing`, `marker-stale`, `no-verilate-unsupported`): the build job verilated for itself. The result is correct but unsplit.
+- **`compile.build_phase_fallback`** (`marker-missing`, `marker-stale`, `marker-foreign`, `no-verilate-unsupported`): the build job verilated for itself. The result is correct but unsplit.
 - **`compile.verilate_failed`:** verilation failed; the build job reports it per test.
 - **`compile.verilate_marker_write_failed`:** the verilate output could not be recorded, so the build job compiles that build in full.
 - **`compile.license_queued`:** a VCS build waited for a license. Add `compile.time` headroom or lower `parallel`.

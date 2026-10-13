@@ -934,7 +934,7 @@
       "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/pages/concepts/hub.md"
     },
     {
-      "description": "Configure and run mutation campaigns with FPV or simulation kill oracles, scoped files, budgets, and machine-readable reports.",
+      "description": "Configure and run mutation campaigns with FPV or simulation kill oracles, curated patch mutants, scoped files, budgets, and machine-readable reports.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/mut/",
       "sections": [
         {
@@ -954,6 +954,12 @@
           "slug": "choose-operators",
           "title": "Choose operators",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/mut/choose-operators.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/mut/#add-curated-mutants",
+          "slug": "add-curated-mutants",
+          "title": "Add curated mutants",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/mut/add-curated-mutants.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/mut/#scope-a-hierarchical-campaign",
@@ -1722,6 +1728,12 @@
           "slug": "choose-the-mapped-run-abc-script",
           "title": "Choose the mapped-run ABC script",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/synthesis/choose-the-mapped-run-abc-script.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/synthesis/#gate-enable-flops-with-clock-gating-cells",
+          "slug": "gate-enable-flops-with-clock-gating-cells",
+          "title": "Gate enable flops with clock-gating cells",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/synthesis/gate-enable-flops-with-clock-gating-cells.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/synthesis/#synthesize-hard-macros",

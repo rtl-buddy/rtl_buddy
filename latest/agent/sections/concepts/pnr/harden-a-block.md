@@ -17,3 +17,22 @@ runs:
 - `buffer-ports` is part of the block's configuration only when on, and `port-buffer` only when it is set and ports are buffered, so an abstract hardened by an rtl_buddy without it is stale (`config changed (buffer_ports)`) until the block is re-hardened, and one hardened with `buffer-ports: false` is not.
 - An abstract carries one corner's timing model, so `harden` on a multi-corner platform is refused before OpenROAD starts.
 - The model has timing arcs only, so a parent's `rb power` sees the block as drawing 0 W. Run `rb power` on the block itself.
+
+### Choose the abstract's obstruction style
+
+By default the abstract LEF is written with `write_abstract_lef -bloat_occupied_layers`: every layer the block uses is an obstruction over its whole footprint. A block with supply straps on met4 then blocks met4 everywhere, and a parent can cross it only on met5. `abstract:` on the hardened run chooses otherwise:
+
+```yaml
+runs:
+  - name: alu_block_pnr
+    harden: true
+    abstract:
+      bloat: occupied            # default; or a number, OpenROAD's -bloat_factor
+      feedthrough-layers: [met4] # these layers get the block's real shapes
+```
+
+- `bloat: <number>` writes `-bloat_factor <number>` instead: the block's shapes grown by that factor, so a parent can route between them on every layer. `0` writes the real shapes.
+- `feedthrough-layers` keeps the `bloat` style on every other layer and writes the listed ones with the block's real shapes as obstructions. rtl_buddy writes a second LEF with `-bloat_factor 0` and splices its obstructions on those layers into `<top>.lef`. A listed layer the block does not use has no obstruction; one that appears in neither LEF, likely a misspelling, warns `pnr.abstract_feedthrough_layers_unused`.
+- `abstract:` needs `harden: true`.
+- It is part of the block's configuration only when it differs from the default, so abstracts hardened before it existed stay current, and changing it makes the abstract stale (`config changed (abstract)`) until the block is re-hardened. A hand-edited LEF is still stale.
+- With fewer obstructions a parent's router can route over the block. Check the parent's DRC and the block's pins and straps after changing the style.

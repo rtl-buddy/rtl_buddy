@@ -20,4 +20,6 @@ rb -M cov regression --coverage-coverview --coverage-per-test
 rb -M cov randtest basic 50 --coverage-merge
 ```
 
+`verilator_coverage` is single-threaded, so a raw merge of many tests runs in parallel shards: the databases are split into contiguous groups of at least 16, each group is merged into a partial database in a hidden directory under `cov_dir/`, and the partials are merged into the result, which is the same database. In the head it uses up to 8 of the host's CPUs; a [dispatched tail](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/dispatch/#run-the-coverage-tail-as-a-job) uses its reservation. Each process needs roughly as much memory as one merge over all inputs, and `merge-timeout` bounds the whole merge.
+
 HTML needs `use-lcov: true` and `genhtml` (diagnose with `rb tool-check --explain lcov`) and is written to `coverage_merge.html` under the command root. Coverview is an archive export for CI or handoff and needs the external `info-process` and compatible Coverview tooling. For interactive inspection use `rb cov` or the hub. See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/) for all options.

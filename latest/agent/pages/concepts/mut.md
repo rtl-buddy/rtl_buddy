@@ -1,10 +1,10 @@
 ---
-description: Configure and run mutation campaigns with FPV or simulation kill oracles, scoped files, budgets, and machine-readable reports.
+description: Configure and run mutation campaigns with FPV or simulation kill oracles, curated patch mutants, scoped files, budgets, and machine-readable reports.
 ---
 
 # Mutation testing
 
-`rb mut` injects small SystemVerilog changes (mutants) and measures whether your configured verification catches them. Use it to find holes in a testbench or property set. It needs `rtl-buddy-xeno[verible,slang] >= 0.1.0`; without a compatible engine it exits with an installation hint.
+`rb mut` injects small SystemVerilog changes (mutants) and measures whether your configured verification catches them. Use it to find holes in a testbench or property set. Generated mutants need `rtl-buddy-xeno[verible,slang] >= 0.1.0`; without a compatible engine a campaign with `operators` exits with an installation hint. A campaign of [user mutants](#add-curated-mutants) only needs `git`.
 
 ```bash
 uv add "rtl_buddy[mut]"
@@ -65,7 +65,27 @@ Simulation enables Verilator assertions by default; see [Assertion-based verific
 | `assign_drop` | Drop an assignment |
 | `port_binding_swap` | Swap two port bindings |
 
-An empty operator list, or an operator the installed engine does not support, is fatal.
+An operator the installed engine does not support is fatal. `operators` may be empty or omitted when `mutants` is set; a campaign with neither is fatal.
+
+## Add curated mutants
+
+`mutants` lists hand-written faults the operators cannot express, such as a flipped product bit or an off-by-one index. Each entry is a unified diff, scored like a generated mutant: in its own copy of the model tree, against the same baseline and kill oracles, with one entry in the report.
+
+```yaml
+operators: []
+mutants:
+  - name: alu_prod_bit2
+    patch: mutants/alu_prod_bit2.patch
+  - name: alu_lane_swap
+    patch: mutants/alu_lane_swap.patch
+    strip: 1
+```
+
+- `patch` is relative to `mut.yaml`; a missing file is fatal at load.
+- Paths inside the diff are relative to the model directory, the one containing `models.yaml`. `strip` (default 1) removes leading path components, as `git apply -p<strip>`; the default matches the `a/` and `b/` prefixes of `git diff`. Make a patch from the model directory with `git diff --relative`.
+- The diff is applied with `git apply`. A diff that no longer applies, for example after an RTL edit moved its context, makes the mutant `ERRORED`, with git's message in the mutation column and a `mut_runner.user_mutant_not_applied` warning. A diff that would write outside the model tree also errors.
+- `name` must be unique and contain only letters, digits, underscore, dot or hyphen. The mutant id is `user_<name>` and its operator is `user`.
+- User mutants run after the baseline and before generated mutants. The budget and `per_file` counts cover generated mutants only; `scope` needs a non-empty `operators`.
 
 ## Scope a hierarchical campaign
 
@@ -87,7 +107,7 @@ rb mut run -c mut/demo/mut.yaml
 rb mut score mut/demo/artefacts/mut/demo_top/mut_report.json
 ```
 
-- `list` shows candidate sites without mutating.
+- `list` shows candidate sites for `operators` without mutating. User mutants have no sites.
 - `run` uses the `debug` builder mode by default, evaluates the baseline and the mutants, then writes the report.
 - `score` recomputes the score from an existing report without rerunning verification.
 
@@ -99,7 +119,7 @@ Each mutant has one outcome:
 
 - `KILLED`: an oracle caught the change.
 - `SURVIVED`: every oracle passed. Inspect these verification gaps first.
-- `ERRORED`: the mutant did not elaborate or compile. It is excluded from scoring.
+- `ERRORED`: the mutant did not elaborate or compile, or the proof ended without a verdict (an sby error, a timeout, or an `UNKNOWN` other than a failed induction step). It is excluded from scoring.
 
 ```text
 mutation score = killed / (killed + survived)
@@ -107,7 +127,7 @@ mutation score = killed / (killed + survived)
 
 The score is `n/a` when nothing is scorable. Surviving mutants whose operator predicted observable signal changes are also reported as predicted-observable misses.
 
-The report is `<mut.yaml dir>/artefacts/mut/<campaign>/mut_report.json`, with the baseline verdict, totals, score, and each mutant's operator, outcome, verdict, diff summary and predicted signals. Under `--machine`, `mut list` returns `sites`; `mut run` and `mut score` return `report`.
+The report is `<mut.yaml dir>/artefacts/mut/<campaign>/mut_report.json`, with the baseline verdict, totals, score, and each mutant's operator, outcome, verdict, diff summary and predicted signals. A user mutant's `file` lists the model-relative files its diff touched. Under `--machine`, `mut list` returns `sites`; `mut run` and `mut score` return `report`.
 
 ## Exit codes
 

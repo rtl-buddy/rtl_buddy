@@ -1,6 +1,6 @@
 ## tests.yaml
 
-Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default, optional top-level `compile-opts` adds compile options for one simulator family, and optional top-level `compile` sizes this suite's dispatched build jobs.
+Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default, optional top-level `compile-opts` adds compile options for one simulator family, optional top-level `filelist-modes` adds compile inputs for one builder mode, and optional top-level `compile` sizes this suite's dispatched build jobs.
 
 ```yaml
 rtl-buddy-filetype: test_config
@@ -30,7 +30,8 @@ Top-level fields:
 | `testbenches` | Required | Testbench definitions |
 | `tests` | Required | Test definitions |
 | `builder` | Optional | Suite default builder name |
-| `compile-opts` | Optional | Compile options per simulator family, appended after the builder mode's `compile-time`. See below |
+| `compile-opts` | Optional | Compile options per simulator family, optionally per builder mode, appended after the builder mode's `compile-time`. See below |
+| `filelist-modes` | Optional | Filelist entries per builder mode, compiled for every testbench in that mode only. See [Per-mode compile inputs](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#per-mode-compile-inputs) |
 | `compile` | Optional | This suite's whole-job dispatch compile reservation: `cpus`, `mem`, quoted `time`, `parallel`, `split-verilate`, a `verilate` sub-block, and a [`modes`](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#per-mode-reservations) sub-block. See below |
 | `preproc-sets-plusdefines` | Default true | Suite default for the test field of the same name |
 
@@ -44,6 +45,17 @@ compile-opts:
 
 A string splits on whitespace as `compile-time` does; a list is taken token by token. Only the family of the builder doing the compile applies, so `--builder vcs` on the suite above passes no Verilator option. The options come after the builder mode's, get the same expansion (see [Simulator builders](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#simulator-builders)), and are part of the compile command, so they are part of the shared-build key. Use them for a choice that belongs to one suite, such as a lower optimisation level for a testbench whose generated code is slow to compile and quick to run; keep project-wide options in `cfg-rtl-builder`.
 
+A family's value may instead map builder modes (the `builder-opts` keys `--builder-mode` names) to options, with an optional `default`:
+
+```yaml
+compile-opts:
+  verilator:
+    default: "-MAKEFLAGS OPT_FAST=-O0"
+    nightly: ""        # no suite option under -M nightly
+```
+
+The compiling mode takes its own entry, else `default`, else no options. An entry present but empty means no options, not `default`. Each entry is a string or a list, as above. Mode names match exactly. The selected options are part of the compile command and so of that mode's shared-build key; a mode that selects no options builds with the same key as a suite without `compile-opts`. A string or list value applies in every mode.
+
 The suite `compile` block layers field by field over `cfg-dispatch.compile`, which layers over `cfg-dispatch.resources`. A testbench's own `compile` overrides it per build, and omitted fields inherit. It sizes the suite's build jobs and the compile half of a simulation job that compiles for itself.
 
 The suite value is the floor for both the verilate job and the build job of a split suite; `split-verilate: false` runs one build job instead. It is not part of the compile fingerprint, so it never invalidates a shared build stamp.
@@ -54,6 +66,7 @@ Testbench fields:
 |---|---|---|
 | `name` | Required | Testbench identifier |
 | `filelist` | Required | Sources appended to the model filelist |
+| `filelist-modes` | Optional | Filelist entries per builder mode, compiled for this testbench in that mode only. See [Per-mode compile inputs](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#per-mode-compile-inputs) |
 | `resources` | Optional | Dispatch `cpus`, `mem`, and quoted `time`, plus a [`modes`](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#per-mode-reservations) sub-block. Inherited by tests |
 | `compile` | Optional | This testbench's per-build dispatch compile reservation. See below |
 | `toplevel` | Required for cocotb and SystemC, optional otherwise | Module the compile elaborates from. Not defaulted to `name`. See [Elaboration top](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#elaboration-top) |
@@ -98,6 +111,25 @@ Test fields:
 Builder precedence is CLI `--builder`, test `builder`, suite `builder`, then the active platform default. A `reglvl` map resolves against the effective builder.
 
 Coverage processing uses the platform-selected builder unless `--builder` is supplied. If a suite or test overrides the builder, pass `--builder` on coverage runs so simulation and coverage select the same family.
+
+### Per-mode compile inputs
+
+`filelist-modes` maps a builder mode (the `builder-opts` key `--builder-mode` names), or `default`, to extra filelist entries compiled only in that mode. It is accepted at the suite top level, for every testbench, and on a testbench:
+
+```yaml
+filelist-modes:                  # suite level: every testbench
+  cov: [cov_waivers.vlt]
+
+testbenches:
+  - name: tb_a
+    filelist: [tb_a.sv]
+    filelist-modes:              # this testbench only
+      cov: [a_scope.vlt]         # scopes coverage under -M cov; -M reg never sees it
+```
+
+Each level takes the compiling mode's entry, else its `default`, else nothing; an entry present but empty selects nothing. Mode names match exactly. Entries take the same filelist syntax as `filelist` (sources, `.vlt` files, `+incdir+`, `+define+`, `-v`, `-y`, `-F`) and resolve against the suite directory. They follow the testbench `filelist` in `run.f`, suite entries before the testbench's.
+
+The entries are compile inputs of that mode's build only, so they are in that mode's shared-build key and in no other's: adding a `cov` entry leaves the `reg` build and its key unchanged. Entries are not keyed by simulator family, so a mode that more than one builder defines passes them to each; name a Verilator-only file under a mode only Verilator builders use. Options per mode go in [`compile-opts`](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#testsyaml) instead. Tools that read a testbench's sources without compiling it, such as the hierarchy view and the waveform source resolver, read only `filelist`.
 
 ### Elaboration top
 

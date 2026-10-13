@@ -9,4 +9,4 @@
 | `assign_drop` | Drop an assignment |
 | `port_binding_swap` | Swap two port bindings |
 
-An empty operator list, or an operator the installed engine does not support, is fatal.
+An operator the installed engine does not support is fatal. `operators` may be empty or omitted when `mutants` is set; a campaign with neither is fatal.

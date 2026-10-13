@@ -116,6 +116,7 @@ cfg-synth-tools:
       static-functions: error
       conflicting-drivers: error
       unresolved-interfaces: warn
+      clock-gating-min-flops: 0
 
 cfg-pdks:
   - name: sky130hd
@@ -151,11 +152,11 @@ cfg-pnr-platforms:
 
 | Block | Fields and behavior |
 |---|---|
-| `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `abc-script`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, and `unresolved-interfaces`. OpenROAD also accepts `strategy` |
+| `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `abc-script`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, `unresolved-interfaces`, and `clock-gating-min-flops`. OpenROAD also accepts `strategy` |
 | `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical` (default `metal3` / `metal2`), `placement.*`, `dont-use-cells`, `pdn-config`, `rcx-rules`, `tracks-tcl`, `layer-rc-tcl`, `tapcell-tcl`, and `platform-tcl`. `corners` maps a corner name to its standard-cell Liberty: one path, or a list for cells split across files. `cell-gds` takes one path or a list. Each path resolves on its own from `root_config.yaml` |
-| `cfg-synth-platforms` | `name`, `pdk`; optional `corner` (the first declared corner by default) and `dont-use-cells` |
+| `cfg-synth-platforms` | `name`, `pdk`; optional `corner` (the first declared corner by default), `dont-use-cells`, `abc-driving-cell` (the Liberty cell ABC assumes drives every primary input), `abc-output-load` (femtofarads on every primary output) and `clock-gating-cell` (`'<cell> <enable>:<clock>:<gated clock>'`, the ICG `clockgate` uses instead of choosing one from the Liberty). The two `abc-*` keys are written to `abc.constr` and passed as `abc -constr` on mapped runs; see [Synthesis](../concepts/synthesis.md#give-abc-a-driving-cell-and-output-load) and [clock gating](../concepts/synthesis.md#gate-enable-flops-with-clock-gating-cells) |
 | `cfg-pnr-platforms` | `name`, `pdk`; optional `corner` or `corners`, `cts-buffer`, `port-buffer`, `cts-sink-clustering` (default `true`), `cts-apply-ndr`, `post-cts-setup-repair` (default `false`), `global-route-hold-repair` (default `false`), `routing-layer-adjustment`, `max-fanout`, `routing-layers.signal` / `.clock`, `placement.*`, and `dont-use-cells`. `corners` is a non-empty list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; it excludes `corner`. See [multi-corner signoff](../concepts/pnr.md#sign-off-at-several-corners) |
-| `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `yosys.abc-script`, `openroad.run`, `openroad.pre-sta-tcl`, and `openroad.repair` settings. `openroad.repair` (default `false`) runs `repair_design` and `repair_timing -setup` before the synthesis STA reports. The built-in default is `standard`. Precedence is per-run override, then effort, then tool config |
+| `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `yosys.abc-script`, `yosys.clock-gating-min-flops`, `openroad.run`, `openroad.pre-sta-tcl`, and `openroad.repair` settings. `openroad.repair` (default `false`) runs `repair_design` and `repair_timing -setup` before the synthesis STA reports. The built-in default is `standard`. Precedence is per-run override, then effort, then tool config |
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
 
@@ -200,6 +201,8 @@ A `placement:` block on a P&R platform overrides its PDK's block field by field:
 For synthesis, `frontend: verilog` is the default. `frontend: slang` requires `plugin-path` or `RTL_BUDDY_SLANG_PLUGIN`; relative plugin paths resolve from the project root. `single-unit` and `best-effort-hierarchy` are slang-only booleans. `best-effort-hierarchy: true` asks yosys-slang to keep module instances as hierarchy instead of inlining them, which a design that relies on `(* keep_hierarchy *)` for mapping needs. See [Synthesis](../concepts/synthesis.md#systemverilog-frontend).
 
 `abc-args` is the argument string of the `abc` command an unmapped `tool: yosys` run adds after `synth`; empty adds none. `abc-script` is the ABC script of a Liberty-mapped run's `abc -liberty` command, on both backends; `default` and `delay` name the built-in presets. Empty selects `delay`, which also omits `&dch -f`, when the run's `synth-args` pass `-extra-map +/choices/<map>`, and otherwise `default`, which omits `dc2` and `&fraig -x`. A script is one line of `;`-separated ABC commands without double quotes, and `{D}` in it takes the SDC delay target. A mapped run ignores `abc-args` and warns. See [Synthesis](../concepts/synthesis.md#choose-the-mapped-run-abc-script).
+
+`clock-gating-min-flops` (default `0`, off) makes a Liberty-mapped run insert integrated clock-gating cells with Yosys `clockgate` after `synth` and `chformal -remove`, before `dfflibmap`, for each set of at least that many rising-edge flops sharing a clock and enable. An unmapped run warns `synth.clock_gating_ignored` and gates nothing. See [Synthesis](../concepts/synthesis.md#gate-enable-flops-with-clock-gating-cells).
 
 In `synth.yaml` overrides, use snake-case keys such as `plugin_path` and `single_unit`. Unknown keys warn and are ignored; a non-mapping override or a wrong `single_unit` type is fatal. The elaboration override key is `yosys` for both Yosys and OpenROAD runs. An OpenROAD run's Yosys stage also reads `tool_overrides.openroad`, with `yosys` winning per key, and takes its tool options from the `yosys` entry of `cfg-synth-tools`, or from the `openroad` entry when there is no `yosys` entry. `strategy` is read only from `openroad`. Keys that no stage reads warn. See [Synthesis](../concepts/synthesis.md#systemverilog-frontend).
 
@@ -341,6 +344,7 @@ cfg-dispatch:
 | `compile.modes` | Unset; like `resources.modes`, plus a `verilate` sub-block: `compile.modes.<mode>.verilate.{cpus,mem,time}` |
 | `compile.parallel` | 1; integer of at least 1. Number of distinct builds the suite's build job compiles concurrently. A suite's own `compile.parallel` overrides it. See below |
 | `compile.verilate` | `{cpus, mem, time}` sizing the verilate job of a split Verilator suite. `cpus` defaults to 2, since verilation is single-threaded. `mem` and `time` default to the resolved `compile` values. Ignored where the split does not apply |
+| `compile.serialise-checkouts` | `false`; with a shared-build cache root, names a suite's Slurm build and verilate jobs after its cache directory, so checkouts sharing the cache queue behind each other on `singleton` instead of racing. Project-wide only; inert without a cache root or off Slurm. See [dispatch](../concepts/dispatch.md) |
 | `compile.split-verilate` | `true`; splits a Verilator suite's build job into a verilate job and a C++ build job chained on `afterok`. A suite's own `compile.split-verilate` overrides it; Slurm only, since `local-parallel` never splits |
 | `coverage` | Inherits `resources`. Reserves the coverage tail job (merge, model build, LCOV exports, manifest) that `--dispatch slurm` submits after the simulations. Takes `cpus`, `mem`, `time` and `modes`; `mem`, `time` and `cpus` must be greater than zero. See [Run the coverage tail as a job](../concepts/dispatch.md#run-the-coverage-tail-as-a-job) |
 | `sbatch-args` | Empty list. Appended verbatim after the generated flags, so it overrides duplicates. See [`sbatch-args` behavior](#sbatch-args-behavior) |
@@ -583,7 +587,7 @@ model-configs:
 
 ## tests.yaml
 
-Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default, optional top-level `compile-opts` adds compile options for one simulator family, and optional top-level `compile` sizes this suite's dispatched build jobs.
+Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default, optional top-level `compile-opts` adds compile options for one simulator family, optional top-level `filelist-modes` adds compile inputs for one builder mode, and optional top-level `compile` sizes this suite's dispatched build jobs.
 
 ```yaml
 rtl-buddy-filetype: test_config
@@ -613,7 +617,8 @@ Top-level fields:
 | `testbenches` | Required | Testbench definitions |
 | `tests` | Required | Test definitions |
 | `builder` | Optional | Suite default builder name |
-| `compile-opts` | Optional | Compile options per simulator family, appended after the builder mode's `compile-time`. See below |
+| `compile-opts` | Optional | Compile options per simulator family, optionally per builder mode, appended after the builder mode's `compile-time`. See below |
+| `filelist-modes` | Optional | Filelist entries per builder mode, compiled for every testbench in that mode only. See [Per-mode compile inputs](#per-mode-compile-inputs) |
 | `compile` | Optional | This suite's whole-job dispatch compile reservation: `cpus`, `mem`, quoted `time`, `parallel`, `split-verilate`, a `verilate` sub-block, and a [`modes`](#per-mode-reservations) sub-block. See below |
 | `preproc-sets-plusdefines` | Default true | Suite default for the test field of the same name |
 
@@ -627,6 +632,17 @@ compile-opts:
 
 A string splits on whitespace as `compile-time` does; a list is taken token by token. Only the family of the builder doing the compile applies, so `--builder vcs` on the suite above passes no Verilator option. The options come after the builder mode's, get the same expansion (see [Simulator builders](#simulator-builders)), and are part of the compile command, so they are part of the shared-build key. Use them for a choice that belongs to one suite, such as a lower optimisation level for a testbench whose generated code is slow to compile and quick to run; keep project-wide options in `cfg-rtl-builder`.
 
+A family's value may instead map builder modes (the `builder-opts` keys `--builder-mode` names) to options, with an optional `default`:
+
+```yaml
+compile-opts:
+  verilator:
+    default: "-MAKEFLAGS OPT_FAST=-O0"
+    nightly: ""        # no suite option under -M nightly
+```
+
+The compiling mode takes its own entry, else `default`, else no options. An entry present but empty means no options, not `default`. Each entry is a string or a list, as above. Mode names match exactly. The selected options are part of the compile command and so of that mode's shared-build key; a mode that selects no options builds with the same key as a suite without `compile-opts`. A string or list value applies in every mode.
+
 The suite `compile` block layers field by field over `cfg-dispatch.compile`, which layers over `cfg-dispatch.resources`. A testbench's own `compile` overrides it per build, and omitted fields inherit. It sizes the suite's build jobs and the compile half of a simulation job that compiles for itself.
 
 The suite value is the floor for both the verilate job and the build job of a split suite; `split-verilate: false` runs one build job instead. It is not part of the compile fingerprint, so it never invalidates a shared build stamp.
@@ -637,6 +653,7 @@ Testbench fields:
 |---|---|---|
 | `name` | Required | Testbench identifier |
 | `filelist` | Required | Sources appended to the model filelist |
+| `filelist-modes` | Optional | Filelist entries per builder mode, compiled for this testbench in that mode only. See [Per-mode compile inputs](#per-mode-compile-inputs) |
 | `resources` | Optional | Dispatch `cpus`, `mem`, and quoted `time`, plus a [`modes`](#per-mode-reservations) sub-block. Inherited by tests |
 | `compile` | Optional | This testbench's per-build dispatch compile reservation. See below |
 | `toplevel` | Required for cocotb and SystemC, optional otherwise | Module the compile elaborates from. Not defaulted to `name`. See [Elaboration top](#elaboration-top) |
@@ -681,6 +698,25 @@ Test fields:
 Builder precedence is CLI `--builder`, test `builder`, suite `builder`, then the active platform default. A `reglvl` map resolves against the effective builder.
 
 Coverage processing uses the platform-selected builder unless `--builder` is supplied. If a suite or test overrides the builder, pass `--builder` on coverage runs so simulation and coverage select the same family.
+
+### Per-mode compile inputs
+
+`filelist-modes` maps a builder mode (the `builder-opts` key `--builder-mode` names), or `default`, to extra filelist entries compiled only in that mode. It is accepted at the suite top level, for every testbench, and on a testbench:
+
+```yaml
+filelist-modes:                  # suite level: every testbench
+  cov: [cov_waivers.vlt]
+
+testbenches:
+  - name: tb_a
+    filelist: [tb_a.sv]
+    filelist-modes:              # this testbench only
+      cov: [a_scope.vlt]         # scopes coverage under -M cov; -M reg never sees it
+```
+
+Each level takes the compiling mode's entry, else its `default`, else nothing; an entry present but empty selects nothing. Mode names match exactly. Entries take the same filelist syntax as `filelist` (sources, `.vlt` files, `+incdir+`, `+define+`, `-v`, `-y`, `-F`) and resolve against the suite directory. They follow the testbench `filelist` in `run.f`, suite entries before the testbench's.
+
+The entries are compile inputs of that mode's build only, so they are in that mode's shared-build key and in no other's: adding a `cov` entry leaves the `reg` build and its key unchanged. Entries are not keyed by simulator family, so a mode that more than one builder defines passes them to each; name a Verilator-only file under a mode only Verilator builders use. Options per mode go in [`compile-opts`](#testsyaml) instead. Tools that read a testbench's sources without compiling it, such as the hierarchy view and the waveform source resolver, read only `filelist`.
 
 ### Elaboration top
 
@@ -731,7 +767,7 @@ syntheses:
 | `lef-paths` / `lib-paths` | Optional lists | Block-specific LEF and Liberty files, appended after platform data |
 | `blocks` | Optional list | Hardened blocks the design instances. Each has `name` (the module), `pnr` (a `harden: true` P&R run), and `pnr-path` (its `pnr.yaml`, relative to `synth.yaml`); all three are required. The abstract's `.lib` and `.lef` are appended to `lib-paths` and `lef-paths`. The model's filelist must still leave the module a blackbox. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
 | `reglvl` | Optional | Regression level |
-| `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `abc_script`, `strategy`, `frontend`, `plugin_path`, `single_unit`, `best_effort_hierarchy`, `static_functions`, `conflicting_drivers`, `unresolved_interfaces` |
+| `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `abc_script`, `strategy`, `frontend`, `plugin_path`, `single_unit`, `best_effort_hierarchy`, `static_functions`, `conflicting_drivers`, `unresolved_interfaces`, `clock_gating_min_flops` |
 | `effort` | Default `standard` | `cfg-synth-efforts` entry. CLI `--effort` wins |
 | `threads` | Default unset (1) | OpenROAD worker threads for the `tool: openroad` timing stage, as in `pnr.yaml`. No effect on Yosys. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
@@ -792,6 +828,7 @@ runs:
 | `detailed-route-verbose` | Default 1 | `detailed_route -verbose` level, a non-negative integer. 1 logs each iteration's progress and violation count to `pnr.log`; 0 silences them; higher levels add more router detail. Not part of a hardened block's config digest. See [Follow routing progress](../concepts/pnr.md#follow-routing-progress) |
 | `checkpoints` | Default `false` | `true`, a stage name, or a list of `floorplan`, `place`, `cts`, `global_route`. Writes a stage-named ODB, DEF, and SDC (plus route guides and segments after `global_route`) under `artefacts/<run>/checkpoints/<run-id>/`, with a manifest and a `progress.jsonl` of step events. `[]` keeps progress only. See [Keep stage checkpoints](../concepts/pnr.md#keep-stage-checkpoints) |
 | `harden` | Default `false` | Publishes the routed result as a hard-macro abstract under `artefacts/<run>/abstract/`: `<top>.lef`, `<top>.lib` (OpenSTA timing model), `<top>.gds`, and `abstract.manifest.json`. Implies `--gds` with `gds-mode: strict`; needs a single-corner platform. See [Harden a block](../concepts/pnr.md#harden-a-block) |
+| `abstract` | Optional, needs `harden: true` | Obstruction style of the abstract LEF. `bloat`: `occupied` (default, `write_abstract_lef -bloat_occupied_layers`) or a non-negative number (`-bloat_factor`). `feedthrough-layers`: a list of layers written with the block's real shapes as obstructions while the others keep the `bloat` style. Part of a hardened block's config digest only when not the default. See [Choose the abstract's obstruction style](../concepts/pnr.md#choose-the-abstracts-obstruction-style) |
 | `buffer-ports` | Default: the value of `harden` | `true` runs `buffer_ports -inputs -outputs` after IO pin placement and before global placement, so each port drives or is driven by one buffer. Part of a hardened block's config digest when `true`. See [Harden a block](../concepts/pnr.md#harden-a-block) |
 | `fail-on-electrical` | Default `false` | Fails a routed run with any max-slew, max-capacitance or max-fanout violator. Without it such a run passes, qualified with the counts. Not part of a hardened block's config digest. See [Interpret results](../concepts/pnr.md#interpret-results) |
 | `floorplan.utilization` | Default 0.55 | Core utilization from 0 to 1 |
@@ -1187,7 +1224,7 @@ package:
 
 ## mut.yaml
 
-Required keys are `rtl-buddy-filetype: mut_config`, `model`, `model_path`, `design_file`, `operators`, and `verify`.
+Required keys are `rtl-buddy-filetype: mut_config`, `model`, `model_path`, `design_file`, `verify`, and at least one entry in `operators` or `mutants`.
 
 ```yaml
 rtl-buddy-filetype: mut_config
@@ -1208,7 +1245,10 @@ budget:
 | `model` | Required | Model name |
 | `model_path` | Required | `models.yaml` relative to `mut.yaml` |
 | `design_file` | Required | Baseline mutation file inside the model directory |
-| `operators` | Required, non-empty | `arith_flip`, `bit_op_flip`, `cond_negate`, `cond_const`, `assign_drop`, `port_binding_swap` |
+| `operators` | Default empty | `arith_flip`, `bit_op_flip`, `cond_negate`, `cond_const`, `assign_drop`, `port_binding_swap` |
+| `mutants[].name` | Required per entry | Unique user-mutant name: letters, digits, `_`, `.`, `-`; mutant id `user_<name>` |
+| `mutants[].patch` | Required per entry | Unified diff relative to `mut.yaml`; its paths are relative to the model directory |
+| `mutants[].strip` | Default 1 | Leading path components removed from the diff's paths, as `git apply -p` |
 | `verify.fpv_config` / `.verification` | Pair | FPV oracle config and entry |
 | `verify.test_config` | Optional | Simulation oracle suite |
 | `verify.tests` | Default all | Selected simulation tests |
@@ -1222,6 +1262,8 @@ budget:
 | `scope.include` / `.exclude` | Default empty | Case-sensitive `fnmatch` globs over instance and source paths; `**` is not recursive |
 
 At least one oracle is required, and `fpv_config` requires `verification`. `design_file` and every scoped file must stay within the model directory.
+
+- A user mutant whose diff no longer applies is `ERRORED`. The budget does not limit user mutants, and `scope` requires a non-empty `operators`. See [Add curated mutants](../concepts/mut.md#add-curated-mutants).
 
 - An empty scope mutates `design_file` without the viewer.
 - A non-empty scope requires `rtl-buddy-view`, selects hierarchy source files, and fails if none match.
