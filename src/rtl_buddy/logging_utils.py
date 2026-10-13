@@ -1963,6 +1963,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             flow = "P&R" if event.startswith("pnr") else "synthesis"
             run = fields.get("pnr") or fields.get("synth")
             return f'{flow} "{run}": {fields.get("error")}'
+        case "pnr.abstract_feedthrough_layers_unused":
+            return (
+                f'P&R "{fields.get("pnr")}": abstract.feedthrough-layers '
+                f"{', '.join(fields.get('layers') or [])} appear in no obstruction "
+                "of the block; check the layer names against the technology LEF"
+            )
         case "pnr.block_stale_accepted" | "synth.block_stale_accepted":
             flow = "P&R" if event.startswith("pnr") else "synthesis"
             run = fields.get("pnr") or fields.get("synth")
