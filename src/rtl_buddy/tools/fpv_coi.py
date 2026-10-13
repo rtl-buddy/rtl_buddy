@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 from ..logging_utils import log_event
 from ..process_utils import run_managed_process
+from .synth_yosys import yosys_process_env
 
 
 # `stat` prints one `=== <module> ===` block per module. It appends `(partially selected)`
@@ -294,6 +295,7 @@ def run_coi_analysis(
                 stdout=logf,
                 stderr=subprocess.STDOUT,
                 cwd=work_dir,
+                env=yosys_process_env(),
             )
     except FileNotFoundError:
         log_event(

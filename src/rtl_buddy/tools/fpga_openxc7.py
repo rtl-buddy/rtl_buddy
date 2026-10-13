@@ -20,6 +20,7 @@ from ..runner.fpga_results import (
 from .artifact_paths import clear_managed_outputs
 from .fpga_base import BaseFpga, resolve_target
 from .fpga_openxc7_reports import parse_nextpnr_log
+from .synth_yosys import yosys_process_env
 
 # Part prefix -> prjxray database family directory.
 _PRJXRAY_FAMILIES: dict[str, str] = {
@@ -138,12 +139,17 @@ class OpenXc7Fpga(BaseFpga):
         return script_path
 
     def _run_stage(
-        self, stage: str, cmd: list[str], log_name: str, stdout_path: str | None = None
+        self,
+        stage: str,
+        cmd: list[str],
+        log_name: str,
+        stdout_path: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> FpgaFailResults | None:
         """Run one stage; return a FAIL result, or None on success.
 
         With ``stdout_path``, stdout goes to that file and the log gets stderr only;
-        otherwise both go to the log.
+        otherwise both go to the log. ``env`` replaces the inherited environment.
         """
         log_path = os.path.join(self.artefact_dir, log_name)
         log_event(
@@ -159,11 +165,15 @@ class OpenXc7Fpga(BaseFpga):
             if stdout_path is not None:
                 with open(stdout_path, "wb") as out_f:
                     result = run_managed_process(
-                        cmd, stdout=out_f, stderr=log_f, cwd=self.artefact_dir
+                        cmd, stdout=out_f, stderr=log_f, cwd=self.artefact_dir, env=env
                     )
             else:
                 result = run_managed_process(
-                    cmd, stdout=log_f, stderr=subprocess.STDOUT, cwd=self.artefact_dir
+                    cmd,
+                    stdout=log_f,
+                    stderr=subprocess.STDOUT,
+                    cwd=self.artefact_dir,
+                    env=env,
                 )
         if result.returncode != 0:
             log_event(
@@ -333,6 +343,7 @@ class OpenXc7Fpga(BaseFpga):
                 "yosys",
                 [self._yosys, "-s", os.path.basename(script_path)],
                 "yosys.log",
+                env=yosys_process_env(),
             )
             if fail is not None:
                 return self._fail_after_stage(fail)

@@ -386,6 +386,44 @@ def test_yosys_runs_with_tmpdir_in_its_artefact_dir(tmp_path, monkeypatch, backe
     tmp_dir = Path(synth.artefact_dir) / "yosys-tmp"
     assert [kw["env"]["TMPDIR"] for kw in seen] == [str(tmp_dir)]
     assert tmp_dir.is_dir()
+    # yosys-abc's readline must not wrap the `source <TMPDIR>/...` echo Yosys waits for (#797).
+    assert [kw["env"]["COLUMNS"] for kw in seen] == [synth_yosys.YOSYS_ABC_COLUMNS]
+
+
+def test_yosys_env_sets_columns_without_term(monkeypatch):
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.setenv("COLUMNS", "80")
+    env = synth_yosys.yosys_process_env()
+    assert env["COLUMNS"] == synth_yosys.YOSYS_ABC_COLUMNS
+    assert "TERM" not in env
+    assert synth_yosys.yosys_process_env({"A": "1"}) == {
+        "A": "1",
+        "COLUMNS": synth_yosys.YOSYS_ABC_COLUMNS,
+    }
+
+
+def test_coi_yosys_runs_with_columns(tmp_path, monkeypatch):
+    from rtl_buddy.tools import fpv_coi
+
+    seen = []
+
+    def _fake(cmd, stdout, **kwargs):
+        seen.append(kwargs)
+        return ManagedProcessResult(returncode=1)
+
+    monkeypatch.setattr(fpv_coi, "run_managed_process", _fake)
+    fpv_coi.run_coi_analysis(
+        name="f",
+        yosys_exe="yosys",
+        sources=[],
+        incdirs=[],
+        properties=[],
+        constraints=None,
+        top="top",
+        script_path=str(tmp_path / "coi.ys"),
+        log_path=str(tmp_path / "coi.log"),
+    )
+    assert [kw["env"]["COLUMNS"] for kw in seen] == [synth_yosys.YOSYS_ABC_COLUMNS]
 
 
 @pytest.mark.skipif(shutil.which("yosys") is None, reason="yosys not installed")
