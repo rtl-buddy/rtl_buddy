@@ -44,7 +44,7 @@ read_verilog -sv -defer <T>/top.sv
 synth -top top
 chformal -remove
 dfflibmap -dont_use FILL* -liberty <T>/cells.lib
-abc -liberty <T>/cells.lib -dont_use FILL* -script "+{_ABC_SCRIPT}"
+abc -liberty <T>/cells.lib -dont_use FILL* -D 2500 -script "+{_ABC_SCRIPT}"
 write_verilog <T>/artefacts/g_openroad/synth_netlist.v
 stat -liberty <T>/cells.lib
 tee -q -o <T>/artefacts/g_openroad/synth_stat.json stat -json -liberty <T>/cells.lib
