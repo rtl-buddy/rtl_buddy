@@ -737,3 +737,150 @@ def test_both_backends_read_the_same_constraints(fixture, monkeypatch):
 )
 def test_extract_names_shapes(word, expected):
     assert extract_names(word) == expected
+
+
+# Following `source` (script_path) and lenient queries (#788)
+
+
+def _read_file(path, interest=CLOCK, **kwargs):
+    return read_commands(
+        pathlib.Path(path).read_text(),
+        interest=interest,
+        source=str(path),
+        script_path=str(path),
+        **kwargs,
+    )
+
+
+def test_source_is_followed_relative_to_info_script(tcl_backend, tmp_path, caplog):
+    (tmp_path / "clocks.sdc").write_text("create_clock -name clk -period 10.0 c\n")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "more.sdc").write_text(
+        "set p 4\ncreate_clock -name c2 -period $p c2\n"
+        "source [file join [file dirname [info script]] deep.sdc]\n"
+    )
+    (tmp_path / "sub" / "deep.sdc").write_text("create_clock -period 2.5 c3\n")
+    top = tmp_path / "top.sdc"
+    top.write_text(
+        "source [file join [file dirname [file normalize [info script]]] clocks.sdc]\n"
+        "source sub/more.sdc\n"
+        "create_clock -name top -period 1 t\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        cmds, used = _read_file(top)
+    assert used == "tcl"
+    assert [(c.words[c.words.index("-period") + 1], c.line) for c in cmds] == [
+        ("10.0", 1),
+        ("4", 2),
+        ("2.5", 1),
+        ("1", 3),
+    ]
+    assert [pathlib.Path(c.file).name for c in cmds] == [
+        "clocks.sdc",
+        "more.sdc",
+        "deep.sdc",
+        "top.sdc",
+    ]
+    assert not _events(caplog, "constraints.include_unsupported")
+
+
+def test_an_unreadable_source_warns_and_the_rest_is_read(tcl_backend, tmp_path, caplog):
+    top = tmp_path / "top.sdc"
+    top.write_text("source missing.sdc\ncreate_clock -period 3 c\n")
+    with caplog.at_level(logging.WARNING):
+        cmds, used = _read_file(top)
+    assert used == "tcl"
+    assert [c.words for c in cmds] == [["-period", "3", "c"]]
+    [rec] = _events(caplog, "constraints.source_unreadable")
+    assert rec.rtl_fields["included"] == "missing.sdc"
+    assert rec.rtl_fields["line"] == 1
+    assert "could not be read" in rec.getMessage()
+
+
+def test_a_file_that_sources_itself_falls_back(tcl_backend, tmp_path, caplog):
+    top = tmp_path / "top.sdc"
+    top.write_text("source [info script]\n")
+    with caplog.at_level(logging.WARNING):
+        _cmds, used = _read_file(top)
+    assert used == "tokenizer"
+    [rec] = _events(caplog, "constraints.tcl_error")
+    assert "source nesting" in rec.rtl_fields["message"]
+
+
+def test_a_syntax_error_in_a_sourced_file_is_reported(tcl_backend, tmp_path, caplog):
+    (tmp_path / "bad.sdc").write_text("create_clock -period {2\n")
+    top = tmp_path / "top.sdc"
+    top.write_text("source bad.sdc\n")
+    with caplog.at_level(logging.WARNING):
+        _cmds, used = _read_file(top)
+    assert used == "tokenizer"
+    [rec] = _events(caplog, "constraints.tcl_error")
+    assert "close-brace" in rec.rtl_fields["message"]
+
+
+def test_the_path_only_file_command_cannot_write(tcl_backend, tmp_path):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep")
+    top = tmp_path / "top.sdc"
+    top.write_text(f"file delete {victim}\nfile mkdir {tmp_path / 'made'}\n")
+    cmds, used = _read_file(top, interest=None)
+    assert used == "tcl"
+    assert victim.read_text() == "keep"
+    assert not (tmp_path / "made").exists()
+    assert [c.words[0] for c in cmds] == ["delete", "mkdir"]
+
+
+def test_the_tokenizer_follows_a_literal_source(tokenizer_backend, tmp_path, caplog):
+    (tmp_path / "clocks.sdc").write_text("create_clock -period 10 c\n")
+    top = tmp_path / "top.sdc"
+    top.write_text(
+        "source clocks.sdc\nsource [file join [file dirname [info script]] x.sdc]\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        cmds, used = _read_file(top)
+    assert used == "tokenizer"
+    assert [(c.words, pathlib.Path(c.file).name) for c in cmds] == [
+        (["-period", "10", "c"], "clocks.sdc")
+    ]
+    [rec] = _events(caplog, "constraints.source_unreadable")
+    assert rec.rtl_fields["line"] == 2
+
+
+_PROC_SDC = (
+    "proc make_clocks {} {\n"
+    "  foreach p [get_ports {clk_a clk_b}] {\n"
+    "    create_clock -name $p -period 5 [get_ports $p]\n"
+    "  }\n"
+    "}\n"
+    "make_clocks\n"
+)
+
+
+def test_a_loop_over_a_query_is_refused_without_lenient_queries(tcl_backend, caplog):
+    with caplog.at_level(logging.WARNING):
+        cmds, used = read_commands(_PROC_SDC, interest=CLOCK, source="p.sdc")
+    assert used == "tokenizer"
+    assert cmds == []
+
+
+def test_lenient_queries_evaluate_a_proc_over_a_query(tcl_backend, caplog):
+    with caplog.at_level(logging.DEBUG):
+        cmds, used = read_commands(
+            _PROC_SDC, interest=CLOCK, source="p.sdc", lenient_queries=True
+        )
+    assert used == "tcl"
+    assert [c.words for c in cmds] == [
+        ["-name", "clk_a", "-period", "5", "clk_a"],
+        ["-name", "clk_b", "-period", "5", "clk_b"],
+    ]
+    assert [c.line for c in cmds] == [3, 3]
+    assert _events(caplog, "constraints.tcl_query_names")
+    assert not _events(caplog, "constraints.tcl_error")
+
+
+def test_lenient_queries_leave_a_file_the_interp_reads_unchanged(tcl_backend):
+    text = "create_clock -period 1 [get_ports {a b}]\n"
+    plain, _ = read_commands(text, interest=CLOCK)
+    lenient, _ = read_commands(text, interest=CLOCK, lenient_queries=True)
+    assert [c.words for c in plain] == [c.words for c in lenient]
+    assert plain[0].words[-1] == "[get_ports {a b}]"

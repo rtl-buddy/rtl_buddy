@@ -87,6 +87,8 @@ class TclCommand:
     line: int | None = None
     #: The command as a single line, or ``None`` when unknown.
     raw: str | None = None
+    #: The file the command was read from when ``read_commands`` followed ``source`` (``script_path``); ``line`` counts in it. ``None`` otherwise.
+    file: str | None = None
 
 
 #: Wall-clock budget for evaluating one constraint file.
@@ -130,7 +132,13 @@ def _parse_response(stdout: str) -> dict | None:
     return None
 
 
-def _run_worker(text: str, *, interest: frozenset[str] | None) -> dict:
+def _run_worker(
+    text: str,
+    *,
+    interest: frozenset[str] | None,
+    script_path: str | None = None,
+    query_names: bool = False,
+) -> dict:
     """Evaluate ``text`` in a worker process; never raises.
 
     A timeout, non-zero exit or malformed output comes back as an ``{"ok": false}`` response, like a Tcl error.
@@ -141,6 +149,11 @@ def _run_worker(text: str, *, interest: frozenset[str] | None) -> dict:
         "command_limit": TCL_COMMAND_LIMIT,
         "time_limit_seconds": TCL_TIME_LIMIT_SECONDS,
     }
+    # Only sent when set, so a plain request stays byte-identical.
+    if script_path is not None:
+        request["script_path"] = script_path
+    if query_names:
+        request["query_names"] = True
     timeout = _worker_timeout()
     try:
         # json.dumps escapes non-ASCII, so the pipe is ASCII in any locale.
@@ -309,19 +322,7 @@ def extract_names(word: str) -> list[str]:
     return out
 
 
-def _read_with_tcl(
-    text: str,
-    *,
-    interest: frozenset[str] | None,
-    source: str | None,
-) -> list[TclCommand] | None:
-    """Evaluate ``text`` in the worker's recording safe interp.
-
-    Returns the commands in ``interest``, or ``None`` when the interp did not read the file (syntax error, unset variable, resource limit, no answer).
-    """
-    response = _run_worker(text, interest=interest)
-
-    # Warnings arrive even when evaluation failed.
+def _log_worker_warnings(response: dict, source: str | None) -> None:
     for warning in response.get("warnings") or ():
         if not isinstance(warning, dict):
             continue
@@ -334,6 +335,50 @@ def _read_with_tcl(
                 line=warning.get("line"),
                 included=warning.get("included") or "",
             )
+        elif warning.get("kind") == "source_unreadable":
+            log_event(
+                logger,
+                logging.WARNING,
+                "constraints.source_unreadable",
+                source=warning.get("file") or source,
+                line=warning.get("line"),
+                included=warning.get("included") or "",
+                error=warning.get("error") or "",
+            )
+
+
+def _read_with_tcl(
+    text: str,
+    *,
+    interest: frozenset[str] | None,
+    source: str | None,
+    script_path: str | None = None,
+    lenient_queries: bool = False,
+) -> list[TclCommand] | None:
+    """Evaluate ``text`` in the worker's recording safe interp.
+
+    Returns the commands in ``interest``, or ``None`` when the interp did not read the file (syntax error, unset variable, resource limit, no answer). With ``lenient_queries``, a failed read is retried once with object queries answering their name arguments as a list (see :func:`read_commands`).
+    """
+    response = _run_worker(text, interest=interest, script_path=script_path)
+
+    if not response.get("ok") and lenient_queries:
+        retry = _run_worker(
+            text, interest=interest, script_path=script_path, query_names=True
+        )
+        if retry.get("ok"):
+            line = response.get("line")
+            log_event(
+                logger,
+                logging.DEBUG,
+                "constraints.tcl_query_names",
+                source=source,
+                line=line if isinstance(line, int) else None,
+                message=str(response.get("error") or ""),
+            )
+            response = retry
+
+    # Warnings arrive even when evaluation failed.
+    _log_worker_warnings(response, source)
 
     if not response.get("ok"):
         line = response.get("line")
@@ -352,6 +397,7 @@ def _read_with_tcl(
         name = str(raw["name"])
         words = [str(w) for w in raw.get("words") or ()]
         line = raw.get("line")
+        file = raw.get("file")
         commands.append(
             TclCommand(
                 name=name,
@@ -359,6 +405,7 @@ def _read_with_tcl(
                 line=line if isinstance(line, int) else None,
                 # One line, like the tokenizer's reconstruction.
                 raw=" ".join(" ".join([name, *words]).split()),
+                file=str(file) if file else None,
             )
         )
     return commands
@@ -457,15 +504,39 @@ def _reconstruct(span: str) -> str:
     return " ".join(span.replace("\\\n", " ").split())
 
 
+#: Deepest literal ``source`` nesting the tokenizer follows.
+_MAX_TOKENIZER_SOURCE_DEPTH = 16
+
+
+def _tokenizer_source_target(words: list[str], script_path: str) -> str | None:
+    """The file a literal ``source <path>`` names, relative to ``script_path``'s directory then the working directory; ``None`` for a computed path or a missing file."""
+    if len(words) < 2:
+        return None
+    target = words[-1]
+    if target[:1] == "{" and target[-1:] == "}":
+        target = target[1:-1]
+    if not target or any(ch in target for ch in "$[") or target.startswith("-"):
+        return None
+    candidates = (
+        [target]
+        if os.path.isabs(target)
+        else [os.path.join(os.path.dirname(script_path), target), target]
+    )
+    found = next((c for c in candidates if os.path.isfile(c)), None)
+    return os.path.abspath(found) if found else None
+
+
 def _read_with_tokenizer(
     text: str,
     *,
     interest: frozenset[str] | None,
     source: str | None,
+    script_path: str | None = None,
+    _depth: int = 0,
 ) -> list[TclCommand]:
     """Split ``text`` into words without evaluating it.
 
-    Logs at most one ``constraints.tokenizer_skipped`` warning per call, at the first ``$`` reference or scripting command; the whole file is still read.
+    Logs at most one ``constraints.tokenizer_skipped`` warning per call, at the first ``$`` reference or scripting command; the whole file is still read. With ``script_path``, a ``source`` of a literal path is read in place.
     """
     commands: list[TclCommand] = []
     warned = False
@@ -498,16 +569,47 @@ def _read_with_tokenizer(
                     features=list(OUT_OF_SCOPE_FEATURES),
                 )
 
-        if interest is not None and name not in interest:
-            continue
-        commands.append(
-            TclCommand(
-                name=name,
-                words=words[1:],
-                line=line_no,
-                raw=_reconstruct(span),
+        if interest is None or name in interest:
+            commands.append(
+                TclCommand(
+                    name=name,
+                    words=words[1:],
+                    line=line_no,
+                    raw=_reconstruct(span),
+                    file=script_path,
+                )
             )
-        )
+
+        if (
+            name == "source"
+            and script_path is not None
+            and _depth < _MAX_TOKENIZER_SOURCE_DEPTH
+        ):
+            included = _tokenizer_source_target(words, script_path)
+            if included is None:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "constraints.source_unreadable",
+                    source=script_path,
+                    line=line_no,
+                    included=words[-1] if len(words) > 1 else "",
+                    error="the tokenizer follows only a literal, existing path",
+                )
+                continue
+            try:
+                body = Path(included).read_text(errors="replace")
+            except OSError:
+                continue
+            commands.extend(
+                _read_with_tokenizer(
+                    body.replace("\r\n", "\n").replace("\r", "\n"),
+                    interest=interest,
+                    source=included,
+                    script_path=included,
+                    _depth=_depth + 1,
+                )
+            )
 
     return commands
 
@@ -517,15 +619,29 @@ def read_commands(
     *,
     interest: frozenset[str] | None,
     source: str | None = None,
+    script_path: str | None = None,
+    lenient_queries: bool = False,
 ) -> tuple[list[TclCommand], str]:
     """Return ``(commands, backend)`` for the commands in ``interest``, or every command when it is ``None``.
 
     `backend` is the one that answered: ``"tokenizer"`` when ``tcl`` is not selected, not available, or refused the file. Line endings are normalised first so CRLF continuations work.
+
+    ``script_path`` names the file ``text`` was read from. With it, ``source`` is followed: relative to the sourcing file's directory, then the working directory, with ``[info script]`` and path-only ``file`` subcommands (``dirname``, ``join``, ``normalize`` ...) answering as Tcl would; each command's ``file`` says where it came from. The tokenizer follows only a literal path. Without it, ``source`` is reported as unsupported.
+
+    ``lenient_queries`` retries a file the interp refused with object queries (``get_ports`` ...) answering their name arguments as a Tcl list rather than their source form, so a proc or loop that iterates a query's result is evaluated. Words then hold the names, not ``[get_ports ...]``; use it only where the query form does not matter.
     """
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if script_path is not None:
+        script_path = os.path.abspath(script_path)
     if select_backend() == TCL_BACKEND:
         try:
-            commands = _read_with_tcl(text, interest=interest, source=source)
+            commands = _read_with_tcl(
+                text,
+                interest=interest,
+                source=source,
+                script_path=script_path,
+                lenient_queries=lenient_queries,
+            )
         except Exception as exc:
             # Fall back to the tokenizer instead of returning no constraints.
             log_event(
@@ -540,6 +656,8 @@ def read_commands(
         if commands is not None:
             return commands, TCL_BACKEND
     return (
-        _read_with_tokenizer(text, interest=interest, source=source),
+        _read_with_tokenizer(
+            text, interest=interest, source=source, script_path=script_path
+        ),
         TOKENIZER_BACKEND,
     )

@@ -1754,6 +1754,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "change its ABC script"
             )
         case "synth.sdc_no_clock":
+            if fields.get("abc_delay_target"):
+                return (
+                    f'no create_clock period found in SDC "{fields.get("sdc")}"; '
+                    "abc-script uses {D}, so ABC maps with no delay target"
+                )
             return f'no create_clock found in SDC "{fields.get("sdc")}"; abc runs unconstrained'
         case "synth.sdc_period_unevaluated":
             return (
@@ -1784,6 +1789,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"Tcl refused to evaluate it ({fields.get('message')}); falling "
                 "back to the word tokenizer, which does not evaluate "
                 "$variables or [expr]"
+            )
+        case "constraints.source_unreadable":
+            return (
+                f'constraint file "{fields.get("source")}" line {fields.get("line")}: '
+                f"`source {fields.get('included')}` could not be read "
+                f"({fields.get('error')}); its commands are missing"
             )
         case "constraints.include_unsupported":
             return (

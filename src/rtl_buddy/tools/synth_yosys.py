@@ -5,6 +5,7 @@ import re
 import shlex
 import subprocess
 from pathlib import Path
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -473,6 +474,115 @@ def yosys_env(artefact_dir: str) -> dict[str, str]:
     return {**yosys_process_env(), "TMPDIR": tmp_dir}
 
 
+def sdc_clock_period_ps(
+    sdc_path: str, time_unit_ps: Callable[[], float], synth_name: str
+) -> int | None:
+    """Return the minimum ``create_clock`` period in the SDC, in picoseconds, or None.
+
+    Shared by both synthesis backends. Periods are in the Liberty `time_unit`, which
+    ``time_unit_ps`` returns in picoseconds. ABC ``-D`` takes one timing window, so
+    multi-clock designs use the minimum, which over-constrains slower domains. Periods
+    are read via the constraint reader, so ``\\``-continued commands and ``{10.0}``
+    work, ``source`` is followed relative to the sourcing file, and a file the interp
+    refuses is retried with object queries answering as name lists, so a proc or loop
+    over ``[get_ports ...]`` is evaluated (#788). A period that is not a number (``$p``
+    under the tokenizer backend, or ``[get_property ...]``) is skipped with
+    ``synth.sdc_period_unevaluated``.
+    """
+    try:
+        with open(sdc_path) as f:
+            text = f.read()
+    except OSError:
+        return None
+
+    commands, _backend = read_commands(
+        text,
+        interest=frozenset({"create_clock"}),
+        source=sdc_path,
+        script_path=sdc_path,
+        lenient_queries=True,
+    )
+    periods: list[float] = []
+    for cmd in commands:
+        value = _flag_value(cmd.words, "-period")
+        if value is None:
+            continue
+        if value.startswith("{") and value.endswith("}"):
+            value = value[1:-1].strip()
+        if value.startswith("$") or value.startswith("["):
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.sdc_period_unevaluated",
+                synth=synth_name,
+                sdc=cmd.file or sdc_path,
+                line=cmd.line,
+                value=value,
+            )
+            continue
+        try:
+            periods.append(float(value))
+        except ValueError:
+            continue
+    if not periods:
+        return None
+    ps_per_unit = time_unit_ps()
+    if len(periods) > 1:
+        ns_per_unit = ps_per_unit / 1000.0
+        log_event(
+            logger,
+            logging.WARNING,
+            "synth.sdc_multi_clock",
+            synth=synth_name,
+            clocks=len(periods),
+            periods_ns=[p * ns_per_unit for p in periods],
+            used_ns=min(periods) * ns_per_unit,
+            sdc=sdc_path,
+        )
+    return int(min(periods) * ps_per_unit)
+
+
+def resolve_abc_period_ps(
+    constraints: str | None,
+    abc_script: str,
+    time_unit_ps: Callable[[], float],
+    synth_name: str,
+) -> int | None:
+    """Return the ABC ``-D`` delay target, in picoseconds, for a mapped run, or None.
+
+    Shared by both synthesis backends. None without an SDC. An SDC that yields no
+    period warns ``synth.sdc_no_clock``; its ``abc_delay_target`` field says whether
+    ``abc_script`` writes ``{D}``, which then maps with no delay target (#788).
+    """
+    if not constraints:
+        return None
+    period_ps = sdc_clock_period_ps(constraints, time_unit_ps, synth_name)
+    if period_ps is not None:
+        log_event(
+            logger,
+            logging.DEBUG,
+            "synth.sdc_period",
+            synth=synth_name,
+            period_ps=period_ps,
+            sdc=constraints,
+        )
+    else:
+        log_event(
+            logger,
+            logging.WARNING,
+            "synth.sdc_no_clock",
+            synth=synth_name,
+            sdc=constraints,
+            abc_delay_target="{D}" in abc_script,
+        )
+    return period_ps
+
+
+def abc_period_arg(period_ps: int | None) -> str:
+    """Return the `` -D <ps>`` argument of a mapped ``abc`` command, or ``""`` without a period."""
+    return "" if period_ps is None else f" -D {period_ps}"
+
+
 def liberty_args(paths: list[str]) -> str:
     """Return one `` -liberty <file>`` per path, the form `dfflibmap`, `abc` and `stat` take for split cell libraries."""
     return "".join(f" -liberty {path}" for path in paths)
@@ -831,61 +941,10 @@ class YosysSynth:
         return self._ps_per_unit
 
     def _parse_clock_period_ps(self, sdc_path: str) -> int | None:
-        """Return the minimum ``create_clock`` period in the SDC, in picoseconds, or None.
-
-        Periods are in the Liberty `time_unit` (:meth:`_time_unit_ps`). ABC ``-D`` takes one timing window, so multi-clock designs use the
-        minimum, which over-constrains slower domains. Periods are read via the
-        constraint reader, so ``\\``-continued commands and ``{10.0}`` work. A
-        period that is not a number (``$p`` under the tokenizer backend, or
-        ``[get_property ...]``) is skipped with ``synth.sdc_period_unevaluated``.
-        """
-        try:
-            with open(sdc_path) as f:
-                text = f.read()
-        except OSError:
-            return None
-
-        commands, _backend = read_commands(
-            text, interest=frozenset({"create_clock"}), source=sdc_path
+        """Return the SDC's minimum ``create_clock`` period in picoseconds, or None (:func:`sdc_clock_period_ps`)."""
+        return sdc_clock_period_ps(
+            sdc_path, self._time_unit_ps, self.synth_cfg.get_name()
         )
-        periods: list[float] = []
-        for cmd in commands:
-            value = _flag_value(cmd.words, "-period")
-            if value is None:
-                continue
-            if value.startswith("{") and value.endswith("}"):
-                value = value[1:-1].strip()
-            if value.startswith("$") or value.startswith("["):
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "synth.sdc_period_unevaluated",
-                    synth=self.synth_cfg.get_name(),
-                    sdc=sdc_path,
-                    line=cmd.line,
-                    value=value,
-                )
-                continue
-            try:
-                periods.append(float(value))
-            except ValueError:
-                continue
-        if not periods:
-            return None
-        ps_per_unit = self._time_unit_ps()
-        if len(periods) > 1:
-            ns_per_unit = ps_per_unit / 1000.0
-            log_event(
-                logger,
-                logging.WARNING,
-                "synth.sdc_multi_clock",
-                synth=self.synth_cfg.get_name(),
-                clocks=len(periods),
-                periods_ns=[p * ns_per_unit for p in periods],
-                used_ns=min(periods) * ns_per_unit,
-                sdc=sdc_path,
-            )
-        return int(min(periods) * ps_per_unit)
 
     def _resolve_lib_paths(self) -> list[str]:
         extras = list(self.synth_cfg.get_lib_paths())
@@ -1015,32 +1074,16 @@ class YosysSynth:
             cell_libs = liberty_args(self._resolve_cell_lib_paths())
             lines.append(f"dfflibmap{dont_use}{cell_libs}")
 
-            abc_cmd = f"abc{cell_libs}{dont_use}"
-            constraints = self.synth_cfg.get_constraints()
-            period_ps = None
-            if constraints:
-                period_ps = self._parse_clock_period_ps(constraints)
-                if period_ps is not None:
-                    abc_cmd += f" -D {period_ps}"
-                    log_event(
-                        logger,
-                        logging.DEBUG,
-                        "synth.sdc_period",
-                        synth=self.synth_cfg.get_name(),
-                        period_ps=period_ps,
-                        sdc=constraints,
-                    )
-                else:
-                    log_event(
-                        logger,
-                        logging.WARNING,
-                        "synth.sdc_no_clock",
-                        synth=self.synth_cfg.get_name(),
-                        sdc=constraints,
-                    )
+            abc_script = mapped_abc_script(opts)
+            period_ps = resolve_abc_period_ps(
+                self.synth_cfg.get_constraints(),
+                abc_script,
+                self._time_unit_ps,
+                self.synth_cfg.get_name(),
+            )
+            abc_cmd = f"abc{cell_libs}{dont_use}{abc_period_arg(period_ps)}"
             self._period_ps = period_ps
 
-            abc_script = mapped_abc_script(opts)
             if period_ps is not None:
                 abc_script += _ABC_STIME
             abc_cmd += f' -script "+{abc_script}"'
