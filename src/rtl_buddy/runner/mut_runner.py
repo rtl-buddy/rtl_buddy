@@ -1,7 +1,8 @@
 """Mutation-campaign runner for ``rb mut``.
 
 Generates mutants with the external ``rtl-buddy-xeno`` engine, splices each into an isolated copy of the model source tree,
-and scores it against the configured FPV and sim oracles. xeno is optional and imported lazily.
+and scores it against the configured FPV and sim oracles. xeno is optional and imported lazily, only when ``operators`` is non-empty.
+User mutants from ``mutants:`` are unified diffs applied with ``git apply`` to their own copy of the tree and scored the same way.
 """
 
 from __future__ import annotations
@@ -14,10 +15,11 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
-from ..config.mut import MutConfig
+from ..config.mut import MutConfig, MutUserMutant
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..seeding import resolve_test_seed
@@ -25,6 +27,10 @@ from .fpv_runner import FpvRunner
 from .mut_results import ERRORED, KILLED, SURVIVED, MutantOutcome, MutResults
 
 logger = logging.getLogger(__name__)
+
+
+# MutantOutcome.operator for a `mutants:` entry.
+USER_OPERATOR = "user"
 
 
 # Keep in sync with the floor of the `mut` extra in pyproject.toml.
@@ -49,6 +55,10 @@ def _version_tuple(version: str) -> tuple[int, ...]:
         match = re.match(r"\d+", segment)
         parts.append(int(match.group()) if match else 0)
     return tuple(parts)
+
+
+class _PatchError(Exception):
+    """A user mutant's diff did not apply; the message is git's."""
 
 
 class MutRunner:
@@ -221,7 +231,9 @@ class MutRunner:
         return files
 
     def list_candidates(self) -> list[dict]:
-        """Enumerate candidate sites without mutating (``rb mut list``)."""
+        """Enumerate candidate sites without mutating (``rb mut list``); user mutants have no sites."""
+        if not self.mut_cfg.get_operators():
+            return []
         xeno = self._load_xeno()
         if self.mut_cfg.has_scope():
             return self._list_candidates_scoped(xeno)
@@ -267,15 +279,16 @@ class MutRunner:
         return sites
 
     def run(self) -> MutResults:
+        if not self.mut_cfg.get_operators():
+            # A campaign of user mutants only does not need xeno.
+            return self._run_single_file(None)
         xeno = self._load_xeno()
         if self.mut_cfg.has_scope():
             return self._run_scoped(xeno)
-        mutator = self._mutator(xeno)
-        kinds = self._kinds(xeno)
+        return self._run_single_file(xeno)
 
-        self._validate_design_in_model()
-        Path(self.work_dir).mkdir(parents=True, exist_ok=True)
-
+    def _run_baselines(self):
+        """Run the configured oracles on the unmutated tree; return (fpv_cfg, fpv_baseline, baseline_verdict)."""
         # A non-PASS baseline only warns; every mutant then reads as killed.
         fpv_cfg = self._load_fpv_cfg() if self.mut_cfg.has_fpv_oracle() else None
         fpv_baseline = self._baseline_fpv(fpv_cfg) if fpv_cfg is not None else None
@@ -295,8 +308,25 @@ class MutRunner:
             for label, v in (("fpv", fpv_baseline), ("sim", sim_baseline))
             if v is not None
         )
+        return fpv_cfg, fpv_baseline, baseline_verdict
 
-        outcomes: list[MutantOutcome] = []
+    def _run_single_file(self, xeno) -> MutResults:
+        """Run a single-file campaign: the user mutants, then xeno's mutants of ``design_file`` when ``xeno`` is given."""
+        mutator = self._mutator(xeno) if xeno is not None else None
+        kinds = self._kinds(xeno) if xeno is not None else []
+
+        self._validate_design_in_model()
+        Path(self.work_dir).mkdir(parents=True, exist_ok=True)
+
+        fpv_cfg, fpv_baseline, baseline_verdict = self._run_baselines()
+
+        outcomes = self._run_user_mutants(fpv_cfg, fpv_baseline)
+        if mutator is None:
+            return MutResults(
+                name=self.mut_cfg.get_name(),
+                outcomes=outcomes,
+                baseline_verdict=baseline_verdict or "NA",
+            )
         deadline = self._deadline()
         for idx, mutant in enumerate(
             mutator.generate(
@@ -324,33 +354,17 @@ class MutRunner:
         )
 
     def _run_scoped(self, xeno) -> MutResults:
-        """Run a multi-file campaign, mutating each scoped file in sorted order.
+        """Run a multi-file campaign: the user mutants, then each scoped file in sorted order.
 
         ``per_file_cap`` limits mutants per file. ``max_mutants`` is a global ceiling and the campaign stops when it is
         reached, even mid-file; the time budget also covers the whole campaign, so later files may be truncated. The
-        schedule applies per file.
+        schedule applies per file. User mutants are outside the budget and the ``per_file`` counts.
         """
         kinds = self._kinds(xeno)
         Path(self.work_dir).mkdir(parents=True, exist_ok=True)
 
-        fpv_cfg = self._load_fpv_cfg() if self.mut_cfg.has_fpv_oracle() else None
-        fpv_baseline = self._baseline_fpv(fpv_cfg) if fpv_cfg is not None else None
-        sim_baseline = self._baseline_sim() if self.mut_cfg.has_sim_oracle() else None
-        for label, verdict in (("fpv", fpv_baseline), ("sim", sim_baseline)):
-            if verdict is not None and verdict != "PASS":
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "mut_runner.baseline_not_pass",
-                    campaign=self.mut_cfg.get_name(),
-                    oracle=label,
-                    verdict=verdict,
-                )
-        baseline_verdict = " ".join(
-            f"{label}={v}"
-            for label, v in (("fpv", fpv_baseline), ("sim", sim_baseline))
-            if v is not None
-        )
+        fpv_cfg, fpv_baseline, baseline_verdict = self._run_baselines()
+        user_outcomes = self._run_user_mutants(fpv_cfg, fpv_baseline)
 
         source_files = self._scoped_source_files()
         model_dir = self._model_dir()
@@ -401,7 +415,7 @@ class MutRunner:
 
         return MutResults(
             name=self.mut_cfg.get_name(),
-            outcomes=outcomes,
+            outcomes=user_outcomes + outcomes,
             baseline_verdict=baseline_verdict or "NA",
             per_file=per_file,
         )
@@ -434,21 +448,111 @@ class MutRunner:
 
         ``target_file`` is the file to splice into; None means the configured ``design_file``.
         """
+        mutant_root, model_src = self._copy_model_tree(mutant_id)
+        spliced = os.path.join(model_src, self._design_relpath(target_file))
+        with open(spliced, "w") as f:
+            f.write(mutant_sv)
+        return self._copied_model(model_src), mutant_root
+
+    def _copy_model_tree(self, mutant_id: str) -> tuple[str, str]:
+        """Copy the model directory to ``<work_dir>/<mutant_id>/model_src``; return (mutant root, model_src)."""
         mutant_root = os.path.join(self.work_dir, mutant_id)
         model_src = os.path.join(mutant_root, "model_src")
         if os.path.exists(model_src):
             shutil.rmtree(model_src)
         shutil.copytree(self._model_dir(), model_src)
+        return mutant_root, model_src
 
-        spliced = os.path.join(model_src, self._design_relpath(target_file))
-        with open(spliced, "w") as f:
-            f.write(mutant_sv)
-
+    def _copied_model(self, model_src: str):
+        """Return the campaign's ModelConfig re-pointed at the models.yaml inside ``model_src``."""
         orig_model = self.mut_cfg.get_model()
         copied_models_yaml = os.path.join(
             model_src, os.path.basename(os.path.abspath(orig_model.path))
         )
-        return dataclasses.replace(orig_model, path=copied_models_yaml), mutant_root
+        return dataclasses.replace(orig_model, path=copied_models_yaml)
+
+    @staticmethod
+    def _apply_patch(mutant: MutUserMutant, model_src: str) -> list[str]:
+        """Apply a user mutant's diff inside ``model_src`` with ``git apply``; return the touched model-relative paths.
+
+        ``git apply`` is all-or-nothing and refuses paths that leave ``model_src``. Repository discovery is capped at
+        ``model_src``'s parent, so an enclosing checkout (the project under test) never changes how the paths resolve.
+        Raises :class:`_PatchError` with git's message when the diff does not apply.
+        """
+        env = dict(os.environ)
+        env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(os.path.realpath(model_src))
+        cmd = [
+            "git",
+            "apply",
+            "--apply",
+            "--numstat",
+            f"-p{mutant.strip}",
+            mutant.patch,
+        ]
+        try:
+            proc = subprocess.run(
+                cmd, cwd=model_src, env=env, capture_output=True, text=True
+            )
+        except FileNotFoundError as e:
+            raise FatalRtlBuddyError(
+                "rb mut: user mutants are applied with `git apply`, but git is not on PATH"
+            ) from e
+        if proc.returncode != 0:
+            raise _PatchError(
+                proc.stderr.strip() or f"git apply exited {proc.returncode}"
+            )
+        touched = []
+        for line in proc.stdout.splitlines():
+            parts = line.split("\t", 2)
+            if len(parts) == 3:
+                touched.append(parts[2])
+        return touched
+
+    def _run_user_mutants(self, fpv_cfg, fpv_baseline) -> list[MutantOutcome]:
+        """Score every ``mutants:`` entry in config order; the budget does not limit them."""
+        return [
+            self._score_user_mutant(m, fpv_cfg, fpv_baseline)
+            for m in self.mut_cfg.get_mutants()
+        ]
+
+    def _score_user_mutant(
+        self, mutant: MutUserMutant, fpv_cfg, fpv_baseline
+    ) -> MutantOutcome:
+        mutant_id = f"{USER_OPERATOR}_{mutant.name}"
+        diff_summary = f"patch {mutant.patch_display}"
+        try:
+            mutant_root, model_src = self._copy_model_tree(mutant_id)
+            touched = self._apply_patch(mutant, model_src)
+        except (OSError, _PatchError) as e:
+            # The patch no longer applies (or the copy failed): no verdict, excluded from the score.
+            log_event(
+                logger,
+                logging.WARNING,
+                "mut_runner.user_mutant_not_applied",
+                campaign=self.mut_cfg.get_name(),
+                mutant=mutant_id,
+                patch=mutant.patch,
+                error=str(e),
+            )
+            first_line = str(e).splitlines()[0] if str(e) else ""
+            return MutantOutcome(
+                mutant_id=mutant_id,
+                operator=USER_OPERATOR,
+                outcome=ERRORED,
+                diff_summary=f"{diff_summary} does not apply: {first_line}",
+                verdict="ERROR",
+            )
+        return self._evaluate_mutant(
+            mutant_id=mutant_id,
+            operator=USER_OPERATOR,
+            mutant_model=self._copied_model(model_src),
+            mutant_root=mutant_root,
+            fpv_cfg=fpv_cfg,
+            fpv_baseline=fpv_baseline,
+            diff_summary=diff_summary,
+            predicted=[],
+            file_rel=", ".join(touched),
+        )
 
     def _load_fpv_cfg(self):
         from ..config.fpv import FpvSuiteConfig
@@ -616,6 +720,32 @@ class MutRunner:
                 file=file_rel,
             )
 
+        return self._evaluate_mutant(
+            mutant_id=mutant_id,
+            operator=operator,
+            mutant_model=mutant_model,
+            mutant_root=mutant_root,
+            fpv_cfg=fpv_cfg,
+            fpv_baseline=fpv_baseline,
+            diff_summary=mutant.diff_summary,
+            predicted=predicted,
+            file_rel=file_rel,
+        )
+
+    def _evaluate_mutant(
+        self,
+        *,
+        mutant_id: str,
+        operator: str,
+        mutant_model,
+        mutant_root: str,
+        fpv_cfg,
+        fpv_baseline,
+        diff_summary: str,
+        predicted: list[str],
+        file_rel: str,
+    ) -> MutantOutcome:
+        """Run the configured oracles on a materialised mutant and combine their outcomes."""
         per_outcomes: list[str] = []
         verdicts: list[str] = []
         if fpv_cfg is not None:
@@ -651,7 +781,7 @@ class MutRunner:
             mutant_id=mutant_id,
             operator=operator,
             outcome=overall,
-            diff_summary=mutant.diff_summary,
+            diff_summary=diff_summary,
             verdict=" ".join(verdicts) or "NA",
             predicted_signals=predicted,
             file=file_rel,

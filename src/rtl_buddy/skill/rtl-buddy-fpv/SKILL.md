@@ -28,4 +28,4 @@ Use `rb --machine`. For configs and worked procedures read `rb fpv --help`, `rb 
 
 ## Mutation campaigns
 
-Use `rb --machine docs show concepts/mut`. Survivors are verification holes; mutants that cannot build are errors, not kills. `mut run` exits 0 when the campaign is scorable and 1 when nothing is scorable; score and survivor count do not gate it. Fatal errors exit 2.
+Use `rb --machine docs show concepts/mut`. Survivors are verification holes; mutants that cannot build are errors, not kills. Keep curated faults as `mutants:` patches so a patch that stops applying shows as `ERRORED`. `mut run` exits 0 when the campaign is scorable and 1 when nothing is scorable; score and survivor count do not gate it. Fatal errors exit 2.

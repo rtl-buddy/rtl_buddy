@@ -1,12 +1,13 @@
 """Configuration schema for ``rb mut`` (mutation testing) runs.
 
-One ``mut.yaml`` describes a single mutation campaign: a design file, the operators to apply, a budget, and the kill oracle (FPV, simulation, or both).
-The mutation engine is the external ``rtl-buddy-xeno`` library.
+One ``mut.yaml`` describes a single mutation campaign: a design file, the operators to apply, user-supplied patch mutants, a budget, and the kill oracle (FPV, simulation, or both).
+The mutation engine for ``operators`` is the external ``rtl-buddy-xeno`` library; ``mutants`` need only ``git``.
 """
 
 import logging
 import os
 import pprint
+import re
 from dataclasses import dataclass, field as dc_field
 from typing import Literal
 
@@ -32,6 +33,9 @@ _VALID_OPERATORS = (
 )
 
 _VALID_SCHEDULES = ("sequential", "round_robin")
+
+# A user mutant's name becomes part of its work directory and mutant id.
+_MUTANT_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 
 
 # ---- budget ----------------------------------------------------------------
@@ -87,6 +91,33 @@ class MutScopeFile:
     exclude: list[str] = field(default_factory=list)
 
 
+# ---- user-supplied mutants (optional) --------------------------------------
+
+
+@serde
+class MutUserMutantFile:
+    """A hand-written mutant: a unified diff applied with ``git apply`` to an isolated copy of the model tree.
+
+    ``patch`` is relative to mut.yaml. The paths inside the diff are relative to the model directory (the one holding
+    models.yaml) after ``strip`` leading components are removed, as ``git apply -p<strip>``; the default 1 matches the
+    ``a/`` and ``b/`` prefixes of ``git diff``.
+    """
+
+    name: str
+    patch: str
+    strip: int = 1
+
+
+@dataclass
+class MutUserMutant:
+    name: str
+    # Absolute path to the diff.
+    patch: str
+    # The path as written in mut.yaml, for reports.
+    patch_display: str
+    strip: int = 1
+
+
 # ---- campaign config (one mut.yaml) ----------------------------------------
 
 
@@ -98,16 +129,27 @@ class MutConfigFile:
     # Relative to mut.yaml; must be a model source file inside the models.yaml directory.
     # With a scope block it only anchors the model dir and oracle baseline; the scoped files are mutated.
     design_file: str = field(rename="design_file")
-    operators: list[str]
     verify: MutVerifyFile
+    # Either list may be empty, but not both.
+    operators: list[str] = field(default_factory=list)
+    mutants: list[MutUserMutantFile] = field(default_factory=list)
     name: str | None = None
     top: str | None = None
     budget: MutBudgetFile = field(default_factory=MutBudgetFile)
     scope: MutScopeFile = field(default_factory=MutScopeFile)
 
     def initialise(self, config_dir: str) -> "MutConfig":
-        if not self.operators:
-            raise FatalRtlBuddyError("mut.yaml: operators list is empty")
+        if not self.operators and not self.mutants:
+            raise FatalRtlBuddyError(
+                "mut.yaml: operators and mutants are both empty; "
+                "configure at least one operator or user mutant"
+            )
+        if self.scope.include or self.scope.exclude:
+            if not self.operators:
+                raise FatalRtlBuddyError(
+                    "mut.yaml: scope selects files for generated mutants and "
+                    "needs a non-empty operators list"
+                )
         for op in self.operators:
             if op not in _VALID_OPERATORS:
                 raise FatalRtlBuddyError(
@@ -147,6 +189,7 @@ class MutConfigFile:
             self.model
         )
         design_file = os.path.normpath(os.path.join(config_dir, self.design_file))
+        mutants = self._initialise_mutants(config_dir)
         fpv_config = (
             os.path.normpath(os.path.join(config_dir, self.verify.fpv_config))
             if self.verify.fpv_config
@@ -165,6 +208,7 @@ class MutConfigFile:
             top_override=self.top,
             design_file=design_file,
             operators=list(self.operators),
+            mutants=mutants,
             fpv_config=fpv_config,
             verification=self.verify.verification,
             test_config=test_config,
@@ -179,6 +223,35 @@ class MutConfigFile:
             scope_include=list(self.scope.include),
             scope_exclude=list(self.scope.exclude),
         )
+
+    def _initialise_mutants(self, config_dir: str) -> list[MutUserMutant]:
+        seen: set[str] = set()
+        mutants: list[MutUserMutant] = []
+        for m in self.mutants:
+            if not _MUTANT_NAME_RE.fullmatch(m.name or ""):
+                raise FatalRtlBuddyError(
+                    f"mut.yaml: mutant name {m.name!r} must start with a letter, "
+                    "digit or underscore and contain only letters, digits, "
+                    "underscore, dot or hyphen"
+                )
+            if m.name in seen:
+                raise FatalRtlBuddyError(f"mut.yaml: duplicate mutant name {m.name!r}")
+            seen.add(m.name)
+            if m.strip < 0:
+                raise FatalRtlBuddyError(
+                    f"mut.yaml: mutant {m.name!r}: strip must be >= 0"
+                )
+            patch = os.path.normpath(os.path.join(config_dir, m.patch))
+            if not os.path.isfile(patch):
+                raise FatalRtlBuddyError(
+                    f"mut.yaml: mutant {m.name!r}: patch not found: {patch}"
+                )
+            mutants.append(
+                MutUserMutant(
+                    name=m.name, patch=patch, patch_display=m.patch, strip=m.strip
+                )
+            )
+        return mutants
 
 
 @dataclass
@@ -200,6 +273,7 @@ class MutConfig:
     assertions: bool = True
     scope_include: list[str] = dc_field(default_factory=list)
     scope_exclude: list[str] = dc_field(default_factory=list)
+    mutants: list[MutUserMutant] = dc_field(default_factory=list)
 
     def get_name(self) -> str:
         return self.name
@@ -218,6 +292,9 @@ class MutConfig:
 
     def get_operators(self) -> list[str]:
         return self.operators
+
+    def get_mutants(self) -> list[MutUserMutant]:
+        return self.mutants
 
     def has_fpv_oracle(self) -> bool:
         return self.fpv_config is not None
