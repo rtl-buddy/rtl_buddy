@@ -90,6 +90,8 @@ The summary shows the verdict, mode, depth, engines, engine result mix, runtime 
 
 A run passes when sby reports `PASS`. `FAIL`, `UNKNOWN`, `ERROR` or a nonzero exit fails it. In a regression, an entry above the selected level is `SKIP`.
 
+In `mode: prove`, an `UNKNOWN` whose engine passed the base case and failed the induction step is graded as the proof's verdict, `induction failed: ...`: no counterexample within `depth`, but the property is not k-inductive. Any other `UNKNOWN`, a timeout or an `ERROR` is a tool failure.
+
 ## Check proof quality
 
 A green verdict can come from unreachable antecedents, unused logic or over-strong assumptions. Keep the default analyses on and run a negative check.

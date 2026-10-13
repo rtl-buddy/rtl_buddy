@@ -24,7 +24,7 @@ Use `rb --machine`. For configs and worked procedures read `rb fpv --help`, `rb 
 - Constrain reset and initial state so the proof does not start in an unreachable state.
 - Confirm every intended cover is reachable.
 - Make one deliberate mutation and confirm the expected assertion fails before calling a proof environment trustworthy.
-- Track intentionally non-inductive cases with `xfail`/`xfail_strict`. They excuse a property sby disproved, not an `UNKNOWN`, a solver timeout or an sby error, which stay `FAIL`.
+- Track intentionally non-inductive cases with `xfail`/`xfail_strict`. They excuse a property sby disproved or a `prove` whose induction step failed (desc `induction failed: ...`), not any other `UNKNOWN`, a solver timeout or an sby error, which stay `FAIL`.
 
 ## Mutation campaigns
 

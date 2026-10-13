@@ -441,7 +441,7 @@ class SbyFpv:
                 params=cfg.get_param_tokens(),
             )
 
-        # Exit codes: 0 PASS, 1 FAIL, 2 UNKNOWN/timeout, other ERROR. The status file wins when present.
+        # sby exit codes are a bitmask: 0 PASS, 2 FAIL, 4 UNKNOWN, 8 TIMEOUT, 16 ERROR. The status file wins when present.
         if status == "PASS" or (status is None and proc.returncode == 0):
             result = FpvPassResults(
                 name=cfg.get_name(),
@@ -467,6 +467,25 @@ class SbyFpv:
             self._merge_extras(result, vacuity=vacuity, coi=coi)
             return result
 
+        if (
+            status == "UNKNOWN"
+            and cfg.get_mode() == "prove"
+            and self._induction_failed(log_path, workdir)
+        ):
+            # A failed induction step is the proof's verdict on the design (not k-inductive at this depth),
+            # so it stays eligible for xfail; any other UNKNOWN is graded a tool failure below.
+            result = FpvFailResults(
+                name=cfg.get_name(),
+                mode=cfg.get_mode(),
+                depth=cfg.get_depth(),
+                engines=cfg.get_engines(),
+                runtime_s=round(runtime_s, 2),
+                desc=self._induction_desc(workdir, log_path),
+                per_engine=per_engine,
+            )
+            self._merge_extras(result, vacuity=vacuity, coi=coi)
+            return result
+
         desc_status = status or f"sby exit code {proc.returncode}"
         hint = self._vacuous_guard_hint(log_path, workdir)
         result = FpvFailResults(
@@ -482,6 +501,33 @@ class SbyFpv:
         )
         self._merge_extras(result, vacuity=vacuity, coi=coi)
         return result
+
+    def _induction_desc(self, workdir: str, log_path: str) -> str:
+        """Describe a failed induction step, pointing at the first engine's induction trace when present."""
+        desc = (
+            f"induction failed: no counterexample within depth {self.fpv_cfg.get_depth()}, "
+            f"but the property is not k-inductive (sby reported UNKNOWN"
+        )
+        engine_dirs = (
+            sorted(e for e in os.listdir(workdir) if e.startswith("engine_"))
+            if os.path.isdir(workdir)
+            else []
+        )
+        for entry in engine_dirs:
+            trace = os.path.join(workdir, entry, "trace_induct.vcd")
+            if os.path.isfile(trace):
+                return f"{desc}; induction trace: {trace})"
+        return f"{desc}; see {log_path})"
+
+    @staticmethod
+    def _induction_failed(log_path: str, workdir: str) -> bool:
+        """Return True when sby's workdir logfile, or the captured run log, reports a failed induction step."""
+        from .fpv_log_parse import induction_failed, read_workdir_log
+
+        texts = [read_workdir_log(workdir)]
+        if os.path.isfile(log_path):
+            texts.append(Path(log_path).read_text())
+        return any(t is not None and induction_failed(t) for t in texts)
 
     def _vacuous_guard_hint(self, log_path: str, workdir: str) -> str:
         """Return a hint when the formal-cell guard (``select -assert-min 1``) tripped, else "".
