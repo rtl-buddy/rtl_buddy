@@ -16,6 +16,41 @@ def process_opts(opts):
     return re.sub(r"\s+", " ", opts).split(" ")
 
 
+def normalize_compile_opts(value, *, where) -> dict[str, list[str]] | None:
+    """Validate a suite's ``compile-opts`` and return it as ``{family: [token, ...]}``.
+
+    ``value`` maps a simulator family (``verilator``, ``vcs``, ``icarus`` or a builder's
+    ``simulator-family``) to options appended after the builder mode's ``compile-time``
+    for that family only. A string is split on whitespace as ``compile-time`` is; a
+    list is taken token by token. Raises FatalRtlBuddyError naming ``where``.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise FatalRtlBuddyError(
+            f"{where}: compile-opts must map a simulator family to options, "
+            f"got {type(value).__name__}"
+        )
+    normalized: dict[str, list[str]] = {}
+    for family, opts in value.items():
+        if not isinstance(family, str) or not family.strip():
+            raise FatalRtlBuddyError(
+                f"{where}: compile-opts keys must be simulator family names, got {family!r}"
+            )
+        if opts is None:
+            tokens: list[str] = []
+        elif isinstance(opts, str):
+            tokens = [t for t in process_opts(opts.strip()) if t]
+        elif isinstance(opts, list) and all(isinstance(t, str) for t in opts):
+            tokens = list(opts)
+        else:
+            raise FatalRtlBuddyError(
+                f"{where}: compile-opts.{family} must be a string or a list of strings"
+            )
+        normalized[family.strip().lower()] = tokens
+    return normalized
+
+
 #: Set by rtl_buddy, not read from the caller's environment, when ``compile-time`` tokens are expanded.
 PROJECT_ROOT_VAR = "RTL_BUDDY_PROJECT_ROOT"
 

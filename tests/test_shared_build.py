@@ -7781,3 +7781,80 @@ def test_prune_unlinks_symlinks_without_following_them_and_continues_after_failu
         getattr(r, "rtl_event", None) == "compile.shared_build_prune_failed"
         for r in caplog.records
     )
+
+
+def _with_suite_compile_opts(sim, opts_by_family):
+    """Give the sim's test the suite ``compile-opts`` that TestConfig carries."""
+    sim.test_cfg.get_compile_opts = lambda family: list(opts_by_family.get(family, []))
+    return sim
+
+
+def test_suite_compile_opts_follow_the_builder_opts_for_their_family(
+    tmp_path, monkeypatch
+):
+    """A suite's options for the compiling family land after the builder mode's."""
+    _write_source(tmp_path)
+    sim = _with_suite_compile_opts(
+        _make_sim(
+            tmp_path, monkeypatch, test_name="t", compile_opts=["--binary", "-j", "4"]
+        ),
+        {"verilator": ["-MAKEFLAGS", "OPT_FAST=-O0"], "vcs": ["-kdb"]},
+    )
+    plan = sim._build_compile_plan()
+    assert plan.builder_opts[:3] == ["--binary", "-j", "4"]
+    assert plan.builder_opts[3:] == ["-MAKEFLAGS", "OPT_FAST=-O0"]
+    argv = sim._compile_argv(plan, quiet=True)
+    assert argv.index("-MAKEFLAGS") > argv.index("--binary")
+    assert "-kdb" not in argv
+
+
+def test_suite_compile_opts_for_another_family_are_not_passed(tmp_path, monkeypatch):
+    """`--builder vcs` on a suite with Verilator options gets none of them."""
+    _write_source(tmp_path)
+    sim = _with_suite_compile_opts(
+        _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name="t",
+            exe="vcs",
+            family="vcs",
+            compile_opts=["-sverilog"],
+        ),
+        {"verilator": ["-MAKEFLAGS", "OPT_FAST=-O0"]},
+    )
+    plan = sim._build_compile_plan()
+    assert plan.builder_opts == ["-sverilog"]
+    assert "-MAKEFLAGS" not in sim._compile_argv(plan, quiet=True)
+
+
+def test_suite_compile_opts_are_part_of_the_shared_build_key(tmp_path, monkeypatch):
+    """A suite option changes the compile, so it must change the shared build."""
+    _write_source(tmp_path)
+    plain = _make_sim(tmp_path, monkeypatch, test_name="a").compile_group_dir()
+    tuned = _with_suite_compile_opts(
+        _make_sim(tmp_path, monkeypatch, test_name="b"),
+        {"verilator": ["-MAKEFLAGS", "OPT_FAST=-O0"]},
+    ).compile_group_dir()
+    again = _make_sim(tmp_path, monkeypatch, test_name="c").compile_group_dir()
+    assert plain == again
+    assert tuned != plain
+
+
+def test_suite_compile_opts_expand_like_compile_time(tmp_path, monkeypatch):
+    """`${RTL_BUDDY_PROJECT_ROOT}` in a suite option names the project root."""
+    _write_checkout(tmp_path)
+    sim = _with_suite_compile_opts(
+        _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name="t",
+            suite_dir=tmp_path / "verif" / "blk",
+            project_root=tmp_path,
+            model_path=tmp_path / "verif" / "blk" / "models.yaml",
+            filelist=["../../rtl/a.sv"],
+            compile_opts=["--binary"],
+        ),
+        {"verilator": ["${RTL_BUDDY_PROJECT_ROOT}/rtl/waive.vlt"]},
+    )
+    plan = sim._build_compile_plan()
+    assert str(tmp_path.resolve() / "rtl" / "waive.vlt") in plan.builder_opts

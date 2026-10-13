@@ -131,6 +131,8 @@ class TestConfig:
     timeout: int | None
     covers: list[str] | None = None
     builder_name: str | None = None
+    # The suite's `compile-opts`: options per simulator family, appended after the builder mode's compile-time.
+    compile_opts: dict[str, list[str]] | None = None
     assertions: bool = False
     # Layered over the testbench's `resources:` and cfg-dispatch defaults by config.dispatch.resolve_resources().
     resources: "DispatchResourcesFile | None" = None
@@ -152,6 +154,12 @@ class TestConfig:
     def get_builder_name(self):
         """Return the ``cfg-rtl-builder`` name selected for this test, or None for the suite/platform default."""
         return self.builder_name
+
+    def get_compile_opts(self, family: str) -> list[str]:
+        """Return the suite's ``compile-opts`` for simulator ``family``; empty when it names none."""
+        if not self.compile_opts:
+            return []
+        return list(self.compile_opts.get(family.lower(), []))
 
     def is_xfail(self) -> bool:
         """Whether this test is expected to fail."""
@@ -348,6 +356,7 @@ class TestConfig:
             "timeout": self.timeout,
             "covers": self.covers,
             "builder_name": self.builder_name,
+            "compile_opts": self.compile_opts,
             "assertions": self.assertions,
             "resources": to_dict(self.resources)
             if self.resources is not None
@@ -381,6 +390,7 @@ class TestConfig:
             d["timeout"],
             covers=d["covers"],
             builder_name=d["builder_name"],
+            compile_opts=d.get("compile_opts"),
             assertions=d["assertions"],
             resources=from_dict(DispatchResourcesFile, d["resources"])
             if d["resources"] is not None
@@ -458,6 +468,7 @@ class TestConfigFile:
         tbs,
         suite_builder=None,
         suite_preproc_sets_plusdefines=None,
+        suite_compile_opts=None,
     ):
         validate_preproc_sets_plusdefines(
             self.preproc_sets_plusdefines, where=f"test {self.name!r}"
@@ -501,6 +512,7 @@ class TestConfigFile:
             self.timeout,
             covers=self.covers,
             builder_name=self.builder_name or suite_builder,
+            compile_opts=suite_compile_opts,
             assertions=self.assertions,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
