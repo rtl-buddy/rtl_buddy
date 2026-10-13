@@ -95,10 +95,56 @@ def select_compile_opts(
     if opts is None:
         return []
     if isinstance(opts, dict):
-        if mode is not None and mode in opts:
-            return list(opts[mode])
-        return list(opts.get(COMPILE_OPTS_DEFAULT_MODE, []))
+        return select_mode_entry(opts, mode)
     return list(opts)
+
+
+def select_mode_entry(
+    by_mode: dict[str, list[str]] | None, mode: str | None
+) -> list[str]:
+    """Return ``by_mode``'s entry for builder ``mode``, else its ``default``, else empty.
+
+    An entry present but empty selects nothing; it does not fall back to ``default``.
+    """
+    if not by_mode:
+        return []
+    if mode is not None and mode in by_mode:
+        return list(by_mode[mode])
+    return list(by_mode.get(COMPILE_OPTS_DEFAULT_MODE, []))
+
+
+def normalize_filelist_modes(value, *, where) -> dict[str, list[str]] | None:
+    """Validate a ``filelist-modes`` block and return it as ``{mode: [entry, ...]}``.
+
+    ``value`` maps a builder mode (a ``builder-opts`` key), or ``default`` for every
+    mode without its own entry, to extra filelist entries compiled only in that mode.
+    Each value is a list of filelist lines, as ``filelist:`` takes; an empty or null
+    value selects nothing. Raises FatalRtlBuddyError naming ``where``.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise FatalRtlBuddyError(
+            f"{where}: filelist-modes must map a builder mode to a list of filelist "
+            f"entries, got {type(value).__name__}"
+        )
+    normalized: dict[str, list[str]] = {}
+    for mode, entries in value.items():
+        if not isinstance(mode, str) or not mode.strip():
+            raise FatalRtlBuddyError(
+                f"{where}: filelist-modes keys must be builder mode names or "
+                f"`{COMPILE_OPTS_DEFAULT_MODE}`, got {mode!r}"
+            )
+        if entries is None:
+            entries = []
+        if not isinstance(entries, list) or not all(
+            isinstance(e, str) for e in entries
+        ):
+            raise FatalRtlBuddyError(
+                f"{where}: filelist-modes.{mode} must be a list of filelist entries"
+            )
+        normalized[mode] = list(entries)
+    return normalized
 
 
 #: Set by rtl_buddy, not read from the caller's environment, when ``compile-time`` tokens are expanded.

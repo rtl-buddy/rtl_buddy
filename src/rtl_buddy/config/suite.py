@@ -15,7 +15,7 @@ from .dispatch import (
     validate_compile_block,
     warn_unknown_block_keys,
 )
-from .rtl import normalize_compile_opts
+from .rtl import normalize_compile_opts, normalize_filelist_modes
 from .test import (
     TestbenchConfig,
     TestConfigFile,
@@ -33,6 +33,8 @@ class SuiteConfigFile:
     builder: str | None = None
     # Per simulator family, appended after the builder mode's compile-time; Any so the load error names the key.
     compile_opts: Any = field(rename="compile-opts", default=None)
+    # Extra filelist entries per builder mode for every testbench; Any so the load error names the key.
+    filelist_modes: Any = field(rename="filelist-modes", default=None)
     # Layers over cfg-dispatch.compile field by field. A dedicated class keeps an unset `parallel` (None) distinct from `parallel: 1`.
     compile: SuiteCompileFile | None = None
     # Suite default for each test's `preproc-sets-plusdefines`; Any so the load error names the key.
@@ -115,6 +117,7 @@ class SuiteConfig:
                 raise FatalRtlBuddyError(f"{path}: {e}") from e
             validate_preproc_sets_plusdefines(data.preproc_sets_plusdefines, where=path)
             compile_opts = normalize_compile_opts(data.compile_opts, where=path)
+            filelist_modes = normalize_filelist_modes(data.filelist_modes, where=path)
 
             # The dict comprehensions below would silently keep the last duplicate.
             seen_tbs: dict[str, int] = {}
@@ -172,6 +175,7 @@ class SuiteConfig:
                         data.builder,
                         data.preproc_sets_plusdefines,
                         suite_compile_opts=compile_opts,
+                        suite_filelist_modes=filelist_modes,
                     )
                     for test in data.tests
                 }

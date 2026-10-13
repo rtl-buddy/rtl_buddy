@@ -7,11 +7,13 @@ import shutil
 import threading
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from rtl_buddy import artifact_lock as artifact_lock_module
 from rtl_buddy.config.rtl import select_compile_opts
+from rtl_buddy.config import test as test_config_module
 from rtl_buddy.process_utils import ManagedProcessResult
 from rtl_buddy.runner.test_results import CompileFailResults, TestResults
 from rtl_buddy.runner.test_runner import RunDepth, TestRunner as RtlBuddyTestRunner
@@ -7906,3 +7908,97 @@ def test_suite_compile_opts_per_mode_are_part_of_the_shared_build_key(
     # The named mode's options change its key.
     assert key("nightly", "c", nightly_only) != key("nightly", "d")
     assert key("nightly", "e", nightly_only) == key("nightly", "f", nightly_only)
+
+
+def _with_filelist_modes(sim, mode, *, suite=None, tb=None):
+    """Compile ``sim`` in ``mode`` with suite- and testbench-level ``filelist-modes``."""
+    testbench = test_config_module.TestbenchConfig(
+        name="tb", filelist=[], filelist_modes=tb
+    )
+    holder = SimpleNamespace(filelist_modes=suite, tb=testbench)
+    sim.test_cfg.tb = testbench
+    sim.testbench = testbench
+    sim.test_cfg.get_mode_filelist = lambda m: (
+        test_config_module.TestConfig.get_mode_filelist(holder, m)
+    )
+    sim.rtl_builder_mode = mode
+    return sim
+
+
+def _run_f(sim):
+    plan = sim._build_compile_plan()
+    return Path(plan.filelist_path).read_text()
+
+
+def test_filelist_modes_reach_only_their_modes_run_f(tmp_path, monkeypatch):
+    """A cov-only entry is compiled under cov and absent from every other mode."""
+    _write_source(tmp_path)
+    (tmp_path / "a_scope.vlt").write_text("`verilator_config\n")
+    cov_only = {"cov": ["a_scope.vlt"]}
+
+    def run_f(mode, name):
+        return _run_f(
+            _with_filelist_modes(
+                _make_sim(tmp_path, monkeypatch, test_name=name, suite_dir=tmp_path),
+                mode,
+                tb=cov_only,
+            )
+        )
+
+    assert str(tmp_path / "a_scope.vlt") in run_f("cov", "a")
+    assert "a_scope.vlt" not in run_f("sim", "b")
+
+
+def test_a_cov_only_filelist_entry_leaves_the_reg_key_byte_identical(
+    tmp_path, monkeypatch
+):
+    """Adding a cov-only entry must not rebuild, or re-key, any other mode."""
+    _write_source(tmp_path)
+    (tmp_path / "a_scope.vlt").write_text("`verilator_config\n")
+
+    def key_and_run_f(mode, name, **modes):
+        sim = _with_filelist_modes(
+            _make_sim(tmp_path, monkeypatch, test_name=name, suite_dir=tmp_path),
+            mode,
+            **modes,
+        )
+        run_f = _run_f(sim)
+        return sim.compile_group_dir(), run_f
+
+    plain_reg = key_and_run_f("reg", "a")
+    for modes in (
+        {"tb": {"cov": ["a_scope.vlt"]}},
+        {"suite": {"cov": ["a_scope.vlt"]}},
+    ):
+        assert key_and_run_f("reg", "b", **modes) == plain_reg
+        plain_cov = key_and_run_f("cov", "c")
+        scoped_cov = key_and_run_f("cov", "d", **modes)
+        assert scoped_cov[0] != plain_cov[0]
+        assert scoped_cov[1] != plain_cov[1]
+
+
+def test_filelist_modes_default_applies_to_modes_without_an_entry(
+    tmp_path, monkeypatch
+):
+    """`default` covers every other mode; an empty entry opts a mode out."""
+    _write_source(tmp_path)
+    (tmp_path / "waive.vlt").write_text("`verilator_config\n")
+    (tmp_path / "suite.vlt").write_text("`verilator_config\n")
+    modes = {"default": ["waive.vlt"], "nightly": []}
+
+    def run_f(mode, name):
+        return _run_f(
+            _with_filelist_modes(
+                _make_sim(tmp_path, monkeypatch, test_name=name, suite_dir=tmp_path),
+                mode,
+                suite={"default": ["suite.vlt"]},
+                tb=modes,
+            )
+        )
+
+    reg = run_f("reg", "a")
+    assert "waive.vlt" in reg and "suite.vlt" in reg
+    # Suite entries come before the testbench's.
+    assert reg.index("suite.vlt") < reg.index("waive.vlt")
+    nightly = run_f("nightly", "b")
+    assert "waive.vlt" not in nightly and "suite.vlt" in nightly
