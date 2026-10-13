@@ -12,6 +12,8 @@ cfg-dispatch:
       cov: {mem: 8G}
 ```
 
+The raw merge runs as many `verilator_coverage --write` processes at once as the job has `cpus`, fewer when `mem` is set and would not fit them at about eight times the largest raw database each (see [Merge and export results](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/#merge-and-export-results)). With the default single CPU it is one merge, as before.
+
 The job writes `cov_dir/` under the head's command root, logs to `.dispatch/coverage/` under the artefact root, and is named `rb:coverage`. If it fails, see [Read a failed merge](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/#read-a-failed-merge).
 
 Once accepted, the job is recorded in `.dispatch/coverage/run-<pid>-<token>.json`, like a fleet. If the head dies while waiting on it, the next run finds it there (see [Interrupted runs](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#interrupted-runs-warn-cancel-adopt)).
