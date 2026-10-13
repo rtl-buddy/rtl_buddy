@@ -7,7 +7,7 @@ rb mut run -c mut/demo/mut.yaml
 rb mut score mut/demo/artefacts/mut/demo_top/mut_report.json
 ```
 
-- `list` shows candidate sites without mutating.
+- `list` shows candidate sites for `operators` without mutating. User mutants have no sites.
 - `run` uses the `debug` builder mode by default, evaluates the baseline and the mutants, then writes the report.
 - `score` recomputes the score from an existing report without rerunning verification.
 

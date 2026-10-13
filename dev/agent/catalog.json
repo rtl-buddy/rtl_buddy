@@ -934,7 +934,7 @@
       "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/hub.md"
     },
     {
-      "description": "Configure and run mutation campaigns with FPV or simulation kill oracles, scoped files, budgets, and machine-readable reports.",
+      "description": "Configure and run mutation campaigns with FPV or simulation kill oracles, curated patch mutants, scoped files, budgets, and machine-readable reports.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/mut/",
       "sections": [
         {
@@ -954,6 +954,12 @@
           "slug": "choose-operators",
           "title": "Choose operators",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/mut/choose-operators.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/mut/#add-curated-mutants",
+          "slug": "add-curated-mutants",
+          "title": "Add curated mutants",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/mut/add-curated-mutants.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/mut/#scope-a-hierarchical-campaign",

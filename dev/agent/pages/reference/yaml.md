@@ -1220,7 +1220,7 @@ package:
 
 ## mut.yaml
 
-Required keys are `rtl-buddy-filetype: mut_config`, `model`, `model_path`, `design_file`, `operators`, and `verify`.
+Required keys are `rtl-buddy-filetype: mut_config`, `model`, `model_path`, `design_file`, `verify`, and at least one entry in `operators` or `mutants`.
 
 ```yaml
 rtl-buddy-filetype: mut_config
@@ -1241,7 +1241,10 @@ budget:
 | `model` | Required | Model name |
 | `model_path` | Required | `models.yaml` relative to `mut.yaml` |
 | `design_file` | Required | Baseline mutation file inside the model directory |
-| `operators` | Required, non-empty | `arith_flip`, `bit_op_flip`, `cond_negate`, `cond_const`, `assign_drop`, `port_binding_swap` |
+| `operators` | Default empty | `arith_flip`, `bit_op_flip`, `cond_negate`, `cond_const`, `assign_drop`, `port_binding_swap` |
+| `mutants[].name` | Required per entry | Unique user-mutant name: letters, digits, `_`, `.`, `-`; mutant id `user_<name>` |
+| `mutants[].patch` | Required per entry | Unified diff relative to `mut.yaml`; its paths are relative to the model directory |
+| `mutants[].strip` | Default 1 | Leading path components removed from the diff's paths, as `git apply -p` |
 | `verify.fpv_config` / `.verification` | Pair | FPV oracle config and entry |
 | `verify.test_config` | Optional | Simulation oracle suite |
 | `verify.tests` | Default all | Selected simulation tests |
@@ -1255,6 +1258,8 @@ budget:
 | `scope.include` / `.exclude` | Default empty | Case-sensitive `fnmatch` globs over instance and source paths; `**` is not recursive |
 
 At least one oracle is required, and `fpv_config` requires `verification`. `design_file` and every scoped file must stay within the model directory.
+
+- A user mutant whose diff no longer applies is `ERRORED`. The budget does not limit user mutants, and `scope` requires a non-empty `operators`. See [Add curated mutants](../concepts/mut.md#add-curated-mutants).
 
 - An empty scope mutates `design_file` without the viewer.
 - A non-empty scope requires `rtl-buddy-view`, selects hierarchy source files, and fails if none match.

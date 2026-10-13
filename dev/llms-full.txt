@@ -1365,7 +1365,7 @@ A marker excuses only a verdict the flow's own tool reported at its end: a simul
 | Flow | Graded `FAIL` under a marker |
 | --- | --- |
 | `test` | preproc, sweep and filelist setup failures; compile failures; a sim killed at `sim_timeout`; a simulator that exited without a verdict; a dispatched job the scheduler lost |
-| `fpv` | sby reporting `UNKNOWN`, a solver timeout, or an error instead of `PASS`/`FAIL` |
+| `fpv` | sby reporting `UNKNOWN`, a solver timeout, or an error instead of `PASS`/`FAIL`; a `prove` whose base case passed and induction step failed is a verdict, not a tool failure |
 | `cdc`, `lint` | the analyzer failing before it produced a count |
 | `synth`, `pnr`, `power`, `fpga` | setup failures: a missing tool, an unresolvable platform or PDK, a filelist or script-generation error |
 
@@ -1676,6 +1676,8 @@ rb fpv-regression -c fpv_regression.yaml -l 1000
 The summary shows the verdict, mode, depth, engines, engine result mix, runtime and counterexample path. sby gives no per-assertion verdicts; per-engine status is the finest detail.
 
 A run passes when sby reports `PASS`. `FAIL`, `UNKNOWN`, `ERROR` or a nonzero exit fails it. In a regression, an entry above the selected level is `SKIP`.
+
+In `mode: prove`, an `UNKNOWN` whose engine passed the base case and failed the induction step is graded as the proof's verdict, `induction failed: ...`: no counterexample within `depth`, but the property is not k-inductive. Any other `UNKNOWN`, a timeout or an `ERROR` is a tool failure.
 
 ## Check proof quality
 
@@ -2327,12 +2329,12 @@ The LaunchAgent runs the hub from the project directory, restarts it, and logs t
 <!-- source: concepts/mut -->
 
 ---
-description: Configure and run mutation campaigns with FPV or simulation kill oracles, scoped files, budgets, and machine-readable reports.
+description: Configure and run mutation campaigns with FPV or simulation kill oracles, curated patch mutants, scoped files, budgets, and machine-readable reports.
 ---
 
 # Mutation testing
 
-`rb mut` injects small SystemVerilog changes (mutants) and measures whether your configured verification catches them. Use it to find holes in a testbench or property set. It needs `rtl-buddy-xeno[verible,slang] >= 0.1.0`; without a compatible engine it exits with an installation hint.
+`rb mut` injects small SystemVerilog changes (mutants) and measures whether your configured verification catches them. Use it to find holes in a testbench or property set. Generated mutants need `rtl-buddy-xeno[verible,slang] >= 0.1.0`; without a compatible engine a campaign with `operators` exits with an installation hint. A campaign of [user mutants](#add-curated-mutants) only needs `git`.
 
 ```bash
 uv add "rtl_buddy[mut]"
@@ -2393,7 +2395,27 @@ Simulation enables Verilator assertions by default; see [Assertion-based verific
 | `assign_drop` | Drop an assignment |
 | `port_binding_swap` | Swap two port bindings |
 
-An empty operator list, or an operator the installed engine does not support, is fatal.
+An operator the installed engine does not support is fatal. `operators` may be empty or omitted when `mutants` is set; a campaign with neither is fatal.
+
+## Add curated mutants
+
+`mutants` lists hand-written faults the operators cannot express, such as a flipped product bit or an off-by-one index. Each entry is a unified diff, scored like a generated mutant: in its own copy of the model tree, against the same baseline and kill oracles, with one entry in the report.
+
+```yaml
+operators: []
+mutants:
+  - name: alu_prod_bit2
+    patch: mutants/alu_prod_bit2.patch
+  - name: alu_lane_swap
+    patch: mutants/alu_lane_swap.patch
+    strip: 1
+```
+
+- `patch` is relative to `mut.yaml`; a missing file is fatal at load.
+- Paths inside the diff are relative to the model directory, the one containing `models.yaml`. `strip` (default 1) removes leading path components, as `git apply -p<strip>`; the default matches the `a/` and `b/` prefixes of `git diff`. Make a patch from the model directory with `git diff --relative`.
+- The diff is applied with `git apply`. A diff that no longer applies, for example after an RTL edit moved its context, makes the mutant `ERRORED`, with git's message in the mutation column and a `mut_runner.user_mutant_not_applied` warning. A diff that would write outside the model tree also errors.
+- `name` must be unique and contain only letters, digits, underscore, dot or hyphen. The mutant id is `user_<name>` and its operator is `user`.
+- User mutants run after the baseline and before generated mutants. The budget and `per_file` counts cover generated mutants only; `scope` needs a non-empty `operators`.
 
 ## Scope a hierarchical campaign
 
@@ -2415,7 +2437,7 @@ rb mut run -c mut/demo/mut.yaml
 rb mut score mut/demo/artefacts/mut/demo_top/mut_report.json
 ```
 
-- `list` shows candidate sites without mutating.
+- `list` shows candidate sites for `operators` without mutating. User mutants have no sites.
 - `run` uses the `debug` builder mode by default, evaluates the baseline and the mutants, then writes the report.
 - `score` recomputes the score from an existing report without rerunning verification.
 
@@ -2427,7 +2449,7 @@ Each mutant has one outcome:
 
 - `KILLED`: an oracle caught the change.
 - `SURVIVED`: every oracle passed. Inspect these verification gaps first.
-- `ERRORED`: the mutant did not elaborate or compile. It is excluded from scoring.
+- `ERRORED`: the mutant did not elaborate or compile, or the proof ended without a verdict (an sby error, a timeout, or an `UNKNOWN` other than a failed induction step). It is excluded from scoring.
 
 ```text
 mutation score = killed / (killed + survived)
@@ -2435,7 +2457,7 @@ mutation score = killed / (killed + survived)
 
 The score is `n/a` when nothing is scorable. Surviving mutants whose operator predicted observable signal changes are also reported as predicted-observable misses.
 
-The report is `<mut.yaml dir>/artefacts/mut/<campaign>/mut_report.json`, with the baseline verdict, totals, score, and each mutant's operator, outcome, verdict, diff summary and predicted signals. Under `--machine`, `mut list` returns `sites`; `mut run` and `mut score` return `report`.
+The report is `<mut.yaml dir>/artefacts/mut/<campaign>/mut_report.json`, with the baseline verdict, totals, score, and each mutant's operator, outcome, verdict, diff summary and predicted signals. A user mutant's `file` lists the model-relative files its diff touched. Under `--machine`, `mut list` returns `sites`; `mut run` and `mut score` return `report`.
 
 ## Exit codes
 
@@ -10666,7 +10688,7 @@ package:
 
 ## mut.yaml
 
-Required keys are `rtl-buddy-filetype: mut_config`, `model`, `model_path`, `design_file`, `operators`, and `verify`.
+Required keys are `rtl-buddy-filetype: mut_config`, `model`, `model_path`, `design_file`, `verify`, and at least one entry in `operators` or `mutants`.
 
 ```yaml
 rtl-buddy-filetype: mut_config
@@ -10687,7 +10709,10 @@ budget:
 | `model` | Required | Model name |
 | `model_path` | Required | `models.yaml` relative to `mut.yaml` |
 | `design_file` | Required | Baseline mutation file inside the model directory |
-| `operators` | Required, non-empty | `arith_flip`, `bit_op_flip`, `cond_negate`, `cond_const`, `assign_drop`, `port_binding_swap` |
+| `operators` | Default empty | `arith_flip`, `bit_op_flip`, `cond_negate`, `cond_const`, `assign_drop`, `port_binding_swap` |
+| `mutants[].name` | Required per entry | Unique user-mutant name: letters, digits, `_`, `.`, `-`; mutant id `user_<name>` |
+| `mutants[].patch` | Required per entry | Unified diff relative to `mut.yaml`; its paths are relative to the model directory |
+| `mutants[].strip` | Default 1 | Leading path components removed from the diff's paths, as `git apply -p` |
 | `verify.fpv_config` / `.verification` | Pair | FPV oracle config and entry |
 | `verify.test_config` | Optional | Simulation oracle suite |
 | `verify.tests` | Default all | Selected simulation tests |
@@ -10701,6 +10726,8 @@ budget:
 | `scope.include` / `.exclude` | Default empty | Case-sensitive `fnmatch` globs over instance and source paths; `**` is not recursive |
 
 At least one oracle is required, and `fpv_config` requires `verification`. `design_file` and every scoped file must stay within the model directory.
+
+- A user mutant whose diff no longer applies is `ERRORED`. The budget does not limit user mutants, and `scope` requires a non-empty `operators`. See [Add curated mutants](../concepts/mut.md#add-curated-mutants).
 
 - An empty scope mutates `design_file` without the viewer.
 - A non-empty scope requires `rtl-buddy-view`, selects hierarchy source files, and fails if none match.
