@@ -19,11 +19,29 @@ cfg-synth-efforts:
       abc-script: "strash; dretime; map {D}"
 ```
 
-- rtl_buddy keeps `-liberty` and `-dont_use`. On `tool: yosys` with an SDC clock it also passes `-D <period_ps>`, the shortest SDC period in picoseconds, and appends `stime -p`, whose report gives the run's WNS. Write `{D}` where a mapping command should take the delay target; `tool: openroad` passes none, so `{D}` is empty there.
+- rtl_buddy keeps `-liberty` and `-dont_use`. With an SDC clock it also passes `-D <period_ps>`, the shortest SDC period in picoseconds, on both backends; `tool: yosys` also appends `stime -p`, whose report gives the run's WNS. Write `{D}` where a mapping command should take the delay target. An SDC that yields no period warns `synth.sdc_no_clock`, and says so when the script uses `{D}`, which is then empty and ABC maps with no delay target. Without an SDC, `{D}` is empty and nothing is logged.
 - Write the script on one line, with commands separated by `;` and no double quotes. A multi-line value or a double quote is a configuration error. Yosys replaces commas with spaces.
 - `strash; dretime; map {D}` is the script of `abc -fast`. It maps a large flat design much faster than the default, at some cost in quality.
 - `abc-args` applies only to unmapped `tool: yosys` runs, as `abc <abc-args>`. A mapped run ignores it and warns `synth.abc_args_ignored`.
 - `synth` runs Yosys' generic `abc`, whose script includes `dc2`, before the mapped-run ABC step. Add `-noabc` to `synth-args` to keep log-depth carry networks.
+
+### Give ABC a driving cell and output load
+
+Without one, ABC treats every primary input of the logic it maps, including every flop output, as an ideal driver. `buffer -p` then leaves a flop driving thousands of pins, and OpenROAD's synthesis-stage `repair_design` does not split the net before placement. Set a driving cell and output load on the synth platform:
+
+```yaml
+cfg-synth-platforms:
+  - name: asap7_rvt_ff
+    pdk: asap7
+    abc-driving-cell: BUFx2_ASAP7_75t_R
+    abc-output-load: 1.0      # femtofarads on each primary output
+```
+
+- rtl_buddy writes them to `abc.constr` in the artefact directory and passes `abc -constr abc.constr` on both backends. Yosys reads the file before `abc-script`, so it applies to any script.
+- They matter to ABC's buffering, sizing and timing commands. Add them to the script, for example `...; &nf {D}; &put; buffer -p; upsize {D}; dnsize {D}`.
+- Either key works alone. Both are off by default because no cell name suits every PDK. Pick a small buffer from the corner's Liberty.
+- A driving cell ABC cannot find in the mapped library is only an ABC log line; rtl_buddy warns `synth.abc_driving_cell_missing`.
+- Both values join the run's options fingerprint only when set.
 
 ### Keep prefix adders log-depth with the `delay` preset
 

@@ -1730,6 +1730,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/choose-the-mapped-run-abc-script.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#gate-enable-flops-with-clock-gating-cells",
+          "slug": "gate-enable-flops-with-clock-gating-cells",
+          "title": "Gate enable flops with clock-gating cells",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/gate-enable-flops-with-clock-gating-cells.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#synthesize-hard-macros",
           "slug": "synthesize-hard-macros",
           "title": "Synthesize hard macros",

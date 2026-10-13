@@ -114,10 +114,15 @@ Liberty files may be gzipped. SDC values are in the Liberty `time_unit`, which r
 
 `rb` reads SDC and XDC text with one of two readers. `rb tool-check` names the active one under `In-process readers`.
 
-- **`tcl`**: a safe Tcl interpreter, so line continuations, braces, nested collections, `$variables` and `[expr ...]` read as they do in Vivado and OpenSTA. It has no `exec`, `open`, `file`, `socket`, `cd`, `glob` or `source`; `source` includes are not followed, so name the included file directly.
+- **`tcl`**: a safe Tcl interpreter, so line continuations, braces, nested collections, `$variables` and `[expr ...]` read as they do in Vivado and OpenSTA. It has no `exec`, `open`, `file`, `socket`, `cd`, `glob` or `source`; `source` includes are not followed, so name the included file directly. The synthesis clock-period read is the exception below.
 - **`tokenizer`**: the fallback when no Tcl interpreter can start, typically a Python without `_tkinter`. It splits words but evaluates nothing, so `-period $p` or `-period [expr ...]` is reported as unevaluated. Install tkinter to restore the `tcl` reader: `uv python install --managed-python`, `brew install python-tk@<X.Y>`, or `dnf install python3-tkinter`.
 
 Either reader returns syntax only. `get_ports`, `get_cells` and `-filter` collections stay opaque names, because OpenROAD or Vivado resolves them against a netlist.
+
+When `rb synth` reads the SDC for ABC's delay target, it also:
+
+- follows `source`, relative to the sourcing file's directory and then the working directory. `[info script]` names the file being read, and `file dirname`, `join`, `normalize`, `tail` and the other path subcommands answer as Tcl's do, so `source [file join [file dirname [file normalize [info script]]] clocks.sdc]` works. The `tokenizer` follows only a literal path. An include it cannot read warns `constraints.source_unreadable`.
+- re-reads a file the interpreter refused with `get_ports`, `get_pins`, `get_cells`, `get_nets`, `get_clocks` and `all_*` returning their name arguments as a list, so a `proc` or `foreach` over `[get_ports {a b}]` runs.
 
 Set `RTL_BUDDY_CONSTRAINT_READER=tokenizer` to force the fallback, or `=tcl` to require the interpreter and fail if none can start.
 
@@ -285,11 +290,29 @@ cfg-synth-efforts:
       abc-script: "strash; dretime; map {D}"
 ```
 
-- rtl_buddy keeps `-liberty` and `-dont_use`. On `tool: yosys` with an SDC clock it also passes `-D <period_ps>`, the shortest SDC period in picoseconds, and appends `stime -p`, whose report gives the run's WNS. Write `{D}` where a mapping command should take the delay target; `tool: openroad` passes none, so `{D}` is empty there.
+- rtl_buddy keeps `-liberty` and `-dont_use`. With an SDC clock it also passes `-D <period_ps>`, the shortest SDC period in picoseconds, on both backends; `tool: yosys` also appends `stime -p`, whose report gives the run's WNS. Write `{D}` where a mapping command should take the delay target. An SDC that yields no period warns `synth.sdc_no_clock`, and says so when the script uses `{D}`, which is then empty and ABC maps with no delay target. Without an SDC, `{D}` is empty and nothing is logged.
 - Write the script on one line, with commands separated by `;` and no double quotes. A multi-line value or a double quote is a configuration error. Yosys replaces commas with spaces.
 - `strash; dretime; map {D}` is the script of `abc -fast`. It maps a large flat design much faster than the default, at some cost in quality.
 - `abc-args` applies only to unmapped `tool: yosys` runs, as `abc <abc-args>`. A mapped run ignores it and warns `synth.abc_args_ignored`.
 - `synth` runs Yosys' generic `abc`, whose script includes `dc2`, before the mapped-run ABC step. Add `-noabc` to `synth-args` to keep log-depth carry networks.
+
+### Give ABC a driving cell and output load
+
+Without one, ABC treats every primary input of the logic it maps, including every flop output, as an ideal driver. `buffer -p` then leaves a flop driving thousands of pins, and OpenROAD's synthesis-stage `repair_design` does not split the net before placement. Set a driving cell and output load on the synth platform:
+
+```yaml
+cfg-synth-platforms:
+  - name: asap7_rvt_ff
+    pdk: asap7
+    abc-driving-cell: BUFx2_ASAP7_75t_R
+    abc-output-load: 1.0      # femtofarads on each primary output
+```
+
+- rtl_buddy writes them to `abc.constr` in the artefact directory and passes `abc -constr abc.constr` on both backends. Yosys reads the file before `abc-script`, so it applies to any script.
+- They matter to ABC's buffering, sizing and timing commands. Add them to the script, for example `...; &nf {D}; &put; buffer -p; upsize {D}; dnsize {D}`.
+- Either key works alone. Both are off by default because no cell name suits every PDK. Pick a small buffer from the corner's Liberty.
+- A driving cell ABC cannot find in the mapped library is only an ABC log line; rtl_buddy warns `synth.abc_driving_cell_missing`.
+- Both values join the run's options fingerprint only when set.
 
 ### Keep prefix adders log-depth with the `delay` preset
 
@@ -314,6 +337,24 @@ When `abc-script` is unset and the `synth-args` of the run pass `-extra-map +/ch
 | `delay` | 1.89 ns | 10.79 ns | 46590 |
 
 Compare timing under both presets before keeping one. `delay` suits datapaths with many adders on separate register-to-register paths.
+
+## Gate enable flops with clock-gating cells
+
+By default every flop with a load enable maps to an enable flop that recirculates its output through a mux and is clocked every cycle. Production flows replace those with clock-gating cells, so an open-PDK run overstates their area and clock power. `clock-gating-min-flops` inserts integrated clock-gating cells (ICGs) with Yosys `clockgate`:
+
+```yaml
+cfg-synth-efforts:
+  - name: gated
+    yosys:
+      clock-gating-min-flops: 8
+```
+
+- Set it in an effort, in `cfg-synth-tools` `opts`, or for one run in `tool_overrides.<tool>.clock_gating_min_flops`. Precedence is run override, then effort, then tool config. `0`, the default, is off; a run override of `0` turns off an effort's gating.
+- Each set of at least that many rising-edge flops sharing a clock and enable gets one ICG, and its flops become plain flops. Falling-edge flops are left alone.
+- The line runs after `synth` and `chformal -remove` and before `dfflibmap`, on both backends: `clockgate -liberty <cell libs> -dont_use <dont-use-cells> -min_net_size <n>`. `-liberty` picks the ICG from the corner's Liberty.
+- When the Liberty's choice is wrong, name the cell and its enable, clock and gated-clock pins on the synth platform, for example `clock-gating-cell: 'sky130_fd_sc_hd__dlclkp_1 GATE:CLK:GCLK'`. The run then writes `clockgate -pos <cell> <pins> -min_net_size <n>`.
+- It needs a Liberty: an unmapped `tool: yosys` run warns `synth.clock_gating_ignored` and gates nothing.
+- The setting joins the run's options fingerprint only when on.
 
 ## Synthesize hard macros
 
@@ -364,7 +405,8 @@ Outputs land under `<synth-dir>/artefacts/<run>/`.
 | `synth.log` | Yosys-only | Yosys output |
 | `synth_yosys.log` | OpenROAD | First-stage Yosys output |
 | `synth.tcl`, `synth.log` | OpenROAD | STA script and OpenROAD output |
-| `yosys-tmp/` | Both | Yosys `TMPDIR`: temp files and the merged Liberty SCL cache that `abc` builds from several cell libraries. It replaces any inherited `TMPDIR`. |
+| `abc.constr` | Mapped runs | ABC driving cell and output load, when the platform sets them |
+| `yosys-tmp/` | Both | Yosys `TMPDIR`: temp files and the merged Liberty SCL cache that `abc` builds from several cell libraries. It replaces any inherited `TMPDIR`. Every Yosys launch also gets `COLUMNS=100000`, so `yosys-abc` does not hang on a long temp path when `TERM` is unset. |
 | `synth_stat.json` | Both | Yosys `stat -json`: per-module cell count and area |
 | `phys-model.json`, `phys-manifest.json` | Both | Physical model and its manifest; query with `rb phys` ([Physical Metrics](phys.md)) |
 
