@@ -17,7 +17,7 @@ from ..config.pdk import (
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
 )
-from ..config.pnr import MacroPlacement
+from ..config.pnr import ABSTRACT_BLOAT_OCCUPIED, MacroPlacement, PnrAbstract
 from .artifact_paths import project_relative, project_root_or_none
 
 ABSTRACT_DIR_NAME = "abstract"
@@ -28,6 +28,8 @@ ABSTRACT_MANIFEST_NAME = "abstract.manifest.json"
 ABSTRACT_MANIFEST_SCHEMA = 1
 #: Manifest keys of the three views; each file is `<top>.<key>`.
 ABSTRACT_VIEWS = ("lef", "lib", "gds")
+#: The real-shape LEF a run with `abstract.feedthrough-layers` writes beside `<top>.lef`; spliced in and removed before publishing.
+FEEDTHROUGH_VIEW = "feedthrough.lef"
 #: Views published when they could be produced: `<top>.params.json`, the parameter values the top was elaborated with (see `block_params`).
 OPTIONAL_VIEWS = ("params.json",)
 
@@ -60,18 +62,89 @@ def clear_abstract(artefact_dir: str) -> list[str]:
     return removed
 
 
-def harden_tcl() -> str:
+def _bloat_flag(bloat) -> str:
+    """The `write_abstract_lef` option for an `abstract.bloat` value."""
+    if bloat == ABSTRACT_BLOAT_OCCUPIED:
+        return "-bloat_occupied_layers"
+    return f"-bloat_factor {float(bloat):g}"
+
+
+def harden_tcl(abstract: PnrAbstract | None = None) -> str:
     """Return the Tcl that writes the LEF and timing model into the staging directory.
 
-    It runs in the P&R session after `write_db`, so the timing model is characterised against the routed design and its propagated clocks. `-bloat_occupied_layers` marks every layer the block routes on as blocked over its whole footprint, so a parent never routes through the block's own metal.
+    It runs in the P&R session after `write_db`, so the timing model is characterised against the routed design and its propagated clocks. By default `-bloat_occupied_layers` marks every layer the block routes on as blocked over its whole footprint, so a parent never routes through the block's own metal; `abstract.bloat` can name a `-bloat_factor` instead. With `abstract.feedthrough-layers`, a second LEF is written with `-bloat_factor 0`, the block's real shapes, for :func:`splice_feedthrough_obs` (#768).
     """
+    abstract = abstract or PnrAbstract()
     staging = f"$OUT_DIR/{ABSTRACT_STAGING_NAME}"
+    feedthrough = (
+        f"write_abstract_lef -bloat_factor 0 {staging}/${{DESIGN}}.{FEEDTHROUGH_VIEW}\n"
+        if abstract.feedthrough_layers
+        else ""
+    )
     return (
         '\nputs ">>> Abstract views (harden)"\n'
         f"file mkdir {staging}\n"
-        f"write_abstract_lef -bloat_occupied_layers {staging}/${{DESIGN}}.lef\n"
+        f"write_abstract_lef {_bloat_flag(abstract.bloat)} {staging}/${{DESIGN}}.lef\n"
+        f"{feedthrough}"
         f"write_timing_model {staging}/${{DESIGN}}.lib\n"
     )
+
+
+def _obs_groups(
+    lines: list[str],
+) -> tuple[int, int, list[tuple[str, list[str]]]] | None:
+    """Return the `OBS` section of a one-macro LEF as `(first, last, [(layer, lines)])`, or None without one.
+
+    `first` and `last` index the `OBS` and closing `END` lines. Each group is a `LAYER` statement and the geometry lines under it.
+    """
+    start = next((i for i, ln in enumerate(lines) if ln.strip() == "OBS"), None)
+    if start is None:
+        return None
+    groups: list[tuple[str, list[str]]] = []
+    for i in range(start + 1, len(lines)):
+        stripped = lines[i].strip()
+        if stripped == "END":
+            return start, i, groups
+        words = stripped.split()
+        if words and words[0] == "LAYER" and len(words) > 1:
+            groups.append((words[1].rstrip(";"), [lines[i]]))
+        elif groups:
+            groups[-1][1].append(lines[i])
+    return None
+
+
+def splice_feedthrough_obs(
+    lef_path: str, feedthrough_path: str, layers: tuple[str, ...]
+) -> list[str]:
+    """Rewrite `lef_path`'s obstructions on `layers` with the real shapes from `feedthrough_path`, then remove that file.
+
+    Every other layer keeps `lef_path`'s obstruction, which `abstract.bloat` chose. A feedthrough layer the block does not use ends up with no obstruction. Returns the `layers` found in neither LEF, which are most likely misspelt.
+    """
+    base = Path(lef_path).read_text().splitlines()
+    shapes = Path(feedthrough_path).read_text().splitlines()
+    base_obs = _obs_groups(base)
+    shape_obs = _obs_groups(shapes)
+    wanted = set(layers)
+    real = {name: body for name, body in (shape_obs[2] if shape_obs else [])}
+    seen = set(real)
+    if base_obs is not None:
+        first, last, groups = base_obs
+        seen |= {name for name, _ in groups}
+        body: list[str] = []
+        placed: set[str] = set()
+        for name, group in groups:
+            if name in wanted:
+                body.extend(real.get(name, []))
+                placed.add(name)
+            else:
+                body.extend(group)
+        for name, group in real.items():
+            if name in wanted and name not in placed:
+                body.extend(group)
+        base = base[: first + 1] + body + base[last:]
+        Path(lef_path).write_text("\n".join(base) + "\n")
+    os.unlink(feedthrough_path)
+    return [name for name in layers if name not in seen]
 
 
 def file_fingerprint(path: str | None, root: str | None) -> dict | None:
@@ -318,6 +391,19 @@ def abstract_config(pnr_cfg, platform) -> dict:
         ),
         # Emitted only when a PDK Tcl hook is set so existing digests do not change.
         **({"tcl_hooks": {k: _rel(v) for k, v in hooks.items()}} if hooks else {}),
+        # Emitted only when non-default so existing digests do not change; a change regenerates.
+        **(
+            {
+                "abstract": {
+                    "bloat": pnr_cfg.get_abstract().bloat,
+                    "feedthrough_layers": list(
+                        pnr_cfg.get_abstract().feedthrough_layers
+                    ),
+                }
+            }
+            if not pnr_cfg.get_abstract().is_default()
+            else {}
+        ),
     }
 
 

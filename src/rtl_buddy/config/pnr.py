@@ -757,6 +757,71 @@ def _load_floorplan_shape(run: str, fp: PnrFloorplanFile) -> dict:
     }
 
 
+#: `abstract.bloat` value for `write_abstract_lef -bloat_occupied_layers`, the default.
+ABSTRACT_BLOAT_OCCUPIED = "occupied"
+
+
+@serde
+class PnrAbstractFile:
+    """`abstract:` of a `harden: true` run: the obstruction style of the abstract LEF (#768)."""
+
+    # `str` first so `occupied` is not read as a number.
+    bloat: str | float | int | None = None
+    # `str` first so a single name is not read as characters; it is then rejected.
+    feedthrough_layers: str | list[str] | None = field(
+        rename="feedthrough-layers", default=None
+    )
+
+
+@dataclass(frozen=True)
+class PnrAbstract:
+    """A hardened run's abstract LEF obstruction style.
+
+    `bloat` is `occupied` (every layer the block uses is blocked over its whole footprint) or OpenROAD's `-bloat_factor`. `feedthrough_layers` are written with the block's real shapes as obstructions instead, so a parent can route between them.
+    """
+
+    bloat: str | float = ABSTRACT_BLOAT_OCCUPIED
+    feedthrough_layers: tuple[str, ...] = ()
+
+    def is_default(self) -> bool:
+        return self.bloat == ABSTRACT_BLOAT_OCCUPIED and not self.feedthrough_layers
+
+
+def _load_abstract(
+    run: str, entry: PnrAbstractFile | None, harden: bool
+) -> PnrAbstract:
+    """Validate a run's `abstract:` block at load time."""
+    if entry is None:
+        return PnrAbstract()
+    where = f"pnr run '{run}': abstract"
+    if not harden:
+        raise FatalRtlBuddyError(
+            f"{where} needs harden: true; only a hardened run writes an abstract"
+        )
+    bloat = entry.bloat
+    if bloat is None or bloat == ABSTRACT_BLOAT_OCCUPIED:
+        bloat = ABSTRACT_BLOAT_OCCUPIED
+    elif isinstance(bloat, bool) or not _finite_number(bloat) or bloat < 0:
+        raise FatalRtlBuddyError(
+            f"{where}.bloat must be {ABSTRACT_BLOAT_OCCUPIED!r} or a non-negative "
+            f"number (OpenROAD's -bloat_factor), got {entry.bloat!r}"
+        )
+    else:
+        bloat = float(bloat)
+    layers = entry.feedthrough_layers
+    if layers is None:
+        layers = []
+    if not isinstance(layers, list):
+        raise FatalRtlBuddyError(
+            f"{where}.feedthrough-layers must be a list of layer names, "
+            f"got {layers!r}; write [{layers}]"
+        )
+    names = tuple(_layer_name(f"{where}.feedthrough-layers", v) for v in layers)
+    if len(set(names)) != len(names):
+        raise FatalRtlBuddyError(f"{where}.feedthrough-layers repeats a layer")
+    return PnrAbstract(bloat=bloat, feedthrough_layers=names)
+
+
 @serde
 class PnrConfigFile:
     name: str
@@ -783,6 +848,8 @@ class PnrConfigFile:
     checkpoints: bool | str | list[str] = False
     # Publish a hard-macro abstract (LEF, Liberty, GDS, manifest) under `abstract/`; forces a strict GDS export.
     harden: bool = False
+    # Obstruction style of a hardened run's abstract LEF; unset keeps `-bloat_occupied_layers`.
+    abstract: PnrAbstractFile | None = None
     # `buffer_ports -inputs -outputs` before global placement; unset follows `harden`.
     buffer_ports: bool | None = field(rename="buffer-ports", default=None)
     # Fail a routed run that has max-slew, max-capacitance or max-fanout violators.
@@ -947,6 +1014,7 @@ class PnrConfigFile:
             gds_allow_empty=list(self.gds_allow_empty),
             checkpoints=checkpoints,
             harden=bool(self.harden),
+            abstract=_load_abstract(self.name, self.abstract, bool(self.harden)),
             buffer_ports=(
                 bool(self.buffer_ports) if self.buffer_ports is not None else None
             ),
@@ -986,6 +1054,7 @@ class PnrConfig:
     detailed_route_verbose: int = DEFAULT_DETAILED_ROUTE_VERBOSE
     checkpoints: tuple[str, ...] | None = None
     harden: bool = False
+    abstract: PnrAbstract = dc_field(default_factory=PnrAbstract)
     # As written in pnr.yaml; `None` follows `harden`. Read it through `get_buffer_ports`.
     buffer_ports: bool | None = None
     fail_on_electrical: bool = False
@@ -1062,6 +1131,10 @@ class PnrConfig:
     def get_harden(self) -> bool:
         """Whether the run publishes a hard-macro abstract."""
         return self.harden
+
+    def get_abstract(self) -> PnrAbstract:
+        """The abstract LEF obstruction style of a hardened run (`abstract:`)."""
+        return self.abstract
 
     def get_buffer_ports(self) -> bool:
         """Whether the flow buffers the block's ports: the `buffer-ports:` value, else on exactly when the run hardens.

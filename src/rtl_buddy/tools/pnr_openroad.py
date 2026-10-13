@@ -957,7 +957,9 @@ class OpenRoadPnr:
             "rcx_block": rcx_block,
             "final_parasitics": final_parasitics,
             "harden_block": (
-                pnr_abstract.harden_tcl() if self.pnr_cfg.get_harden() else ""
+                pnr_abstract.harden_tcl(self.pnr_cfg.get_abstract())
+                if self.pnr_cfg.get_harden()
+                else ""
             ),
             "setup_repair": (
                 "repair_timing -setup\n" if platform.get_post_cts_setup_repair() else ""
@@ -2281,9 +2283,31 @@ class OpenRoadPnr:
         problem = (
             f"abstract view(s) not produced: {', '.join(missing)}" if missing else None
         )
+        feedthrough = self.pnr_cfg.get_abstract().feedthrough_layers
+        feedthrough_lef = pnr_abstract.view_path(
+            staging, design, pnr_abstract.FEEDTHROUGH_VIEW
+        )
+        if problem is None and feedthrough and not os.path.isfile(feedthrough_lef):
+            problem = (
+                f"abstract view(s) not produced: {os.path.basename(feedthrough_lef)}"
+            )
         if problem is None:
             self._record_block_parameters(staging, design)
             try:
+                if feedthrough:
+                    unused = pnr_abstract.splice_feedthrough_obs(
+                        pnr_abstract.view_path(staging, design, "lef"),
+                        feedthrough_lef,
+                        feedthrough,
+                    )
+                    if unused:
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "pnr.abstract_feedthrough_layers_unused",
+                            pnr=self.pnr_cfg.get_name(),
+                            layers=unused,
+                        )
                 shutil.copyfile(gds, pnr_abstract.view_path(staging, design, "gds"))
                 pnr_abstract.write_manifest(
                     staging,
