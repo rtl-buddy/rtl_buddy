@@ -20,6 +20,7 @@ from ..config.synth import (
     SynthToolOpts,
     SynthEffortConfig,
     default_effort_config,
+    resolve_clock_gating_min_flops,
     resolve_conflicting_drivers_mode,
     resolve_static_functions_mode,
     resolve_unresolved_interfaces_mode,
@@ -772,10 +773,53 @@ def mapped_abc_script(opts: SynthToolOpts) -> str:
     return script
 
 
+def resolve_clock_gating(opts: SynthToolOpts, synth_cfg, root_cfg) -> dict | None:
+    """Return ``{"min_flops", "cell"}`` for a run that gates clocks, or None when ``clock-gating-min-flops`` is 0 (#786).
+
+    ``cell`` is the platform's ``clock-gating-cell`` or None, in which case ``clockgate -liberty`` picks the ICG.
+    """
+    min_flops = resolve_clock_gating_min_flops(opts)
+    if not min_flops:
+        return None
+    cell = ""
+    platform = synth_cfg.get_platform()
+    if platform and root_cfg is not None:
+        get_cell = getattr(
+            root_cfg.get_synth_platform_cfg(platform), "get_clock_gating_cell", None
+        )
+        cell = get_cell() if get_cell is not None else ""
+    return {"min_flops": min_flops, "cell": cell or None}
+
+
+def clock_gating_cmds(
+    gating: dict | None, cell_libs: str, dont_use: str, synth_name: str, mapped: bool
+) -> list[str]:
+    """Return the ``clockgate`` line a run adds between ``chformal -remove`` and ``dfflibmap``, or ``[]``.
+
+    The ICG comes from the platform's ``clock-gating-cell`` (``-pos``), else ``-liberty`` picks one from
+    the cell libraries, skipping ``dont-use-cells``. Only rising-edge flops are gated. An unmapped run has
+    no ICG to map to, so it warns ``synth.clock_gating_ignored`` and gates nothing.
+    """
+    if gating is None:
+        return []
+    if not mapped:
+        log_event(
+            logger,
+            logging.WARNING,
+            "synth.clock_gating_ignored",
+            synth=synth_name,
+            min_flops=gating["min_flops"],
+        )
+        return []
+    if gating["cell"]:
+        return [f"clockgate -pos {gating['cell']} -min_net_size {gating['min_flops']}"]
+    return [f"clockgate{cell_libs}{dont_use} -min_net_size {gating['min_flops']}"]
+
+
 def apply_effort(
     opts: SynthToolOpts, overrides: dict | None, effort_cfg: SynthEffortConfig
 ) -> SynthToolOpts:
-    """Set the effort's ``synth_args``, ``abc_args`` and ``abc_script`` on `opts` and return it.
+    """Set the effort's ``synth_args``, ``abc_args``, ``abc_script`` and ``clock_gating_min_flops`` on `opts` and return it.
 
     Shared by both synthesis backends. An effort value replaces the tool config's but not a key
     the run's `overrides` set, so precedence is run override, then effort, then tool config.
@@ -784,6 +828,7 @@ def apply_effort(
         ("synth_args", effort_cfg.get_yosys_synth_args()),
         ("abc_args", effort_cfg.get_yosys_abc_args()),
         ("abc_script", effort_cfg.get_yosys_abc_script()),
+        ("clock_gating_min_flops", effort_cfg.get_yosys_clock_gating_min_flops()),
     ):
         if value and (not overrides or key not in overrides):
             setattr(opts, key, value)
@@ -1134,11 +1179,19 @@ class YosysSynth:
         # Formal cells in the netlist are rejected by OpenROAD/OpenSTA `read_verilog`.
         lines.append("chformal -remove")
 
-        if mapped:
-            dont_use = dont_use_args(
-                resolve_dont_use_cells(self.synth_cfg, self.root_cfg)
+        dont_use = dont_use_args(resolve_dont_use_cells(self.synth_cfg, self.root_cfg))
+        cell_libs = liberty_args(self._resolve_cell_lib_paths())
+        lines.extend(
+            clock_gating_cmds(
+                resolve_clock_gating(opts, self.synth_cfg, self.root_cfg),
+                cell_libs,
+                dont_use,
+                self.synth_cfg.get_name(),
+                mapped,
             )
-            cell_libs = liberty_args(self._resolve_cell_lib_paths())
+        )
+
+        if mapped:
             lines.append(f"dfflibmap{dont_use}{cell_libs}")
 
             abc_script = mapped_abc_script(opts)
@@ -1519,8 +1572,9 @@ class YosysSynth:
           received (:func:`elaboration_defines`), not `synth.yaml`'s field alone.
         - `mapped` branch: `abc_script` (:func:`mapped_abc_script`),
           `abc_period_ps` (null when the SDC names no clock),
-          `libs` (:func:`library_fingerprint`), `dont_use`, and `abc_constr`
-          (:func:`resolve_abc_constr`) when the platform sets one.
+          `libs` (:func:`library_fingerprint`), `dont_use`, `abc_constr`
+          (:func:`resolve_abc_constr`) when the platform sets one, and
+          `clock_gating` (:func:`resolve_clock_gating`) when it is on.
         - unmapped branch: `abc_args`. Mapped runs ignore `abc_args`.
 
         `strategy` is never included. Values only, not the files they came from.
@@ -1543,6 +1597,9 @@ class YosysSynth:
             constr = resolve_abc_constr(self.synth_cfg, self.root_cfg)
             if constr is not None:
                 fed["abc_constr"] = constr
+            gating = resolve_clock_gating(opts, self.synth_cfg, self.root_cfg)
+            if gating is not None:
+                fed["clock_gating"] = gating
         else:
             fed["abc_args"] = opts.abc_args
         return fed

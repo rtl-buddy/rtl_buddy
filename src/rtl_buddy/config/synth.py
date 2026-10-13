@@ -29,6 +29,22 @@ class SynthPlatformConfigFile:
     # ABC's driving cell for primary inputs and load (fF) on primary outputs, passed as `abc -constr` (#787).
     abc_driving_cell: str = field(rename="abc-driving-cell", default="")
     abc_output_load: float | int | None = field(rename="abc-output-load", default=None)
+    # `<cell> <ce>:<clk>:<gclk>`: the ICG `clockgate -pos` uses instead of picking one from the Liberty (#786).
+    clock_gating_cell: str = field(rename="clock-gating-cell", default="")
+
+
+def _validate_clock_gating_cell(spec, where: str) -> str:
+    """Check `clock-gating-cell`: ``<cell> <ce>:<clk>:<gclk>``, or empty for Liberty selection."""
+    if spec is None or spec == "":
+        return ""
+    words = spec.split() if isinstance(spec, str) else []
+    pins = words[1].split(":") if len(words) == 2 else []
+    if len(pins) != 3 or not all(pins) or any(c in spec for c in "\"';{}[]$"):
+        raise FatalRtlBuddyError(
+            f"{where}: clock-gating-cell must be '<cell> <enable>:<clock>:<gated clock>', "
+            f"for example 'sky130_fd_sc_hd__dlclkp_1 GATE:CLK:GCLK', got {spec!r}"
+        )
+    return " ".join(words)
 
 
 def _validate_abc_driving_cell(cell, where: str) -> str:
@@ -86,6 +102,9 @@ class SynthPlatformConfig:
         where = f"synth platform '{self._name}'"
         self._abc_driving_cell = _validate_abc_driving_cell(cfg.abc_driving_cell, where)
         self._abc_output_load = _validate_abc_output_load(cfg.abc_output_load, where)
+        self._clock_gating_cell = _validate_clock_gating_cell(
+            cfg.clock_gating_cell, where
+        )
 
     def get_name(self) -> str:
         return self._name
@@ -118,6 +137,10 @@ class SynthPlatformConfig:
         """The load in femtofarads ABC puts on every primary output (`abc-output-load`), or None."""
         return self._abc_output_load
 
+    def get_clock_gating_cell(self) -> str:
+        """The ICG and its pins for `clockgate -pos` (`clock-gating-cell`), or `""` to let `clockgate -liberty` choose."""
+        return self._clock_gating_cell
+
 
 @dataclass
 class SynthToolOpts:
@@ -138,6 +161,8 @@ class SynthToolOpts:
     conflicting_drivers: str = ""
     # Gate on Yosys "Could not find interface instance" warnings: "error", "warn" (default) or "allow".
     unresolved_interfaces: str = ""
+    # Mapped runs: gate sets of at least this many enable flops with `clockgate`; 0 is off (#786).
+    clock_gating_min_flops: int = 0
 
 
 @serde
@@ -153,6 +178,7 @@ class SynthToolOptsFile:
     static_functions: str = field(rename="static-functions", default="")
     conflicting_drivers: str = field(rename="conflicting-drivers", default="")
     unresolved_interfaces: str = field(rename="unresolved-interfaces", default="")
+    clock_gating_min_flops: int = field(rename="clock-gating-min-flops", default=0)
 
 
 # Accepted values for the correctness gates.
@@ -190,6 +216,19 @@ def resolve_conflicting_drivers_mode(opts: SynthToolOpts) -> str:
     return mode
 
 
+def resolve_clock_gating_min_flops(opts: SynthToolOpts) -> int:
+    """Effective ``clock-gating-min-flops``: 0 (off) or the minimum enable-flop set size ``clockgate`` gates."""
+    value = opts.clock_gating_min_flops
+    if value is None or value == "":
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise FatalRtlBuddyError(
+            "synth option clock-gating-min-flops must be a non-negative integer "
+            f"(0 is off), got {value!r}"
+        )
+    return value
+
+
 def resolve_unresolved_interfaces_mode(opts: SynthToolOpts) -> str:
     """Effective ``unresolved-interfaces`` mode; defaults to ``warn``.
 
@@ -219,6 +258,7 @@ SYNTH_TOOL_OVERRIDE_KEYS: tuple[str, ...] = (
     "static_functions",
     "conflicting_drivers",
     "unresolved_interfaces",
+    "clock_gating_min_flops",
 )
 
 # Type-checked overrides, as key -> (type, label, hint). A quoted `"true"` would otherwise be truthy.
@@ -241,6 +281,11 @@ _SYNTH_OVERRIDE_TYPES: dict[str, tuple[type, str, str]] = {
         "string",
         f"write one of {', '.join(UNRESOLVED_INTERFACES_MODES)}",
     ),
+    "clock_gating_min_flops": (
+        int,
+        "non-negative integer",
+        "write an unquoted number of flops; 0 is off",
+    ),
 }
 
 
@@ -249,6 +294,7 @@ class SynthEffortYosysFile:
     synth_args: str = field(rename="synth-args", default="")
     abc_args: str = field(rename="abc-args", default="")
     abc_script: str = field(rename="abc-script", default="")
+    clock_gating_min_flops: int = field(rename="clock-gating-min-flops", default=0)
 
 
 @serde
@@ -281,6 +327,9 @@ class SynthEffortConfig:
 
     def get_yosys_abc_script(self) -> str:
         return self._cfg.yosys.abc_script
+
+    def get_yosys_clock_gating_min_flops(self) -> int:
+        return self._cfg.yosys.clock_gating_min_flops
 
     def get_openroad_run(self) -> bool:
         return self._cfg.openroad.run
@@ -381,6 +430,7 @@ class SynthToolConfig:
         static_functions = self._cfg.opts.static_functions
         conflicting_drivers = self._cfg.opts.conflicting_drivers
         unresolved_interfaces = self._cfg.opts.unresolved_interfaces
+        clock_gating_min_flops = self._cfg.opts.clock_gating_min_flops
         if overrides:
             if not isinstance(overrides, dict):
                 log_event(
@@ -412,6 +462,9 @@ class SynthToolConfig:
             unresolved_interfaces = overrides.get(
                 "unresolved_interfaces", unresolved_interfaces
             )
+            clock_gating_min_flops = overrides.get(
+                "clock_gating_min_flops", clock_gating_min_flops
+            )
         return SynthToolOpts(
             synth_args=synth_args,
             abc_args=abc_args,
@@ -424,6 +477,7 @@ class SynthToolConfig:
             static_functions=static_functions,
             conflicting_drivers=conflicting_drivers,
             unresolved_interfaces=unresolved_interfaces,
+            clock_gating_min_flops=clock_gating_min_flops,
         )
 
 
