@@ -32,7 +32,19 @@ on:
 
 jobs:
   release:
-    if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || github.event_name == 'workflow_dispatch'
+    # The version label is checked here, not in a step: a job skipped by its `if` never
+    # joins the `release` concurrency group. GitHub keeps one pending job per group and
+    # cancels the older one when another queues, so when a stack merges at once every
+    # unlabelled PR's run used to queue behind and supersede the labelled top PR's run,
+    # and no release was cut. Label comparisons are case-insensitive, as the step's
+    # `grep -i` is.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'pull_request'
+          && github.event.pull_request.merged == true
+          && (contains(github.event.pull_request.labels.*.name, 'version/major')
+              || contains(github.event.pull_request.labels.*.name, 'version/minor')
+              || contains(github.event.pull_request.labels.*.name, 'version/patch')))
     runs-on: ubuntu-latest
     concurrency:
       group: release
