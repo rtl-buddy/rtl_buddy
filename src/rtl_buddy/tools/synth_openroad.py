@@ -12,6 +12,7 @@ from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps, open_libe
 from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 from .synth_yosys import (
     MAX_EVENT_FINDINGS,
+    abc_batch_cmds,
     abc_constr_arg,
     abc_period_arg,
     apply_effort,
@@ -246,7 +247,7 @@ class OpenRoadSynth:
         opts = self._resolve_yosys_opts()
 
         source_files = self._source_files_from_filelist(fl_path)
-        lines = []
+        lines = abc_batch_cmds(opts, self.yosys_executable, self.artefact_dir)
         for lib in yosys_read_lib_paths(
             lib_paths, self.blocks, source_files, self.synth_cfg.get_name()
         ):
@@ -850,6 +851,8 @@ class OpenRoadSynth:
         - `abc_script`: the stage 1 ABC script (:func:`mapped_abc_script`), and `abc_period_ps`, its
           `-D` delay target (null when the SDC names no clock), plus `abc_constr` when the platform
           sets an ABC driving cell or output load, and `clock_gating` when stage 1 gates clocks.
+        - `abc_persistent: false` when stage 1 runs ABC in batch mode (:func:`abc_batch_cmds`);
+          absent at the default.
         - `map`: `resynth` (from `_resynth_cmd`), the sha256 of the effort's pre-STA Tcl (stripped as
           the script writer strips it), and the resolved `lefs`. With the effort's `openroad.repair`
           on, also `repair: true` and the sha256 of the `layer-rc-tcl` it sources; both are absent
@@ -891,6 +894,12 @@ class OpenRoadSynth:
                     )
                 )
                 else {}
+            ),
+            # Absent at the default, so runs that keep persistent ABC keep their digest.
+            **(
+                {}
+                if self._resolve_yosys_opts().abc_persistent
+                else {"abc_persistent": False}
             ),
             "map": map_options,
             "libs": library_fingerprint(self._resolve_lib_paths(), self.root_cfg),

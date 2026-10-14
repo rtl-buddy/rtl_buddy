@@ -1770,6 +1770,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('min_flops')} is ignored on an unmapped run "
                 "(no Liberty to take an ICG from); set a platform or lib-paths"
             )
+        case "synth.yosys_abc_missing":
+            return (
+                f"abc-persistent: false needs yosys-abc, but none was found next to "
+                f"{fields.get('yosys')} or on PATH"
+            )
         case "synth.abc_driving_cell_missing":
             return (
                 f"synth {fields.get('synth')}: ABC found no cell "
