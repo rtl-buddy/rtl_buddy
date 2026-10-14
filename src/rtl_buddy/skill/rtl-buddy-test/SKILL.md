@@ -22,6 +22,7 @@ Use `rb --machine` and read `payload.results`, not rendered tables. For syntax a
 
 - UVM uses its report thresholds; cocotb uses `cocotb_results.xml`.
 - Other simulations need a line beginning `PASS` or `FAIL` in `test.log`. Follow `FAIL` with `ERR:` or `FAT:` so `desc` holds the reason.
+- For a negative control, pair `xfail_strict: true` with `xfail_match: "<regex>"` (searched in the first `ERR:`/`FAT:` line, then `desc`); a failure for another reason, such as a watchdog, stays `FAIL`.
 - `payload.results[*].result` and `desc` are authoritative. `NA` means no verdict was produced and needs review; it is not proof of a pass.
 - Exit 0: no real `FAIL`, including an `XFAIL` or an intentional early-stop `NA` (only `early_stop: true`, from `-E pre|comp|sim`). Exit 1: a real `FAIL`, an unknown `NA` or a strict `XPASS`. Exit 2: fatal configuration or environment error.
 

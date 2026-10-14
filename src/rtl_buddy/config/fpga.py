@@ -8,6 +8,7 @@ from serde import field, serde
 from .yaml_loader import config_from_yaml
 
 from ..errors import FatalRtlBuddyError
+from ..runner.xfail import compile_xfail_match
 from ..logging_utils import log_event
 from .model import ModelConfig, ModelConfigLoader
 from .toolpath import resolve_tool_path
@@ -59,8 +60,15 @@ class FpgaConfigFile:
     # Either flag marks the run expected to fail; an unexpected pass fails only for `xfail_strict`.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
+    # Regex the failure must match to count as expected; needs `xfail`/`xfail_strict`. See docs/concepts/expected-failures.md.
+    xfail_match: str | None = None
 
     def initialise(self, config_dir: str) -> "FpgaConfig":
+        compile_xfail_match(
+            self.xfail_match,
+            xfail=self.xfail or self.xfail_strict,
+            where=f"fpga {self.name!r}",
+        )
         if self.part and self.platform:
             raise FatalRtlBuddyError(
                 f"fpga run '{self.name}': 'part' and 'platform' are "
@@ -90,6 +98,7 @@ class FpgaConfigFile:
             require_timing_met=self.require_timing_met,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
+            xfail_match=self.xfail_match,
         )
 
 
@@ -107,6 +116,7 @@ class FpgaConfig:
     require_timing_met: bool = False
     xfail: bool = False
     xfail_strict: bool = False
+    xfail_match: str | None = None
 
     def get_require_timing_met(self) -> bool:
         """Whether an unmet-timing routed run should FAIL (vs PASS)."""
@@ -118,6 +128,10 @@ class FpgaConfig:
 
     def get_xfail_strict(self) -> bool:
         return self.xfail_strict
+
+    def get_xfail_match(self) -> str | None:
+        """The `xfail_match` regex a FAIL must match to count as expected, or None."""
+        return self.xfail_match
 
     def get_name(self) -> str:
         return self.name

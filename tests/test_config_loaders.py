@@ -451,6 +451,7 @@ def test_testconfig_plan_roundtrip():
         resources=DispatchResourcesFile(cpus=4, mem="16G", time="02:00:00"),
         xfail=True,
         xfail_strict=False,
+        xfail_match=r"ECP-\d+",
         sim_rand_seed=17,
         sim_rand_seed_plusarg="stimulus_seed",
         preproc_sets_plusdefines=False,

@@ -198,7 +198,7 @@ from .runner.test_results import (
     is_run_failure,
 )
 from .runner.test_runner import RunDepth, TestRunner
-from .runner.xfail import apply_xfail, xfail_refusal
+from .runner.xfail import apply_xfail, xfail_mismatch, xfail_refusal
 from .runner.fpga_runner import FpgaRunner
 from .runner.fpga_results import FpgaSkipResults
 from .runner.pnr_runner import PnrExportRunner, PnrRunner
@@ -1740,14 +1740,19 @@ class RtlBuddy:
         ``cfg.is_xfail()`` is true.
 
         A FAIL that happened instead of a verdict (setup or compile failure, sim killed
-        at the timeout, lost dispatch job) keeps its FAIL; the event reports
-        ``excused=false`` with the reason.
+        at the timeout, lost dispatch job), or that the config's ``xfail_match`` regex
+        does not name, keeps its FAIL; the event reports ``excused=false`` with the
+        reason.
         """
         observed = res.results.get("result")
         strict = cfg.get_xfail_strict()
+        get_match = getattr(cfg, "get_xfail_match", None)
+        match = get_match() if get_match is not None else None
         # Read before apply_xfail, which rewrites the desc either way.
-        refusal = xfail_refusal(res.results) if observed == "FAIL" else None
-        apply_xfail(res, strict=strict)
+        refusal = None
+        if observed == "FAIL":
+            refusal = xfail_refusal(res.results) or xfail_mismatch(res.results, match)
+        apply_xfail(res, strict=strict, match=match)
         log_event(
             logger,
             logging.INFO,

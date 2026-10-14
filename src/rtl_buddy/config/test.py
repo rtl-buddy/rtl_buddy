@@ -22,6 +22,7 @@ import pprint
 import os
 
 from ..errors import FatalRtlBuddyError
+from ..runner.xfail import compile_xfail_match
 from ..logging_utils import log_event
 from ..seeding import (
     SeedResolution,
@@ -159,6 +160,8 @@ class TestConfig:
     # Either flag makes a FAIL report as XFAIL (a pass). An unexpected pass (XPASS) counts as a pass under `xfail` and a failure under `xfail_strict`, which wins if both are set.
     xfail: bool = False
     xfail_strict: bool = False
+    # Regex a FAIL's first error line or desc must match to count as expected; a FAIL for another reason stays FAIL.
+    xfail_match: str | None = None
     default_timeout: int = 60
     sim_rand_seed: int | None = None
     sim_rand_seed_plusarg: str | None = None
@@ -205,6 +208,10 @@ class TestConfig:
     def get_xfail_strict(self) -> bool:
         """Whether an unexpected pass (XPASS) should count as a failure."""
         return self.xfail_strict
+
+    def get_xfail_match(self) -> str | None:
+        """The `xfail_match` regex a FAIL must match to count as expected, or None."""
+        return self.xfail_match
 
     def get_model(self):
         return self.model
@@ -397,6 +404,7 @@ class TestConfig:
             else None,
             "xfail": self.xfail,
             "xfail_strict": self.xfail_strict,
+            "xfail_match": self.xfail_match,
             "default_timeout": self.default_timeout,
             "sim_rand_seed": self.sim_rand_seed,
             "sim_rand_seed_plusarg": self.sim_rand_seed_plusarg,
@@ -432,6 +440,7 @@ class TestConfig:
             else None,
             xfail=d["xfail"],
             xfail_strict=d["xfail_strict"],
+            xfail_match=d.get("xfail_match"),
             default_timeout=d["default_timeout"],
             sim_rand_seed=d.get("sim_rand_seed"),
             sim_rand_seed_plusarg=d.get("sim_rand_seed_plusarg"),
@@ -487,6 +496,8 @@ class TestConfigFile:
     assertions: bool = False
     xfail: bool = False
     xfail_strict: bool = False
+    # Regex the failure must match to count as expected; needs `xfail`/`xfail_strict`. See docs/concepts/expected-failures.md.
+    xfail_match: str | None = None
     resources: DispatchResourcesFile | None = None
     sim_rand_seed: int | None = field(rename="sim-rand-seed", default=None)
     sim_rand_seed_plusarg: str | None = field(
@@ -508,6 +519,11 @@ class TestConfigFile:
     ):
         validate_preproc_sets_plusdefines(
             self.preproc_sets_plusdefines, where=f"test {self.name!r}"
+        )
+        compile_xfail_match(
+            self.xfail_match,
+            xfail=self.xfail or self.xfail_strict,
+            where=f"test {self.name!r}",
         )
         if self.sim_rand_seed is not None:
             try:
@@ -553,6 +569,7 @@ class TestConfigFile:
             assertions=self.assertions,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
+            xfail_match=self.xfail_match,
             resources=self.resources,
             sim_rand_seed=self.sim_rand_seed,
             sim_rand_seed_plusarg=self.sim_rand_seed_plusarg,
