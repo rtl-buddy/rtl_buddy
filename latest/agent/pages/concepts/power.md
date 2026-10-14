@@ -79,6 +79,8 @@ All fields are in [YAML Formats: power.yaml](../reference/yaml.md#poweryaml).
 
 `activity.saif` and `activity.vcd` are mutually exclusive. Set `activity.scope` only with a trace, to the hierarchy containing the design, such as `tb_top/u_dut`. Synthetic defaults are a 0.1 toggle rate and 0.5 static probability; override them with `activity.default-toggle-rate` and `activity.default-static-prob`. The inputs take the same values because OpenSTA reports `inf` or `NaN` power downstream of an input with no activity that it does not time, such as a false-pathed input.
 
+Before applying any activity, the script runs `sta::update_generated_clks` after `read_sdc`. OpenSTA leaves a generated clock at period 0 until its waveform is derived, and `report_power` does not derive it, so an activity relative to that clock, such as input activity on a port whose `set_input_delay` names a forwarded clock, would otherwise be infinite.
+
 ## Capture SAIF activity
 
 Convert a debug waveform with `rb saif`, then run the analysis:
@@ -207,6 +209,7 @@ Read `power.log` for tool and input errors, then `power.rpt` for missing or malf
 
 - **`N instance(s) have no Liberty power data and report 0 W`:** see [Read the unpowered-cell warning](#read-the-unpowered-cell-warning).
 - **`N configured macro input(s) not on disk`:** the run stops. Fix the listed `lib-paths` or `lef-paths` on this entry or the upstream run.
+- **`Total line of report_power output is NaN/inf`:** OpenSTA converted an activity against a zero clock period. Check that every clock the SDC's I/O delays reference has a finite period; `create_generated_clock` clocks are derived before the activity is read.
 - **`power.spef_rejected`:** the SPEF is unreadable or stale and the estimate was used. Rerun `rb pnr`, then the power run.
 - **`phys-model.json has no per-instance breakdown`:** the per-instance report was missing or unreadable. Totals are still recorded and the run passes, but `rb phys instance` has nothing for it.
 - **`phys-model.json was not written`:** publishing failed. Any model in the directory belongs to an earlier run.

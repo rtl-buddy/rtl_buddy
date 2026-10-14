@@ -356,6 +356,25 @@ cfg-synth-efforts:
 - It needs a Liberty: an unmapped `tool: yosys` run warns `synth.clock_gating_ignored` and gates nothing.
 - The setting joins the run's options fingerprint only when on.
 
+## Run ABC in batch mode
+
+Yosys 0.64 on Linux keeps one `yosys-abc` process alive and sends it each ABC script over a pipe. It waits for `yosys-abc` to echo the `source <TMPDIR>/.../abc.script` line after its prompt. With `TERM` unset, readline assumes an 80-column screen and echoes a long line scrolled sideways, so the prompt never arrives and both processes block. Since rtl_buddy 6.81.0, every Yosys launch gets `COLUMNS=100000`, which keeps the echo on one line.
+
+If a run still stops after ABC with `output.blif` written, set `abc-persistent: false`:
+
+```yaml
+cfg-synth-tools:
+  - name: yosys
+    tool: yosys
+    opts:
+      abc-persistent: false
+```
+
+- Set it in `cfg-synth-tools` `opts`, or for one run in `tool_overrides.<tool>.abc_persistent`. The run override wins.
+- The run links `yosys-tmp/abc-batch` to the `yosys-abc` beside its Yosys binary, or on `PATH`, and starts `synth.ys` with `scratchpad -set abc.exe <link>`. Yosys reuses the process only for its own `yosys-abc` path, so every ABC call, including `synth`'s own, runs as `yosys-abc -s -f <script>`. The binary and the mapping are unchanged; each call pays process start-up.
+- It applies to `tool: yosys` and to the Yosys stage of `tool: openroad`. A run with no `yosys-abc` to link is fatal.
+- The setting joins the run's options fingerprint only when `false`.
+
 ## Synthesize hard macros
 
 For each hard macro:
@@ -406,7 +425,7 @@ Outputs land under `<synth-dir>/artefacts/<run>/`.
 | `synth_yosys.log` | OpenROAD | First-stage Yosys output |
 | `synth.tcl`, `synth.log` | OpenROAD | STA script and OpenROAD output |
 | `abc.constr` | Mapped runs | ABC driving cell and output load, when the platform sets them |
-| `yosys-tmp/` | Both | Yosys `TMPDIR`: temp files and the merged Liberty SCL cache that `abc` builds from several cell libraries. It replaces any inherited `TMPDIR`. Every Yosys launch also gets `COLUMNS=100000`, so `yosys-abc` does not hang on a long temp path when `TERM` is unset. |
+| `yosys-tmp/` | Both | Yosys `TMPDIR`: temp files and the merged Liberty SCL cache that `abc` builds from several cell libraries. It replaces any inherited `TMPDIR`. Every Yosys launch also gets `COLUMNS=100000`, so `yosys-abc` does not hang on a long temp path when `TERM` is unset. With `abc-persistent: false` it also holds the `abc-batch` link. |
 | `synth_stat.json` | Both | Yosys `stat -json`: per-module cell count and area |
 | `phys-model.json`, `phys-manifest.json` | Both | Physical model and its manifest; query with `rb phys` ([Physical Metrics](phys.md)) |
 
@@ -421,6 +440,7 @@ Each entry is a console message and the action it calls for.
 - **`static-functions` finding, run fails:** add `automatic` to the listed declarations, or set `static-functions: warn|allow`.
 - **`multiple conflicting drivers` warning(s), run fails:** fix the design so each net has one driver style, or set `conflicting-drivers: allow`.
 - **Interface instance could not be bound:** use `frontend: slang`, or accept the fallback with `unresolved-interfaces: warn|allow`.
+- **Yosys stops after ABC, `output.blif` written, no netlist:** set `abc-persistent: false`; see [Run ABC in batch mode](#run-abc-in-batch-mode).
 - **multi-clock SDC, abc constraint set to minimum:** use `tool: openroad` for multi-clock timing, or split into one run per clock domain.
 - **no `create_clock` found, or `create_clock -period` did not evaluate:** ABC runs unconstrained or skips that clock. Add a literal clock or restore the `tcl` reader.
 - **no Tcl interpreter is reachable, or Tcl refused a line:** the tokenizer reader is in use, so `$variables` and `[expr]` stay unevaluated. Install tkinter.

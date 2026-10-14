@@ -1736,6 +1736,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/synthesis/gate-enable-flops-with-clock-gating-cells.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/synthesis/#run-abc-in-batch-mode",
+          "slug": "run-abc-in-batch-mode",
+          "title": "Run ABC in batch mode",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/synthesis/run-abc-in-batch-mode.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/synthesis/#synthesize-hard-macros",
           "slug": "synthesize-hard-macros",
           "title": "Synthesize hard macros",

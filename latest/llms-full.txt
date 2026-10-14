@@ -740,7 +740,7 @@ Before using `--dispatch slurm`, provide:
 
 For each suite, dispatch submits one build job that compiles each distinct build once, then groups simulations with identical resolved resources into Slurm arrays that start after the build succeeds. Where [verilation is split off](#split-verilation-from-the-c-build), the build is two chained jobs. Results come back into the normal summary and exit status.
 
-A compile or verilate failure fails the tests that use that build, with the compiler's exit status and error lines; unrelated builds continue, and the build job still exits 0 so its dependents run. A failed build is compiled once: the other tests on that build whose inputs are identical take its exit status, and their `compile.log` carries its transcript. A failure that may be transient is not shared, and each of those tests compiles for itself: one that waited for a license seat, or whose transcript ends in an out-of-memory signature (`Killed signal terminated program`, `virtual memory exhausted`, `out of memory`, `Cannot allocate memory`, make's `Error 137`). A job that produces no result (scheduler kill, node failure, dependency failure) is reported as a failed test, never dropped.
+A compile or verilate failure fails the tests that use that build, with the compiler's exit status and error lines; unrelated builds continue, and the build job still exits 0 so its dependents run. A failed build is compiled once: the other tests on that build whose inputs are identical take its exit status, and their `compile.log` carries its transcript. A failure that may be transient is not shared, and each of those tests compiles for itself: one that waited for a license seat, or whose transcript ends in an out-of-memory signature (`Killed signal terminated program`, `virtual memory exhausted`, `out of memory`, `Cannot allocate memory`, make's `Error 137`). Each test reads the build's most recent failed compile: after a transient failure the next test compiles again, and once a compile fails for another reason the remaining tests take that compile's exit status and transcript. A transient failure never replaces a non-transient one already recorded, so a test whose inputs differ and whose compile then runs out of memory does not send the remaining tests back to compiling. A job that produces no result (scheduler kill, node failure, dependency failure) is reported as a failed test, never dropped.
 
 `max-jobs-per-array` throttles each array, so total concurrency can approach the throttle times the number of arrays (or slices, for [large groups](#split-large-groups-into-several-arrays)).
 
@@ -1099,7 +1099,7 @@ A test whose retries ran under different cpu requests gets no `cpus` row (`right
 
 - **`dispatch.build_job_deduped` and the build job stays `PENDING`:** inspect the job it waits for with `squeue -j <ids> -O JobID,State,Reason` and `scontrol show job <id>`. `RUNNING`, or `PENDING` for `Resources` or `Priority`, is normal; cancelling it discards a build this run will reuse. `scancel` it only if it is held (`JobHeldUser`, `JobHeldAdmin`), unschedulable (`PartitionConfig`, `BadConstraints`), or an abandoned run.
 - **`build_job.group_input_drift`:** configs that share one build have different inputs. Give the config its own build, or fix the hook that rewrites the input per test.
-- **`build_job.group_failure_adoption_declined`:** a config shares a build whose first compile failed, but its inputs differ, the compiler was killed by a signal, or the failure may be transient (a license wait or an out-of-memory signature in the transcript), so it compiles again. A hook that rewrites a listed input per test causes the first; for an out-of-memory failure, raise `compile.mem` or lower `compile.parallel`.
+- **`build_job.group_failure_adoption_declined`:** a config shares a build whose most recent compile failed (the event's `leader` names that compile's test), but its inputs differ, the compiler was killed by a signal, or the failure may be transient (a license wait or an out-of-memory signature in the transcript), so it compiles again. A hook that rewrites a listed input per test causes the first; for an out-of-memory failure, raise `compile.mem` or lower `compile.parallel`.
 - **`compile.build_stamp_rejected`, `compile.stamp_write_failed`, `compile.prebuilt_stamp_invalid`:** see [Recover when a gated job cannot use the build](#recover-when-a-gated-job-cannot-use-the-build).
 - **`dispatch.binary_mismatch`:** runs of one build directory did not all use the same executable, because one run rebuilt it while others used it. Results are scored as they ran; re-run to confirm.
 - **`compile.build_phase_fallback`** (`marker-missing`, `marker-stale`, `marker-foreign`, `no-verilate-unsupported`): the build job verilated for itself. The result is correct but unsplit.
@@ -3546,6 +3546,8 @@ All fields are in [YAML Formats: power.yaml](../reference/yaml.md#poweryaml).
 
 `activity.saif` and `activity.vcd` are mutually exclusive. Set `activity.scope` only with a trace, to the hierarchy containing the design, such as `tb_top/u_dut`. Synthetic defaults are a 0.1 toggle rate and 0.5 static probability; override them with `activity.default-toggle-rate` and `activity.default-static-prob`. The inputs take the same values because OpenSTA reports `inf` or `NaN` power downstream of an input with no activity that it does not time, such as a false-pathed input.
 
+Before applying any activity, the script runs `sta::update_generated_clks` after `read_sdc`. OpenSTA leaves a generated clock at period 0 until its waveform is derived, and `report_power` does not derive it, so an activity relative to that clock, such as input activity on a port whose `set_input_delay` names a forwarded clock, would otherwise be infinite.
+
 ## Capture SAIF activity
 
 Convert a debug waveform with `rb saif`, then run the analysis:
@@ -3674,6 +3676,7 @@ Read `power.log` for tool and input errors, then `power.rpt` for missing or malf
 
 - **`N instance(s) have no Liberty power data and report 0 W`:** see [Read the unpowered-cell warning](#read-the-unpowered-cell-warning).
 - **`N configured macro input(s) not on disk`:** the run stops. Fix the listed `lib-paths` or `lef-paths` on this entry or the upstream run.
+- **`Total line of report_power output is NaN/inf`:** OpenSTA converted an activity against a zero clock period. Check that every clock the SDC's I/O delays reference has a finite period; `create_generated_clock` clocks are derived before the activity is read.
 - **`power.spef_rejected`:** the SPEF is unreadable or stale and the estimate was used. Rerun `rb pnr`, then the power run.
 - **`phys-model.json has no per-instance breakdown`:** the per-instance report was missing or unreadable. Totals are still recorded and the run passes, but `rb phys instance` has nothing for it.
 - **`phys-model.json was not written`:** publishing failed. Any model in the directory belongs to an earlier run.
@@ -4568,6 +4571,25 @@ cfg-synth-efforts:
 - It needs a Liberty: an unmapped `tool: yosys` run warns `synth.clock_gating_ignored` and gates nothing.
 - The setting joins the run's options fingerprint only when on.
 
+## Run ABC in batch mode
+
+Yosys 0.64 on Linux keeps one `yosys-abc` process alive and sends it each ABC script over a pipe. It waits for `yosys-abc` to echo the `source <TMPDIR>/.../abc.script` line after its prompt. With `TERM` unset, readline assumes an 80-column screen and echoes a long line scrolled sideways, so the prompt never arrives and both processes block. Since rtl_buddy 6.81.0, every Yosys launch gets `COLUMNS=100000`, which keeps the echo on one line.
+
+If a run still stops after ABC with `output.blif` written, set `abc-persistent: false`:
+
+```yaml
+cfg-synth-tools:
+  - name: yosys
+    tool: yosys
+    opts:
+      abc-persistent: false
+```
+
+- Set it in `cfg-synth-tools` `opts`, or for one run in `tool_overrides.<tool>.abc_persistent`. The run override wins.
+- The run links `yosys-tmp/abc-batch` to the `yosys-abc` beside its Yosys binary, or on `PATH`, and starts `synth.ys` with `scratchpad -set abc.exe <link>`. Yosys reuses the process only for its own `yosys-abc` path, so every ABC call, including `synth`'s own, runs as `yosys-abc -s -f <script>`. The binary and the mapping are unchanged; each call pays process start-up.
+- It applies to `tool: yosys` and to the Yosys stage of `tool: openroad`. A run with no `yosys-abc` to link is fatal.
+- The setting joins the run's options fingerprint only when `false`.
+
 ## Synthesize hard macros
 
 For each hard macro:
@@ -4618,7 +4640,7 @@ Outputs land under `<synth-dir>/artefacts/<run>/`.
 | `synth_yosys.log` | OpenROAD | First-stage Yosys output |
 | `synth.tcl`, `synth.log` | OpenROAD | STA script and OpenROAD output |
 | `abc.constr` | Mapped runs | ABC driving cell and output load, when the platform sets them |
-| `yosys-tmp/` | Both | Yosys `TMPDIR`: temp files and the merged Liberty SCL cache that `abc` builds from several cell libraries. It replaces any inherited `TMPDIR`. Every Yosys launch also gets `COLUMNS=100000`, so `yosys-abc` does not hang on a long temp path when `TERM` is unset. |
+| `yosys-tmp/` | Both | Yosys `TMPDIR`: temp files and the merged Liberty SCL cache that `abc` builds from several cell libraries. It replaces any inherited `TMPDIR`. Every Yosys launch also gets `COLUMNS=100000`, so `yosys-abc` does not hang on a long temp path when `TERM` is unset. With `abc-persistent: false` it also holds the `abc-batch` link. |
 | `synth_stat.json` | Both | Yosys `stat -json`: per-module cell count and area |
 | `phys-model.json`, `phys-manifest.json` | Both | Physical model and its manifest; query with `rb phys` ([Physical Metrics](phys.md)) |
 
@@ -4633,6 +4655,7 @@ Each entry is a console message and the action it calls for.
 - **`static-functions` finding, run fails:** add `automatic` to the listed declarations, or set `static-functions: warn|allow`.
 - **`multiple conflicting drivers` warning(s), run fails:** fix the design so each net has one driver style, or set `conflicting-drivers: allow`.
 - **Interface instance could not be bound:** use `frontend: slang`, or accept the fallback with `unresolved-interfaces: warn|allow`.
+- **Yosys stops after ABC, `output.blif` written, no netlist:** set `abc-persistent: false`; see [Run ABC in batch mode](#run-abc-in-batch-mode).
 - **multi-clock SDC, abc constraint set to minimum:** use `tool: openroad` for multi-clock timing, or split into one run per clock domain.
 - **no `create_clock` found, or `create_clock -period` did not evaluate:** ABC runs unconstrained or skips that clock. Add a literal clock or restore the `tcl` reader.
 - **no Tcl interpreter is reachable, or Tcl refused a line:** the tokenizer reader is in use, so `$variables` and `[expr]` stay unevaluated. Install tkinter.
@@ -9646,6 +9669,7 @@ cfg-synth-tools:
       conflicting-drivers: error
       unresolved-interfaces: warn
       clock-gating-min-flops: 0
+      abc-persistent: true
 
 cfg-pdks:
   - name: sky130hd
@@ -9681,7 +9705,7 @@ cfg-pnr-platforms:
 
 | Block | Fields and behavior |
 |---|---|
-| `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `abc-script`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, `unresolved-interfaces`, and `clock-gating-min-flops`. OpenROAD also accepts `strategy` |
+| `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `abc-script`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, `unresolved-interfaces`, `clock-gating-min-flops`, and `abc-persistent`. OpenROAD also accepts `strategy` |
 | `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical` (default `metal3` / `metal2`), `placement.*`, `dont-use-cells`, `pdn-config`, `rcx-rules`, `tracks-tcl`, `layer-rc-tcl`, `tapcell-tcl`, and `platform-tcl`. `corners` maps a corner name to its standard-cell Liberty: one path, or a list for cells split across files. `cell-gds` takes one path or a list. Each path resolves on its own from `root_config.yaml` |
 | `cfg-synth-platforms` | `name`, `pdk`; optional `corner` (the first declared corner by default), `dont-use-cells`, `abc-driving-cell` (the Liberty cell ABC assumes drives every primary input), `abc-output-load` (femtofarads on every primary output) and `clock-gating-cell` (`'<cell> <enable>:<clock>:<gated clock>'`, the ICG `clockgate` uses instead of choosing one from the Liberty). The two `abc-*` keys are written to `abc.constr` and passed as `abc -constr` on mapped runs; see [Synthesis](../concepts/synthesis.md#give-abc-a-driving-cell-and-output-load) and [clock gating](../concepts/synthesis.md#gate-enable-flops-with-clock-gating-cells) |
 | `cfg-pnr-platforms` | `name`, `pdk`; optional `corner` or `corners`, `cts-buffer`, `port-buffer`, `cts-sink-clustering` (default `true`), `cts-apply-ndr`, `post-cts-setup-repair` (default `false`), `global-route-hold-repair` (default `false`), `routing-layer-adjustment`, `max-fanout`, `routing-layers.signal` / `.clock`, `placement.*`, and `dont-use-cells`. `corners` is a non-empty list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; it excludes `corner`. See [multi-corner signoff](../concepts/pnr.md#sign-off-at-several-corners) |
@@ -9733,7 +9757,9 @@ For synthesis, `frontend: verilog` is the default. `frontend: slang` requires `p
 
 `clock-gating-min-flops` (default `0`, off) makes a Liberty-mapped run insert integrated clock-gating cells with Yosys `clockgate` after `synth` and `chformal -remove`, before `dfflibmap`, for each set of at least that many rising-edge flops sharing a clock and enable. An unmapped run warns `synth.clock_gating_ignored` and gates nothing. See [Synthesis](../concepts/synthesis.md#gate-enable-flops-with-clock-gating-cells).
 
-In `synth.yaml` overrides, use snake-case keys such as `plugin_path` and `single_unit`. Unknown keys warn and are ignored; a non-mapping override or a wrong `single_unit` type is fatal. The elaboration override key is `yosys` for both Yosys and OpenROAD runs. An OpenROAD run's Yosys stage also reads `tool_overrides.openroad`, with `yosys` winning per key, and takes its tool options from the `yosys` entry of `cfg-synth-tools`, or from the `openroad` entry when there is no `yosys` entry. `strategy` is read only from `openroad`. Keys that no stage reads warn. See [Synthesis](../concepts/synthesis.md#systemverilog-frontend).
+`abc-persistent` (default `true`) lets Yosys reuse one `yosys-abc` process for every ABC call. `false` runs each call as its own `yosys-abc` process, through a link `yosys-tmp/abc-batch` to the same binary, on both backends; the mapping is unchanged. A run without `yosys-abc` next to its Yosys or on `PATH` is fatal. The setting joins the options fingerprint only when `false`. See [Synthesis](../concepts/synthesis.md#run-abc-in-batch-mode).
+
+In `synth.yaml` overrides, use snake-case keys such as `plugin_path` and `single_unit`. Unknown keys warn and are ignored; a non-mapping override or a wrongly typed value, such as a quoted `single_unit` or `abc_persistent`, is fatal. The elaboration override key is `yosys` for both Yosys and OpenROAD runs. An OpenROAD run's Yosys stage also reads `tool_overrides.openroad`, with `yosys` winning per key, and takes its tool options from the `yosys` entry of `cfg-synth-tools`, or from the `openroad` entry when there is no `yosys` entry. `strategy` is read only from `openroad`. Keys that no stage reads warn. See [Synthesis](../concepts/synthesis.md#systemverilog-frontend).
 
 `static-functions`, `conflicting-drivers`, and `unresolved-interfaces` are correctness gates on the Yosys elaboration stage, which the `yosys` and `openroad` backends both use. Omit an option to take its default. An unrecognized value is fatal.
 
