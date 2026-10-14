@@ -544,6 +544,18 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "no-verilate-unsupported": (
                     "this Verilator does not support --no-verilate"
                 ),
+                "verilation-missing": (
+                    "the build directory without the -CFLAGS/-LDFLAGS options "
+                    "holds no verilation of these inputs"
+                ),
+                "verilation-foreign": (
+                    "the verilation without the -CFLAGS/-LDFLAGS options belongs "
+                    "to another checkout"
+                ),
+                "verilation-unusable": (
+                    "the verilation without the -CFLAGS/-LDFLAGS options could "
+                    "not be copied into this build directory"
+                ),
             }.get(fields.get("reason"), str(fields.get("reason")))
             return (
                 f"{fields.get('test')}: verilating as well as building, "
@@ -1035,6 +1047,38 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"another checkout's verilation ({fields.get('marker_root')}), "
                 "still waiting for its build; not verilating over it. The build "
                 "job reuses that build if it has finished, else compiles in full"
+            )
+        case "compile.verilation_reused":
+            # #833: only -CFLAGS/-LDFLAGS differ from a finished verilation.
+            return (
+                f"{target or 'compile'}: reusing the verilation in "
+                f"{_build_location(fields)}; only the C++ build runs, since the "
+                "compile line differs from it only in -CFLAGS/-LDFLAGS"
+            )
+        case "compile.verilation_copied":
+            return (
+                f"{target or 'compile'}: copied {fields.get('copied')} changed "
+                f"verilated file(s) from {fields.get('verilation_path')} into "
+                f"{fields.get('build_path')}"
+            )
+        case "compile.verilation_not_reusable":
+            return (
+                f"{target or 'compile'}: the verilation in "
+                f"{fields.get('verilation_path')} cannot be reused with this "
+                "line's -CFLAGS/-LDFLAGS (a -f file or library before them, or "
+                "an unexpected makefile); verilating in full instead"
+            )
+        case "compile.verilation_copy_failed":
+            return (
+                f"{target or 'compile'}: could not copy the verilation in "
+                f"{_build_location(fields)} ({fields.get('error')}); verilating "
+                "this build directory in full instead"
+            )
+        case "compile.verilation_record_write_failed":
+            return (
+                f"{fields.get('test')}: could not record the verilation in "
+                f"{fields.get('record')} ({fields.get('error')}); a build with "
+                "other -CFLAGS/-LDFLAGS will verilate again"
             )
         case "compile.verilate_reused":
             # Verilate-job counterpart of build_reused: there is no stamp yet, so the

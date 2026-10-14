@@ -6,6 +6,7 @@
 """Simulation compile, run and grading for Verilog testbenches."""
 
 import contextlib
+import filecmp
 import fnmatch
 import hashlib
 import json
@@ -21,7 +22,7 @@ import sys
 import logging
 import threading
 import types
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from stat import S_ISREG
 
 logger = logging.getLogger(__name__)
@@ -508,6 +509,13 @@ _BOOKKEEPING_FILE_PATTERNS = (
 # A dotfile, so no suffix clear matches it.
 VERILATE_MARKER_NAME = ".rb-verilate.json"
 
+# Record a successful verilation leaves in its build dir: the fingerprint sha of the
+# inputs it verilated (the compile line without `-CFLAGS`/`-LDFLAGS`), the checkout,
+# and the dependencies Verilator read. A build of the same design with other C++
+# flags copies that verilated C++ and runs only the make (#833). Unlike the split
+# marker it outlives the build, and it is removed whenever the front end reruns there.
+VERILATION_RECORD_NAME = ".rb-verilation.json"
+
 # rtl_buddy's own outputs, by name.
 # An include root can itself be a managed tree (a `preproc` hook generates headers into
 # its `artifact_dir`), so pruning `artefacts` is not enough. Generated inputs there must
@@ -525,6 +533,7 @@ _MANAGED_OUTPUT_FILE_PATTERNS = (
     ICARUS_SNAPSHOT_NAME,
     SHARED_BUILD_STAMP_NAME,
     VERILATE_MARKER_NAME,
+    VERILATION_RECORD_NAME,
     RESULT_JSON_NAME,
 ) + DISPATCH_OUTPUT_PATTERNS
 
@@ -569,6 +578,215 @@ _BUILD_STEP_FLAGS = ("--binary", "--build")
 # Whether a Verilator supports ``--no-verilate``, keyed on the resolved executable.
 # Answered once per process.
 _NO_VERILATE_SUPPORT: dict[str, bool] = {}
+
+# Verilator options whose value reaches only the C++ compile and link: Verilator
+# writes them into `VM_USER_CFLAGS`/`VM_USER_LDLIBS` of the generated `V<top>.mk`
+# and nothing else. Verilator takes the value as the next argument, with one or two
+# leading dashes; `-CFLAGS=<x>` is not an option it accepts, so it is left alone.
+# `-MAKEFLAGS` would work the same way but is not split out (#833).
+_CXX_ONLY_OPTIONS = {
+    "-CFLAGS": "cflags",
+    "--CFLAGS": "cflags",
+    "-LDFLAGS": "ldflags",
+    "--LDFLAGS": "ldflags",
+}
+
+# Options that make Verilator add its own entries to the C++ flag lists while it
+# parses the command line, in order, as (cflags, ldlibs). Spelled with one dash;
+# `--x` is normalised to `-x`. Checked against the verilated makefile before use,
+# so a Verilator that adds other entries makes the reuse decline, never misorder.
+_VERILATOR_IMPLICIT_CXX_FLAGS = {
+    "-runtime-debug": (
+        ["-ggdb", "-fsanitize=address,undefined", "-D_GLIBCXX_DEBUG", "-DVL_DEBUG=1"],
+        ["-ggdb", "-fsanitize=address,undefined"],
+    ),
+    "-trace-fst": ([], ["-lz"]),
+}
+
+# Options a verilation reuse declines on: a hierarchical build verilates into
+# subdirectories with makefiles of their own.
+_VERILATION_REUSE_BLOCKERS = frozenset({"-hierarchical", "--hierarchical"})
+
+# Makefile variables Verilator fills from `-CFLAGS` and `-LDFLAGS`, by flag list.
+_MK_USER_FLAG_VARS = (("cflags", "VM_USER_CFLAGS"), ("ldflags", "VM_USER_LDLIBS"))
+
+
+def split_cxx_only_flags(cmd):
+    """Split ``cmd`` into the compile line without its C++-only options, and those
+    options' values.
+
+    Returns ``(stripped, {"cflags": [...], "ldflags": [...]})``. Each
+    ``-CFLAGS <x>`` / ``-LDFLAGS <x>`` pair (one or two dashes, any number of times)
+    is removed and ``<x>`` kept verbatim, in order. A trailing option with no value
+    stays, so Verilator reports it.
+    """
+    stripped = []
+    values = {"cflags": [], "ldflags": []}
+    index = 0
+    while index < len(cmd):
+        token = cmd[index]
+        kind = _CXX_ONLY_OPTIONS.get(token) if isinstance(token, str) else None
+        if kind is not None and index + 1 < len(cmd):
+            values[kind].append(cmd[index + 1])
+            index += 2
+            continue
+        stripped.append(token)
+        index += 1
+    return stripped, values
+
+
+def merge_cxx_only_flags(argv, verilated):
+    """The C++ flag lists Verilator would emit for ``argv``, given the lists the
+    verilation of ``argv`` minus its C++-only options emitted, or ``None``.
+
+    Verilator appends to one list per variable in command-line order: `-CFLAGS` and
+    `-LDFLAGS` values, entries some options imply
+    (:data:`_VERILATOR_IMPLICIT_CXX_FLAGS`), then whatever a later `-f` file adds,
+    then entries added during verilation (`--main` adds `-DVL_TIME_CONTEXT`). This
+    walks ``argv`` up to the last C++-only option, slotting each value in front of
+    the verilated entries that come later. ``None`` (decline) when an earlier token
+    could have added entries this cannot place: a `-f`/`-F` file, a library or
+    object named on the line, or implied entries that do not match.
+    """
+    positions = [
+        index
+        for index, token in enumerate(argv)
+        if isinstance(token, str) and token in _CXX_ONLY_OPTIONS
+    ]
+    merged = {"cflags": [], "ldflags": []}
+    consumed = {"cflags": 0, "ldflags": 0}
+    index = 0
+    last = positions[-1] if positions else -1
+    while index <= last:
+        token = argv[index]
+        kind = _CXX_ONLY_OPTIONS.get(token)
+        if kind is not None and index + 1 < len(argv):
+            merged[kind].append(argv[index + 1])
+            index += 2
+            continue
+        option = token[1:] if token.startswith("--") else token
+        implied = _VERILATOR_IMPLICIT_CXX_FLAGS.get(option)
+        if implied is not None:
+            for kind, entries in zip(("cflags", "ldflags"), implied):
+                start = consumed[kind]
+                if verilated[kind][start : start + len(entries)] != entries:
+                    return None
+                merged[kind] += entries
+                consumed[kind] += len(entries)
+        elif option in ("-f", "-F") or token.endswith((".a", ".o", ".so")):
+            return None
+        index += 1
+    return {kind: merged[kind] + verilated[kind][consumed[kind] :] for kind in merged}
+
+
+def _is_verilated_output(name, prefix):
+    """Is ``name`` a file a verilation with ``prefix`` writes that its make reads?
+
+    The C++, headers and makefiles, plus the dependency file rtl_buddy stamps from.
+    Never a make output (`<prefix>__ALL.cpp`, objects, archives, precompiled
+    headers, the executable) and never rtl_buddy's own files.
+    """
+    if not name.startswith(prefix):
+        return False
+    if name == f"{prefix}__ver.d":
+        return True
+    return name.endswith((".cpp", ".h", ".mk")) and name != f"{prefix}__ALL.cpp"
+
+
+def _sync_file(target, *, source=None, data=None):
+    """Make ``target`` hold ``source``'s bytes (or ``data``); True if it was written.
+
+    A file already identical is left alone, mtime and all, so the objects make built
+    from it stay current. A different one is replaced atomically with a fresh mtime,
+    newer than any object built before, so make rebuilds what depends on it.
+    """
+    target = Path(target)
+    try:
+        if data is not None:
+            if target.read_bytes() == data:
+                return False
+        elif os.path.getsize(target) == os.path.getsize(source) and filecmp.cmp(
+            source, target, shallow=False
+        ):
+            return False
+    except OSError:
+        pass
+    tmp = target.with_name(atomic_tmp_name(target.name))
+    try:
+        if data is not None:
+            tmp.write_bytes(data)
+        else:
+            shutil.copyfile(source, tmp)
+        os.replace(tmp, target)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
+    return True
+
+
+def _mk_user_flag_block(lines, variable):
+    """Locate ``variable``'s block in a verilated makefile.
+
+    Returns ``(start, end, auto, values)``: the header line index, the index of the
+    blank line closing the block, the tab-indented lines Verilator writes first
+    (from options such as `--lib-create`), and the two-space-indented user values.
+    ``None`` when the block is missing, repeated or not in that shape.
+    """
+    header = f"{variable} = \\"
+    if lines.count(header) != 1:
+        return None
+    start = lines.index(header)
+    auto, values = [], []
+    end = start + 1
+    while end < len(lines) and lines[end] != "":
+        line = lines[end]
+        if not line.endswith(" \\"):
+            return None
+        if line.startswith("\t") and not values:
+            auto.append(line)
+        elif line.startswith("  "):
+            values.append(line[2:-2])
+        else:
+            return None
+        end += 1
+    if end == len(lines):
+        return None
+    return start, end, auto, values
+
+
+def read_mk_user_flags(text):
+    """The C++ flag lists a verilated makefile carries, as
+    ``{"cflags": [...], "ldflags": [...]}``, or ``None`` if not in Verilator's shape.
+    """
+    lines = text.split("\n")
+    flags = {}
+    for kind, variable in _MK_USER_FLAG_VARS:
+        block = _mk_user_flag_block(lines, variable)
+        if block is None:
+            return None
+        flags[kind] = block[3]
+    return flags
+
+
+def rewrite_mk_user_flags(text, flags):
+    """``text`` with its C++ flag lists replaced by ``flags``, or ``None``.
+
+    Written as Verilator writes them (one ``  <value> \\`` line per value, after the
+    lines it adds itself), so the result is the makefile a verilation with those
+    flags would have emitted. A value with a newline cannot be written that way.
+    """
+    if any("\n" in value for values in flags.values() for value in values):
+        return None
+    lines = text.split("\n")
+    for kind, variable in _MK_USER_FLAG_VARS:
+        block = _mk_user_flag_block(lines, variable)
+        if block is None:
+            return None
+        start, end, auto, _ = block
+        lines[start + 1 : end] = auto + [f"  {value} \\" for value in flags[kind]]
+    return "\n".join(lines)
+
 
 # Environment override for the persistent shared-build cache root.
 # Below ``--shared-build-root`` and above the root config's
@@ -1206,6 +1424,17 @@ class _CompilePlan:
     # directory, not (compile_work_dir, shared_dir), so different tests with one key
     # land in one group.
     group_dir: str = ""
+    # The shared Verilator build dir of this compile line without its `-CFLAGS` and
+    # `-LDFLAGS` (#833), whose verilation this build copies and only makes. None when
+    # the line has no such option, or the reuse cannot apply (see
+    # :meth:`VlogSim._plan_verilation_reuse`).
+    verilation_dir: Path | None = None
+    # The fingerprint of that line: what the verilation dir's record must match.
+    verilation_fingerprint: dict | None = None
+    # True when `shared_dir` is itself the verilation dir of its compile line (a shared
+    # Verilator build with no C++-only option), so its verilations are recorded for
+    # builds with other C++ flags to reuse.
+    records_verilation: bool = False
 
 
 class VlogSim:
@@ -3063,6 +3292,7 @@ class VlogSim:
             self._shared_build_dir = str(shared_dir)
             plan.build_dir = str(shared_dir)
             plan.group_dir = str(shared_dir)
+            self._plan_verilation_reuse(plan)
         else:
             # Emitted from the plan, so it lands at probe time, before compile.config
             # for the same test.
@@ -3079,6 +3309,68 @@ class VlogSim:
             # job. Same fingerprint and stamp file, kept in the test's own compile work
             # dir. `group_dir` stays the resolved output path.
         return plan
+
+    def _verilation_key_cmd(self, plan):
+        """``plan``'s compile line without its `-CFLAGS`/`-LDFLAGS` options.
+
+        Stripped list by list, the way :meth:`_build_compile_plan` assembles
+        ``key_cmd``, so the result is exactly the ``key_cmd`` of a build that never
+        had those options.
+        """
+        return (
+            [self.rtl_builder_cfg.get_exe()]
+            + split_cxx_only_flags(plan.builder_opts)[0]
+            + split_cxx_only_flags(plan.extra_compile_flags)[0]
+            + plan.assertion_flags
+            + plan.top_flags
+            + plan.plusdefines
+        )
+
+    def _plan_verilation_reuse(self, plan):
+        """Point a shared Verilator ``plan`` at the build dir its verilation lives in.
+
+        The C++-only options (`-CFLAGS`, `-LDFLAGS`) reach only the generated
+        makefile, so the verilation is keyed without them (#833): the build dir that
+        same line without them would use, by the same key derivation. A line with
+        none of them is its own verilation dir and records its verilations; one with
+        some copies the verilation from there and runs only the make (see
+        :meth:`_reuse_verilation`). The full key and directory are unchanged, so no
+        existing build dir moves.
+
+        Only for a line with a build step (`--binary`/`--build`), since a line that
+        only verilates has no make to run alone, and never for `--hierarchical`.
+        """
+        if not plan.is_verilator or plan.shared_dir is None:
+            return
+        key_cmd = plan.key_cmd
+        if not self._splittable(key_cmd) or any(
+            token in _VERILATION_REUSE_BLOCKERS for token in key_cmd
+        ):
+            return
+        verilation_cmd = self._verilation_key_cmd(plan)
+        if verilation_cmd == key_cmd:
+            plan.records_verilation = True
+            return
+        cache_root = self.shared_build_root
+        fingerprint = {
+            **plan.fingerprint,
+            "cmd": self._relativise_cmd(verilation_cmd),
+        }
+        plan.verilation_fingerprint = fingerprint
+        plan.verilation_dir = shared_build_dir(
+            self.suite_work_dir,
+            self._compile_config_key(
+                fingerprint,
+                content=cache_root is not None,
+                cmd_inputs=(
+                    self._fingerprint_cmd_inputs(verilation_cmd, fingerprint["sources"])
+                    if cache_root is not None
+                    else None
+                ),
+            ),
+            cache_root=cache_root,
+            project_root=self._project_root,
+        )
 
     def _gated_build_verdict(self, fingerprint=None):
         """What the build envelope says about this test, as ``(kind, record)``.
@@ -3313,15 +3605,21 @@ class VlogSim:
         key. ``verilate`` replaces ``--binary`` with ``--exe --main --timing`` and
         drops ``--build``, so Verilator emits C++ and ``V<top>.mk`` under ``--Mdir``
         and stops. ``build`` adds ``--no-verilate`` so the make runs over what the
-        first half left.
+        first half left; so does ``full`` over a verilation copied from the build
+        dir without the C++-only options (#833).
         """
-        if self.build_phase == BUILD_PHASE_FULL:
-            return run_cmd
-        if self.build_phase == BUILD_PHASE_BUILD:
-            # Only where the marker cleared this key; every fallback runs the whole
-            # compile.
+        if self.build_phase in (BUILD_PHASE_FULL, BUILD_PHASE_BUILD):
+            # Only where a marker or a copied verilation cleared this key; every
+            # fallback runs the whole compile.
             return run_cmd + ["--no-verilate"] if self._skip_verilate else run_cmd
-        if not self._splittable(run_cmd):
+        return self._verilate_only_argv(run_cmd)
+
+    @classmethod
+    def _verilate_only_argv(cls, run_cmd):
+        """``run_cmd`` stopped after the front end: ``--binary`` becomes ``--exe
+        --main --timing`` and ``--build`` is dropped. Unchanged without a build step.
+        """
+        if not cls._splittable(run_cmd):
             return run_cmd
         rewritten = []
         for arg in run_cmd:
@@ -3411,6 +3709,83 @@ class VlogSim:
         recorded = marker.get("fingerprint_sha")
         own = _fingerprint_sha(fingerprint)
         return recorded is not None and own is not None and recorded == own
+
+    @staticmethod
+    def _verilation_record_path(build_dir):
+        """Where a build dir records the verilation it holds (#833)."""
+        return Path(build_dir) / VERILATION_RECORD_NAME
+
+    def _write_verilation_record(
+        self, build_dir, *, fingerprint, status, transcript, duration_sec, deps
+    ):
+        """Record the verilation now in ``build_dir``. Never raises.
+
+        Best-effort: a missing record costs the next build with other C++ flags one
+        verilation. ``deps`` are the stamp-style dependencies Verilator read, so a
+        header reached only through an include is checked as for a stamp.
+        """
+        path = self._verilation_record_path(build_dir)
+        try:
+            self._replace_text(
+                path,
+                json.dumps(
+                    {
+                        "fingerprint_sha": _fingerprint_sha(fingerprint),
+                        "root": self._marker_root(),
+                        "status": status,
+                        "transcript": transcript,
+                        "duration_sec": duration_sec,
+                        "deps": deps,
+                        "deps_format": _DEPS_FORMAT,
+                        "timestamp": time.time(),
+                    },
+                    sort_keys=True,
+                ),
+            )
+        except OSError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "compile.verilation_record_write_failed",
+                test=self.test_name,
+                record=str(path),
+                error=str(exc),
+            )
+
+    def _read_verilation_record(self, build_dir):
+        """The record in ``build_dir`` as a dict, or ``None``. Never raises."""
+        try:
+            stored = json.loads(self._verilation_record_path(build_dir).read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return stored if isinstance(stored, dict) else None
+
+    def _verilation_record_matches(self, record, fingerprint):
+        """Is ``record`` about this checkout's verilation of these inputs, with every
+        dependency it read unchanged? Says nothing about its status.
+        """
+        if not isinstance(record, dict) or self._verilate_marker_is_foreign(record):
+            return False
+        recorded = record.get("fingerprint_sha")
+        if recorded is None or recorded != _fingerprint_sha(fingerprint):
+            return False
+        deps = record.get("deps")
+        if deps is None:
+            # No dependency file, as for a stamp: `sources` lists every include dir.
+            return True
+        if record.get("deps_format") != _DEPS_FORMAT:
+            return False
+        # The check reports through the stamp's mismatch reason; this is not a stamp.
+        saved = self.stamp_mismatch_reason
+        try:
+            return self._deps_unchanged(self.test_name, deps, quiet=True)
+        finally:
+            self.stamp_mismatch_reason = saved
+
+    def _clear_verilation_record(self, build_dir):
+        """Retire ``build_dir``'s record before its front end reruns. Never raises."""
+        with contextlib.suppress(OSError):
+            self._verilation_record_path(build_dir).unlink(missing_ok=True)
 
     def _marker_root(self):
         """The checkout a verilate marker belongs to: the project root in cache mode.
@@ -3549,6 +3924,279 @@ class VlogSim:
         )
         self.last_compile_failure = {"returncode": 1, "transcript": transcript}
         return 1
+
+    @staticmethod
+    def _verilation_evidence(plan):
+        """What Verilator's `*__verFiles.dat` in ``plan``'s build dir look like now.
+
+        Verilator writes that file at the end of a verilation without errors, before
+        any make, so a change across a compile means its front end finished even
+        when the make then failed. ``{}`` when there is none.
+        """
+        evidence = {}
+        mdir = Path(plan.compile_work_dir) / plan.build_dir
+        for path in mdir.glob("*__verFiles.dat"):
+            try:
+                stat = path.stat()
+                evidence[path.name] = (
+                    stat.st_ino,
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    path.read_bytes(),
+                )
+            except OSError:
+                continue
+        return evidence
+
+    def _wants_verilation_reuse(self, plan, *, forced):
+        """Should this compile take its verilation from ``plan.verilation_dir``?
+
+        Not under ``--rebuild``, which owes a compile from scratch, and not with a
+        Verilator that cannot run the make alone.
+        """
+        return (
+            plan.verilation_dir is not None
+            and not forced
+            and self._verilator_supports_no_verilate()
+        )
+
+    def _reuse_verilation(self, plan, base_argv):
+        """Get this compile's verilation from ``plan.verilation_dir`` (#833).
+
+        Called under the build dir's lock; takes the verilation dir's lock inside it
+        (always in that order, and nothing holding a verilation dir's lock takes
+        another, so two builds cannot deadlock). Under that lock it reuses the
+        verilation recorded there, or verilates the line without its C++-only
+        options into it. The verilate phase stops there. Otherwise the verilated
+        files are copied into this build dir, with the makefile's C++ flag lists
+        rewritten to this line's, before the lock is released: the make that follows
+        runs in this build dir alone, so builds with different C++ flags never share
+        an object file or binary, and a verilation that reruns cannot change files
+        under it.
+
+        Returns ``("done", status)`` to return outright, ``("seeded", verilate_sec)``
+        when this build dir is ready for a ``--no-verilate`` make, or
+        ``("fallback", reason)`` to compile here in full as before.
+        """
+        vdir = plan.verilation_dir
+        fingerprint = plan.verilation_fingerprint
+        fields = _build_dir_fields(vdir, shared=True)
+        try:
+            vdir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return "fallback", "verilation-unusable"
+        with build_dir_lock(vdir, test=self.test_name):
+            record = self._read_verilation_record(vdir)
+            marker = self._read_verilate_marker(vdir)
+            if any(
+                found is not None and self._verilate_marker_is_foreign(found)
+                for found in (record, marker)
+            ):
+                # Another checkout's verilation, whose files name its paths; leave it
+                # alone and compile here in full.
+                return "fallback", "verilation-foreign"
+            matches = self._verilation_record_matches(record, fingerprint)
+            if (matches and record.get("status") == "ok") or (
+                record is None and self._verilate_marker_is_ok(marker, fingerprint)
+            ):
+                found = record if matches else marker
+                log_console_event(
+                    logger,
+                    logging.INFO,
+                    "compile.verilation_reused",
+                    test=self.test_name,
+                    **fields,
+                )
+                reused = True
+                # The build phase reports what the key's verilation cost, as with
+                # the split marker; a reuse in one process cost nothing.
+                verilate_sec = (
+                    found.get("duration_sec")
+                    if self.build_phase == BUILD_PHASE_BUILD
+                    else 0.0
+                )
+            elif matches and self.build_phase == BUILD_PHASE_BUILD:
+                # The verilate job failed these inputs; running it again here fails
+                # the same way under the wrong reservation.
+                return "done", self._decline_failed_verilation(record)
+            else:
+                if self.build_phase == BUILD_PHASE_BUILD:
+                    self._report_build_phase_fallback("verilation-missing")
+                status, verilate_sec = self._verilate_into(plan, vdir)
+                if status != 0:
+                    return "done", status
+                reused = False
+            if self.build_phase == BUILD_PHASE_VERILATE:
+                self._record_compile(
+                    duration_sec=0.0 if reused else verilate_sec, reused=reused
+                )
+                return "done", 0
+            try:
+                copied = self._seed_build_dir(vdir, Path(plan.shared_dir), base_argv)
+            except OSError as exc:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "compile.verilation_copy_failed",
+                    test=self.test_name,
+                    error=str(exc),
+                    **fields,
+                )
+                return "fallback", "verilation-unusable"
+        if copied is None:
+            return "fallback", "verilation-unusable"
+        log_event(
+            logger,
+            logging.INFO,
+            "compile.verilation_copied",
+            test=self.test_name,
+            copied=copied,
+            build_path=str(plan.shared_dir),
+            verilation_path=str(vdir),
+        )
+        return "seeded", verilate_sec
+
+    def _verilate_into(self, plan, vdir):
+        """Verilate ``plan``'s line without its C++-only options into ``vdir``.
+
+        Under ``vdir``'s lock. Returns ``(returncode, duration_sec)`` and leaves a
+        record either way. A failure is this compile's failure, with its transcript.
+        """
+        vplan = dataclass_replace(
+            plan,
+            build_dir=str(vdir),
+            builder_opts=split_cxx_only_flags(plan.builder_opts)[0],
+            extra_compile_flags=split_cxx_only_flags(plan.extra_compile_flags)[0],
+        )
+        run_cmd = self._verilate_only_argv(self._compile_argv_base(vplan, quiet=True))
+        run_str = " ".join(run_cmd)
+        # The front end is about to rewrite what both describe.
+        self._clear_verilation_record(vdir)
+        with contextlib.suppress(OSError):
+            self._verilate_marker_path(vdir).unlink(missing_ok=True)
+        log_event(
+            logger,
+            logging.INFO,
+            "compile.start",
+            test=self.test_name,
+            command=run_str,
+            builder=self.rtl_builder_cfg.get_name(),
+        )
+        extra_compile_env = self._get_extra_compile_env()
+        s_time = time.time()
+        with task_status(f"Verilating {self.test_name}", spinner="dots12"):
+            try:
+                result = run_managed_process(
+                    run_cmd,
+                    capture_output=True,
+                    text=True,
+                    cwd=plan.compile_work_dir,
+                    env={**os.environ, **extra_compile_env}
+                    if extra_compile_env
+                    else None,
+                )
+            except FileNotFoundError:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "compile.builder_missing",
+                    test=self.test_name,
+                    executable=run_cmd[0],
+                )
+                raise FatalRtlBuddyError(f"Builder not found. Run exe: {run_cmd[0]}")
+        duration = round(time.time() - s_time, 2)
+        transcript_path = self._write_compile_transcript(run_str, result)
+        ok = result.returncode == 0
+        self._write_verilation_record(
+            vdir,
+            fingerprint=plan.verilation_fingerprint,
+            status="ok" if ok else "failed",
+            transcript=transcript_path,
+            duration_sec=duration,
+            deps=(
+                self._collect_build_deps(str(vdir), plan.compile_work_dir)
+                if ok
+                else None
+            ),
+        )
+        if ok:
+            return 0, duration
+        self._record_compile(duration_sec=duration, reused=False)
+        log_event(
+            logger,
+            logging.ERROR,
+            "compile.failed",
+            test=self.test_name,
+            returncode=result.returncode,
+            duration_sec=duration,
+            transcript=transcript_path,
+            license_queued=False,
+        )
+        self.last_compile_failure = {
+            "returncode": result.returncode,
+            "transcript": transcript_path,
+        }
+        failed_sha = _fingerprint_sha(plan.fingerprint)
+        if failed_sha is not None:
+            self.last_compile_failure["fingerprint_sha"] = failed_sha
+        return result.returncode, duration
+
+    def _seed_build_dir(self, vdir, build_dir, argv):
+        """Copy the verilation in ``vdir`` into ``build_dir`` for ``argv``'s make.
+
+        Returns how many files were written, or ``None`` when the verilation is not
+        one this can reproduce exactly (see :func:`merge_cxx_only_flags`): then
+        nothing was changed. The makefile gets this line's C++ flag lists, as a
+        verilation of ``argv`` would have written it. Files already identical keep
+        their mtime, so make rebuilds only what changed; verilated files ``vdir`` no
+        longer has are removed.
+        """
+        names = []
+        with os.scandir(vdir) as scan:
+            for entry in scan:
+                if entry.is_dir(follow_symlinks=False):
+                    # A hierarchical or otherwise nested verilation.
+                    return None
+                if entry.is_file(follow_symlinks=False):
+                    names.append(entry.name)
+        classes = [name for name in names if name.endswith("_classes.mk")]
+        if len(classes) != 1:
+            return None
+        prefix = classes[0][: -len("_classes.mk")]
+        makefile = f"{prefix}.mk"
+        if makefile not in names:
+            return None
+        # Bytes round-trip unchanged whatever the flags hold.
+        text = (Path(vdir) / makefile).read_bytes().decode("utf-8", "surrogateescape")
+        verilated = read_mk_user_flags(text)
+        merged = (
+            merge_cxx_only_flags(argv, verilated) if verilated is not None else None
+        )
+        rewritten = rewrite_mk_user_flags(text, merged) if merged is not None else None
+        if rewritten is None:
+            log_event(
+                logger,
+                logging.INFO,
+                "compile.verilation_not_reusable",
+                test=self.test_name,
+                verilation_path=str(vdir),
+            )
+            return None
+        wanted = {name for name in names if _is_verilated_output(name, prefix)}
+        build_dir.mkdir(parents=True, exist_ok=True)
+        for stale in os.listdir(build_dir):
+            if _is_verilated_output(stale, prefix) and stale not in wanted:
+                (build_dir / stale).unlink(missing_ok=True)
+        written = 0
+        for name in sorted(wanted):
+            if name == makefile:
+                changed = _sync_file(
+                    build_dir / name, data=rewritten.encode("utf-8", "surrogateescape")
+                )
+            else:
+                changed = _sync_file(build_dir / name, source=Path(vdir) / name)
+            written += changed
+        return written
 
     def _prepare_build_dir_toolchain(self, plan, *, forced):
         """Keep a Verilator build dir's make from outliving its toolchain.
@@ -4137,8 +4785,10 @@ class VlogSim:
             removed_bytes += size
 
         try:
-            # Neither split builds nor --skip-identical may trust deleted sources.
+            # Neither split builds, --skip-identical nor a build with other C++ flags
+            # (#833) may trust deleted sources.
             self._verilate_marker_path(root).unlink(missing_ok=True)
+            self._verilation_record_path(root).unlink(missing_ok=True)
             entries = list(root.iterdir())
             prefixes = set()
             for path in entries:
@@ -4221,6 +4871,10 @@ class VlogSim:
         # Did `--rebuild` claim this directory? A split phase's reuse check must respect
         # it.
         forced = False
+        # Set below for this compile only: a marker or a copied verilation clears the
+        # front end.
+        self._skip_verilate = False
+        self._verilate_sec = None
 
         if self.share_build:
             if plan.unsupported_reason is None:
@@ -4280,11 +4934,25 @@ class VlogSim:
         verilate_only = self.build_phase == BUILD_PHASE_VERILATE and self._splittable(
             base_argv
         )
+        # Take the verilation from the build dir of this line without its C++-only
+        # options (#833)? A split marker here means the verilate job verilated into
+        # this dir itself, so the build job follows it as before.
+        reuse_verilation = self._wants_verilation_reuse(plan, forced=forced) and not (
+            self.build_phase == BUILD_PHASE_BUILD
+            and self._read_verilate_marker(stamp_dir) is not None
+        )
         if self.build_phase == BUILD_PHASE_BUILD:
-            settled = self._settle_split_phase(stamp_dir, fingerprint)
-            if settled is not None:
-                return settled
+            if not reuse_verilation:
+                settled = self._settle_split_phase(stamp_dir, fingerprint)
+                if settled is not None:
+                    return settled
         elif verilate_only:
+            if reuse_verilation:
+                outcome, value = self._reuse_verilation(plan, base_argv)
+                if outcome == "done":
+                    return value
+                # Another checkout's verilation is there: verilate here as before.
+                reuse_verilation = False
             settled = self._settle_verilate_phase(stamp_dir, fingerprint, forced=forced)
             if settled is not None:
                 return settled
@@ -4361,7 +5029,27 @@ class VlogSim:
             # A verilate-only compile writes a fresh one when it finishes.
             with contextlib.suppress(OSError):
                 self._verilate_marker_path(stamp_dir).unlink(missing_ok=True)
+            self._clear_verilation_record(stamp_dir)
         self._prepare_build_dir_toolchain(plan, forced=forced)
+        if reuse_verilation:
+            # After the toolchain check, which scrubs objects another Verilator made.
+            outcome, value = self._reuse_verilation(plan, base_argv)
+            if outcome == "done":
+                return value
+            if outcome == "seeded":
+                self._skip_verilate = True
+                self._verilate_sec = value
+            elif self.build_phase == BUILD_PHASE_BUILD:
+                self._report_build_phase_fallback(value)
+            run_cmd = self._apply_build_phase(base_argv)
+            run_str = " ".join(run_cmd)
+        # Whether this compile's front end finished, for a build dir that records its
+        # verilation: a `--binary` that fails in the make still verilated.
+        ver_files_before = (
+            self._verilation_evidence(plan)
+            if plan.records_verilation and not self._skip_verilate
+            else None
+        )
         log_event(
             logger,
             logging.INFO,
@@ -4407,6 +5095,19 @@ class VlogSim:
         # applies. Consumers read the path off the events below, not a name of their
         # own.
         transcript_path = self._write_compile_transcript(run_str, result)
+        if ver_files_before is not None and (
+            result.returncode == 0
+            or self._verilation_evidence(plan) not in (ver_files_before, {})
+        ):
+            # This dir's verilation is now one a build with other C++ flags can copy.
+            self._write_verilation_record(
+                stamp_dir,
+                fingerprint=fingerprint,
+                status="ok",
+                transcript=transcript_path,
+                duration_sec=round(e_time - s_time, 2),
+                deps=self._collect_build_deps(build_dir, compile_work_dir),
+            )
         if verilate_only:
             # What the build half reads instead of a stamp. No stamp is written, since
             # nothing runnable exists yet and a gated sim would reuse a directory with

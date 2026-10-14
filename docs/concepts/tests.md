@@ -214,6 +214,22 @@ basic: dropped 12 stale object/dependency files from … (built by …, now …)
 
 An ordinary source edit keeps the objects and stays incremental unless [intermediate pruning](#pruning-verilator-intermediates) is enabled.
 
+### Changing only C++ compile or link flags
+
+Verilator passes `-CFLAGS` and `-LDFLAGS` only to the C++ compile and link of the model. A Verilator build that differs from another only in those options reuses that build's verilation and reruns just the C++ build:
+
+```text
+basic: reusing the verilation in obj_dir_c6d5c70100b51c6d; only the C++ build runs, since the compile line differs from it only in -CFLAGS/-LDFLAGS
+```
+
+- Each set of C++ flags still gets its own build directory, keyed on the whole compile line, so builds with different flags never share object files or an executable. Existing build directories keep their keys.
+- The verilation lives in the build directory of the same compile line without its `-CFLAGS` and `-LDFLAGS`. A build with neither option verilates there as before and records its verilation in `.rb-verilation.json`. A build with them verilates there without them if no recorded verilation matches the current inputs, then copies the generated C++ into its own directory, rewrites the C++ flag lists in `V<top>.mk` to its own, and runs `verilator ... --no-verilate`. The resulting executable is stamped like any other build.
+- The copy rewrites only files whose content changed, so after a source edit make recompiles only what the new verilation changed.
+- A verilation whose make failed is still recorded, so after a link failure (for example, a model too large for the default code model) adding a flag such as `-CFLAGS -mcmodel=large` does not verilate again.
+- In YAML, compile options are split on whitespace, so give each flag its own option: `-CFLAGS -O2 -CFLAGS -g`, not `-CFLAGS "-O2 -g"`.
+- The full compile runs as before under `--rebuild`, with `--hierarchical`, with a Verilator without `--no-verilate`, when a `-f` file or a library or object named on the compile line precedes a `-CFLAGS`/`-LDFLAGS` option (the flag order could differ from Verilator's), and when the verilation belongs to another checkout sharing a [persistent cache](#persistent-build-cache).
+- Only `-CFLAGS` and `-LDFLAGS` are treated this way. `-MAKEFLAGS` and every other option still key the verilation.
+
 ## Pruning Verilator intermediates
 
 Enable intermediate pruning when shared Verilator builds consume too much disk space and you only need their executable for later simulations:
@@ -230,7 +246,7 @@ Pruning removes generated C++ sources, headers, makefiles, object files, static 
 
 The saved stamp still tracks consumed RTL and headers, so unchanged inputs reuse the executable and edited inputs rebuild correctly. A rebuild regenerates the removed files and performs a full C++ compile. Waveforms and coverage remain available from the executable, but generated C++ is unavailable for debugging until pruning is disabled and the build is forced again.
 
-Cleanup holds the build lock and invalidates split-verilation and skip-identical metadata before removing generated sources. If the filesystem cannot acquire the lock, pruning is skipped. Cleanup errors warn without failing the compiled simulation. `compile.shared_build_pruned` records `removed_files` and `removed_bytes` in the run log.
+Cleanup holds the build lock and invalidates split-verilation, skip-identical and [reusable-verilation](#changing-only-c-compile-or-link-flags) metadata before removing generated sources. A directory that only holds a verilation for builds with other C++ flags is never pruned. If the filesystem cannot acquire the lock, pruning is skipped. Cleanup errors warn without failing the compiled simulation. `compile.shared_build_pruned` records `removed_files` and `removed_bytes` in the run log.
 
 ## Persistent build cache
 

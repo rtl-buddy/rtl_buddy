@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -8473,3 +8474,572 @@ def test_filelist_modes_default_applies_to_modes_without_an_entry(
     assert reg.index("suite.vlt") < reg.index("waive.vlt")
     nightly = run_f("nightly", "b")
     assert "waive.vlt" not in nightly and "suite.vlt" in nightly
+
+
+# ---- #833: a change to only -CFLAGS/-LDFLAGS reuses the verilation ----
+
+
+def _verilated_flag_lists(cmd):
+    """The C++ flag lists a Verilator emits for ``cmd``, modelled independently of the code under test."""
+    cflags, ldlibs = [], []
+    index = 0
+    while index < len(cmd):
+        token = cmd[index]
+        option = token[1:] if token.startswith("--") else token
+        if option in ("-CFLAGS", "-LDFLAGS") and index + 1 < len(cmd):
+            (cflags if option == "-CFLAGS" else ldlibs).append(cmd[index + 1])
+            index += 2
+            continue
+        if option == "-trace-fst":
+            ldlibs.append("-lz")
+        index += 1
+    if "--binary" in cmd or "--main" in cmd:
+        cflags.append("-DVL_TIME_CONTEXT")
+    return cflags, ldlibs
+
+
+def _fake_mk(cflags, ldlibs, *, auto=()):
+    lines = [
+        "# Verilated -*- Makefile -*-",
+        "VM_PREFIX = Vtop",
+        "# User CFLAGS (from -CFLAGS on Verilator command line)",
+        "VM_USER_CFLAGS = \\",
+        *(f"\t{entry} \\" for entry in auto),
+        *(f"  {entry} \\" for entry in cflags),
+        "",
+        "# User LDLIBS (from -LDFLAGS on Verilator command line)",
+        "VM_USER_LDLIBS = \\",
+        *(f"  {entry} \\" for entry in ldlibs),
+        "",
+        "include Vtop_classes.mk",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _install_verilating_builder(
+    monkeypatch, calls, source, *, verilate_rc=0, make_rc=0, classes=("Vtop__1",)
+):
+    """A fake Verilator that writes a verilation in Verilator's shape, then makes it.
+
+    The front end writes ``Vtop.mk`` (with the flag lists of the line it was given), the
+    class makefile, C++ derived from ``source`` and a ``__ver.d`` naming it. A build step
+    (``--binary``/``--build``) writes ``simv`` holding the makefile it linked from, so a
+    test can see which flags built it. ``calls`` records ``kind``: ``verilate`` (front end
+    only), ``make`` (``--no-verilate``) or ``full``.
+    """
+
+    def _fake_run(cmd, capture_output, text, cwd, env=None):
+        mdir = Path(cmd[cmd.index("--Mdir") + 1])
+        mdir = mdir if mdir.is_absolute() else Path(cwd) / mdir
+        builds = "--binary" in cmd or "--build" in cmd
+        kind = "make" if "--no-verilate" in cmd else ("full" if builds else "verilate")
+        calls.append({"cmd": list(cmd), "cwd": cwd, "mdir": mdir, "kind": kind})
+        mdir.mkdir(parents=True, exist_ok=True)
+        if kind != "make":
+            if verilate_rc:
+                (mdir / "Vtop.cpp").write_text("// half-written\n")
+                return ManagedProcessResult(
+                    returncode=verilate_rc, stdout="", stderr="boom"
+                )
+            cflags, ldlibs = _verilated_flag_lists(cmd)
+            (mdir / "Vtop.mk").write_text(_fake_mk(cflags, ldlibs))
+            (mdir / "Vtop_classes.mk").write_text(
+                "VM_CLASSES_FAST += Vtop " + " ".join(classes) + "\n"
+            )
+            (mdir / "Vtop.cpp").write_text(f"// Verilated\n{Path(source).read_text()}")
+            (mdir / "Vtop.h").write_text("// Verilated header\n")
+            for name in classes:
+                (mdir / f"{name}.cpp").write_text(f"// Verilated {name}\n")
+            (mdir / "Vtop__ver.d").write_text(f"{mdir}/Vtop.cpp : {source}\n")
+            (mdir / "Vtop__verFiles.dat").write_text(" ".join(cmd) + "\n")
+        if builds or kind == "make":
+            if make_rc:
+                return ManagedProcessResult(returncode=make_rc, stdout="", stderr="ld")
+            (mdir / "Vtop__ALL.o").write_text("object\n")
+            (mdir / "simv").write_text((mdir / "Vtop.mk").read_text())
+        return ManagedProcessResult(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
+    )
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
+
+
+_RECORD = vlog_sim_module.VERILATION_RECORD_NAME
+
+
+def _cxx_sim(tmp_path, monkeypatch, opts=(), *, name="t", base=("--binary",), **kwargs):
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name=name,
+        compile_opts=list(base) + list(opts),
+        **kwargs,
+    )
+    vlog_sim_module._NO_VERILATE_SUPPORT[sim.rtl_builder_cfg.get_exe()] = True
+    return sim
+
+
+def _record_of(directory):
+    return json.loads((Path(directory) / _RECORD).read_text())
+
+
+def _user_flags_of(path):
+    return vlog_sim_module.read_mk_user_flags(Path(path).read_text())
+
+
+@pytest.mark.parametrize(
+    "cmd, stripped, values",
+    [
+        (["v", "-CFLAGS", "-O1"], ["v"], {"cflags": ["-O1"], "ldflags": []}),
+        (
+            ["v", "--CFLAGS", "-O1 -g", "-x", "-LDFLAGS", "-lm", "-CFLAGS", "-DA=1"],
+            ["v", "-x"],
+            {"cflags": ["-O1 -g", "-DA=1"], "ldflags": ["-lm"]},
+        ),
+        # `-CFLAGS=<x>` is not an option Verilator takes; a trailing option has no value.
+        (["v", "-CFLAGS=-O1", "-CFLAGS"], ["v", "-CFLAGS=-O1", "-CFLAGS"], None),
+    ],
+)
+def test_split_cxx_only_flags_removes_each_option_and_its_value(cmd, stripped, values):
+    got_stripped, got_values = vlog_sim_module.split_cxx_only_flags(cmd)
+    assert got_stripped == stripped
+    assert got_values == (values or {"cflags": [], "ldflags": []})
+
+
+def test_the_verilation_key_ignores_only_the_cxx_flags(tmp_path, monkeypatch):
+    """Lines that differ only in -CFLAGS/-LDFLAGS share a verilation dir, which is the dir the line without them builds in; their own build dirs stay apart."""
+    _write_source(tmp_path)
+    plain = _cxx_sim(tmp_path, monkeypatch)._compile_plan()
+    o1 = _cxx_sim(tmp_path, monkeypatch, ["-CFLAGS", "-O1"])._compile_plan()
+    o2 = _cxx_sim(
+        tmp_path, monkeypatch, ["-CFLAGS", "-O2", "-LDFLAGS", "-lm"]
+    )._compile_plan()
+    other = _cxx_sim(tmp_path, monkeypatch, ["-CFLAGS", "-O1", "-Wall"])._compile_plan()
+
+    assert plain.records_verilation and plain.verilation_dir is None
+    assert o1.verilation_dir == o2.verilation_dir == plain.shared_dir
+    assert len({plain.shared_dir, o1.shared_dir, o2.shared_dir}) == 3
+    assert vlog_sim_module._fingerprint_sha(
+        o1.verilation_fingerprint
+    ) == vlog_sim_module._fingerprint_sha(plain.fingerprint)
+    # Any other option is a verilation input.
+    assert other.verilation_dir != plain.shared_dir
+    # The full key is the one it always was: the plain line's dir did not move.
+    assert plain.key_cmd == ["verilator", "--binary"]
+
+
+def test_the_verilation_key_ignores_the_cxx_flags_in_cache_mode(tmp_path, monkeypatch):
+    cache = tmp_path / "cache"
+    checkout = tmp_path / "wt"
+    _write_checkout(checkout)
+    plain = _cache_sim(
+        checkout,
+        monkeypatch,
+        cache_root=cache,
+        test_name="a",
+        compile_opts=["--binary"],
+    )._compile_plan()
+    flagged = _cache_sim(
+        checkout,
+        monkeypatch,
+        cache_root=cache,
+        test_name="b",
+        compile_opts=["--binary", "-CFLAGS", "-O1"],
+    )._compile_plan()
+    assert flagged.verilation_dir == plain.shared_dir
+    assert flagged.shared_dir != plain.shared_dir
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"base": ("--cc",)},  # nothing to make alone
+        {"base": ("--binary", "--hierarchical")},
+        {"share_build": False},
+        {"family": "vcs", "exe": "vcs", "base": ()},
+    ],
+)
+def test_no_verilation_reuse_where_it_cannot_apply(tmp_path, monkeypatch, kwargs):
+    _write_source(tmp_path)
+    plan = _cxx_sim(tmp_path, monkeypatch, ["-CFLAGS", "-O1"], **kwargs)._compile_plan()
+    assert plan.verilation_dir is None and not plan.records_verilation
+
+
+@pytest.mark.parametrize(
+    "argv, verilated, expected",
+    [
+        # Values keep their spaces and order; `--main` entries come last.
+        (
+            ["v", "--binary", "-CFLAGS", "-O1 -g", "-CFLAGS", "-DX", "-f", "run.f"],
+            {"cflags": ["-DVL_TIME_CONTEXT"], "ldflags": []},
+            {"cflags": ["-O1 -g", "-DX", "-DVL_TIME_CONTEXT"], "ldflags": []},
+        ),
+        # An implying option before the flags: its entries stay in front.
+        (
+            ["v", "--trace-fst", "-LDFLAGS", "-lm", "-f", "run.f"],
+            {"cflags": [], "ldflags": ["-lz"]},
+            {"cflags": [], "ldflags": ["-lz", "-lm"]},
+        ),
+        # ...and after them, behind.
+        (
+            ["v", "-LDFLAGS", "-lm", "--trace-fst"],
+            {"cflags": [], "ldflags": ["-lz"]},
+            {"cflags": [], "ldflags": ["-lm", "-lz"]},
+        ),
+        (
+            ["v", "--runtime-debug", "-CFLAGS", "-O0"],
+            {
+                "cflags": [
+                    "-ggdb",
+                    "-fsanitize=address,undefined",
+                    "-D_GLIBCXX_DEBUG",
+                    "-DVL_DEBUG=1",
+                ],
+                "ldflags": ["-ggdb", "-fsanitize=address,undefined"],
+            },
+            {
+                "cflags": [
+                    "-ggdb",
+                    "-fsanitize=address,undefined",
+                    "-D_GLIBCXX_DEBUG",
+                    "-DVL_DEBUG=1",
+                    "-O0",
+                ],
+                "ldflags": ["-ggdb", "-fsanitize=address,undefined"],
+            },
+        ),
+        # A file before the flags may have added entries this cannot place.
+        (["v", "-f", "opts.f", "-CFLAGS", "-O1"], {"cflags": [], "ldflags": []}, None),
+        (["v", "lib.a", "-LDFLAGS", "-lm"], {"cflags": [], "ldflags": ["lib.a"]}, None),
+        # An implied entry the verilation does not carry: another Verilator.
+        (["v", "--trace-fst", "-LDFLAGS", "-lm"], {"cflags": [], "ldflags": []}, None),
+    ],
+)
+def test_merge_cxx_only_flags_reproduces_verilators_order(argv, verilated, expected):
+    assert vlog_sim_module.merge_cxx_only_flags(argv, verilated) == expected
+
+
+def test_a_rewritten_makefile_is_the_one_verilator_would_write():
+    text = _fake_mk(["-DVL_TIME_CONTEXT"], [], auto=["-fPIC"])
+    assert vlog_sim_module.read_mk_user_flags(text) == {
+        "cflags": ["-DVL_TIME_CONTEXT"],
+        "ldflags": [],
+    }
+    flags = {"cflags": ["-O1 -g", "-DVL_TIME_CONTEXT"], "ldflags": ["-lm", "-lz"]}
+    rewritten = vlog_sim_module.rewrite_mk_user_flags(text, flags)
+    assert rewritten == _fake_mk(flags["cflags"], flags["ldflags"], auto=["-fPIC"])
+    assert vlog_sim_module.read_mk_user_flags(rewritten) == flags
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "VM_USER_CFLAGS = \\\n\nfoo\n",  # no LDLIBS block
+        _fake_mk([], []).replace("VM_USER_LDLIBS = \\\n", "VM_USER_LDLIBS = -lz\n"),
+        _fake_mk(["-O1"], []) + _fake_mk([], []),  # repeated
+        _fake_mk([], [])
+        .replace("  ", "   ")
+        .replace("VM_USER_CFLAGS = \\\n", "VM_USER_CFLAGS = \\\n odd \\\n"),
+    ],
+)
+def test_a_makefile_not_in_verilators_shape_is_not_rewritten(text):
+    assert (
+        vlog_sim_module.rewrite_mk_user_flags(text, {"cflags": [], "ldflags": []})
+        is None
+    )
+
+
+def test_a_flag_value_with_a_newline_is_not_rewritten():
+    flags = {"cflags": ["-DA\n-DB"], "ldflags": []}
+    assert vlog_sim_module.rewrite_mk_user_flags(_fake_mk([], []), flags) is None
+
+
+def test_a_plain_build_records_its_verilation(tmp_path, monkeypatch):
+    source = _write_source(tmp_path)
+    calls = []
+    _install_verilating_builder(monkeypatch, calls, source)
+    sim = _cxx_sim(tmp_path, monkeypatch)
+    assert sim.compile() == 0
+    shared = _shared_dir_of(sim)
+    record = _record_of(shared)
+    assert record["status"] == "ok"
+    assert record["fingerprint_sha"] == vlog_sim_module._fingerprint_sha(
+        sim._compile_plan().fingerprint
+    )
+    assert [entry[0] for entry in record["deps"]] == [str(source)]
+    # The plain build itself is the one it always was.
+    assert [call["kind"] for call in calls] == ["full"]
+    assert "--no-verilate" not in calls[0]["cmd"]
+
+
+def test_changing_only_cflags_reuses_the_verilation_and_runs_the_make(
+    tmp_path, monkeypatch
+):
+    source = _write_source(tmp_path)
+    calls = []
+    _install_verilating_builder(monkeypatch, calls, source)
+    plain = _cxx_sim(tmp_path, monkeypatch)
+    assert plain.compile() == 0
+    vdir = _shared_dir_of(plain)
+    plain_simv = (vdir / "simv").read_text()
+
+    flagged = _cxx_sim(tmp_path, monkeypatch, ["-CFLAGS", "-O1", "-LDFLAGS", "-lm"])
+    build_dir = _shared_dir_of(flagged)
+    assert flagged.compile() == 0
+
+    assert [call["kind"] for call in calls] == ["full", "make"]
+    make = calls[1]
+    assert make["mdir"] == build_dir
+    assert make["cmd"][-1] == "--no-verilate"
+    assert "-CFLAGS" in make["cmd"]
+    # The binary was linked from this line's flags, in this build dir, and is stamped.
+    assert _user_flags_of(build_dir / "Vtop.mk") == {
+        "cflags": ["-O1", "-DVL_TIME_CONTEXT"],
+        "ldflags": ["-lm"],
+    }
+    assert (build_dir / "simv").read_text() == (build_dir / "Vtop.mk").read_text()
+    assert (build_dir / vlog_sim_module.SHARED_BUILD_STAMP_NAME).exists()
+    assert flagged.last_compile["reused"] is False
+    assert flagged.last_compile["verilate_sec"] == 0.0
+    # The plain build is untouched.
+    assert (vdir / "simv").read_text() == plain_simv
+    assert _user_flags_of(vdir / "Vtop.mk")["cflags"] == ["-DVL_TIME_CONTEXT"]
+
+    # The stamp in the build dir validates like any other.
+    again = _cxx_sim(tmp_path, monkeypatch, ["-CFLAGS", "-O1", "-LDFLAGS", "-lm"])
+    assert again.compile() == 0
+    assert len(calls) == 2
+
+
+def test_two_flag_sets_build_apart_from_one_verilation(tmp_path, monkeypatch):
+    """A cold start verilates once, without the C++ flags, into the shared verilation dir; each flag set makes in its own dir."""
+    source = _write_source(tmp_path)
+    calls = []
+    _install_verilating_builder(monkeypatch, calls, source)
+    o1 = _cxx_sim(tmp_path, monkeypatch, ["-CFLAGS", "-O1"], name="a")
+    o2 = _cxx_sim(tmp_path, monkeypatch, ["-CFLAGS", "-O2"], name="b")
+    assert o1.compile() == 0
+    assert o2.compile() == 0
+
+    vdir = o1._compile_plan().verilation_dir
+    assert [call["kind"] for call in calls] == ["verilate", "make", "make"]
+    verilate = calls[0]
+    assert verilate["mdir"] == vdir
+    assert "-CFLAGS" not in verilate["cmd"] and "--binary" not in verilate["cmd"]
+    assert _record_of(vdir)["status"] == "ok"
+    # The verilation dir holds no build and no stamp of its own.
+    assert not (vdir / "simv").exists()
+    assert not (vdir / vlog_sim_module.SHARED_BUILD_STAMP_NAME).exists()
+    dirs = [_shared_dir_of(o1), _shared_dir_of(o2)]
+    assert [call["mdir"] for call in calls[1:]] == dirs
+    assert _user_flags_of(dirs[0] / "simv")["cflags"][0] == "-O1"
+    assert _user_flags_of(dirs[1] / "simv")["cflags"][0] == "-O2"
+
+
+def test_an_edit_reverilates_and_copies_only_what_changed(tmp_path, monkeypatch):
+    """The copy keeps unchanged files' mtimes, so make keeps their objects; a changed file is newer than every object, and a class the new verilation lacks is gone."""
+    source = _write_source(tmp_path)
+    calls = []
+    _install_verilating_builder(monkeypatch, calls, source)
+    assert _cxx_sim(tmp_path, monkeypatch, ["-CFLAGS", "-O1"]).compile() == 0
+    sim = _cxx_sim(tmp_path, monkeypatch, ["-CFLAGS", "-O1"])
+    build_dir = _shared_dir_of(sim)
+    old = time.time() - 1000
+    for name in ("Vtop.h", "Vtop.cpp", "Vtop__ALL.o"):
+        os.utime(build_dir / name, (old, old))
+    # A class an earlier verilation emitted and this one does not.
+    (build_dir / "Vtop__2.cpp").write_text("// Verilated Vtop__2\n")
+
+    source.write_text("module top; wire w; endmodule\n")
+    assert sim.compile() == 0
+
+    assert [call["kind"] for call in calls] == ["verilate", "make", "verilate", "make"]
+    assert (build_dir / "Vtop.h").stat().st_mtime == pytest.approx(old)
+    assert (build_dir / "Vtop.cpp").stat().st_mtime > old + 500
+    assert "wire w" in (build_dir / "Vtop.cpp").read_text()
+    assert not (build_dir / "Vtop__2.cpp").exists()
+
+
+def test_a_failed_verilation_fails_the_compile_with_its_transcript(
+    tmp_path, monkeypatch
+):
+    source = _write_source(tmp_path)
+    calls = []
+    _install_verilating_builder(monkeypatch, calls, source, verilate_rc=3)
+    sim = _cxx_sim(tmp_path, monkeypatch, ["-CFLAGS", "-O1"])
+    assert sim.compile() == 3
+    assert [call["kind"] for call in calls] == ["verilate"]
+    failure = sim.last_compile_failure
+    assert failure["returncode"] == 3
+    assert "boom" in Path(failure["transcript"]).read_text()
+    assert failure["fingerprint_sha"] is not None
+    # Nothing was made, and the record says the inputs fail.
+    assert not (_shared_dir_of(sim) / "simv").exists()
+
+
+def test_the_split_phases_verilate_once_and_make_per_flag_set(
+    tmp_path, monkeypatch, caplog
+):
+    source = _write_source(tmp_path)
+    calls = []
+    _install_verilating_builder(monkeypatch, calls, source)
+    for name, flag in (("a", "-O1"), ("b", "-O2")):
+        assert (
+            _cxx_sim(
+                tmp_path,
+                monkeypatch,
+                ["-CFLAGS", flag],
+                name=name,
+                build_phase="verilate",
+            ).compile()
+            == 0
+        )
+    assert [call["kind"] for call in calls] == ["verilate"]
+    builds = [
+        _cxx_sim(
+            tmp_path, monkeypatch, ["-CFLAGS", flag], name=name, build_phase="build"
+        )
+        for name, flag in (("a", "-O1"), ("b", "-O2"))
+    ]
+    with caplog.at_level(logging.WARNING):
+        for build in builds:
+            assert build.compile() == 0
+    assert [call["kind"] for call in calls] == ["verilate", "make", "make"]
+    assert not [
+        record
+        for record in caplog.records
+        if record.__dict__.get("rtl_event") == "compile.build_phase_fallback"
+    ]
+    # No split marker lands in a build dir the verilate job never verilated.
+    for build in builds:
+        assert not (_shared_dir_of(build) / _MARKER).exists()
+
+
+def test_the_build_phase_declines_a_verilation_that_failed(tmp_path, monkeypatch):
+    source = _write_source(tmp_path)
+    calls = []
+    _install_verilating_builder(monkeypatch, calls, source, verilate_rc=2)
+    verilate = _cxx_sim(
+        tmp_path, monkeypatch, ["-CFLAGS", "-O1"], build_phase="verilate"
+    )
+    assert verilate.compile() == 2
+    assert _record_of(verilate._compile_plan().verilation_dir)["status"] == "failed"
+    build = _cxx_sim(tmp_path, monkeypatch, ["-CFLAGS", "-O1"], build_phase="build")
+    assert build.compile() == 1
+    assert len(calls) == 1
+    assert "verilate job failed" in build.compile_fail_desc
+
+
+@pytest.mark.parametrize("case", ["rebuild", "no-verilate-unsupported", "unmergeable"])
+def test_a_build_that_cannot_reuse_compiles_in_full_as_before(
+    tmp_path, monkeypatch, case
+):
+    source = _write_source(tmp_path)
+    calls = []
+    _install_verilating_builder(monkeypatch, calls, source)
+    assert _cxx_sim(tmp_path, monkeypatch).compile() == 0
+    opts = ["-CFLAGS", "-O1"]
+    if case == "unmergeable":
+        # A filelist before the flags may add entries the copy cannot place.
+        opts_f = tmp_path / "opts.f"
+        opts_f.write_text("\n")
+        opts = ["-f", str(opts_f)] + opts
+    sim = _cxx_sim(tmp_path, monkeypatch, opts, rebuild=case == "rebuild")
+    if case == "no-verilate-unsupported":
+        vlog_sim_module._NO_VERILATE_SUPPORT[sim.rtl_builder_cfg.get_exe()] = False
+    assert sim.compile() == 0
+    assert calls[-1]["kind"] == "full"
+    assert calls[-1]["mdir"] == _shared_dir_of(sim)
+    assert "-CFLAGS" in calls[-1]["cmd"]
+
+
+def test_another_checkouts_verilation_is_left_alone(tmp_path, monkeypatch, caplog):
+    cache, wt_a, wt_b = _two_cache_checkouts(tmp_path)
+    calls = []
+    _install_verilating_builder(monkeypatch, calls, wt_a / "rtl" / "a.sv")
+
+    def _sim(checkout, opts):
+        sim = _cache_sim(
+            checkout,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=["--binary"] + opts,
+        )
+        vlog_sim_module._NO_VERILATE_SUPPORT[sim.rtl_builder_cfg.get_exe()] = True
+        return sim
+
+    assert _sim(wt_a, []).compile() == 0
+    vdir = _shared_dir_of(_sim(wt_a, []))
+    assert _record_of(vdir)["root"] == os.path.realpath(wt_a)
+    flagged = _sim(wt_b, ["-CFLAGS", "-O1"])
+    assert flagged._compile_plan().verilation_dir == vdir
+    assert flagged.compile() == 0
+    # B's paths are not in A's verilation: B verilates its own build dir in full.
+    assert calls[-1]["kind"] == "full"
+    assert calls[-1]["mdir"] == _shared_dir_of(flagged)
+    assert _record_of(vdir)["root"] == os.path.realpath(wt_a)
+
+
+def test_a_record_with_a_changed_dependency_does_not_match(tmp_path, monkeypatch):
+    source = _write_source(tmp_path)
+    calls = []
+    _install_verilating_builder(monkeypatch, calls, source)
+    sim = _cxx_sim(tmp_path, monkeypatch)
+    assert sim.compile() == 0
+    plan_fp = sim._compile_plan().fingerprint
+    record = _record_of(_shared_dir_of(sim))
+    sim.stamp_mismatch_reason = "kept"
+    assert sim._verilation_record_matches(record, plan_fp)
+    source.write_text("module top; wire w; endmodule\n")
+    assert not sim._verilation_record_matches(record, plan_fp)
+    # The check is not a stamp check and leaves its reason alone.
+    assert sim.stamp_mismatch_reason == "kept"
+    assert not sim._verilation_record_matches({**record, "root": "/elsewhere"}, plan_fp)
+    assert not sim._verilation_record_matches({**record, "deps_format": 1}, plan_fp)
+
+
+@pytest.mark.parametrize("verilated", [True, False])
+def test_a_plain_build_that_fails_in_the_make_still_records_a_finished_verilation(
+    tmp_path, monkeypatch, verilated
+):
+    """Verilator writes `__verFiles.dat` only after a clean front end, so a changed one means the verilation finished even when the link did not."""
+    source = _write_source(tmp_path)
+    calls = []
+    if verilated:
+        _install_verilating_builder(monkeypatch, calls, source, make_rc=2)
+    else:
+        _install_verilating_builder(monkeypatch, calls, source, verilate_rc=2)
+    sim = _cxx_sim(tmp_path, monkeypatch)
+    assert sim.compile() == 2
+    assert (_shared_dir_of(sim) / _RECORD).exists() is verilated
+
+
+def test_a_compile_that_reruns_the_front_end_retires_the_record(tmp_path, monkeypatch):
+    source = _write_source(tmp_path)
+    calls = []
+    _install_verilating_builder(monkeypatch, calls, source)
+    sim = _cxx_sim(tmp_path, monkeypatch)
+    assert sim.compile() == 0
+    shared = _shared_dir_of(sim)
+    _install_verilating_builder(monkeypatch, calls, source, verilate_rc=1)
+    rebuilt = _cxx_sim(tmp_path, monkeypatch, rebuild=True)
+    assert rebuilt.compile() == 1
+    assert not (shared / _RECORD).exists()
+
+
+def test_pruning_retires_the_record(tmp_path, monkeypatch):
+    source = _write_source(tmp_path)
+    calls = []
+    _install_verilating_builder(monkeypatch, calls, source)
+    sim = _cxx_sim(tmp_path, monkeypatch, shared_build_prune=True)
+    assert sim.compile() == 0
+    shared = _shared_dir_of(sim)
+    assert not (shared / _RECORD).exists()
+    assert not (shared / "Vtop.mk").exists()
+
+
+def test_the_record_is_never_a_compile_input():
+    assert vlog_sim_module._is_non_input_file(_RECORD)
