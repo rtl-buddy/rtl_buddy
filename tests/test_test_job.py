@@ -1782,6 +1782,205 @@ def test_a_declined_failure_adoption_compiles_and_says_why(
     ]
 
 
+_OOM_LINE = "g++: fatal error: Killed signal terminated program cc1plus"
+_LINK_LINE = "ld: final link failed: relocation truncated to fit"
+
+
+def _add_same_key_tests(project: Path, names) -> None:
+    """Append tests that copy ``extra``; the stub's ``group_of`` puts them on one key."""
+    tests_yaml = project / "tests.yaml"
+    body = tests_yaml.read_text()
+    block = body[body.index("  - name: extra\n") :]
+    tests_yaml.write_text(
+        body
+        + "".join(block.replace("name: extra", f"name: {name}", 1) for name in names)
+    )
+
+
+def _retrying_key(project, stamped_runner, outcome_of_attempt, *, solo=False):
+    """One compile key whose compiles fail as ``outcome_of_attempt(n)`` says (n from 1).
+
+    The fake compiler writes each attempt's transcript; the stub's failure adoption
+    follows ``VlogSim``'s rule (transient iff the transcript shows an out-of-memory
+    signature), so the decision under test is only which failure the build job hands
+    it. ``solo`` adds a test on a second key, which builds, so ``--parallel 2`` runs
+    the thread pool.
+    """
+    from rtl_buddy.runner.test_results import CompileFailResults, EarlyStopResults
+    from rtl_buddy.tools.vlog_sim import VlogSim
+
+    names = ["t3", "t4", "t5"] + (["solo"] if solo else [])
+    _add_same_key_tests(project, names)
+    attempts = []
+    failures = {}
+
+    def _compile(name):
+        if name == "solo":
+            return EarlyStopResults(name="solo/results", desc="compiled")
+        attempts.append(name)
+        returncode, line = outcome_of_attempt(len(attempts))
+        transcript = project / f"{name}-compile.log"
+        transcript.write_text(f"building...\n{line}\n")
+        failures[name] = {
+            "returncode": returncode,
+            "transcript": str(transcript),
+            "fingerprint_sha": "s",
+        }
+        return CompileFailResults(name=f"{name}/results")
+
+    def _adopt(name):
+        _test, leader, failure = stamped_runner.adopt_failure_calls[-1]
+        transient = VlogSim._transient_failure_reason(failure)
+        if transient is not None:
+            return None, transient
+        failures[name] = {**failure, "adopted_from": leader}
+        return "adopted", None
+
+    stamped_runner.group_of = lambda name: name if name == "solo" else "one-key"
+    stamped_runner.compile_hook = _compile
+    stamped_runner.compile_failure_of = failures.get
+    stamped_runner.adopt_failure_of = _adopt
+    return attempts, failures
+
+
+def _run_build_job(project, parallel):
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--parallel",
+            parallel,
+            "--result-json",
+            "build-result-1.json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    records = {
+        record["test"]: record
+        for record in load_build_result_json(project / "build-result-1.json")["builds"]
+    }
+    declined = [
+        (record["test"], record["leader"])
+        for record in _records(job_log_path(project / "build-result-1.json"))
+        if record.get("event") == "build_job.group_failure_adoption_declined"
+    ]
+    return records, declined
+
+
+@pytest.mark.parametrize("parallel", ["1", "2"])
+def test_siblings_adopt_a_deterministic_failure_that_follows_an_out_of_memory_one(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner], parallel
+):
+    """#827: once a retry after an out-of-memory failure fails deterministically, the
+    remaining siblings adopt the retry's failure, not keep reading the leader's.
+    """
+    attempts, failures = _retrying_key(
+        minimal_project,
+        stamped_runner,
+        lambda n: (137, _OOM_LINE) if n == 1 else (1, _LINK_LINE),
+        solo=parallel != "1",
+    )
+    records, declined = _run_build_job(minimal_project, parallel)
+
+    # One out-of-memory compile, one deterministic compile, the rest adopt.
+    assert attempts == ["basic", "extra"]
+    assert declined == [("extra", "basic")]
+    assert [
+        (test, leader) for test, leader, _ in stamped_runner.adopt_failure_calls
+    ] == [
+        ("extra", "basic"),
+        ("t3", "extra"),
+        ("t4", "extra"),
+        ("t5", "extra"),
+    ]
+    for name in ("t3", "t4", "t5"):
+        assert failures[name]["adopted_from"] == "extra"
+        assert failures[name]["transcript"].endswith("extra-compile.log")
+        assert records[name]["returncode"] == 1
+    assert records["basic"]["returncode"] == 137
+    if parallel != "1":
+        envelope = load_build_result_json(minimal_project / "build-result-1.json")
+        assert "solo" in envelope["built"]
+
+
+def test_siblings_keep_retrying_a_key_whose_every_compile_runs_out_of_memory(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    """Every attempt that may be transient is retried by the next sibling, and each
+    decline names the attempt just before it.
+    """
+    attempts, _failures = _retrying_key(
+        minimal_project, stamped_runner, lambda _n: (137, _OOM_LINE)
+    )
+    _records_, declined = _run_build_job(minimal_project, "1")
+
+    assert attempts == ["basic", "extra", "t3", "t4", "t5"]
+    assert declined == [
+        ("extra", "basic"),
+        ("t3", "extra"),
+        ("t4", "t3"),
+        ("t5", "t4"),
+    ]
+
+
+def test_siblings_adopt_a_deterministic_leader_failure(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    """A leader that fails deterministically is compiled once and adopted by all."""
+    attempts, failures = _retrying_key(
+        minimal_project, stamped_runner, lambda _n: (1, _LINK_LINE)
+    )
+    records, declined = _run_build_job(minimal_project, "1")
+
+    assert attempts == ["basic"]
+    assert declined == []
+    for name in ("extra", "t3", "t4", "t5"):
+        assert failures[name]["adopted_from"] == "basic"
+        assert records[name]["returncode"] == 1
+
+
+def test_an_out_of_memory_retry_does_not_displace_a_deterministic_failure(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    """A sibling that declines a deterministic failure (its inputs differ) and then runs
+    out of memory does not replace it: the next sibling with the leader's inputs still
+    adopts the leader's failure instead of retrying on an unrelated out-of-memory kill.
+    """
+    from rtl_buddy.tools.vlog_sim import VlogSim
+
+    attempts, failures = _retrying_key(
+        minimal_project,
+        stamped_runner,
+        lambda n: (1, _LINK_LINE) if n == 1 else (137, _OOM_LINE),
+    )
+
+    def _adopt(name):
+        _test, leader, failure = stamped_runner.adopt_failure_calls[-1]
+        if name == "extra":
+            return None, "its compile inputs differ"
+        transient = VlogSim._transient_failure_reason(failure)
+        if transient is not None:
+            return None, transient
+        failures[name] = {**failure, "adopted_from": leader}
+        return "adopted", None
+
+    stamped_runner.adopt_failure_of = _adopt
+    records, declined = _run_build_job(minimal_project, "1")
+
+    assert attempts == ["basic", "extra"]
+    assert declined == [("extra", "basic")]
+    for name in ("t3", "t4", "t5"):
+        assert failures[name]["adopted_from"] == "basic"
+        assert records[name]["returncode"] == 1
+    assert records["extra"]["returncode"] == 137
+
+
 def test_a_leader_that_never_reached_a_builder_is_not_adopted_from(
     minimal_project: Path, stamped_runner: type[_StampedStubRunner]
 ):

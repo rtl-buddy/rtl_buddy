@@ -254,6 +254,7 @@ from .tools.verible import Verible
 from .tools.vlog_filelist import VlogFilelist, apply_exclude_globs
 from .tools.vlog_sim import (
     SHARED_BUILD_ROOT_ENV,
+    VlogSim,
     resolve_shared_build_root,
     share_build_unsupported_reason,
 )
@@ -481,6 +482,26 @@ def _annotate_build_failure(entry, *, failure, worker_error, suite_dir):
         if lines:
             entry["error_tail"] = lines[-COMPILE_ERROR_TAIL_LINES:]
     return entry
+
+
+def _keeps_deterministic_failure(recorded, failure) -> bool:
+    """Whether a key's recorded failure should stand against a newer ``failure``.
+
+    The build job keeps a key's most recent failed compile for siblings to adopt (#827),
+    except that a failure which may be transient (out of memory, a license wait) never
+    replaces a deterministic one already on record. Such a newer failure comes from a
+    sibling that declined the deterministic one (its inputs differ, say), and a later
+    sibling with the recorded failure's inputs should still adopt that failure rather
+    than retry on the strength of an unrelated out-of-memory kill.
+    """
+    if recorded is None:
+        return False
+    previous = recorded[1] if isinstance(recorded[1], dict) else {}
+    newer = failure if isinstance(failure, dict) else {}
+    return (
+        VlogSim._transient_failure_reason(newer) is not None
+        and VlogSim._transient_failure_reason(previous) is None
+    )
 
 
 class RtlBuddy:
@@ -3453,8 +3474,12 @@ class RtlBuddy:
         # Config that compiled each group's build, keyed by group dir. A group is one
         # worker's unit, so no two threads touch one key.
         group_leaders = {}
-        # The group's first failed compile, as (test name, failure record), keyed the
-        # same way. Siblings with the same inputs adopt it rather than fail it again.
+        # The group's most recent failed compile, as (test name, failure record), keyed
+        # the same way, so one worker owns each key and no lock is needed. Siblings
+        # with the same inputs adopt it rather than fail it again. Most recent, not
+        # first: a failure that may be transient (out of memory) is retried by the
+        # next sibling, and once a retry fails deterministically the rest adopt that
+        # retry's failure, not keep reading the first one (#827).
         group_failures = {}
         # Distinct from a runner reporting no stamp: a runner class that reports none
         # keeps the leader rule, as with `adopt_group_build`.
@@ -3769,7 +3794,9 @@ class RtlBuddy:
 
             A failed compile is adopted the same way: a sibling whose compile inputs
             are identical takes the failure (return code and transcript) instead of
-            failing the same compile again.
+            failing the same compile again. The sibling reads the key's most recent
+            failed compile, so after a transient failure (out of memory) is retried,
+            a deterministic failure of the retry is what the rest adopt.
 
             Re-checks the cancellation latch before every member and when a worker takes
             the next group. The pool cancels only pending futures, and
@@ -3830,6 +3857,8 @@ class RtlBuddy:
                 if failed_leader is not None and adopt_failure is not None:
                     # A deterministic failure (a fatal lint warning) would fail every
                     # sibling the same way, one full compile each, serially.
+                    # `failed_name` is the attempt whose failure this decides on,
+                    # which is the leader only until a sibling compiles again.
                     failed_name, failure = failed_leader
                     try:
                         verdict, detail = adopt_failure(failure, leader=failed_name)
@@ -3877,9 +3906,14 @@ class RtlBuddy:
                 elif isinstance(res, CompileFailResults):
                     # The builder ran and failed; a filelist or setup failure never
                     # reached it and has nothing to adopt.
+                    # The latest attempt replaces the earlier one: only a sibling
+                    # that declined to adopt compiles, so the next sibling decides on
+                    # this attempt's failure.
                     failure = getattr(runner, "last_compile_failure", None)
-                    if failure is not None:
-                        group_failures.setdefault(group_dir, (name, failure))
+                    if failure is not None and not _keeps_deterministic_failure(
+                        group_failures.get(group_dir), failure
+                    ):
+                        group_failures[group_dir] = (name, failure)
                 rows.append((index, name, built, None, runner, group_dir))
             # Outside the loop, so outside every build-directory lock `compile_prepared`
             # took: this key is built and stamped.

@@ -2193,6 +2193,55 @@ def test_an_out_of_resource_signature_in_the_error_tail_is_not_adopted(
     assert "Error 137" in detail
 
 
+def test_a_retry_that_fails_deterministically_is_adoptable_with_its_own_transcript(
+    tmp_path, monkeypatch
+):
+    """#827, runner side: a compiler that runs out of memory on its first build and
+    fails at link on every later one. The out-of-memory failure is declined, the retry
+    compiles, and its link failure is adopted by the next sibling with the retry's
+    transcript and return code.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    builder = vlog_sim_module.run_managed_process
+    oom = "g++: fatal error: Killed signal terminated program cc1plus"
+    link = "ld: final link failed: relocation truncated to fit"
+
+    def _oom_then_link(*args, **kwargs):
+        builder(*args, **kwargs)
+        if len(calls) == 1:
+            return ManagedProcessResult(returncode=2, stdout=f"{oom}\n", stderr="")
+        return ManagedProcessResult(returncode=1, stdout=f"{link}\n", stderr="")
+
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _oom_then_link)
+
+    leader = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    group = leader.compile_group_dir()
+    assert leader.compile() == 2
+    retry = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert retry.compile_group_dir() == group
+    verdict, detail = retry.adopt_group_failure(
+        leader.last_compile_failure, leader="test_a"
+    )
+    assert verdict is None and "ran out of resources" in detail
+    assert retry.compile() == 1
+    assert len(calls) == 2
+
+    sibling = _make_sim(tmp_path, monkeypatch, test_name="test_c")
+    assert sibling.compile_group_dir() == group
+    assert sibling.adopt_group_failure(retry.last_compile_failure, leader="test_b") == (
+        "adopted",
+        None,
+    )
+    assert len(calls) == 2  # not compiled a third time
+    assert sibling.last_compile_failure["returncode"] == 1
+    text = Path(sibling.last_compile_failure["transcript"]).read_text()
+    assert text.startswith("Compile skipped: test_b, ")
+    assert retry.last_compile_failure["transcript"] in text
+    assert link in text and oom not in text
+
+
 def test_a_failure_after_a_license_wait_is_not_adopted(tmp_path, monkeypatch):
     """A VCS compile that queued for a seat records it, and its sibling compiles for itself."""
     _write_source(tmp_path)
