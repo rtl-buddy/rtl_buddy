@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -473,6 +474,68 @@ def yosys_env(artefact_dir: str) -> dict[str, str]:
     tmp_dir = os.path.join(os.path.abspath(artefact_dir), YOSYS_TMP_DIRNAME)
     os.makedirs(tmp_dir, exist_ok=True)
     return {**yosys_process_env(), "TMPDIR": tmp_dir}
+
+
+#: Name of the link to `yosys-abc` that `abc-persistent: false` points ``abc.exe`` at (#826).
+ABC_BATCH_LINK_NAME = "abc-batch"
+
+
+def resolve_yosys_abc(yosys_executable: str) -> str:
+    """Return the absolute path of the `yosys-abc` that `yosys_executable` runs.
+
+    Yosys looks for `yosys-abc` in the directory of its own resolved binary, so that directory is
+    tried first, then the directory `yosys_executable` names or is found in, then ``PATH``.
+    Raises :class:`FatalRtlBuddyError` when none has an executable `yosys-abc`.
+    """
+    found = shutil.which(yosys_executable)
+    dirs: list[str] = []
+    if found:
+        dirs.append(os.path.dirname(os.path.realpath(found)))
+        dirs.append(os.path.dirname(os.path.abspath(found)))
+    candidates = [os.path.join(d, "yosys-abc") for d in dict.fromkeys(dirs)]
+    on_path = shutil.which("yosys-abc")
+    if on_path:
+        candidates.append(os.path.abspath(on_path))
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    log_event(
+        logger,
+        logging.ERROR,
+        "synth.yosys_abc_missing",
+        yosys=yosys_executable,
+        tried=candidates,
+    )
+    raise FatalRtlBuddyError(
+        f"abc-persistent: false needs the yosys-abc that {yosys_executable!r} runs, "
+        "but none was found next to it or on PATH "
+        f"(tried: {', '.join(candidates) or 'nothing'}); install yosys-abc or set "
+        "abc-persistent back to true"
+    )
+
+
+def abc_batch_cmds(
+    opts: SynthToolOpts, yosys_executable: str, artefact_dir: str
+) -> list[str]:
+    """Return the Yosys script lines that make ABC run in batch mode, or ``[]`` with ``abc-persistent`` on.
+
+    Yosys 0.64 reuses one `yosys-abc` process over a pipe only when ``abc.exe`` is its own
+    `yosys-abc` path (``is_yosys_abc()``). Pointing ``abc.exe`` at a symlink to the same binary
+    starts a fresh `yosys-abc -s -f <script>` for every ABC call, with the same mapping (#826).
+    The link is ``<artefact_dir>/yosys-tmp/abc-batch``; with ``abc-persistent`` on, a stale one is removed.
+    """
+    tmp_dir = os.path.join(os.path.abspath(artefact_dir), YOSYS_TMP_DIRNAME)
+    link = os.path.join(tmp_dir, ABC_BATCH_LINK_NAME)
+    if opts.abc_persistent:
+        if os.path.islink(link):
+            os.remove(link)
+        return []
+    target = resolve_yosys_abc(yosys_executable)
+    os.makedirs(tmp_dir, exist_ok=True)
+    if os.path.lexists(link):
+        os.remove(link)
+    os.symlink(target, link)
+    return [f"scratchpad -set abc.exe {link}"]
 
 
 def sdc_clock_period_ps(
@@ -1149,7 +1212,7 @@ class YosysSynth:
         incdirs = incdirs_from_filelist(fl_path)
 
         source_files = self._source_files_from_filelist(fl_path)
-        lines = []
+        lines = abc_batch_cmds(opts, self.tool_cfg.get_executable(), self.artefact_dir)
         for lib in yosys_read_lib_paths(
             lib_paths, self.blocks, source_files, self.synth_cfg.get_name()
         ):
@@ -1576,6 +1639,7 @@ class YosysSynth:
           (:func:`resolve_abc_constr`) when the platform sets one, and
           `clock_gating` (:func:`resolve_clock_gating`) when it is on.
         - unmapped branch: `abc_args`. Mapped runs ignore `abc_args`.
+        - `abc_persistent: false` when batch ABC is on (:func:`abc_batch_cmds`); absent otherwise.
 
         `strategy` is never included. Values only, not the files they came from.
         """
@@ -1602,6 +1666,9 @@ class YosysSynth:
                 fed["clock_gating"] = gating
         else:
             fed["abc_args"] = opts.abc_args
+        # Absent at the default, so runs that keep persistent ABC keep their digest.
+        if not opts.abc_persistent:
+            fed["abc_persistent"] = False
         return fed
 
     def _digested_defines(self) -> dict:

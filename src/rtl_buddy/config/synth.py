@@ -163,6 +163,8 @@ class SynthToolOpts:
     unresolved_interfaces: str = ""
     # Mapped runs: gate sets of at least this many enable flops with `clockgate`; 0 is off (#786).
     clock_gating_min_flops: int = 0
+    # False runs every ABC call as its own `yosys-abc` process instead of reusing one over a pipe (#826).
+    abc_persistent: bool = True
 
 
 @serde
@@ -179,6 +181,7 @@ class SynthToolOptsFile:
     conflicting_drivers: str = field(rename="conflicting-drivers", default="")
     unresolved_interfaces: str = field(rename="unresolved-interfaces", default="")
     clock_gating_min_flops: int = field(rename="clock-gating-min-flops", default=0)
+    abc_persistent: bool = field(rename="abc-persistent", default=True)
 
 
 # Accepted values for the correctness gates.
@@ -259,6 +262,7 @@ SYNTH_TOOL_OVERRIDE_KEYS: tuple[str, ...] = (
     "conflicting_drivers",
     "unresolved_interfaces",
     "clock_gating_min_flops",
+    "abc_persistent",
 )
 
 # Type-checked overrides, as key -> (type, label, hint). A quoted `"true"` would otherwise be truthy.
@@ -286,6 +290,7 @@ _SYNTH_OVERRIDE_TYPES: dict[str, tuple[type, str, str]] = {
         "non-negative integer",
         "write an unquoted number of flops; 0 is off",
     ),
+    "abc_persistent": (bool, "bool", "write an unquoted YAML true/false"),
 }
 
 
@@ -431,6 +436,7 @@ class SynthToolConfig:
         conflicting_drivers = self._cfg.opts.conflicting_drivers
         unresolved_interfaces = self._cfg.opts.unresolved_interfaces
         clock_gating_min_flops = self._cfg.opts.clock_gating_min_flops
+        abc_persistent = self._cfg.opts.abc_persistent
         if overrides:
             if not isinstance(overrides, dict):
                 log_event(
@@ -465,6 +471,7 @@ class SynthToolConfig:
             clock_gating_min_flops = overrides.get(
                 "clock_gating_min_flops", clock_gating_min_flops
             )
+            abc_persistent = overrides.get("abc_persistent", abc_persistent)
         return SynthToolOpts(
             synth_args=synth_args,
             abc_args=abc_args,
@@ -478,6 +485,7 @@ class SynthToolConfig:
             conflicting_drivers=conflicting_drivers,
             unresolved_interfaces=unresolved_interfaces,
             clock_gating_min_flops=clock_gating_min_flops,
+            abc_persistent=abc_persistent,
         )
 
 
