@@ -457,6 +457,16 @@ def test_multi_corner_power_fails_when_a_corner_report_is_missing(
     assert not Path(backend._corner_report_path("tt")).exists()
 
 
+def test_multi_corner_power_names_a_nan_corner_total(tmp_path, monkeypatch):
+    """A corner whose Total line is NaN fails naming the corner and NaN (#820)."""
+    reports = {**_CORNER_REPORTS, "ss": _report("NaN", "NaN", "1.05e-10", "NaN")}
+    _backend, res = _run_mc_power(tmp_path, monkeypatch, reports=reports)
+
+    assert res.results["result"] == "FAIL"
+    assert "corner 'ss'" in res.results["desc"]
+    assert "NaN" in res.results["desc"]
+
+
 def test_multi_corner_power_fails_without_the_worst_corner_marker(
     tmp_path, monkeypatch
 ):
