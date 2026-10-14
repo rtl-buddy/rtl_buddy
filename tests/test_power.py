@@ -2562,6 +2562,7 @@ read_lef /pdk/fake/tech.lef
 read_verilog {artefacts}/power_netlist.v
 link_design demo_top
 read_sdc {sdc}
+if {{[info commands sta::update_generated_clks] ne ""}} {{ sta::update_generated_clks }}
 report_power > {artefacts}/power.rpt
 puts "RB_PHYS_DETAIL_BEGIN"
 catch {{
@@ -3246,6 +3247,144 @@ def test_a_pnr_power_run_sets_the_platform_max_fanout_after_read_sdc(tmp_path):
     read_sdc = next(i for i, ln in enumerate(lines) if ln.startswith("read_sdc "))
     assert lines[read_sdc + 1] == "set_max_fanout 64 [current_design]"
     assert sum(ln.startswith("set_max_fanout") for ln in lines) == 1
+
+
+_UPDATE_GENCLKS = 'if {[info commands sta::update_generated_clks] ne ""} { sta::update_generated_clks }'
+
+
+def _set_activity(backend, source):
+    """Point the fixture's activity at `source` (static, synthetic, saif or vcd)."""
+    if source != "static":
+        backend.power_cfg.mode = "dynamic"
+    if source in ("saif", "vcd"):
+        setattr(backend.power_cfg.activity, source, f"/sim/dump.{source}")
+    assert backend.power_cfg.get_activity_source() == (
+        "default" if source == "static" else source
+    )
+
+
+_ACTIVITY_CMD = {
+    "synthetic": "set_power_activity -global ",
+    "saif": "read_saif ",
+    "vcd": "read_power_activities ",
+}
+
+
+@pytest.mark.parametrize("netlist_source", ["synth", "pnr-spef", "pnr-estimate"])
+@pytest.mark.parametrize("activity", ["static", "synthetic", "saif", "vcd"])
+def test_the_power_script_derives_generated_clocks_before_any_activity(
+    tmp_path, netlist_source, activity
+):
+    """`sta::update_generated_clks` follows `read_sdc` and precedes the activity and `report_power` (#820).
+
+    OpenSTA leaves a generated clock at period 0 until it is derived; an activity relative to
+    it is then inf and the Total line NaN.
+    """
+    if netlist_source == "synth":
+        backend = _make_power_backend(tmp_path)
+    else:
+        backend, _spef = _make_spef_power_backend(
+            tmp_path, spef=netlist_source == "pnr-spef"
+        )
+    _set_activity(backend, activity)
+
+    lines = Path(backend._write_script()).read_text().splitlines()
+
+    assert lines.count(_UPDATE_GENCLKS) == 1
+    update = lines.index(_UPDATE_GENCLKS)
+    read_sdc = next(i for i, ln in enumerate(lines) if ln.startswith("read_sdc "))
+    report = next(i for i, ln in enumerate(lines) if ln.startswith("report_power >"))
+    assert read_sdc < update < report
+    # After the parasitics too, so nothing between it and the activity can drop the waveform.
+    parasitics = [
+        i
+        for i, ln in enumerate(lines)
+        if ln.startswith(("read_spef ", "estimate_parasitics"))
+    ]
+    assert all(i < update for i in parasitics)
+    if activity in _ACTIVITY_CMD:
+        first = next(
+            i for i, ln in enumerate(lines) if ln.startswith(_ACTIVITY_CMD[activity])
+        )
+        assert update == first - 1
+
+
+def test_a_multi_corner_power_script_derives_generated_clocks_once(tmp_path):
+    backend = _make_power_backend(
+        tmp_path,
+        platform=_FakePlatform(
+            liberty="/pdk/fake/tt.lib",
+            corners={"tt": "/pdk/fake/tt.lib", "ss": "/pdk/fake/ss.lib"},
+        ),
+    )
+
+    lines = Path(backend._write_script()).read_text().splitlines()
+
+    assert lines.count(_UPDATE_GENCLKS) == 1
+    first_report = next(
+        i for i, ln in enumerate(lines) if ln.startswith("report_power -corner")
+    )
+    assert lines.index(_UPDATE_GENCLKS) < first_report
+
+
+# `report_power` of the #820 reproducer: an input delay relative to an underived generated clock.
+_NAN_REPORT = """\
+Group                  Internal  Switching    Leakage      Total
+                          Power      Power      Power      Power (Watts)
+----------------------------------------------------------------
+Sequential           inf               NaN   8.44e-12        NaN   0.0%
+Combinational               NaN inf          3.93e-12        NaN   0.0%
+----------------------------------------------------------------
+Total                       NaN        NaN   2.47e-11        NaN   0.0%
+"""
+
+
+def test_a_nan_total_line_fails_naming_nan_and_the_likely_cause(tmp_path, monkeypatch):
+    """A NaN Total line fails naming NaN and pointing at a zero clock period, not as unparsable (#820)."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.tools import power_openroad
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    backend = _make_power_backend(tmp_path)
+    report = Path(backend.artefact_dir) / "power.rpt"
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+
+    def _writes_nan(cmd, **kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        report.write_text(_NAN_REPORT)
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(power_openroad.subprocess, "run", _writes_nan)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    desc = res.results["desc"]
+    assert "NaN" in desc
+    assert "generated clock" in desc
+    assert "could not parse" not in desc
+    assert not report.exists()
+
+
+@pytest.mark.parametrize(
+    "text, nonfinite",
+    [
+        (_NAN_REPORT, True),
+        ("Total   1.0e-03   inf   3.0e-04   inf 100.0%\n", True),
+        ("Total   -nan   2.0e-03   3.0e-04   -nan 100.0%\n", True),
+        ("no totals here\n", False),
+        # A NaN elsewhere in the report is not a NaN Total line.
+        ("Sequential  NaN  1  1  NaN\nTotal broken\n", False),
+    ],
+)
+def test_only_a_nonfinite_total_line_is_reported_as_nan(tmp_path, text, nonfinite):
+    backend = _make_power_backend(tmp_path)
+
+    assert backend._parse_report(text) is None
+    desc = backend._unparsable_report_desc(text, "report_power output")
+    assert ("NaN" in desc) is nonfinite
+    assert desc.startswith("could not parse Total line") is not nonfinite
 
 
 def test_a_pnr_power_run_without_a_spef_estimates_as_before(tmp_path):

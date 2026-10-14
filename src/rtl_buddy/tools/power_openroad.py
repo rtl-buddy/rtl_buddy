@@ -569,6 +569,11 @@ class OpenRoadPower(BasePower):
         """Resolve to a PnrPlatformConfig (provides Liberty path)."""
         return self.root_cfg.get_pnr_platform_cfg(self.power_cfg.get_platform())
 
+    _UPDATE_GENERATED_CLKS = (
+        'if {[info commands sta::update_generated_clks] ne ""} '
+        "{ sta::update_generated_clks }"
+    )
+
     def _emit_activity_cmds(self) -> list[str]:
         """Translate the resolved activity source (`PowerConfig.get_activity_source()`) into `read_saif`, `read_power_activities` or `set_power_activity` Tcl."""
         source = self.power_cfg.get_activity_source()
@@ -783,6 +788,10 @@ class OpenRoadPower(BasePower):
             )
             if max_fanout:
                 lines.append(max_fanout)
+        # Ahead of the activity: OpenSTA leaves a generated clock at period 0 until its waveform is
+        # derived, and `report_power` and `read_power_activities` do not derive it, so an activity
+        # relative to it is inf and the totals NaN (#820). Guarded since it is an `sta::` internal.
+        lines.append(self._UPDATE_GENERATED_CLKS)
         lines.extend(self._emit_activity_cmds())
         if corner_libs:
             # One report per corner, then `power.rpt` at the worst, so the per-instance rows are of the same corner.
@@ -845,6 +854,22 @@ class OpenRoadPower(BasePower):
         r"([-\d.eE+]+)",  # total
         re.MULTILINE,
     )
+
+    # A Total row whose figures OpenSTA printed as NaN or inf, which `_TOTAL_LINE_RE` does not match.
+    _NONFINITE_TOTAL_RE = re.compile(
+        r"^\s*Total\s.*\b(?:-?nan|-?inf)\b", re.MULTILINE | re.IGNORECASE
+    )
+
+    def _unparsable_report_desc(self, report_text: str, what: str) -> str:
+        """Describe why `_parse_report` returned None for `what` (a report_power output)."""
+        if self._NONFINITE_TOTAL_RE.search(report_text):
+            return (
+                f"Total line of {what} is NaN/inf: an activity was converted against a "
+                "zero clock period — check that every clock the SDC's I/O delays and "
+                "activity reference has a finite period (a generated clock OpenSTA has "
+                "not derived reads as period 0)"
+            )
+        return f"could not parse Total line from {what}"
 
     def _parse_report(self, report_text: str) -> dict | None:
         m = self._TOTAL_LINE_RE.search(report_text)
@@ -1180,7 +1205,7 @@ class OpenRoadPower(BasePower):
         parsed = self._parse_report(report_text)
         if parsed is None:
             return self._fail_after_openroad(
-                "could not parse Total line from report_power output"
+                self._unparsable_report_desc(report_text, "report_power output")
             )
 
         corner_fields: dict = {}
@@ -1254,13 +1279,13 @@ class OpenRoadPower(BasePower):
         for corner in self._script_corners:
             path = self._corner_report_path(corner)
             try:
-                parsed = self._parse_report(Path(path).read_text())
+                text = Path(path).read_text()
             except OSError:
                 return {}, f"power report for corner '{corner}' not produced at {path}"
+            parsed = self._parse_report(text)
             if parsed is None:
-                return {}, (
-                    f"could not parse Total line from corner '{corner}' "
-                    "report_power output"
+                return {}, self._unparsable_report_desc(
+                    text, f"corner '{corner}' report_power output"
                 )
             corners[corner] = parsed
         return {"worst_corner": worst, "corners": corners}, None
