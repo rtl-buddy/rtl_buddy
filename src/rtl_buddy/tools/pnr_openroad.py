@@ -14,6 +14,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
+from ..config.pdk import MacroPinLimitsFile
 from ..config.pnr import (
     BlockageType,
     GdsMode,
@@ -40,6 +41,8 @@ from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
 _TEMPLATE_FILE = "flow.tcl.template"
 _MACRO_PACK_FILE = "macro_pack.tcl"
+# The macro pin-limit procedures, substituted only when `placement.macro-pin-limits` is set.
+_MACRO_PIN_LIMITS_FILE = "macro_pin_limits.tcl"
 # Cuts the rows under hard placement blockages before tap insertion; see `_floorplan_directives`.
 _CUT_ROWS_FILE = "cut_rows.tcl"
 # Replaces the pdn-config's core grid with a run's `pdn:` block; see `_pdn_block`.
@@ -130,6 +133,13 @@ _ELECTRICAL_RE = re.compile(
     rf"^{re.escape(_ELECTRICAL_TAG)} max_(slew|capacitance|fanout) (\d+)\s*$",
     re.MULTILINE,
 )
+# Printed once by the macro pin-limit step: the macro pins it buffered and those still over their limit less the margin.
+_MACRO_PIN_LIMITS_TAG = "RB-MACRO-PIN-LIMITS:"
+_MACRO_PIN_LIMITS_RE = re.compile(
+    rf"^{re.escape(_MACRO_PIN_LIMITS_TAG)} buffered (\d+) unmet (\d+)\s*$",
+    re.MULTILINE,
+)
+
 # Result field per check, and the word a description uses for it.
 _ELECTRICAL_FIELDS = {
     "slew": ("max_slew_violation_count", "max-slew"),
@@ -207,6 +217,24 @@ def _buffer_ports_tcl(enabled: bool, buffer_cell: str | None) -> str:
         return ""
     cell = f" -buffer_cell {buffer_cell}" if buffer_cell else ""
     return f'\nputs ">>> Port buffers"\nbuffer_ports -inputs -outputs{cell}\n'
+
+
+def _macro_pin_limits_tcl(platform) -> str:
+    """Return the macro pin-limit step, run after `repair_design` and its legalization and before CTS, or `""` when `placement.macro-pin-limits` is unset.
+
+    `repair_design` sizes its repeaters for the library-wide target slew, so a macro input whose Liberty `max_transition` is far below it stays over its limit. The step buffers each macro pin over its limit less the margin with a cell fixed on the nearest free row site, sizes it, and marks it dont_touch; see `macro_pin_limits.tcl`. It reads the checks on the legal placement because legalization moves a macro output's loads. It carries its own leading newline so an unset key renders the template byte-identically.
+    """
+    limits = platform.get_placement_macro_pin_limits()
+    if not isinstance(limits, MacroPinLimitsFile):
+        return ""
+    procs = files(_TEMPLATE_PACKAGE).joinpath(_MACRO_PIN_LIMITS_FILE).read_text()
+    return (
+        '\nputs ">>> Macro pin limits"\n'
+        f"{procs}"
+        f"rb::macro_pins::repair {{{' '.join(limits.buffers)}}} {limits.margin:g} "
+        f"{limits.capacitance_margin:g} "
+        f"{platform.get_placement_padding()} {_MACRO_PIN_LIMITS_TAG}\n"
+    )
 
 
 def _global_route_hold_repair_tcl(platform) -> str:
@@ -966,6 +994,7 @@ class OpenRoadPnr:
             ),
             "layer_adjustment": _layer_adjustment_tcl(platform),
             "global_route_hold_repair": _global_route_hold_repair_tcl(platform),
+            "macro_pin_limits_block": _macro_pin_limits_tcl(platform),
             "detailed_route_verbose": str(self.pnr_cfg.get_detailed_route_verbose()),
             "cell_count_tag": _CELL_COUNT_TAG,
             "electrical_tag": _ELECTRICAL_TAG,
@@ -1034,6 +1063,19 @@ class OpenRoadPnr:
         for m in _ELECTRICAL_RE.finditer(log_text):
             fields[_ELECTRICAL_FIELDS[m.group(1)][0]] = int(m.group(2))
         return fields
+
+    def _parse_macro_pin_limits(self, log_text: str) -> dict:
+        """Return the macro pin-limit step's counts as result fields, or `{}` when the step did not run.
+
+        `macro_pin_buffered_count` is the macro pins the step buffered; `macro_pin_unmet_count` those it left over their limit less the margin, judged on placement parasitics.
+        """
+        m = _MACRO_PIN_LIMITS_RE.search(log_text)
+        if not m:
+            return {}
+        return {
+            "macro_pin_buffered_count": int(m.group(1)),
+            "macro_pin_unmet_count": int(m.group(2)),
+        }
 
     def _describe_electrical(self, fields: dict) -> str:
         """Return `"N max-slew, M max-capacitance violator(s)"` for the nonzero counts, or `""` when there are none."""
@@ -2767,8 +2809,19 @@ class OpenRoadPnr:
             "tns_hold_ps": tns_hold * ps_per_unit if tns_hold is not None else None,
             "drc_count": drcs,
             **self._parse_electrical(log_text),
+            **self._parse_macro_pin_limits(log_text),
         }
         corner_fields = self._corner_fields(platform, log_text)
+        if metrics.get("macro_pin_unmet_count"):
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.macro_pin_limits_unmet",
+                pnr=self.pnr_cfg.get_name(),
+                unmet=metrics["macro_pin_unmet_count"],
+                buffered=metrics.get("macro_pin_buffered_count"),
+                log=log_path,
+            )
         # Logged whether or not it fails the run, so a pass with violators never reads as clean.
         electrical = self._describe_electrical(metrics)
         if electrical:

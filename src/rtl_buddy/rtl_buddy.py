@@ -10936,6 +10936,8 @@ class RtlBuddy:
             "max_slew_violation_count",
             "max_capacitance_violation_count",
             "max_fanout_violation_count",
+            "macro_pin_buffered_count",
+            "macro_pin_unmet_count",
             "worst_setup_corner",
             "worst_hold_corner",
             "corners",

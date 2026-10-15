@@ -53,7 +53,7 @@ The generated `pnr.tcl` runs these steps in order:
 2. Initialize the floorplan, create routing tracks and run `insert_tiecells` for the PDK's `tie-hi` and `tie-lo` ports, one tie cell per constant net.
 3. Place macros, insert tap and endcap cells when `tapcell-tcl` is set, build the power grid and place the IO pins, then run `buffer_ports -inputs -outputs` when the run buffers its ports (`buffer-ports`, on by default for `harden: true`; see [Harden a block](#harden-a-block)).
 4. Run global placement, with `-reference_hpwl` when `placement.reference-hpwl` is set and `-routability_driven` / `-routability_use_grt` when `placement.routability-driven` / `placement.routability-use-grt` are `true`, then `repair_tie_fanout` for each tie port, which gives every constant-driven load its own tie cell `placement.tie-separation` microns away (default 0).
-5. Run `repair_design`, legalization, clock-tree synthesis (with `-apply_ndr` when `cts-apply-ndr` is set), setup repair when `post-cts-setup-repair` is set, hold repair and a final legalization.
+5. Run `repair_design`, legalization, the [macro pin-limit step](#buffer-macro-pins-over-their-liberty-limits) when `placement.macro-pin-limits` is set, clock-tree synthesis (with `-apply_ndr` when `cts-apply-ndr` is set), setup repair when `post-cts-setup-repair` is set, hold repair and a final legalization.
 6. Route globally with `-verbose` and a congestion report, after `set_global_routing_layer_adjustment` when `routing-layer-adjustment` is set, repair hold on the global-route parasitics when `global-route-hold-repair` is set, route in detail at the run's `detailed-route-verbose` level, insert fill, extract parasitics when `rcx-rules` is set, then write reports and outputs.
 
 A tie port the PDK leaves unset gets neither tie step.
@@ -168,6 +168,7 @@ cfg-pnr-platforms:
 - **`placement.tie-separation`** (default 0 µm) is how far from its load each per-load tie cell is placed; see [Flow steps](#flow-steps).
 - **`placement.reference-hpwl`** (positive number, unset by default) passes `-reference_hpwl` to `global_placement`. Unset, the placer's density-penalty controller derives its reference HPWL from the design size, which on a large design spreads cells less and ends routability inflation early, so global route can overflow. A fixed value such as `446000000` spreads cells further and can clear the overflow.
 - **`placement.routability-driven`** (default `false`) adds `-routability_driven` to `global_placement`: the placer estimates congestion, inflates cells in congested regions and re-spreads them. Turn it on for a congested block whose global route overflows. **`placement.routability-use-grt`** (default `false`) adds `-routability_use_grt`, which estimates that congestion with the global router instead of RUDY; slower, closer to the real route. It takes effect only in routability mode, so a platform whose resolved settings enable it without `routability-driven` fails to load. Like the other `placement.*` keys, each is set on the PDK and overridden per platform.
+- **`placement.macro-pin-limits`** (unset by default) buffers macro pins that stay over their own Liberty max-slew or max-capacitance limit after `repair_design`; see [Buffer macro pins over their Liberty limits](#buffer-macro-pins-over-their-liberty-limits).
 - **`cts-buffer`** takes a name or a list. With a list, the first entry is the root buffer.
 - **`port-buffer`** (unset by default) is the cell `buffer_ports` inserts on each port of a run with `buffer-ports` on, passed as `-buffer_cell`; unset lets OpenROAD choose. See [Harden a block](#harden-a-block).
 - **`cts-sink-clustering`** (default `true`) passes `-sink_clustering_enable` to CTS. Set it to `false` when CTS fails with `CTS-0080 Sink not found`, as it can on coincident clock pins or a large ASAP7 clock tree.
@@ -331,6 +332,36 @@ Blockages need OpenROAD 26Q1 or newer; on an older build the run fails at setup.
 - A macro may be matched by several entries, but only one entry may set each key for it.
 - At run time a pattern that matches no instance, or that matches a standard cell, fails the run: `floorplan.macros[i]: no instance matches '<pattern>'`.
 - `floorplan.macros` is part of a hardened block's configuration. For a [hardened block](#assemble-hardened-blocks) placed with a `location`, check that its supply pins land on the parent's straps, and that a mirrored block's net order still fits the parent's grid.
+
+## Buffer macro pins over their Liberty limits
+
+`repair_design` sizes its repeaters for the library-wide target slew, so a macro input whose Liberty `max_transition` is far below that target stays over its limit and lands in `electrical.rpt`. The OpenRAM SKY130 SRAMs set 0.04 ns on `addr0`, `addr1` and `wmask0`. `placement.macro-pin-limits` adds a step that buffers such pins:
+
+```yaml
+cfg-pnr-platforms:
+  - name: sky130hd_tt
+    pdk: sky130hd
+    placement:
+      macro-pin-limits:
+        buffers: [sky130_fd_sc_hd__buf_1, sky130_fd_sc_hd__buf_2, sky130_fd_sc_hd__buf_4,
+                  sky130_fd_sc_hd__buf_8, sky130_fd_sc_hd__buf_12, sky130_fd_sc_hd__buf_16]
+        margin: 0.05              # default; the fraction of each limit kept in hand
+        capacitance-margin: 0.5   # default: margin; for max-capacitance checks
+```
+
+The step runs after `repair_design` and the legalization that follows it, before CTS:
+
+1. It reads the max-slew and max-capacitance check of every macro data pin with `report_check_types -net`, so it acts on the checks `electrical.rpt` counts, in the macro library's own thresholds. Clock pins are skipped. A pin over its max-slew limit less `margin`, or its max-capacitance limit less `capacitance-margin`, is buffered.
+2. An input gets a final buffer before the pin and a pre-driver in front of it; an output gets one buffer after the pin. The final buffer (an output's only buffer) is fixed (`FIRM`) on the free row site nearest the pin, outside the macro's `macro-cell-halo` blockage and with `placement.padding` free on both sides. The site is reserved for the widest candidate, and a narrower one slides to the pin's end of it. The legalizer places the pre-driver.
+3. It runs `global_connect`, `detailed_placement` and `estimate_parasitics -placement`, then sizes each buffer from `buffers`, weakest first, until the pin's checks fit less the margins. When none fits, the strongest stays.
+4. It marks the inserted cells, and the nets between them and the macro, `dont_touch`, so CTS and later repair neither resize, remove nor re-buffer them. Supplies are connected first, because `global_connect` skips `dont_touch` instances.
+
+`pnr.log` shows `>>> Macro pin limits`, one line per buffered pin with its check before and after and the cells chosen, then `RB-MACRO-PIN-LIMITS: buffered <n> unmet <m>`. The result fields `macro_pin_buffered_count` and `macro_pin_unmet_count` carry the two counts, and an unmet pin logs the warning `pnr.macro_pin_limits_unmet`. The step judges on placement parasitics; `electrical.rpt` is the routed verdict.
+
+- List `buffers` weakest first. On sky130hd a 0.04 ns SRAM pin reads 4/3 of the driving cell's transition, because the SRAM measures slew 10-90% and the cells 20-80%, so only a strong buffer within a few microns of the pin meets it. Keep `macro-cell-halo` around such a macro small: 3 µm on the sky130hd example meets it with `buf_8`; 20 µm leaves no margin.
+- Placement parasitics see a buffered input's short wire well, but underestimate a long net from a macro output: on the sky130hd example its extracted capacitance came out up to twice the placement estimate. On the sky130hd example, `capacitance-margin: 0.5` was needed to clear every SRAM output; with `0.05`, outputs that looked 20-35% under their limit at placement ended over it after routing.
+- The step cannot fix a pin route that global routing sends around the macro, which happens when the macro's pin edge sits deep in its global-route GCell. It shows as a routed max-capacitance or max-slew violation on a pin with a route far longer than the pin-to-load distance. Keeping the pin edges near a GCell boundary is macro placement's job (`floorplan.macros` `location` sets it by hand); a buffered pin's short net is less exposed.
+- A platform's `macro-pin-limits` replaces its PDK's whole block. The step applies to every hard macro in the run, hardened `blocks:` included, and is part of a hardened block's configuration.
 
 ## Size the die and core
 
@@ -702,6 +733,7 @@ rb pnr -c pnr/top/pnr.yaml --synth
 - **`[ERROR PDN-0179] Unable to repair all channels`.** Raise `placement.macro-halo`.
 - **`N macros do not fit ...`.** Lower utilization, change the aspect ratio or lower `macro-halo`.
 - **`RSZ-0090` at a slow corner.** A single-Liberty macro limits that corner. Give it a Liberty per corner.
+- **Macro pins in `electrical.rpt`, or `pnr.macro_pin_limits_unmet`.** Set or extend `placement.macro-pin-limits`, lower the macro's `macro-cell-halo`, or move the macro; see [Buffer macro pins over their Liberty limits](#buffer-macro-pins-over-their-liberty-limits).
 - **`RB-DONT-USE-VIOLATION`.** The netlist instantiates an excluded cell. Change the RTL, synthesis or pattern.
 - **`STA-0122 cell '<pattern>' not found`.** A `dont-use-cells` pattern matches nothing.
 - **`openroad.threads_capped`.** Raise the reservation, lower `threads:` or use `auto`.

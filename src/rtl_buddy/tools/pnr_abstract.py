@@ -16,6 +16,7 @@ from ..config.blocks import BlockRef
 from ..config.pdk import (
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
+    MacroPinLimitsFile,
 )
 from ..config.pnr import ABSTRACT_BLOAT_OCCUPIED, MacroPlacement, PnrAbstract
 from .artifact_paths import project_relative, project_root_or_none
@@ -346,6 +347,20 @@ def abstract_config(pnr_cfg, platform) -> dict:
             **(
                 {"routability_use_grt": True}
                 if platform.get_placement_routability_use_grt() is True
+                else {}
+            ),
+            **(
+                {
+                    "macro_pin_limits": {
+                        "buffers": list(macro_pin_limits.buffers),
+                        "margin": macro_pin_limits.margin,
+                        "capacitance_margin": macro_pin_limits.capacitance_margin,
+                    }
+                }
+                if isinstance(
+                    macro_pin_limits := platform.get_placement_macro_pin_limits(),
+                    MacroPinLimitsFile,
+                )
                 else {}
             ),
         },
