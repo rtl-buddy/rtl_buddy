@@ -527,8 +527,13 @@ _MANAGED_OUTPUT_FILE_PATTERNS = (
     VERILATE_MARKER_NAME,
     RESULT_JSON_NAME,
 ) + DISPATCH_OUTPUT_PATTERNS
-# The head's `rtl_buddy.log` is excluded by path in `_directory_listing` (see
-# `_is_suite_log`), since a file of that name elsewhere is an ordinary input.
+
+# Every command's `rtl_buddy.log`, wherever it sits. A regression writes one per suite
+# and one in the manifest root, so an include directory on another suite (or on the
+# manifest root) lists a log this suite's run did not write (#831). The log is opened
+# in place by a FileHandler and never rotated, so it has no temp or numbered variants;
+# dispatched jobs' logs are covered by `DISPATCH_OUTPUT_PATTERNS`.
+_COMMAND_LOG_FILE_PATTERNS = (DEFAULT_FILE_LOG,)
 
 # The same outputs caught mid-write.
 # Managed outputs are written via a sibling temp file renamed into place, so an include
@@ -548,6 +553,7 @@ _NON_INPUT_FILE_PATTERNS = (
     _BOOKKEEPING_FILE_PATTERNS
     + _MANAGED_OUTPUT_FILE_PATTERNS
     + _MANAGED_OUTPUT_TMP_PATTERNS
+    + _COMMAND_LOG_FILE_PATTERNS
     + COV_REPORT_FILE_PATTERNS
 )
 
@@ -1328,14 +1334,6 @@ class VlogSim:
         # head so a dispatched job writes into the head's tree. None is the flat layout.
         # The shared build directory stays shared across tags.
         self.run_tag = run_tag
-        # Where the head writes its own log, the one path a directory listing skips by
-        # location rather than name.
-        # Under a `--run-tag` the log sits in `artefacts/`, which listings prune, so
-        # only the flat path needs naming.
-        self._suite_log_path = os.path.realpath(
-            os.path.join(self.suite_work_dir, DEFAULT_FILE_LOG)
-        )
-
         # Files this instance may content-hash for build stamps. It is the project root,
         # not the suite dir, because RTL and headers often live outside the suite.
         # Realpath'd for containment tests.
@@ -1893,16 +1891,6 @@ class VlogSim:
         path = str(simv_path)
         return [self._stamp_relpath(path)] + _stat_entry(path)[1:]
 
-    def _is_suite_log(self, path) -> bool:
-        """Is ``path`` the head's own ``rtl_buddy.log`` in the suite directory?
-
-        Checked by name first so ``realpath`` is only paid for candidates.
-        """
-        return (
-            os.path.basename(path) == DEFAULT_FILE_LOG
-            and os.path.realpath(path) == self._suite_log_path
-        )
-
     def _directory_listing(self, dir_path, *, recursive):
         """A listing of the regular files under ``dir_path``, or ``None`` if unreadable.
 
@@ -1915,8 +1903,8 @@ class VlogSim:
 
         Skipped: dot-directories and managed artefact trees
         (:func:`_is_pruned_walk_dir`), files matching
-        :data:`_NON_INPUT_FILE_PATTERNS`, and the suite's own ``rtl_buddy.log`` (by
-        path). rtl_buddy writes those after the fingerprint that would list them, so
+        :data:`_NON_INPUT_FILE_PATTERNS` (which includes every ``rtl_buddy.log``).
+        rtl_buddy writes those after the fingerprint that would list them, so
         listing them would make every later validation fail. Dot-files otherwise
         count as inputs.
 
@@ -1944,7 +1932,7 @@ class VlogSim:
                         if _is_non_input_file(name):
                             continue
                         path = os.path.join(walk_root, name)
-                        if not os.path.isfile(path) or self._is_suite_log(path):
+                        if not os.path.isfile(path):
                             # A dangling symlink is not an input; a FIFO must not reach
                             # the hasher's `open()`.
                             continue
@@ -1955,9 +1943,7 @@ class VlogSim:
                     names = sorted(
                         item.name
                         for item in scan
-                        if item.is_file()
-                        and not _is_non_input_file(item.name)
-                        and not self._is_suite_log(item.path)
+                        if item.is_file() and not _is_non_input_file(item.name)
                     )
                 entries = [(name, os.path.join(dir_path, name)) for name in names]
         except OSError as e:

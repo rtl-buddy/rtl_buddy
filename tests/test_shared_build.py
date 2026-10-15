@@ -1711,13 +1711,16 @@ def test_a_cov_dir_writer_and_the_listing_prune_share_one_name():
     assert not vlog_sim_module._is_non_input_file("coverage_defs.svh")
 
 
-def test_a_real_input_named_like_the_suite_log_stays_tracked(tmp_path, monkeypatch):
-    """Only the suite's own `rtl_buddy.log` is skipped; a same-named file in another include directory is a compile input."""
+def test_another_suites_log_in_an_include_directory_does_not_change_the_key(
+    tmp_path, monkeypatch
+):
+    """A sibling suite's `rtl_buddy.log` on suite_a's `+incdir+` is not a compile input, so a checkout that also ran suite_b shares suite_a's build with one that did not (#831)."""
     _write_source(tmp_path)
-    (tmp_path / "rtl_buddy.log").write_text("dispatch: 4/5 jobs remaining\n")
-    image = tmp_path / "inc" / "rtl_buddy.log"
-    image.parent.mkdir()
-    image.write_text("@0000 DEADBEEF\n")
+    suite_a = tmp_path / "suite_a"
+    suite_b = tmp_path / "suite_b"
+    suite_a.mkdir()
+    suite_b.mkdir()
+    (suite_b / "defs.svh").write_text("`define W 8\n")
     calls = []
     _install_fake_builder(monkeypatch, calls)
 
@@ -1728,20 +1731,34 @@ def test_a_real_input_named_like_the_suite_log_stays_tracked(tmp_path, monkeypat
             test_name=test_name,
             exe="vcs",
             family="vcs",
-            filelist=["src/top.sv", "+incdir+.", "+incdir+inc"],
+            suite_dir=suite_a,
+            filelist=["src/top.sv", f"+incdir+{suite_b}"],
         )
 
+    # Checkout 1: the regression ran suite_b first, so its log is already there.
+    suite_b_log = suite_b / "rtl_buddy.log"
+    suite_b_log.write_text("suite_b: 1/1 passed\n")
     sim_a = _sim("test_a")
     assert sim_a.compile() == 0
-    suite_listing = [e[0] for e in _dir_entry(sim_a, f"+incdir+{tmp_path}")[-1]]
-    assert "rtl_buddy.log" not in suite_listing, suite_listing
-    assert "inc/rtl_buddy.log" in suite_listing, suite_listing
-    inc_listing = [e[0] for e in _dir_entry(sim_a, f"+incdir+{tmp_path / 'inc'}")[-1]]
-    assert inc_listing == ["rtl_buddy.log"], inc_listing
+    listing = [e[0] for e in _dir_entry(sim_a, f"+incdir+{suite_b}")[-1]]
+    assert listing == ["defs.svh"], listing
 
-    _touch(image, "@0000 CAFEF00D\n")
-    assert _sim("test_b").compile() == 0
-    assert len(calls) == 2
+    # Checkout 2: only suite_a ran, so suite_b holds no log.
+    suite_b_log.unlink()
+    sim_b = _sim("test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 1
+    assert sim_b.last_compile["reused"] is True
+
+
+def test_every_rtl_buddy_log_is_a_non_input_by_name():
+    """Any file named like the command log is rtl_buddy's own output, wherever it sits (#831)."""
+    from rtl_buddy.logging_utils import DEFAULT_FILE_LOG
+
+    assert vlog_sim_module._is_non_input_file(DEFAULT_FILE_LOG)
+    # Exactly the name rtl_buddy writes; a near miss stays an input.
+    assert not vlog_sim_module._is_non_input_file("rtl_buddy.log.svh")
+    assert not vlog_sim_module._is_non_input_file("my_rtl_buddy.log")
 
 
 def test_a_pycache_beside_a_preproc_helper_is_never_listed(tmp_path, monkeypatch):
