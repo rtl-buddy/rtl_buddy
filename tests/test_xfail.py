@@ -6,6 +6,8 @@ import pytest
 
 from rtl_buddy import rtl_buddy as rtl_buddy_mod
 from rtl_buddy.config.suite import SuiteConfig
+from rtl_buddy.config.test import TestConfig as TC
+from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.logging_utils import setup_logging
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.runner.test_results import (
@@ -17,10 +19,14 @@ from rtl_buddy.runner.test_results import (
 from rtl_buddy.runner.xfail import (
     FAIL_STAGE_KEY,
     FAIL_STAGE_REASONS,
+    FIRST_ERROR_KEY,
     apply_xfail,
+    compile_xfail_match,
     is_pass_with_xfail,
+    xfail_mismatch,
     xfail_refusal,
 )
+from rtl_buddy.tools.vlog_post import UvmVlogPost, VlogPost
 
 
 class _Result:
@@ -289,3 +295,211 @@ def test_suite_still_fails_a_strict_xpass(tmp_path, monkeypatch):
     res = suite_results[0]["results"]
     assert res.results["result"] == "XPASS"
     assert rb._exit_code_from_results(suite_results) != 0
+
+
+# ---------------------------------------------------------------------------
+# xfail_match: the marker names the failure it expects (#832)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_xfail_match_hits_the_desc():
+    res = _Result("FAIL", desc="ECP-1017 loader refused the deadlock")
+    apply_xfail(res, strict=True, match=r"ECP-10\d\d")
+    assert res.results["result"] == "XFAIL"
+    assert is_pass_with_xfail(res.results) is True
+
+
+def test_apply_xfail_match_hits_the_first_error_line():
+    # The desc may be generic (UVM counts, a hook's text); the grader's first error line still names the check.
+    res = _Result(
+        "FAIL",
+        desc="1 uvm error detected",
+        **{FIRST_ERROR_KEY: "UVM_ERROR tb.sv(42) @ 100: chk [ECP-1017] refused"},
+    )
+    apply_xfail(res, strict=True, match="ECP-1017")
+    assert res.results["result"] == "XFAIL"
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_apply_xfail_match_miss_stays_fail_with_the_reason(strict):
+    res = _Result(
+        "FAIL",
+        desc="watchdog fired at 1ms",
+        **{FIRST_ERROR_KEY: "ERR: watchdog fired at 1ms"},
+    )
+    apply_xfail(res, strict=strict, match="ECP-1017")
+    assert res.results["result"] == "FAIL"
+    assert is_pass_with_xfail(res.results) is False
+    assert res.results["desc"] == (
+        "xfail: failed for a different reason (expected /ECP-1017/): "
+        "watchdog fired at 1ms"
+    )
+    assert "xfail_strict" not in res.results
+
+
+def test_apply_xfail_match_is_searched_not_anchored():
+    res = _Result("FAIL", desc="prefix ECP-1017 suffix")
+    apply_xfail(res, match="^ECP")
+    assert res.results["result"] == "FAIL"
+    res = _Result("FAIL", desc="prefix ECP-1017 suffix")
+    apply_xfail(res, match="ECP-1017")
+    assert res.results["result"] == "XFAIL"
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_apply_xfail_match_leaves_a_pass_graded_as_before(strict):
+    res = _Result("PASS")
+    apply_xfail(res, strict=strict, match="ECP-1017")
+    assert res.results["result"] == "XPASS"
+    assert is_pass_with_xfail(res.results) is (not strict)
+
+
+def test_apply_xfail_stage_refusal_wins_over_match():
+    # A failure instead of a verdict is reported as such even when the regex would match.
+    res = _Result("FAIL", desc="ECP-1017", **{FAIL_STAGE_KEY: "compile"})
+    apply_xfail(res, strict=True, match="ECP-1017")
+    assert res.results["result"] == "FAIL"
+    assert res.results["desc"] == "xfail not applied (compile failure): ECP-1017"
+
+
+def test_xfail_mismatch_none_without_a_pattern():
+    assert xfail_mismatch({"result": "FAIL", "desc": "x"}, None) is None
+
+
+def test_compile_xfail_match_unset_is_none():
+    assert compile_xfail_match(None, xfail=False, where="test 't'") is None
+
+
+def test_compile_xfail_match_requires_a_marker():
+    with pytest.raises(FatalRtlBuddyError, match="requires xfail"):
+        compile_xfail_match("ECP", xfail=False, where="test 't'")
+
+
+@pytest.mark.parametrize("bad", ["", 42])
+def test_compile_xfail_match_rejects_a_non_regex_value(bad):
+    with pytest.raises(FatalRtlBuddyError, match="non-empty regex"):
+        compile_xfail_match(bad, xfail=True, where="test 't'")
+
+
+def test_compile_xfail_match_rejects_an_invalid_regex():
+    with pytest.raises(FatalRtlBuddyError, match=r"test 't'.*not a valid regex"):
+        compile_xfail_match("ECP-(1017", xfail=True, where="test 't'")
+
+
+def test_suite_config_loads_xfail_match(tmp_path):
+    cfg = _suite_with_marker(
+        tmp_path, 'xfail_strict: true\n    xfail_match: "ECP-1017"'
+    )
+    test = cfg.tests["neg_control"]
+    assert test.get_xfail_match() == "ECP-1017"
+    assert TC.from_plan_dict(test.to_plan_dict()).get_xfail_match() == ("ECP-1017")
+
+
+def test_suite_config_rejects_xfail_match_without_a_marker(tmp_path):
+    with pytest.raises(FatalRtlBuddyError, match="neg_control.*requires xfail"):
+        _suite_with_marker(tmp_path, 'xfail_match: "ECP-1017"')
+
+
+def test_suite_config_rejects_an_invalid_xfail_match(tmp_path):
+    with pytest.raises(FatalRtlBuddyError, match="neg_control.*not a valid regex"):
+        _suite_with_marker(tmp_path, 'xfail: true\n    xfail_match: "ECP-(1017"')
+
+
+_MATCH_MARKER = 'xfail_strict: true\n    xfail_match: "ECP-1017"'
+
+
+def test_suite_excuses_the_named_failure(tmp_path, monkeypatch):
+    rb, suite_results = _run_suite(
+        tmp_path,
+        monkeypatch,
+        _MATCH_MARKER,
+        lambda: TestResults(
+            name="neg_control/results",
+            results={
+                "result": "FAIL",
+                "desc": "loader check fired",
+                FIRST_ERROR_KEY: "ERR: ECP-1017 deadlock refused",
+            },
+        ),
+    )
+    res = suite_results[0]["results"]
+    assert res.results["result"] == "XFAIL"
+    assert rb._exit_code_from_results(suite_results) == 0
+    assert _read_event(tmp_path, "suite.xfail")["excused"] is True
+
+
+def test_suite_fails_a_different_failure(tmp_path, monkeypatch):
+    """The check under test went silent and the watchdog fired instead."""
+    rb, suite_results = _run_suite(
+        tmp_path,
+        monkeypatch,
+        _MATCH_MARKER,
+        lambda: TestResults(
+            name="neg_control/results",
+            results={
+                "result": "FAIL",
+                "desc": "watchdog expired",
+                FIRST_ERROR_KEY: "ERR: watchdog expired",
+            },
+        ),
+    )
+    res = suite_results[0]["results"]
+    assert res.results["result"] == "FAIL"
+    assert res.results["desc"] == (
+        "xfail: failed for a different reason (expected /ECP-1017/): watchdog expired"
+    )
+    assert rb._exit_code_from_results(suite_results) != 0
+    event = _read_event(tmp_path, "suite.xfail")
+    assert event["excused"] is False
+    assert event["reason"] == "failed for a different reason (expected /ECP-1017/)"
+
+
+def test_suite_with_match_still_fails_a_strict_xpass(tmp_path, monkeypatch):
+    rb, suite_results = _run_suite(
+        tmp_path,
+        monkeypatch,
+        _MATCH_MARKER,
+        lambda: TestPassResults(name="neg_control/results"),
+    )
+    assert suite_results[0]["results"].results["result"] == "XPASS"
+    assert rb._exit_code_from_results(suite_results) != 0
+
+
+# ---------------------------------------------------------------------------
+# The sim graders record the first error line xfail_match searches
+# ---------------------------------------------------------------------------
+
+
+def test_vlog_post_records_the_first_err_line(tmp_path):
+    log = tmp_path / "test.log"
+    log.write_text("starting\nERR: ECP-1017 refused\nFAT: later\nFAIL check\n")
+    res = VlogPost(name="t", path=str(log)).get_results()
+    assert res.results["result"] == "FAIL"
+    assert res.results[FIRST_ERROR_KEY] == "ERR: ECP-1017 refused"
+
+
+def test_vlog_post_pass_has_no_first_error(tmp_path):
+    log = tmp_path / "test.log"
+    log.write_text("PASS all good\n")
+    res = VlogPost(name="t", path=str(log)).get_results()
+    assert FIRST_ERROR_KEY not in res.results
+
+
+def test_uvm_vlog_post_records_the_first_uvm_error(tmp_path):
+    log = tmp_path / "test.log"
+    log.write_text(
+        "UVM_INFO tb.sv(10) @ 0: reporter [START] go\n"
+        "# UVM_ERROR tb.sv(42) @ 100: chk [ECP-1017] refused\n"
+        "UVM_FATAL tb.sv(50) @ 200: wd [WDOG] expired\n"
+        "--- UVM Report Summary ---\n"
+        "** Report counts by severity\n"
+        "UVM_INFO :    1\n"
+        "UVM_WARNING :    0\n"
+        "UVM_ERROR :    1\n"
+        "UVM_FATAL :    1\n"
+    )
+    res = UvmVlogPost(name="t", path=str(log), max_warns=0, max_errors=0).get_results()
+    assert res.results["result"] == "FAIL"
+    assert res.results[FIRST_ERROR_KEY] == (
+        "# UVM_ERROR tb.sv(42) @ 100: chk [ECP-1017] refused"
+    )

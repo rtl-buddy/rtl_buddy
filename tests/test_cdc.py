@@ -947,3 +947,49 @@ def test_lint_structurally_bad_report_publishes_nothing(
     assert not text.exists(), why
     assert not domain_map.exists(), why
     assert wrapper.read_report() == {}
+
+
+def _cdc_yaml_with(tmp_path, extra: str):
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    (tmp_path / "cdc.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: cdc_config
+
+        analyses:
+          - name: "cdc_neg"
+            desc: "negative control"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "rtl-buddy-cdc"
+            constraints: "mod_a.sdc"
+    """)
+        + extra
+    )
+    return str(tmp_path / "cdc.yaml")
+
+
+def test_cdc_suite_config_loads_xfail_match(tmp_path):
+    path = _cdc_yaml_with(
+        tmp_path, '    xfail_strict: true\n    xfail_match: "CDC-01[24]"\n'
+    )
+    run = CdcSuiteConfig(path).get_analyses("cdc_neg")[0]
+    assert run.get_xfail_match() == "CDC-01[24]"
+
+
+@pytest.mark.parametrize(
+    "extra,message",
+    [
+        ('    xfail_match: "CDC-012"\n', "requires xfail"),
+        ('    xfail: true\n    xfail_match: "CDC-(012"\n', "not a valid regex"),
+    ],
+)
+def test_cdc_suite_config_rejects_a_bad_xfail_match(tmp_path, extra, message):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    import re
+
+    with pytest.raises(FatalRtlBuddyError) as exc:
+        CdcSuiteConfig(_cdc_yaml_with(tmp_path, extra))
+    # The suite loader wraps the cause as `failed to load "<path>"` and logs it.
+    chain = f"{exc.value} {exc.value.__cause__}"
+    assert re.search(f"cdc 'cdc_neg'.*{message}", chain), chain

@@ -14,6 +14,7 @@ from typing import Literal
 
 from .model import ModelConfig, ModelConfigLoader
 from ..errors import FatalRtlBuddyError
+from ..runner.xfail import compile_xfail_match
 from ..logging_utils import log_event
 from .toolpath import resolve_tool_path
 
@@ -102,8 +103,15 @@ class CdcConfigFile:
     # Either flag turns a FAIL into XFAIL. An unexpected pass (XPASS) passes for `xfail` and fails for `xfail_strict`. `xfail_strict` wins if both are set.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
+    # Regex the failure must match to count as expected; needs `xfail`/`xfail_strict`. See docs/concepts/expected-failures.md.
+    xfail_match: str | None = None
 
     def initialise(self, config_dir: str) -> "CdcConfig":
+        compile_xfail_match(
+            self.xfail_match,
+            xfail=self.xfail or self.xfail_strict,
+            where=f"cdc {self.name!r}",
+        )
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
             self.model
         )
@@ -126,6 +134,7 @@ class CdcConfigFile:
             recognized_syncs=list(self.recognized_syncs),
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
+            xfail_match=self.xfail_match,
         )
 
 
@@ -145,6 +154,7 @@ class CdcConfig:
     recognized_syncs: list[str] = dc_field(default_factory=list)
     xfail: bool = False
     xfail_strict: bool = False
+    xfail_match: str | None = None
 
     def get_recognized_syncs(self) -> list[str]:
         """Instance-path regexes treated as recognized synchronizers by `--check-xdc`."""
@@ -156,6 +166,10 @@ class CdcConfig:
 
     def get_xfail_strict(self) -> bool:
         return self.xfail_strict
+
+    def get_xfail_match(self) -> str | None:
+        """The `xfail_match` regex a FAIL must match to count as expected, or None."""
+        return self.xfail_match
 
     def get_name(self) -> str:
         return self.name

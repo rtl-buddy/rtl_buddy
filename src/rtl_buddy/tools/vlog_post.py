@@ -11,7 +11,7 @@ import os
 logger = logging.getLogger(__name__)
 import re
 from ..runner.test_results import TestResults
-from ..runner.xfail import FAIL_STAGE_KEY
+from ..runner.xfail import FAIL_STAGE_KEY, FIRST_ERROR_KEY
 from ..logging_utils import log_event
 
 
@@ -37,6 +37,26 @@ def count_assertion_failures(*paths) -> int:
         except OSError:
             continue
     return total
+
+
+def first_assertion_failure(*paths) -> str | None:
+    """Return the first Verilator `Assertion failed` line in the given files, stripped, or None; missing files are skipped."""
+    for path in paths:
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", errors="replace") as f:
+                for line in f:
+                    if _ASSERTION_FAILED_RE.match(line):
+                        return line.strip()
+        except OSError:
+            continue
+    return None
+
+
+# A UVM_ERROR/UVM_FATAL report line, e.g. `UVM_ERROR tb.sv(42) @ 100: reporter [ID] msg`, optionally after a `# ` transcript prefix.
+# The negative lookahead skips the report summary's `UVM_ERROR :    1` count lines.
+_UVM_ERROR_LINE_RE = re.compile(r"^\s*(?:#\s*)?UVM_(?:ERROR|FATAL)\s+(?!:)\S")
 
 
 def describe_sim_exit(sim_returncode) -> str:
@@ -106,6 +126,9 @@ class VlogPost:
             detail = match_err.group(2).strip() if match_err is not None else ""
             desc = f"{match_fail.group(1)} {detail}".strip()
             results = {"result": "FAIL", "desc": desc}
+            if match_err is not None:
+                # xfail_match searches this line as well as the desc.
+                results[FIRST_ERROR_KEY] = match_err.group(0).strip()
             if match_pass is not None:
                 log_event(
                     logger,
@@ -140,6 +163,9 @@ class VlogPost:
             results["desc"] = (
                 f"{fired} SVA assertion failure(s) (was {prev_result}: {prev_desc})"
             )
+            first = first_assertion_failure(self.path, self.err_path)
+            if first is not None:
+                results[FIRST_ERROR_KEY] = first
 
 
 class UvmVlogPost(VlogPost):
@@ -169,9 +195,10 @@ class UvmVlogPost(VlogPost):
 
         results = {}
         with open(self.path, "r") as f:
+            text = f.read()
             summary = re.search(
                 r"-+\s*UVM Report Summary\s*-+\s*\**\s*Report counts by severity\s*((?:UVM_(?:INFO|WARNING|ERROR|FATAL)\s*:?\s*[0-9]+\s?)+)",
-                f.read(),
+                text,
             )
 
             if summary is None:
@@ -220,6 +247,17 @@ class UvmVlogPost(VlogPost):
                             "result": "FAIL",
                             "desc": f"{results_str}. See {self.path}",
                         }
+                        first = next(
+                            (
+                                line.strip()
+                                for line in text.splitlines()
+                                if _UVM_ERROR_LINE_RE.match(line)
+                            ),
+                            None,
+                        )
+                        if first is not None:
+                            # xfail_match searches this line as well as the desc.
+                            results[FIRST_ERROR_KEY] = first
 
         self._merge_assertions(results)
         return TestResults(name=self.name, results=results)

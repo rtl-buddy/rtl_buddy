@@ -8,6 +8,7 @@ from serde import field, serde
 from .yaml_loader import config_from_yaml
 
 from ..errors import FatalRtlBuddyError
+from ..runner.xfail import compile_xfail_match
 from .openroad_threads import validate_threads
 from ..logging_utils import log_event
 from .pnr import PnrSuiteConfig
@@ -93,8 +94,15 @@ class PowerConfigFile:
     # Either flag marks the run expected-to-fail; `xfail_strict` fails on an unexpected pass. See docs/concepts/expected-failures.md.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
+    # Regex the failure must match to count as expected; needs `xfail`/`xfail_strict`. See docs/concepts/expected-failures.md.
+    xfail_match: str | None = None
 
     def initialise(self, config_dir: str) -> "PowerConfig":
+        compile_xfail_match(
+            self.xfail_match,
+            xfail=self.xfail or self.xfail_strict,
+            where=f"power {self.name!r}",
+        )
         if self.netlist_source == "synth":
             if not self.synth:
                 raise FatalRtlBuddyError(
@@ -193,6 +201,7 @@ class PowerConfigFile:
             threads=threads,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
+            xfail_match=self.xfail_match,
         )
 
 
@@ -218,6 +227,7 @@ class PowerConfig:
     threads: int | str | None = None
     xfail: bool = False
     xfail_strict: bool = False
+    xfail_match: str | None = None
 
     def is_xfail(self) -> bool:
         """Whether this run is expected to fail."""
@@ -225,6 +235,10 @@ class PowerConfig:
 
     def get_xfail_strict(self) -> bool:
         return self.xfail_strict
+
+    def get_xfail_match(self) -> str | None:
+        """The `xfail_match` regex a FAIL must match to count as expected, or None."""
+        return self.xfail_match
 
     def get_name(self) -> str:
         return self.name

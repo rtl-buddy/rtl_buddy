@@ -11,6 +11,7 @@ from serde import field, serde
 from .yaml_loader import config_from_yaml
 
 from ..errors import FatalRtlBuddyError
+from ..runner.xfail import compile_xfail_match
 from ..logging_utils import log_event
 from .blocks import BlockRef, BlockRefFile, load_block_refs
 from .openroad_threads import validate_threads
@@ -867,8 +868,15 @@ class PnrConfigFile:
     # Either flag marks the run expected-to-fail; `xfail_strict` fails on an unexpected pass. See docs/concepts/expected-failures.md.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
+    # Regex the failure must match to count as expected; needs `xfail`/`xfail_strict`. See docs/concepts/expected-failures.md.
+    xfail_match: str | None = None
 
     def initialise(self, config_dir: str, suite_path: str | None = None) -> "PnrConfig":
+        compile_xfail_match(
+            self.xfail_match,
+            xfail=self.xfail or self.xfail_strict,
+            where=f"pnr {self.name!r}",
+        )
         if not self.synth:
             raise FatalRtlBuddyError(
                 f"pnr run '{self.name}': missing 'synth' (name of upstream rb synth entry)"
@@ -1026,6 +1034,7 @@ class PnrConfigFile:
             detailed_route_verbose=detailed_route_verbose,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
+            xfail_match=self.xfail_match,
         )
 
 
@@ -1061,6 +1070,7 @@ class PnrConfig:
     blocks: list[BlockRef] = dc_field(default_factory=list)
     xfail: bool = False
     xfail_strict: bool = False
+    xfail_match: str | None = None
 
     def is_xfail(self) -> bool:
         """Whether this run is expected to fail."""
@@ -1068,6 +1078,10 @@ class PnrConfig:
 
     def get_xfail_strict(self) -> bool:
         return self.xfail_strict
+
+    def get_xfail_match(self) -> str | None:
+        """The `xfail_match` regex a FAIL must match to count as expected, or None."""
+        return self.xfail_match
 
     def get_name(self) -> str:
         return self.name
