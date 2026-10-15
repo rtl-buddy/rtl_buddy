@@ -70,7 +70,8 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   block's ports (`buffer-ports:`, default on when hardening).
 - A `PASS` is not electrically clean while `max_slew_violation_count` or
   `max_capacitance_violation_count` is nonzero; quote them with the timing.
-  `fail-on-electrical: true` makes them fail the run.
+  `fail-on-electrical: true` makes them fail the run. Macro pins left over a
+  tight Liberty limit (OpenRAM SRAM inputs) need `placement.macro-pin-limits`.
 - `rb pnr` with no run name runs blocks before the runs that consume them.
   `--synth` also runs each upstream synthesis in that order, so a clean tree
   builds in one command. `-j N` hardens independent blocks side by side.

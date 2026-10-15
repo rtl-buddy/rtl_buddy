@@ -10,6 +10,7 @@ from .pdk import (
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
     DEFAULT_PLACEMENT_PADDING,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
+    MacroPinLimitsFile,
     PlacementFile,
     _validate_dont_use_cells,
     merge_dont_use_cells,
@@ -198,6 +199,12 @@ class PnrPlatformConfig:
             self._pdk.get_placement_routability_use_grt(),
             False,
         )
+        # A whole block: a platform's `macro-pin-limits` replaces its PDK's.
+        self._placement_macro_pin_limits = (
+            placement.macro_pin_limits
+            if placement.macro_pin_limits is not None
+            else self._pdk.get_placement_macro_pin_limits()
+        )
         # The placer reads `-routability_use_grt` only in routability mode, so alone it would be silently ignored.
         if (
             self._placement_routability_use_grt
@@ -331,6 +338,10 @@ class PnrPlatformConfig:
     def get_placement_routability_use_grt(self) -> bool:
         """Whether global placement passes `-routability_use_grt`, platform over PDK, default `False`."""
         return self._placement_routability_use_grt
+
+    def get_placement_macro_pin_limits(self) -> MacroPinLimitsFile | None:
+        """`placement.macro-pin-limits`, platform over PDK, or `None` when the step is off."""
+        return self._placement_macro_pin_limits
 
     def get_dont_use_cells(self) -> list[str]:
         """The PDK's excluded cells plus this platform's, PDK first."""

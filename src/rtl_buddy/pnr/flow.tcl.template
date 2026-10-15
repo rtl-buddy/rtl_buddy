@@ -111,7 +111,7 @@ repair_design
 
 puts ">>> Detail placement (legalize)"
 detailed_placement
-
+{{ macro_pin_limits_block }}
 puts ">>> Clock tree synthesis"
 set_propagated_clock [all_clocks]
 clock_tree_synthesis \

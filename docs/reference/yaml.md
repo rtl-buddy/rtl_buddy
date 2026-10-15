@@ -161,7 +161,7 @@ cfg-pnr-platforms:
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
 
-`placement.*` stands for `placement.density`, `placement.padding`, `placement.macro-halo`, `placement.macro-cell-halo`, `placement.tie-separation`, `placement.reference-hpwl`, `placement.routability-driven`, and `placement.routability-use-grt`.
+`placement.*` stands for `placement.density`, `placement.padding`, `placement.macro-halo`, `placement.macro-cell-halo`, `placement.tie-separation`, `placement.reference-hpwl`, `placement.routability-driven`, `placement.routability-use-grt`, and `placement.macro-pin-limits`.
 
 The process-dependent P&R keys are all optional:
 
@@ -175,6 +175,7 @@ The process-dependent P&R keys are all optional:
 | `placement.reference-hpwl` | `cfg-pdks`, `cfg-pnr-platforms` | Positive number. Passed as `global_placement -reference_hpwl`. Unset by default, which keeps the placer's size-derived reference; a fixed value spreads a large design further and can clear global-route overflow |
 | `placement.routability-driven` | `cfg-pdks`, `cfg-pnr-platforms` | Boolean, default `false`. `true` adds `-routability_driven` to `global_placement`, which inflates cells in congested regions and re-spreads them; for congested blocks |
 | `placement.routability-use-grt` | `cfg-pdks`, `cfg-pnr-platforms` | Boolean, default `false`. `true` adds `-routability_use_grt`, so routability mode estimates congestion with the global router instead of RUDY. Requires `placement.routability-driven: true` after platform-over-PDK resolution; otherwise the platform fails to load |
+| `placement.macro-pin-limits` | `cfg-pdks`, `cfg-pnr-platforms` | Mapping. Unset by default, which leaves macro pins to `repair_design`. Set, `rb pnr` buffers each macro data pin over its Liberty max-slew or max-capacitance limit less a margin after the legalization that follows `repair_design`. `buffers` is a required non-empty list of buffer cell names, weakest first; `margin` is a number from 0 up to but not including 1, default `0.05`; `capacitance-margin`, in the same range, replaces `margin` for max-capacitance checks and defaults to it. A platform's block replaces its PDK's whole. See [Place-and-Route](../concepts/pnr.md#buffer-macro-pins-over-their-liberty-limits) |
 | `dont-use-cells` | `cfg-pdks`, `cfg-synth-platforms`, `cfg-pnr-platforms` | Cell names or patterns (`*` and `?` wildcards only), one per list entry. Empty by default. See below for scope |
 | `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid. P&R sources it and calls `pdngen`. Unset by default. A `pnr.yaml` run's own `pdn-config` replaces it |
 | `rcx-rules` | `cfg-pdks` | Path to an OpenRCX extraction-rules file. P&R extracts the routed design, writes `<top>.routed.spef`, and times its final reports on it. A `netlist-source: pnr` power run reads that SPEF instead of estimating. Unset by default |
@@ -191,7 +192,7 @@ The process-dependent P&R keys are all optional:
 | `routing-layer-adjustment` | `cfg-pnr-platforms` | Number from 0 to 1. Global-routing capacity withheld on the `routing-layers.signal` layers (`set_global_routing_layer_adjustment`). Unset by default, which keeps the router's default |
 | `max-fanout` | `cfg-pnr-platforms` | Positive integer. `rb pnr` and `rb power` add `set_max_fanout <n> [current_design]` after each `read_sdc`. Unset by default, which leaves the Liberty or SDC limit, or 50 in `repair_design` when neither sets one |
 
-A `placement:` block on a P&R platform overrides its PDK's block field by field: the platform wins where it names a value, the PDK where it does not. See [Place-and-Route](../concepts/pnr.md#tune-the-process-dependent-steps).
+A `placement:` block on a P&R platform overrides its PDK's block field by field: the platform wins where it names a value, the PDK where it does not. `macro-pin-limits` counts as one field. See [Place-and-Route](../concepts/pnr.md#tune-the-process-dependent-steps).
 
 `dont-use-cells` scope:
 
