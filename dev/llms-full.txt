@@ -900,6 +900,7 @@ Simulation arrays still wait on the build job. `compile.verilate.cpus` defaults 
 - If the verilate output is missing or stale, or the Verilator lacks `--no-verilate`, the build job verilates that build itself and warns `compile.build_phase_fallback`.
 - With a `shared-build-root` shared by several checkouts, only a finished, stamped build is reused across checkouts. Verilate output from another checkout whose build job has not finished is never built on. The verilate job defers to it (`compile.verilate_deferred`) without verilating or overwriting it. The build job then reuses that checkout's stamp if it has finished by then, and otherwise compiles in full (`marker-foreign`). However many checkouts race on one key, the key is verilated at most twice, and no job waits for another checkout.
 - To have checkouts queue instead of race, set `compile.serialise-checkouts: true` in `cfg-dispatch.compile`. With a cache root in force, a suite's verilate and build jobs are then named after its cache directory (`<cache root>/<suite namespace>`) rather than the checkout. Every checkout sharing the cache submits under the same names, so `--dependency=singleton` holds a later checkout's jobs in the queue, with no allocation, until the earlier checkout's jobs end. The later build job then reuses the earlier stamp: one verilation and one C++ build per key. If the earlier checkout fails or is cancelled, its jobs end and the later one builds for itself. It is off by default because the name covers the whole suite: a checkout with different sources queues behind an unrelated build of the same suite. `singleton` only orders jobs of one user, so checkouts run by different users still race. The setting does nothing without a cache root or off Slurm.
+- Builds that differ only in `-CFLAGS`/`-LDFLAGS` share one verilation (see [Changing only C++ compile or link flags](tests.md#changing-only-c-compile-or-link-flags)). The verilate job verilates it once, into the build directory of the compile line without those options, and each build job copies it into its own build directory and runs only the make.
 - Set `compile.split-verilate: false` in `cfg-dispatch.compile` or a suite's `compile:` block to run one build job instead.
 
 An `OUT_OF_MEMORY` on a large design is normally a `compile.verilate.mem` edit; `compile.mem` then only needs one compiler process's memory. Size the build job's `cpus` at the Verilator `-j` or `--build-jobs` value in `builder-opts.<mode>.compile-time` times `compile.parallel`.
@@ -1102,7 +1103,7 @@ A test whose retries ran under different cpu requests gets no `cpus` row (`right
 - **`build_job.group_failure_adoption_declined`:** a config shares a build whose most recent compile failed (the event's `leader` names that compile's test), but its inputs differ, the compiler was killed by a signal, or the failure may be transient (a license wait or an out-of-memory signature in the transcript), so it compiles again. A hook that rewrites a listed input per test causes the first; for an out-of-memory failure, raise `compile.mem` or lower `compile.parallel`.
 - **`compile.build_stamp_rejected`, `compile.stamp_write_failed`, `compile.prebuilt_stamp_invalid`:** see [Recover when a gated job cannot use the build](#recover-when-a-gated-job-cannot-use-the-build).
 - **`dispatch.binary_mismatch`:** runs of one build directory did not all use the same executable, because one run rebuilt it while others used it. Results are scored as they ran; re-run to confirm.
-- **`compile.build_phase_fallback`** (`marker-missing`, `marker-stale`, `marker-foreign`, `no-verilate-unsupported`): the build job verilated for itself. The result is correct but unsplit.
+- **`compile.build_phase_fallback`** (`marker-missing`, `marker-stale`, `marker-foreign`, `no-verilate-unsupported`, and for a build with `-CFLAGS`/`-LDFLAGS` `verilation-missing`, `verilation-foreign`, `verilation-unusable`): the build job verilated for itself. The result is correct but unsplit.
 - **`compile.verilate_failed`:** verilation failed; the build job reports it per test.
 - **`compile.verilate_marker_write_failed`:** the verilate output could not be recorded, so the build job compiles that build in full.
 - **`compile.license_queued`:** a VCS build waited for a license. Add `compile.time` headroom or lower `parallel`.
@@ -1357,6 +1358,23 @@ An expected-failure marker keeps a known, understood failure visible in a suite 
 - If both are set, strict wins.
 - `SKIP` and `NA` are unchanged. A marker does not cover an unknown `NA`, which still exits 1.
 - Prefer `xfail_strict: true` for a known bug or an intentionally failing teaching case, so the regression reports when the behavior changes.
+
+## Name the expected failure
+
+A negative control fails in two ways when the check it exists for regresses: the check stays silent, and something downstream, a watchdog or a data mismatch, fails instead. A bare marker grades both `XFAIL`. `xfail_match` names the failure the marker expects:
+
+```yaml
+- name: guard_neg
+  xfail_strict: true
+  xfail_match: "ECP-1017"
+```
+
+- The regex is searched, not anchored, with Python `re` syntax. Quote it in YAML.
+- It is searched in the first error/fatal line the grader recorded, then in the result desc. A matching `FAIL` becomes `XFAIL`.
+- The first error/fatal line is the sim log's first `ERR:`/`FAT:` line; under `uvm:`, the first `UVM_ERROR`/`UVM_FATAL` report; for a failure from fired SVA assertions, the first `Assertion failed` line. The result carries it as `first_error`. Other flows and graders use the desc alone.
+- A `FAIL` that does not match stays `FAIL`, with desc `xfail: failed for a different reason (expected /ECP-1017/): <desc>`, and the `*_suite.xfail` event reports `excused: false` with that reason.
+- A pass is graded as without `xfail_match`: `XPASS`, a failure only under `xfail_strict`.
+- It is accepted on every flow that takes a marker. Without `xfail` or `xfail_strict`, or with an invalid regex, configuration loading fails.
 
 ## What the marker covers
 
@@ -4890,6 +4908,22 @@ basic: dropped 12 stale object/dependency files from … (built by …, now …)
 
 An ordinary source edit keeps the objects and stays incremental unless [intermediate pruning](#pruning-verilator-intermediates) is enabled.
 
+### Changing only C++ compile or link flags
+
+Verilator passes `-CFLAGS` and `-LDFLAGS` only to the C++ compile and link of the model. A Verilator build that differs from another only in those options reuses that build's verilation and reruns just the C++ build:
+
+```text
+basic: reusing the verilation in obj_dir_c6d5c70100b51c6d; only the C++ build runs, since the compile line differs from it only in -CFLAGS/-LDFLAGS
+```
+
+- Each set of C++ flags still gets its own build directory, keyed on the whole compile line, so builds with different flags never share object files or an executable. Existing build directories keep their keys.
+- The verilation lives in the build directory of the same compile line without its `-CFLAGS` and `-LDFLAGS`. A build with neither option verilates there as before and records its verilation in `.rb-verilation.json`. A build with them verilates there without them if no recorded verilation matches the current inputs, then copies the generated C++ into its own directory, rewrites the C++ flag lists in `V<top>.mk` to its own, and runs `verilator ... --no-verilate`. The resulting executable is stamped like any other build.
+- The copy rewrites only files whose content changed, so after a source edit make recompiles only what the new verilation changed.
+- A verilation whose make failed is still recorded, so after a link failure (for example, a model too large for the default code model) adding a flag such as `-CFLAGS -mcmodel=large` does not verilate again.
+- In YAML, compile options are split on whitespace, so give each flag its own option: `-CFLAGS -O2 -CFLAGS -g`, not `-CFLAGS "-O2 -g"`.
+- The full compile runs as before under `--rebuild`, with `--hierarchical`, with a Verilator without `--no-verilate`, when a `-f` file or a library or object named on the compile line precedes a `-CFLAGS`/`-LDFLAGS` option (the flag order could differ from Verilator's), and when the verilation belongs to another checkout sharing a [persistent cache](#persistent-build-cache).
+- Only `-CFLAGS` and `-LDFLAGS` are treated this way. `-MAKEFLAGS` and every other option still key the verilation.
+
 ## Pruning Verilator intermediates
 
 Enable intermediate pruning when shared Verilator builds consume too much disk space and you only need their executable for later simulations:
@@ -4906,7 +4940,7 @@ Pruning removes generated C++ sources, headers, makefiles, object files, static 
 
 The saved stamp still tracks consumed RTL and headers, so unchanged inputs reuse the executable and edited inputs rebuild correctly. A rebuild regenerates the removed files and performs a full C++ compile. Waveforms and coverage remain available from the executable, but generated C++ is unavailable for debugging until pruning is disabled and the build is forced again.
 
-Cleanup holds the build lock and invalidates split-verilation and skip-identical metadata before removing generated sources. If the filesystem cannot acquire the lock, pruning is skipped. Cleanup errors warn without failing the compiled simulation. `compile.shared_build_pruned` records `removed_files` and `removed_bytes` in the run log.
+Cleanup holds the build lock and invalidates split-verilation, skip-identical and [reusable-verilation](#changing-only-c-compile-or-link-flags) metadata before removing generated sources. A directory that only holds a verilation for builds with other C++ flags is never pruned. If the filesystem cannot acquire the lock, pruning is skipped. Cleanup errors warn without failing the compiled simulation. `compile.shared_build_pruned` records `removed_files` and `removed_bytes` in the run log.
 
 ## Persistent build cache
 
@@ -6315,7 +6349,7 @@ A build stamp decides whether a shared build can be reused.
 - **Verilator** tracks the headers, libraries, standard includes and binary it reports consuming. Inputs under the project root are compared by content hash; inputs outside it, and any single input above 64 MB, by size and mtime.
 - **VCS and Icarus** report no dependencies, so their stamps list every file in each `+incdir+` and `-y` directory and compare content. Adding, removing or editing a file there rebuilds, even one nothing includes. Verilator also compares that listing by file name.
 
-The listing skips dot-directories, `artefacts/`, `obj_dir*`, a coverage run's `cov_dir/` and HTML/Coverview reports, and rtl_buddy's own outputs, so a project directory with one of those names under an include path is not tracked. An `+incdir+` on a large tree slows every reuse check.
+The listing skips dot-directories, `artefacts/`, `obj_dir*`, a coverage run's `cov_dir/` and HTML/Coverview reports, and rtl_buddy's own outputs, including every `rtl_buddy.log`, so a project directory with one of those names under an include path is not tracked. An `+incdir+` on a large tree slows every reuse check.
 
 Do not point `+incdir+` at a directory a simulator or tool writes into: its scratch files change the listing and every run recompiles.
 
@@ -9562,7 +9596,7 @@ Unless stated otherwise:
 
 - Relative paths resolve from the YAML file that contains them. See [Execution Context](../concepts/execution-context.md).
 - `reglvl` defaults to 0. It is an integer, or a per-tool or per-builder map with a `default` fallback. A run is selected when its level is at most the CLI regression level.
-- `xfail: true` is non-strict; `xfail_strict: true` makes an unexpected pass fail. Neither excuses a failure that happened instead of a verdict, such as a setup or compile failure, a sim timeout, or a lost dispatch job. See [Expected failures](../concepts/expected-failures.md).
+- `xfail: true` is non-strict; `xfail_strict: true` makes an unexpected pass fail. Neither excuses a failure that happened instead of a verdict, such as a setup or compile failure, a sim timeout, or a lost dispatch job. `xfail_match: "<regex>"` names the expected failure, so a run that fails for another reason stays `FAIL`. See [Expected failures](../concepts/expected-failures.md).
 - Unknown references and invalid required combinations fail during configuration loading.
 - A key written twice in one mapping fails during configuration loading, naming the file, the key and both line numbers. Plain YAML keeps only the last value. A key set after a `<<:` merge overrides the merged value and is not a duplicate.
 
@@ -10247,6 +10281,7 @@ Test fields:
 | `resources` | Optional | Per-test dispatch reservation layered over testbench and root defaults; quote `time`. A [`modes`](#per-mode-reservations) sub-block is the most specific such layer |
 | `assertions` | Default false | Enables Verilator `--assert` and user coverage. Other builders warn and ignore it |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 <a id="selecting-the-simulator-builder"></a>
 
@@ -10326,6 +10361,7 @@ syntheses:
 | `effort` | Default `standard` | `cfg-synth-efforts` entry. CLI `--effort` wins |
 | `threads` | Default unset (1) | OpenROAD worker threads for the `tool: openroad` timing stage, as in `pnr.yaml`. No effect on Yosys. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 `tool: yosys` writes RTLIL without a platform and a mapped netlist with one. `tool: openroad` requires platform LEF data and runs Yosys elaboration before OpenROAD timing analysis. An effort with `openroad.run: false` uses only the Yosys stage. See [Synthesis](../concepts/synthesis.md).
 
@@ -10399,6 +10435,7 @@ runs:
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 Each `floorplan.blockages` entry has:
 
@@ -10477,6 +10514,7 @@ runs:
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 A P&R source reads the routed ODB and estimates parasitics from global routing. A synthesis source reads the generated netlist. Without `phys-run`, the physical model is written into this run's own `artefacts/<name>/`, so it merges with a synthesis run's half only when both write there.
 
@@ -10523,6 +10561,7 @@ runs:
 | `tool_overrides` | Optional map | Backend-specific overrides keyed by tool name |
 | `require-timing-met` | Default false | Fails a passing routed run when the backend explicitly reports timing unmet. No effect when timing status is unavailable |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 Setting both `part` and `platform`, or neither, is fatal. A platform requires `root_config.yaml`. Its XDC files are read first and the run's files afterward.
 
@@ -10573,6 +10612,7 @@ analyses:
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Optional map | Per-analyzer overrides |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 `rb cdc` produces text and JSON analyzer outputs. See the [CLI reference](cli.md) for commands and options.
 
@@ -10612,6 +10652,7 @@ checks:
 | `extra_args` | Optional list | Appended after `cfg-verible.extra_args.lint`. Later duplicate flags win |
 | `reglvl` | Optional | Regression level |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 Lint uses the platform-routed `cfg-verible` entry. Model expansion drops `-v`, `-y`, and `+` directives, then applies root and check exclusions. Outputs are `artefacts/<name>/lint.f` and `lint.log`. See the [CLI reference](cli.md) for commands and options.
 
@@ -10669,6 +10710,7 @@ verifications:
 | `coi` | Default true | Runs cone-of-influence and dead-assume analysis |
 | `frontend` | Default `verilog` | `verilog` or `slang`. Slang requires the configured plugin |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 Design sources, constraints, and properties are read in that order.
 

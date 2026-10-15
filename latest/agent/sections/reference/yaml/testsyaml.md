@@ -105,6 +105,7 @@ Test fields:
 | `resources` | Optional | Per-test dispatch reservation layered over testbench and root defaults; quote `time`. A [`modes`](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#per-mode-reservations) sub-block is the most specific such layer |
 | `assertions` | Default false | Enables Verilator `--assert` and user coverage. Other builders warn and ignore it |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 <a id="selecting-the-simulator-builder"></a>
 

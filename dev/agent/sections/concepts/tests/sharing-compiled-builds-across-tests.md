@@ -37,3 +37,19 @@ basic: dropped 12 stale object/dependency files from … (built by …, now …)
 ```
 
 An ordinary source edit keeps the objects and stays incremental unless [intermediate pruning](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/#pruning-verilator-intermediates) is enabled.
+
+### Changing only C++ compile or link flags
+
+Verilator passes `-CFLAGS` and `-LDFLAGS` only to the C++ compile and link of the model. A Verilator build that differs from another only in those options reuses that build's verilation and reruns just the C++ build:
+
+```text
+basic: reusing the verilation in obj_dir_c6d5c70100b51c6d; only the C++ build runs, since the compile line differs from it only in -CFLAGS/-LDFLAGS
+```
+
+- Each set of C++ flags still gets its own build directory, keyed on the whole compile line, so builds with different flags never share object files or an executable. Existing build directories keep their keys.
+- The verilation lives in the build directory of the same compile line without its `-CFLAGS` and `-LDFLAGS`. A build with neither option verilates there as before and records its verilation in `.rb-verilation.json`. A build with them verilates there without them if no recorded verilation matches the current inputs, then copies the generated C++ into its own directory, rewrites the C++ flag lists in `V<top>.mk` to its own, and runs `verilator ... --no-verilate`. The resulting executable is stamped like any other build.
+- The copy rewrites only files whose content changed, so after a source edit make recompiles only what the new verilation changed.
+- A verilation whose make failed is still recorded, so after a link failure (for example, a model too large for the default code model) adding a flag such as `-CFLAGS -mcmodel=large` does not verilate again.
+- In YAML, compile options are split on whitespace, so give each flag its own option: `-CFLAGS -O2 -CFLAGS -g`, not `-CFLAGS "-O2 -g"`.
+- The full compile runs as before under `--rebuild`, with `--hierarchical`, with a Verilator without `--no-verilate`, when a `-f` file or a library or object named on the compile line precedes a `-CFLAGS`/`-LDFLAGS` option (the flag order could differ from Verilator's), and when the verilation belongs to another checkout sharing a [persistent cache](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/#persistent-build-cache).
+- Only `-CFLAGS` and `-LDFLAGS` are treated this way. `-MAKEFLAGS` and every other option still key the verilation.

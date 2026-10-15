@@ -41,6 +41,7 @@ verifications:
 | `coi` | Default true | Runs cone-of-influence and dead-assume analysis |
 | `frontend` | Default `verilog` | `verilog` or `slang`. Slang requires the configured plugin |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 Design sources, constraints, and properties are read in that order.
 

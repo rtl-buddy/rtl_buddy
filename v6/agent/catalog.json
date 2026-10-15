@@ -554,6 +554,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/expected-failures/choose-strictness.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/expected-failures/#name-the-expected-failure",
+          "slug": "name-the-expected-failure",
+          "title": "Name the expected failure",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/expected-failures/name-the-expected-failure.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/expected-failures/#what-the-marker-covers",
           "slug": "what-the-marker-covers",
           "title": "What the marker covers",

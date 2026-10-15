@@ -28,6 +28,7 @@ runs:
 | `tool_overrides` | Optional map | Backend-specific overrides keyed by tool name |
 | `require-timing-met` | Default false | Fails a passing routed run when the backend explicitly reports timing unmet. No effect when timing status is unavailable |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 Setting both `part` and `platform`, or neither, is fatal. A platform requires `root_config.yaml`. Its XDC files are read first and the run's files afterward.
 

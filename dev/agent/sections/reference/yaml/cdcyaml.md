@@ -32,5 +32,6 @@ analyses:
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Optional map | Per-analyzer overrides |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 `rb cdc` produces text and JSON analyzer outputs. See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/dev/reference/cli/) for commands and options.

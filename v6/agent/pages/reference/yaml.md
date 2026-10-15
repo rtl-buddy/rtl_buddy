@@ -10,7 +10,7 @@ Unless stated otherwise:
 
 - Relative paths resolve from the YAML file that contains them. See [Execution Context](../concepts/execution-context.md).
 - `reglvl` defaults to 0. It is an integer, or a per-tool or per-builder map with a `default` fallback. A run is selected when its level is at most the CLI regression level.
-- `xfail: true` is non-strict; `xfail_strict: true` makes an unexpected pass fail. Neither excuses a failure that happened instead of a verdict, such as a setup or compile failure, a sim timeout, or a lost dispatch job. See [Expected failures](../concepts/expected-failures.md).
+- `xfail: true` is non-strict; `xfail_strict: true` makes an unexpected pass fail. Neither excuses a failure that happened instead of a verdict, such as a setup or compile failure, a sim timeout, or a lost dispatch job. `xfail_match: "<regex>"` names the expected failure, so a run that fails for another reason stays `FAIL`. See [Expected failures](../concepts/expected-failures.md).
 - Unknown references and invalid required combinations fail during configuration loading.
 - A key written twice in one mapping fails during configuration loading, naming the file, the key and both line numbers. Plain YAML keeps only the last value. A key set after a `<<:` merge overrides the merged value and is not a duplicate.
 
@@ -695,6 +695,7 @@ Test fields:
 | `resources` | Optional | Per-test dispatch reservation layered over testbench and root defaults; quote `time`. A [`modes`](#per-mode-reservations) sub-block is the most specific such layer |
 | `assertions` | Default false | Enables Verilator `--assert` and user coverage. Other builders warn and ignore it |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 <a id="selecting-the-simulator-builder"></a>
 
@@ -774,6 +775,7 @@ syntheses:
 | `effort` | Default `standard` | `cfg-synth-efforts` entry. CLI `--effort` wins |
 | `threads` | Default unset (1) | OpenROAD worker threads for the `tool: openroad` timing stage, as in `pnr.yaml`. No effect on Yosys. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 `tool: yosys` writes RTLIL without a platform and a mapped netlist with one. `tool: openroad` requires platform LEF data and runs Yosys elaboration before OpenROAD timing analysis. An effort with `openroad.run: false` uses only the Yosys stage. See [Synthesis](../concepts/synthesis.md).
 
@@ -847,6 +849,7 @@ runs:
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 Each `floorplan.blockages` entry has:
 
@@ -925,6 +928,7 @@ runs:
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 A P&R source reads the routed ODB and estimates parasitics from global routing. A synthesis source reads the generated netlist. Without `phys-run`, the physical model is written into this run's own `artefacts/<name>/`, so it merges with a synthesis run's half only when both write there.
 
@@ -971,6 +975,7 @@ runs:
 | `tool_overrides` | Optional map | Backend-specific overrides keyed by tool name |
 | `require-timing-met` | Default false | Fails a passing routed run when the backend explicitly reports timing unmet. No effect when timing status is unavailable |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 Setting both `part` and `platform`, or neither, is fatal. A platform requires `root_config.yaml`. Its XDC files are read first and the run's files afterward.
 
@@ -1021,6 +1026,7 @@ analyses:
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Optional map | Per-analyzer overrides |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 `rb cdc` produces text and JSON analyzer outputs. See the [CLI reference](cli.md) for commands and options.
 
@@ -1060,6 +1066,7 @@ checks:
 | `extra_args` | Optional list | Appended after `cfg-verible.extra_args.lint`. Later duplicate flags win |
 | `reglvl` | Optional | Regression level |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 Lint uses the platform-routed `cfg-verible` entry. Model expansion drops `-v`, `-y`, and `+` directives, then applies root and check exclusions. Outputs are `artefacts/<name>/lint.f` and `lint.log`. See the [CLI reference](cli.md) for commands and options.
 
@@ -1117,6 +1124,7 @@ verifications:
 | `coi` | Default true | Runs cone-of-influence and dead-assume analysis |
 | `frontend` | Default `verilog` | `verilog` or `slang`. Slang requires the configured plugin |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+| `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
 Design sources, constraints, and properties are read in that order.
 
