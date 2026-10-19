@@ -1337,6 +1337,9 @@ def test_a_job_accepted_after_its_head_died_is_found(tmp_path, monkeypatch, answ
     slurm.jobs["777"] = {"id": "777", "state": "RUNNING", "dependency": None}
     (run_dir / "dispatch" / f"05_detailed_route.{answer}").write_text("777\n")
     again, _, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+    # A run that wrongly starts fails at max-wait instead of waiting for ever.
+    slurm.backend.max_wait = 600.0
+    monkeypatch.setattr(pnr_dispatch, "_clock", _Clock(100))
 
     res = again.run()
 
@@ -1368,6 +1371,9 @@ def test_a_queue_that_cannot_be_read_refuses_the_run_and_says_so(tmp_path, monke
         1, stderr="squeue: error: Unable to contact slurm controller"
     )
     again, _, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+    # A run that wrongly starts fails at max-wait instead of waiting for ever.
+    slurm.backend.max_wait = 600.0
+    monkeypatch.setattr(pnr_dispatch, "_clock", _Clock(100))
 
     res = again.run()
 
@@ -1444,9 +1450,9 @@ def test_cancelling_bounds_each_scheduler_command(tmp_path, monkeypatch):
 
     commands = [(argv[0], timeout) for argv, timeout in slurm.calls]
     first_cancel = commands.index(("scancel", CANCEL_TIMEOUT_S))
-    # The handler cancels without asking the queue first; every later command is
-    # bounded too.
-    assert commands[first_cancel - 1][0] == "squeue"
+    # The handler cancels without asking the queue first: the command before is the
+    # wait's own poll. Every later command is bounded too.
+    assert commands[first_cancel - 1] == ("squeue", None)
     assert [t for c, t in commands[first_cancel:] if c in ("squeue", "scancel")]
     assert all(
         t is not None for c, t in commands[first_cancel:] if c in ("squeue", "scancel")
