@@ -334,6 +334,8 @@ A block that sets none of the three repairs is a config error, and so is `post-r
 >>> Global-route repair: repair_timing -hold -hold_margin 20 -setup_margin 50 (hold margin 0.02 ns, setup margin 0.05 ns in Liberty time unit 1ps)
 ```
 
+A global-route repair of only `hold-margin: 0`, which is what `global-route-hold-repair: true` sets, logs the single line `>>> Post-global-route hold repair` instead, so its flow script and checkpoints compare equal to the shorthand's.
+
 A run sets its own `global-route-repair:` or `post-route-repair:` in `pnr.yaml` over the platform's, field by field and within `repair-design`. A run's `null` field skips that repair, and a run's `global-route-repair: null` or `post-route-repair: null` turns the platform's block off. `global-route-hold-repair: true` on a platform is `global-route-repair: {hold-margin: 0}`; a platform that sets both is a config error.
 
 ### Repair on the global route

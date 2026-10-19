@@ -343,13 +343,30 @@ def _base_template(template: str) -> str:
     )
 
 
+#: What `global-route-hold-repair: true` filled the global-route hold repair's placeholder with.
+_BASE_HOLD_REPAIR = (
+    'puts ">>> Post-global-route hold repair"\n'
+    "estimate_parasitics -global_routing\n"
+    "repair_timing -hold\n"
+    "global_route -start_incremental\n"
+    "detailed_placement\n"
+    "global_route -end_incremental -congestion_report_file $CONGESTION_RPT -verbose\n"
+    "check_placement -verbose\n"
+)
+
+
+@pytest.mark.parametrize("hold_shorthand", [False, True])
 @pytest.mark.parametrize("setup_repair", [False, True])
 @pytest.mark.parametrize("kind", ["one session", "checkpoints", "stages"])
 def test_a_flow_without_repair_knobs_is_the_template_as_before(
-    tmp_path, monkeypatch, kind, setup_repair
+    tmp_path, monkeypatch, kind, setup_repair, hold_shorthand
 ):
-    """Without the knobs, every script a run writes is the earlier template's render, whole."""
-    platform = _real_platform(tmp_path, post_cts_setup_repair=setup_repair)
+    """Without the new knobs, with or without `global-route-hold-repair: true`, every script a run writes is the earlier template's render, whole."""
+    platform = _real_platform(
+        tmp_path,
+        post_cts_setup_repair=setup_repair,
+        global_route_hold_repair=hold_shorthand,
+    )
 
     def _write(base: bool) -> dict[str, str]:
         pnr_cfg = _pnr_cfg(
@@ -371,7 +388,7 @@ def test_a_flow_without_repair_knobs_is_the_template_as_before(
             render = backend._render
             filled = {
                 "setup_repair": "repair_timing -setup\n" if setup_repair else "",
-                "global_route_hold_repair": "",
+                "global_route_hold_repair": _BASE_HOLD_REPAIR if hold_shorthand else "",
             }
             monkeypatch.setattr(
                 backend, "_render", lambda text, subs: render(text, {**subs, **filled})
@@ -464,16 +481,16 @@ def test_the_hold_repair_keeps_a_set_setup_margin(tmp_path, block, hold_line):
     assert f'puts ">>> Global-route repair: {hold_line}"\n{command}\n' in text
 
 
-def test_the_hold_repair_shorthand_renders_as_before(tmp_path):
-    text = _render(tmp_path, _real_platform(tmp_path, global_route_hold_repair=True))
-    assert (
-        'puts ">>> Global-route repair (reroute incremental)"\n'
-        "estimate_parasitics -global_routing\n"
-        'puts ">>> Global-route repair: repair_timing -hold (hold margin 0 ns)"\n'
-        "repair_timing -hold\n"
-        "global_route -start_incremental\n"
-    ) in text
-    assert "setup_margin" not in text
+def test_a_hold_only_block_without_a_margin_renders_as_the_shorthand(tmp_path):
+    shorthand = _render(
+        tmp_path, _real_platform(tmp_path, global_route_hold_repair=True)
+    )
+    block = _render(
+        tmp_path, _real_platform(tmp_path, global_route_repair={"hold-margin": 0})
+    )
+    assert block == shorthand
+    assert _BASE_HOLD_REPAIR in shorthand
+    assert "Global-route repair" not in shorthand
 
 
 def test_a_full_reroute_routes_again_after_legalizing(tmp_path):

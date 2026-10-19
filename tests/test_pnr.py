@@ -4422,9 +4422,8 @@ def test_pnr_flow_repairs_hold_again_on_global_route_parasitics(tmp_path):
     assert (
         "global_route -congestion_iterations 20 "
         "-congestion_report_file $CONGESTION_RPT -verbose\n"
-        'puts ">>> Global-route repair (reroute incremental)"\n'
+        'puts ">>> Post-global-route hold repair"\n'
         "estimate_parasitics -global_routing\n"
-        'puts ">>> Global-route repair: repair_timing -hold (hold margin 0 ns)"\n'
         "repair_timing -hold\n"
         "global_route -start_incremental\n"
         "detailed_placement\n"

@@ -180,7 +180,7 @@ def _route_hooks(tmp_path) -> dict:
     return hooks
 
 
-_HOLD_REPAIR = 'puts ">>> Global-route repair (reroute incremental)"'
+_HOLD_REPAIR = 'puts ">>> Post-global-route hold repair"'
 
 
 def test_global_route_checkpoint_follows_hold_repair_and_precedes_hooks(tmp_path):

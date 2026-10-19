@@ -213,7 +213,7 @@ _FLOW_ORDER = [
     "repair_timing -hold",
     "\nglobal_route -congestion_iterations",
     ">>> Hook after-global-route:",
-    ">>> Global-route repair (reroute incremental)",
+    ">>> Post-global-route hold repair",
     ">>> Hook before-detailed-route:",
     ">>> Detail route",
     "detailed_route \\",

@@ -33,6 +33,7 @@ from ..config.pnr import (
     with_planner_files,
 )
 from ..config.pnr_repair import (
+    UNSET,
     GlobalRouteRepair,
     PnrMode,
     PostRouteRepair,
@@ -389,11 +390,23 @@ def _global_route_repair_tcl(
     """Return the repair on global-route parasitics, as ORFS runs it, or `""` when the platform and run leave it off. A probe skips it.
 
     The global-route estimate includes the wires that post-CTS repair (on placement parasitics) could not see. The resizer reroutes the nets it changes; the cells it adds are legalized, then `reroute: incremental` reroutes their nets incrementally and `full` runs the flow's global route again. The closing route is `-verbose`, so the log repeats the congestion table after the repair. `dpl_options` follows its `detailed_placement`, as it does the flow's others.
+
+    A hold-only repair with no margin is what `global-route-hold-repair: true` stands for, and renders as that key always has, so its scripts and checkpoints compare equal.
     """
     if repair is None:
         return ""
     if mode is PnrMode.PROBE:
         return 'puts ">>> Global-route repair: skipped (mode: probe)"\n'
+    if repair == GlobalRouteRepair(hold_margin=0.0):
+        return (
+            'puts ">>> Post-global-route hold repair"\n'
+            "estimate_parasitics -global_routing\n"
+            "repair_timing -hold\n"
+            "global_route -start_incremental\n"
+            f"detailed_placement{dpl_options}\n"
+            + _END_INCREMENTAL_CMD
+            + "check_placement -verbose\n"
+        )
     title = "Global-route repair"
     steps = _repair_steps_tcl(
         title,
@@ -4386,12 +4399,17 @@ class OpenRoadPnr:
                 platform = platform.with_run_placement(
                     self.pnr_cfg.get_placement(), self.pnr_cfg.get_name()
                 )
-            # Always, so an incomplete merged repair block fails here, as a setup error.
-            platform = platform.with_run_repairs(
+            run_repairs = (
                 self.pnr_cfg.global_route_repair,
                 self.pnr_cfg.post_route_repair,
-                self.pnr_cfg.get_name(),
             )
+            if any(layer is not UNSET for layer in run_repairs):
+                platform = platform.with_run_repairs(
+                    *run_repairs, self.pnr_cfg.get_name()
+                )
+            # Resolved here, so an incomplete repair block fails as a setup error.
+            platform.get_global_route_repair()
+            platform.get_post_route_repair()
             fp = self.pnr_cfg.get_floorplan()
             if fp.macros_file is not None or fp.pins_file is not None:
                 self.pnr_cfg = replace(
