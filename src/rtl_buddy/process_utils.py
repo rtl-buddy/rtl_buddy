@@ -186,13 +186,22 @@ def _reap_with_rusage(proc: subprocess.Popen) -> ManagedProcessResult:
         if stream:
             stream.close()
     usage = None
-    # Popen.wait() takes this lock too, so an interrupt's reaper waits for this
-    # reap and then sees the return code instead of racing os.wait4.
+    # Block until the exit without reaping and without Popen's lock: a signal
+    # handler in this thread waits on `proc` and would deadlock on that lock.
+    try:
+        os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)
+    except ChildProcessError:
+        pass
+    # Popen.wait() takes this lock too, so a concurrent reaper either reaped
+    # first (the return code is set) or waits for this reap.
     with getattr(proc, "_waitpid_lock", threading.Lock()):
         if proc.returncode is None:
             try:
-                _pid, status, usage = os.wait4(proc.pid, 0)
-                proc.returncode = os.waitstatus_to_exitcode(status)
+                pid, status, usage = os.wait4(proc.pid, os.WNOHANG)
+                if pid:
+                    proc.returncode = os.waitstatus_to_exitcode(status)
+                else:
+                    usage = None
             except ChildProcessError:
                 pass
     if proc.returncode is None:
@@ -229,8 +238,8 @@ def run_managed_process(
     ``capture_output=True`` or a ``subprocess.PIPE`` stream.
 
     ``rusage`` reaps the process with ``os.wait4`` and returns its resource
-    usage in ``ManagedProcessResult.rusage`` (``None`` where ``os.wait4`` is
-    missing). It cannot be combined with ``timeout`` or with both streams piped.
+    usage in ``ManagedProcessResult.rusage`` (``None`` where ``os.wait4`` or
+    ``os.waitid`` is missing). It cannot be combined with ``timeout`` or with both streams piped.
     """
     if capture_output:
         stdout = subprocess.PIPE
@@ -242,7 +251,7 @@ def run_managed_process(
         raise ValueError(
             "rusage cannot be combined with a timeout or with both streams piped"
         )
-    rusage = rusage and hasattr(os, "wait4")
+    rusage = rusage and all(hasattr(os, n) for n in ("wait4", "waitid", "WNOWAIT"))
 
     if timeout_pauser is not None and (
         stdout == subprocess.PIPE or stderr == subprocess.PIPE

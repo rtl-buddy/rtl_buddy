@@ -415,3 +415,31 @@ def test_rusage_reap_tolerates_a_reaper_that_won():
 
     assert result.returncode == 3
     assert result.rusage is None
+
+
+@pytest.mark.skipif(not hasattr(os, "wait4"), reason="needs os.wait4")
+def test_a_signal_during_a_rusage_reap_stops_the_run(tmp_path):
+    """The signal handler waits on the child in the thread that is reaping it; it must not deadlock on Popen's lock."""
+    import sys
+
+    script = tmp_path / "child.py"
+    script.write_text(
+        "import subprocess, sys\n"
+        "from rtl_buddy import process_utils\n"
+        "print('started', flush=True)\n"
+        "process_utils.run_managed_process(\n"
+        "    ['sleep', '60'], stdout=subprocess.DEVNULL, rusage=True, kill_timeout=0.5\n"
+        ")\n"
+    )
+    child = subprocess.Popen(
+        [sys.executable, str(script)], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert child.stdout.readline() == "started\n"
+        time.sleep(1.0)
+        child.send_signal(signal.SIGTERM)
+        assert child.wait(timeout=20) == 128 + signal.SIGTERM
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
