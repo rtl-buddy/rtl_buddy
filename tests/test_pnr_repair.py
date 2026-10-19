@@ -456,6 +456,12 @@ def test_rounds_repair_until_timing_is_met(tmp_path, monkeypatch, stages):
     r1 = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
     assert "read_db [file join $RB_PRED_DIR 05_detailed_route.odb]" in r1
     repair = r1.index("\nrepair_timing -setup")
+    # The repair's buffer trees come from a global route of the unrouted design.
+    unroute = r1.index("\n[ord::get_db_block] destroyNetWires\n")
+    route = r1.index("\nglobal_route -congestion_iterations")
+    assert unroute < route < r1.index("\nestimate_parasitics -global_routing\n")
+    assert r1.index("\nestimate_parasitics -global_routing\n") < r1.index("read_spef")
+    assert r1.index("read_spef") < r1.index("global_route -start_incremental")
     assert r1.index("global_route -start_incremental") < repair
     assert repair < r1.index("global_route -end_incremental")
     assert r1.index("global_route -end_incremental") < r1.index("\ndetailed_route \\")

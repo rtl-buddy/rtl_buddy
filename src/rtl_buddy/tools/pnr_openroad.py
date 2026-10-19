@@ -2080,9 +2080,9 @@ class OpenRoadPnr:
         )
 
     def _post_route_repair_script(self, round_: int) -> str:
-        """Round `round_`'s repair session: repair on the round's SPEF inside an incremental global route, legalize, route in detail and write the stage's checkpoint.
+        """Round `round_`'s repair session: route the unrouted database globally, repair on the round's SPEF inside an incremental global route, legalize, route in detail and write the stage's checkpoint.
 
-        The rounds work on the unfilled database; `finish` fills after the last. A repair in the session that routed fails detailed routing (DRT-0218), and one outside an incremental global route leaves nets the router cannot reach (DRT-1010). `estimate_parasitics -placement` before `read_spef` gives the nets repair changes an estimate.
+        The rounds work on the unfilled database; `finish` fills after the last. A repair in the session that routed fails detailed routing (DRT-0218), and one outside an incremental global route leaves nets the router cannot reach (DRT-1010). On a detailed-routed database the repair builds buffer trees from global routes that miss pins (RSZ-0074), so the session drops the detailed route and routes globally first; the round's detailed route routes every net again either way. `estimate_parasitics -global_routing` before `read_spef` gives the nets repair changes an estimate.
         """
         repair = self._post_route
         setup, hold = repair.margins(round_)
@@ -2091,7 +2091,10 @@ class OpenRoadPnr:
         parts += [
             f'\nputs ">>> {title} of {repair.rounds}: repair on extracted parasitics"\n',
             "remove_fillers\n",
-            "estimate_parasitics -placement\n",
+            "[ord::get_db_block] destroyNetWires\n",
+            f'puts ">>> {title}: global route"\n',
+            _GLOBAL_ROUTE_CMD,
+            "estimate_parasitics -global_routing\n",
             self._read_spef_tcl(
                 f"[file join $RB_RUN_DIR {_post_route_file(f'.r{round_}.spef')}]"
             ),
