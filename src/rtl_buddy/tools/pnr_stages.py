@@ -273,12 +273,15 @@ def _absolutise(value, root):
     return value
 
 
+def is_run_name(spec: str) -> bool:
+    """Whether a `--resume` value names a run under the run's checkpoints (`latest` or a run id) rather than a directory."""
+    return spec == pnr_checkpoints.LATEST_NAME or bool(
+        pnr_checkpoints._RUN_ID_RE.match(spec)
+    )
+
+
 def locate_run(artefact_dir: str, spec: str) -> str | None:
-    """Return the run directory `--resume` names: a directory, `latest`, or a run id under this run's checkpoints."""
-    if os.path.isdir(spec) and not os.path.isabs(spec):
-        return os.path.abspath(spec)
-    if os.path.isabs(spec):
-        return spec if os.path.isdir(spec) else None
+    """Return the run directory `--resume` names: `latest` or a run id under this run's checkpoints, else an absolute directory."""
     root = pnr_checkpoints.checkpoints_root(artefact_dir)
     if spec == pnr_checkpoints.LATEST_NAME:
         pointer = pnr_checkpoints.latest_pointer(artefact_dir)
@@ -287,9 +290,11 @@ def locate_run(artefact_dir: str, spec: str) -> str | None:
             if os.path.islink(pointer)
             else None
         )
-    if pnr_checkpoints._RUN_ID_RE.match(spec):
+    if is_run_name(spec):
         path = os.path.join(root, spec)
         return path if os.path.isdir(path) else None
+    if os.path.isabs(spec):
+        return spec if os.path.isdir(spec) else None
     return None
 
 

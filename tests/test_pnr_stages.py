@@ -1092,6 +1092,70 @@ def test_rb_pnr_takes_the_stage_options():
     assert {"--stop-after", "--resume", "--from"} <= opts
 
 
+@pytest.mark.parametrize(
+    ("spec", "expected"),
+    [
+        ("latest", "latest"),
+        ("20261019T120000-123", "20261019T120000-123"),
+        ("saved", "{sub}/saved"),
+        ("../saved/20261019T120000-123", "{root}/saved/20261019T120000-123"),
+    ],
+)
+def test_rb_pnr_resolves_a_resume_directory_against_the_invocation_directory(
+    minimal_project, monkeypatch, spec, expected
+):
+    """`latest` and run ids name runs under the run's checkpoints; anything else is a directory relative to where rb was invoked, not to the project root."""
+    from typer.testing import CliRunner
+
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    root = minimal_project
+    (root / "pnr.yaml").write_text("rtl-buddy-filetype: pnr_config\nruns: []\n")
+    sub = root / "sub"
+    sub.mkdir()
+    monkeypatch.chdir(sub)
+    seen = {}
+
+    def _capture(self, suite, **kwargs):
+        seen.update(kwargs)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(RtlBuddy, "_do_pnr_suite", _capture)
+    rb = RtlBuddy(name="test_pnr_stages")
+    try:
+        result = CliRunner().invoke(
+            rb.app,
+            ["pnr", "r", "-c", "../pnr.yaml", "--resume", spec, "--from", "cts"],
+        )
+    finally:
+        rb._artifact_locks.release_all()
+
+    assert "resume" in seen, result.output
+    resolved = expected.format(sub=sub, root=root)
+    if os.path.isabs(resolved):
+        assert os.path.normpath(seen["resume"]) == resolved
+    else:
+        assert seen["resume"] == resolved
+
+
+def test_locate_run_never_reads_the_working_directory(tmp_path, monkeypatch):
+    artefacts = tmp_path / "artefacts" / "r"
+    run = artefacts / "checkpoints" / "20261019T120000-1"
+    run.mkdir(parents=True)
+    (artefacts / "checkpoints" / "latest").symlink_to(run.name)
+    elsewhere = tmp_path / "elsewhere"
+    for name in ("latest", "20261019T120000-1", "saved"):
+        (elsewhere / name).mkdir(parents=True)
+    monkeypatch.chdir(elsewhere)
+
+    assert pnr_stages.locate_run(str(artefacts), "latest") == str(run)
+    assert pnr_stages.locate_run(str(artefacts), "20261019T120000-1") == str(run)
+    assert pnr_stages.locate_run(str(artefacts), "saved") is None
+    assert pnr_stages.locate_run(str(artefacts), str(elsewhere / "saved")) == str(
+        elsewhere / "saved"
+    )
+
+
 def test_result_rows_carry_the_stage_fields():
     from rtl_buddy.rtl_buddy import RtlBuddy
     from rtl_buddy.runner.pnr_results import PnrPassResults

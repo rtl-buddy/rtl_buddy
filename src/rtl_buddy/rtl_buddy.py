@@ -11408,9 +11408,9 @@ class RtlBuddy:
             jobs=jobs,
             stop_after=stop_after,
             resume=(
-                str(self._abs_invocation_path(resume))
-                if resume is not None and (os.sep in resume or resume.startswith("."))
-                else resume
+                resume
+                if resume is None or pnr_stages.is_run_name(resume)
+                else str(self._abs_invocation_path(resume))
             ),
             resume_from=resume_from,
         )
