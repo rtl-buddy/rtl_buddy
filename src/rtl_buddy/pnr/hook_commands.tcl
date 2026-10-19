@@ -6,12 +6,18 @@
 
 proc rb::hook::commands {} {
     set out [dict create]
+    # A SWIG object handle (`_<address>_p_<type>`) is a command per database
+    # object a hook touches, not one it defines.
     foreach name [namespace eval :: {info commands}] {
-        dict set out $name {}
+        if {![regexp {^_[0-9a-f]+_p_} $name]} {
+            dict set out $name {}
+        }
     }
     foreach name [namespace eval :: {info procs}] {
-        dict set out $name [list [namespace eval :: [list info args $name]] \
-            [namespace eval :: [list info body $name]]]
+        if {![regexp {^_[0-9a-f]+_p_} $name]} {
+            dict set out $name [list [namespace eval :: [list info args $name]] \
+                [namespace eval :: [list info body $name]]]
+        }
     }
     return $out
 }

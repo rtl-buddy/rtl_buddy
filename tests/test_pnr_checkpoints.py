@@ -55,6 +55,7 @@ DESIGN = "demo_top"
 # `stub: ...` line, which orders them in the log;
 # `RB_STUB_DRC=<n>` makes `detailed_route` report n DRC lines and write a maze log;
 # `RB_STUB_ERRLINE=<cmd>` prints an OpenROAD `[ERROR` line in that command, which returns.
+# `RB_STUB_CKPT_FAIL=<NN_stage>` makes `write_db` of that checkpoint fail without an `[ERROR` line.
 _HARNESS = r"""
 # `clock format` loads msgcat through the auto-loader, which the catch-all
 # `unknown` below would swallow; load it first.
@@ -117,6 +118,11 @@ proc write_def {path} {
     rb_write $path "DESIGN $DESIGN ;\nEND DESIGN"
 }
 proc write_db {path} {
+    global env
+    if {[info exists env(RB_STUB_CKPT_FAIL)]
+        && [file rootname [file tail $path]] eq $env(RB_STUB_CKPT_FAIL)} {
+        error "cannot write $path"
+    }
     rb_stub write_db
     puts "stub: write_db [file tail $path]"
     rb_write $path "odb"
