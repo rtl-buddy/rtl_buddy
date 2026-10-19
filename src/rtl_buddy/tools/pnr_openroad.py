@@ -3011,6 +3011,21 @@ class OpenRoadPnr:
         self._resume_source = checked
         return None
 
+    def _restore_inherited_reports(self) -> None:
+        """Put back the reports an inherited stage's checkpoint keeps (`pnr_checkpoints.STAGE_REPORTS`), so a run resumed after detailed routing reports that route's DRC count."""
+        for stage, kinds in pnr_checkpoints.STAGE_REPORTS.items():
+            entry = self._resume_source.checkpoints.get(stage)
+            if entry is None:
+                continue
+            files = entry.get("files") or {}
+            for kind, name in kinds.items():
+                kept = (files.get(kind) or {}).get("path")
+                target = os.path.join(self.artefact_dir, name)
+                if kept and os.path.isfile(kept):
+                    shutil.copyfile(kept, target)
+                elif os.path.lexists(target):
+                    os.unlink(target)
+
     def _resumed_from(self) -> dict | None:
         source = self._resume_source
         if source is None:
@@ -3463,6 +3478,7 @@ class OpenRoadPnr:
                     fail_stage="resume",
                 )
             self._clear_stale_outputs(include_script=True)
+            self._restore_inherited_reports()
             netlist_failure = self._prepare_netlist()
             if netlist_failure is not None:
                 return netlist_failure

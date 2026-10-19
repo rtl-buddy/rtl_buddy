@@ -14,6 +14,7 @@ Layout under the run's artefact directory::
         03_cts.{odb,def,sdc}
         04_global_route.{odb,def,sdc,guide,segments}
         05_detailed_route.{odb,def,sdc}
+        05_detailed_route.route.{drc.rpt,maze.log}  # the router's reports, when written
         export/03_cts/...                 # `rb pnr-export --checkpoint`
 
 A staged run (`stages: true`) adds each stage's session script and log, `NN_<stage>.{tcl,log}`, and a `NN_<stage>.state.tcl` per checkpoint with the flow globals the next session needs.
@@ -75,6 +76,11 @@ GLOBAL_ROUTED = ("global_route", "detailed_route")
 
 #: Checkpoints that also carry the route guides and global-route segments; the detailed-route session reads the segments. A routed database's pin access points no longer match the segments, which OpenROAD then refuses (GRT-0263), so a later session takes the global route from the guides the database keeps.
 ROUTE_FILES = ("global_route",)
+
+#: Reports in the artefact directory a stage's checkpoint keeps a copy of, as `kind: file name`: the detailed router's DRC report and log, which a run resumed from `finish` restores (see `inherited_reports`).
+STAGE_REPORTS = {
+    "detailed_route": {"drc": "route.drc.rpt", "maze": "route.maze.log"},
+}
 
 #: Flow globals a staged checkpoint saves for the next session: per-macro cell halos from `floorplan.macros`, which the rotated-macro blockages read in the place session.
 SESSION_STATE = ("MACRO_CELL_HALOS",)
@@ -161,6 +167,12 @@ def _arm_config(*, anchors: dict, wanted, account: bool, strict: bool, state=())
                 + " ".join(f"{stage} {index}" for stage, index in STAGE_INDEX.items())
                 + "}",
                 f"routed {{{' '.join(ROUTE_FILES)}}}",
+                "reports {"
+                + " ".join(
+                    f"{stage} {{{' '.join(f'{k} {v}' for k, v in kinds.items())}}}"
+                    for stage, kinds in STAGE_REPORTS.items()
+                )
+                + "}",
                 f"state {{{' '.join(state)}}}",
                 f"account {int(account)}",
                 f"strict {int(strict)}",

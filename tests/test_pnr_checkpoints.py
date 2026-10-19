@@ -49,7 +49,8 @@ DESIGN = "demo_top"
 # Writers put a recognisable file at the given path (a DEF with its DESIGN statement).
 # `RB_STUB_FAIL=<cmd>` raises an OpenROAD-style error in that command;
 # `RB_STUB_KILL=<cmd>` SIGKILLs the interpreter on entry;
-# `RB_STUB_EXIT=<cmd>` exits 0 on entry, as a flow that ends early by accident.
+# `RB_STUB_EXIT=<cmd>` exits 0 on entry, as a flow that ends early by accident;
+# `RB_STUB_DRC=<n>` makes `detailed_route` report n DRC lines and write a maze log.
 _HARNESS = r"""
 # `clock format` loads msgcat through the auto-loader, which the catch-all
 # `unknown` below would swallow; load it first.
@@ -79,6 +80,17 @@ foreach cmd {link_design read_sdc initialize_floorplan place_pins
              detailed_placement clock_tree_synthesis repair_timing
              check_placement global_route detailed_route filler_placement} {
     proc $cmd {args} [list rb_stub $cmd]
+}
+proc detailed_route {args} {
+    global env
+    if {[info exists env(RB_STUB_DRC)]} {
+        foreach {flag lines} [list -output_drc $env(RB_STUB_DRC) -output_maze 1] {
+            set fh [open [lindex $args [expr {[lsearch -exact $args $flag] + 1}]] w]
+            for {set i 0} {$i < $lines} {incr i} { puts $fh "$flag $i" }
+            close $fh
+        }
+    }
+    rb_stub detailed_route
 }
 proc rb_write {path text} {
     set fh [open $path w]

@@ -323,6 +323,36 @@ def test_resume_twice_from_one_global_route(tmp_path, monkeypatch):
     assert (first / "04_global_route.odb").is_file()
 
 
+def test_a_resume_from_finish_reports_the_inherited_route_drcs(tmp_path, monkeypatch):
+    backend, artefacts = _staged(
+        tmp_path, monkeypatch, stop_after="detailed_route", env={"RB_STUB_DRC": "3"}
+    )
+    stopped = backend.run()
+    assert stopped.results["drc_count"] == 3, stopped.results
+    first = _only_run(artefacts)
+    drc = (artefacts / "route.drc.rpt").read_bytes()
+    assert (first / "05_detailed_route.route.drc.rpt").read_bytes() == drc
+    assert (first / "05_detailed_route.route.maze.log").is_file()
+    (artefacts / "route.maze.log").write_text("another run's maze log\n")
+
+    backend, _ = _backend(
+        tmp_path, monkeypatch, resume=first.name, resume_from="finish"
+    )
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["drc_count"] == 3
+    assert (artefacts / "route.drc.rpt").read_bytes() == drc
+    assert (artefacts / "route.maze.log").read_bytes() == (
+        first / "05_detailed_route.route.maze.log"
+    ).read_bytes()
+    second = next(r for r in _runs(artefacts) if r != first)
+    manifest = json.loads((second / "manifest.json").read_text())
+    kept = manifest["checkpoints"]["detailed_route"]
+    assert kept["inherited_from"] == first.name
+    assert Path(kept["files"]["drc"]["path"]).name == "05_detailed_route.route.drc.rpt"
+
+
 def test_a_resume_may_change_settings_of_the_stages_it_runs(tmp_path, monkeypatch):
     first = _stopped_at_global_route(tmp_path, monkeypatch)
     cfg = replace(_pnr_cfg(tmp_path, stages=True), detailed_route_verbose=2)
