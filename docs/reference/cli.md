@@ -705,6 +705,26 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 │                                               so a top built from blocks: is         │
 │                                               synthesized after its blocks are       │
 │                                               hardened                               │
+│ --stop-after            STAGE                 end the run after STAGE (floorplan,    │
+│                                               place, cts, global_route,              │
+│                                               detailed_route): write its checkpoint  │
+│                                               and a stage report; the result is a    │
+│                                               PASS with routed: false, and no routed │
+│                                               outputs or abstract. Needs a single    │
+│                                               named run                              │
+│                                               [default: (run to the end)]            │
+│ --resume                RUN                   resume a staged run (stages: true) in  │
+│                                               a new checkpoint run directory: a run  │
+│                                               id under the run's checkpoints/, a     │
+│                                               checkpoint run directory, or latest.   │
+│                                               Needs --from and a single named run;   │
+│                                               refused when anything the stages       │
+│                                               before --from read has changed         │
+│ --from                  STAGE                 the first stage a --resume runs        │
+│                                               (place, cts, global_route,             │
+│                                               detailed_route, finish); it starts     │
+│                                               from the resumed run's checkpoint of   │
+│                                               the stage before                       │
 │ --help                                        Show this message and exit.            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

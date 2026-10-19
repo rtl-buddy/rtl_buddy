@@ -396,10 +396,10 @@ def test_successful_run_writes_every_checkpoint_and_a_complete_manifest(
             *(f"02_place.{e}" for e in ("odb", "def", "sdc")),
             *(f"03_cts.{e}" for e in ("odb", "def", "sdc")),
             *(
-                f"{name}.{e}"
-                for name in ("04_global_route", "05_detailed_route")
+                f"04_global_route.{e}"
                 for e in ("odb", "def", "sdc", "guide", "segments")
             ),
+            *(f"05_detailed_route.{e}" for e in ("odb", "def", "sdc")),
         ]
     )
     # Never a name a consumer of the final outputs would take.

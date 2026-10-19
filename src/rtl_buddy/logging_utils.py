@@ -2065,6 +2065,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'P&R "{fields.get("pnr")}" failed {where}; {saved}; '
                 f"checkpoints kept in {fields.get('dir')}"
             )
+        case "pnr.resume_refused":
+            return (
+                f'P&R "{fields.get("pnr")}": --resume {fields.get("resume")} '
+                f"--from {fields.get('from_stage')} refused: {fields.get('reason')}"
+            )
+        case "pnr.stopped":
+            return (
+                f'P&R "{fields.get("pnr")}" stopped after {fields.get("stage")} '
+                f"(--stop-after, not routed); checkpoint {fields.get('checkpoint')}"
+            )
         case "pnr.checkpoint_manifest_failed":
             return (
                 f'P&R "{fields.get("pnr")}": could not complete the checkpoint '

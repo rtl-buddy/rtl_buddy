@@ -267,9 +267,9 @@ proc rb::ckpt::write_state {path} {
 }
 
 # One checkpoint: ODB (what a resume re-enters), DEF (what KLayout stream-out
-# reads, so `rb pnr-export --checkpoint` needs no OpenROAD), the SDC, after
-# global routing the route guides and global-route segments, and in a staged
-# run the saved globals. Guides alone do not restore the parasitics
+# reads, so `rb pnr-export --checkpoint` needs no OpenROAD), the SDC, for the
+# stages in `routed` the route guides and global-route segments, and in a
+# staged run the saved globals. Guides alone do not restore the parasitics
 # `estimate_parasitics -global_routing` needs.
 #
 # The `checkpoint` event is written after every file is on disk; a checkpoint

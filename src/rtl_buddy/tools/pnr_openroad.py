@@ -950,13 +950,19 @@ def _read_checkpoint_tcl(stage: str) -> str:
 
 
 def _read_global_route_tcl(stage: str) -> str:
-    """Return the prelude lines that restore the predecessor's global route: guides for the detailed router, segments for `estimate_parasitics -global_routing`."""
+    """Return the prelude lines that restore the predecessor's global route for `estimate_parasitics -global_routing`: its segments.
+
+    The detailed router reads the guides the database keeps; `read_guides` would rewrite them without their via layers, and the route would differ from a one-session run's.
+    """
     name = _checkpoint_name(pnr_stages.predecessor(stage))
     return (
         f'puts ">>> Reading global route {name}"\n'
-        f"read_guides [file join $RB_PRED_DIR {name}.guide]\n"
         f"read_global_route_segments [file join $RB_PRED_DIR {name}.segments]\n"
     )
+
+
+#: OpenROAD 26Q4 crashes in `sta::max_fanout_violation_count`, which the final reports call, until a fanout check has run in the session; a one-session run's repairs have run one.
+_FANOUT_CHECK_TCL = "catch {sta::max_fanout_min_slack}\n"
 
 
 def _maxrss_kb(maxrss: int) -> int:
@@ -1413,7 +1419,7 @@ class OpenRoadPnr:
     def _stage_script(self, stage: str) -> str:
         """Return one staged session's script: rb's prelude, then the stage's part of the flow, then its checkpoint.
 
-        The prelude repeats what the first session set up but a database does not keep: header variables, threads, `platform-tcl`, Liberty and LEF, then the predecessor's database, SDC and saved globals, max fanout, layer RC, don't-use cells and `session` hooks; the flow's design variables; the detailed-placement options; propagated clocks from CTS on; the routing layers from global routing on; and the predecessor's global route from detailed routing on.
+        The prelude repeats what the first session set up but a database does not keep: header variables, threads, `platform-tcl`, Liberty and LEF, then the predecessor's database, SDC and saved globals, max fanout, layer RC, don't-use cells and `session` hooks; the flow's design variables; the detailed-placement options; propagated clocks after CTS; the routing layers after global routing; for detailed routing, the global route's segments; and, for `finish`, a fanout check. Every session takes its guides from its database, and `finish` its global route too.
         """
         flow = self._flow
         substitutions = {
@@ -1436,7 +1442,11 @@ class OpenRoadPnr:
             if pnr_stages.after(stage, "cts"):
                 parts.append(flow.piece("clocks"))
             if pnr_stages.after(stage, "global_route"):
-                parts += [flow.piece("layers"), _read_global_route_tcl(stage)]
+                parts.append(flow.piece("layers"))
+            if stage == "detailed_route":
+                parts.append(_read_global_route_tcl(stage))
+            if stage == "finish":
+                parts.append(_FANOUT_CHECK_TCL)
         parts.append(flow.body(stage))
         if stage != "finish":
             parts.append(
@@ -2626,7 +2636,8 @@ class OpenRoadPnr:
                 step=(summary["last_step"] or {}).get("step"),
                 step_status=(summary["last_step"] or {}).get("status"),
             )
-        return summary
+        resumed_from = self._resumed_from()
+        return {**summary, "resumed_from": resumed_from} if resumed_from else summary
 
     def _resolve_blocks(self, platform) -> PnrFailResults | None:
         """Resolve `blocks:` to published abstracts and append their views to the run's path lists.
@@ -3395,9 +3406,7 @@ class OpenRoadPnr:
         refused = None
         try:
             if self.resume is None:
-                script_path = self._write_script(
-                    platform, self.pnr_cfg.get_floorplan()
-                )
+                script_path = self._write_script(platform, self.pnr_cfg.get_floorplan())
             else:
                 # The stages before `--from` are regenerated and checked before any script is written.
                 self._prepare_flow(platform, self.pnr_cfg.get_floorplan())

@@ -11820,7 +11820,8 @@ class RtlBuddy:
                 help=(
                     "export a stage checkpoint (checkpoints: in pnr.yaml) "
                     "instead of the routed result: a stage (floorplan, place, "
-                    "cts, global_route) of the latest run, <run-id>/<stage>, "
+                    "cts, global_route, detailed_route) of the latest run, "
+                    "<run-id>/<stage>, "
                     "or a checkpoint file; output goes under the checkpoint "
                     "and is labelled not final"
                 ),

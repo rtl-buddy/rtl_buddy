@@ -13,7 +13,7 @@ Layout under the run's artefact directory::
         02_place.{odb,def,sdc}
         03_cts.{odb,def,sdc}
         04_global_route.{odb,def,sdc,guide,segments}
-        05_detailed_route.{odb,def,sdc,guide,segments}
+        05_detailed_route.{odb,def,sdc}
         export/03_cts/...                 # `rb pnr-export --checkpoint`
 
 A staged run (`stages: true`) adds each stage's session script and log, `NN_<stage>.{tcl,log}`, and a `NN_<stage>.state.tcl` per checkpoint with the flow globals the next session needs.
@@ -70,8 +70,11 @@ STAGE_ANCHORS = {
     "detailed_route": ("detailed_route", "leave"),
 }
 
-#: Checkpoints that carry the route guides and global-route segments.
+#: Checkpoints whose database holds a global route.
 GLOBAL_ROUTED = ("global_route", "detailed_route")
+
+#: Checkpoints that also carry the route guides and global-route segments; the detailed-route session reads the segments. A routed database's pin access points no longer match the segments, which OpenROAD then refuses (GRT-0263), so a later session takes the global route from the guides the database keeps.
+ROUTE_FILES = ("global_route",)
 
 #: Flow globals a staged checkpoint saves for the next session: per-macro cell halos from `floorplan.macros`, which the rotated-macro blockages read in the place session.
 SESSION_STATE = ("MACRO_CELL_HALOS",)
@@ -157,7 +160,7 @@ def _arm_config(*, anchors: dict, wanted, account: bool, strict: bool, state=())
                 "order {"
                 + " ".join(f"{stage} {index}" for stage, index in STAGE_INDEX.items())
                 + "}",
-                f"routed {{{' '.join(GLOBAL_ROUTED)}}}",
+                f"routed {{{' '.join(ROUTE_FILES)}}}",
                 f"state {{{' '.join(state)}}}",
                 f"account {int(account)}",
                 f"strict {int(strict)}",
