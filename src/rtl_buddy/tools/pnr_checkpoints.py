@@ -576,6 +576,32 @@ def _stage_of(token: str) -> str | None:
     return None
 
 
+def _inherited_checkpoint(run_dir: str, stage: str, entry: dict) -> CheckpointRef | str:
+    """A checkpoint a resumed run inherited, from the DEF its manifest records."""
+    index = STAGE_INDEX[stage]
+    record = (entry.get("files") or {}).get("def")
+    path = record.get("path") if isinstance(record, dict) else None
+    root = project_root_or_none(run_dir)
+    if path and not os.path.isabs(path) and root is not None:
+        path = os.path.join(root, path)
+    if not path or not os.path.isfile(path):
+        return (
+            f"checkpoint {index}_{stage} of resumed run {os.path.basename(run_dir)} "
+            f"was written by run {entry.get('inherited_from')}, and its DEF "
+            f"{path or '(not recorded)'} is gone"
+        )
+    source_dir = os.path.dirname(path)
+    event = _written_checkpoints(read_progress(source_dir)).get(stage) or {}
+    return CheckpointRef(
+        run_dir=source_dir,
+        run_id=os.path.basename(source_dir),
+        stage=stage,
+        index=index,
+        def_path=path,
+        design=event.get("design"),
+    )
+
+
 def resolve_checkpoint(artefact_dir: str, spec: str) -> CheckpointRef | str:
     """Resolve a `--checkpoint` value to a `CheckpointRef`, or return the reason it cannot be used.
 
@@ -618,15 +644,9 @@ def resolve_checkpoint(artefact_dir: str, spec: str) -> CheckpointRef | str:
     index = STAGE_INDEX[stage]
     if event is None:
         manifest = read_manifest(run_dir) or {}
-        source = ((manifest.get("checkpoints") or {}).get(stage) or {}).get(
-            "inherited_from"
-        )
-        if source:
-            return (
-                f"checkpoint {index}_{stage} of resumed run "
-                f"{os.path.basename(run_dir)} was written by run {source}; "
-                f"name {source}/{stage}"
-            )
+        entry = (manifest.get("checkpoints") or {}).get(stage) or {}
+        if entry.get("inherited_from"):
+            return _inherited_checkpoint(run_dir, stage, entry)
         return (
             f"checkpoint {index}_{stage} was not written by run "
             f"{os.path.basename(run_dir)} (see {os.path.join(run_dir, PROGRESS_NAME)})"
