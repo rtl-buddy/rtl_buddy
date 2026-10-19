@@ -3389,7 +3389,7 @@ class OpenRoadPnr:
         for stage in self._ckpt_stages():
             if stage in written or stage == self.stop_after:
                 continue
-            error = self._checkpoint_error(stage)
+            error = checkpoint_error(self._ckpt_run_dir, stage)
             if error is not None:
                 return f"checkpoint {_checkpoint_name(stage)} was not written: {error}"
             anchor = pnr_checkpoints.STAGE_ANCHORS.get(stage)
