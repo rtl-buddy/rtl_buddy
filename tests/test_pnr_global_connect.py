@@ -3,8 +3,10 @@
 Buffers and fill cells added after `pdngen` carry no supply connections until the rules that `add_global_connection` stored in the database are applied again. The generated scripts run under the stub OpenROAD of `test_pnr_checkpoints`, which logs `stub: global_connect` and each database write.
 """
 
+from dataclasses import replace
+
 import pytest
-from test_pnr_checkpoints import _backend, _runs
+from test_pnr_checkpoints import _backend, _pnr_cfg, _runs
 
 from rtl_buddy.config.pnr import CHECKPOINT_STAGES
 from rtl_buddy.tools import pnr_checkpoints
@@ -97,10 +99,10 @@ def test_a_run_without_checkpoints_connects_at_every_stage_end_and_after_fill(
     assert backend.run().results["result"] == "PASS"
 
     lines = _log(artefacts)
-    # Five stage ends, after fill, and before the outputs.
-    assert lines.count(_CONNECT) == 7
+    # Five stage ends, after any before-detailed-route hook, after fill, and before the outputs.
+    assert lines.count(_CONNECT) == 8
     connects = [i for i, line in enumerate(lines) if line == _CONNECT]
-    assert connects[5] > lines.index(">>> Fill insertion")
+    assert connects[6] > lines.index(">>> Fill insertion")
 
 
 def test_every_staged_session_connects_before_it_writes_its_checkpoint(
@@ -117,6 +119,26 @@ def test_every_staged_session_connects_before_it_writes_its_checkpoint(
         assert script.index("\nrb::global_connect\n") < script.index(
             f"rb::ckpt::stage_end {stage}"
         )
+
+
+@pytest.mark.parametrize("stages", [False, True])
+def test_detailed_route_starts_after_the_connections_of_cells_a_hook_added(
+    tmp_path, monkeypatch, stages
+):
+    hook = tmp_path / "hooks" / "before-detailed-route.tcl"
+    hook.parent.mkdir()
+    hook.write_text('puts "MARK before-detailed-route"\n')
+    cfg = replace(
+        _pnr_cfg(tmp_path, stages=stages),
+        hooks={"before-detailed-route": (str(hook),)},
+    )
+    backend, artefacts = _backend(tmp_path, monkeypatch, pnr_cfg=cfg, env=_RULES)
+
+    assert backend.run().results["result"] == "PASS"
+
+    lines = _log(artefacts)
+    marked = lines.index("MARK before-detailed-route")
+    assert lines[marked + 1 : marked + 3] == [_CONNECT, ">>> Detail route"]
 
 
 @pytest.mark.parametrize("stages", [False, True])
@@ -179,6 +201,6 @@ def test_the_flow_defines_a_guarded_connect_before_any_stage():
 
     assert "proc rb::global_connect" in head
     assert "getGlobalConnects" in head
-    # The end of five stages, after fill, and before the outputs.
-    assert text.count("rb::global_connect\n") == 7
+    # The end of five stages, before detailed route, after fill, and before the outputs.
+    assert text.count("rb::global_connect\n") == 8
     assert text.rindex("rb::global_connect\n") > text.index("filler_placement")
