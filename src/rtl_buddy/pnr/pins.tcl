@@ -8,10 +8,11 @@
 # only warn and drop it.
 
 namespace eval rb::pins {
-    # Set by the flow under `floorplan.pins-complete`: record which entries
-    # cover each port, by port name.
-    variable track 0
+    # Exact pins placed so far, port name -> entries.
     variable exact_entries {}
+    # Set by the flow under `floorplan.pins-complete`: count the side and group
+    # rules that cover each port, port name -> rules.
+    variable track 0
     variable region_rules {}
 }
 
@@ -26,24 +27,39 @@ proc rb::pins::ports {where pattern} {
 
 # Constrain the ports `patterns` match to `region` (`edge:begin-end`, or ""
 # for anywhere) and, with `group`, keep them together, in order with `order`.
+# A port with an exact pin is left out, as is, under `track`, a port an
+# earlier rule already covers: OpenROAD refuses a port in two regions
+# (ODB-0239), and `check_complete` reports it instead.
 proc rb::pins::constrain {where patterns region group order} {
     variable track
-    set covered {}
+    variable exact_entries
+    variable region_rules
+    set matched {}
     foreach pattern $patterns {
-        set matched [ports $where $pattern]
+        foreach port [ports $where $pattern] {
+            dict set matched [[sta::sta_to_db_port $port] getName] 1
+        }
+    }
+    set names {}
+    foreach name [dict keys $matched] {
+        if {[dict exists $exact_entries $name]} {
+            continue
+        }
         if {$track} {
-            foreach port $matched {
-                dict set covered [[sta::sta_to_db_port $port] getName] 1
+            dict incr region_rules $name
+            if {[dict get $region_rules $name] > 1} {
+                continue
             }
         }
+        lappend names $name
     }
-    if {$track} {
-        variable region_rules
-        foreach name [dict keys $covered] {
-            dict incr region_rules $name
-        }
+    set left_out [expr {[dict size $matched] - [llength $names]}]
+    if {[llength $names] == 0} {
+        puts ">>>   $where: every matched port has an exact pin or an earlier rule; nothing to constrain"
+        return
     }
-    set command [list set_io_pin_constraint -pin_names $patterns]
+    set command [list set_io_pin_constraint -pin_names \
+        [expr {$left_out > 0 ? $names : $patterns}]]
     if {$region ne ""} {
         lappend command -region $region
     }
@@ -53,7 +69,11 @@ proc rb::pins::constrain {where patterns region group order} {
             lappend command -order
         }
     }
-    puts ">>>   $where: $command"
+    if {$left_out > 0} {
+        puts ">>>   $where: [lrange $command 0 1] [list $patterns] [lrange $command 3 end] ($left_out port(s) with an exact pin or an earlier rule left out)"
+    } else {
+        puts ">>>   $where: $command"
+    }
     {*}$command
 }
 
@@ -90,10 +110,8 @@ proc rb::pins::place {where pattern x y layer size {snap 1}} {
     }
     set bterm [sta::sta_to_db_port [lindex $matched 0]]
     set name [$bterm getName]
-    if {$track} {
-        variable exact_entries
-        dict incr exact_entries $name
-    }
+    variable exact_entries
+    dict incr exact_entries $name
     set block [ord::get_db_block]
     if {$layer eq ""} {
         set die [$block getDieArea]

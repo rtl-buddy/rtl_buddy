@@ -627,7 +627,8 @@ namespace eval sta {}
 proc ord::get_db_block {} { return fake_block }
 proc fake_block {cmd} { return $::bterms }
 proc sta::sta_to_db_port {port} { return $port }
-proc set_io_pin_constraint {args} {}
+set ::constraints {}
+proc set_io_pin_constraint {args} { lappend ::constraints $args }
 proc make_bterm {name type} {
     proc $name {cmd} "if {\\$cmd eq {getName}} { return $name } else { return $type }"
     lappend ::bterms $name
@@ -665,6 +666,37 @@ set result [join [concat [lsearch -all -inline $::printed RB-PINS*] [list $err]]
         "RB-PINS-COMPLETE: several-regions 1 c",
         "RB-PINS-COMPLETE: uncovered 1 e",
         "floorplan.pins-complete: 1 duplicate-exact, 1 several-regions, 1 uncovered port(s)",
+    ]
+    # c reaches OpenROAD once, which refuses a port in two regions (ODB-0239).
+    issued = _tcl_eval(script + "\nset result [join $::constraints |]")
+    assert issued.split("|") == [
+        "-pin_names c -region left:*",
+        "-pin_names d -region top:*",
+    ]
+
+
+def test_side_and_group_rules_leave_out_exactly_placed_ports():
+    script = (
+        _helper("pins.tcl")
+        + _FAKE_DB
+        + """
+set ::bterms {}
+foreach name {p0 p1 p2 q0} { make_bterm $name SIGNAL }
+proc get_ports {args} { return [lsearch -all -inline -glob {p0 p1 p2 q0} [lindex $args end]] }
+dict set rb::pins::exact_entries p1 1
+dict set rb::pins::exact_entries q0 1
+rb::pins::constrain {floorplan.pins[0]} {p* q*} {left:*} 1 1
+rb::pins::constrain {floorplan.pins[1]} {p*} {left:10-20} 0 0
+rb::pins::constrain {floorplan.pins[2]} {q0} {top:*} 0 0
+set result [join [concat $::constraints [lsearch -all -inline $::printed {>>>*}]] |]
+"""
+    )
+    assert _tcl_eval(script).split("|") == [
+        "-pin_names {p0 p2} -region left:* -group -order",
+        "-pin_names {p0 p2} -region left:10-20",
+        ">>>   floorplan.pins[0]: set_io_pin_constraint -pin_names {p* q*} -region left:* -group -order (2 port(s) with an exact pin or an earlier rule left out)",
+        ">>>   floorplan.pins[1]: set_io_pin_constraint -pin_names p* -region left:10-20 (1 port(s) with an exact pin or an earlier rule left out)",
+        ">>>   floorplan.pins[2]: every matched port has an exact pin or an earlier rule; nothing to constrain",
     ]
 
 

@@ -161,7 +161,7 @@ cfg-pnr-platforms:
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
 
-`placement.*` stands for `placement.density`, `placement.padding`, `placement.macro-halo`, `placement.macro-cell-halo`, `placement.tie-separation`, `placement.reference-hpwl`, `placement.routability-driven`, and `placement.routability-use-grt`.
+`placement.*` stands for `placement.density`, `placement.padding`, `placement.macro-halo`, `placement.macro-cell-halo`, `placement.tie-separation`, `placement.reference-hpwl`, `placement.routability-driven`, `placement.routability-use-grt`, and `placement.rotated-macro-footprint`.
 
 The process-dependent P&R keys are all optional:
 
@@ -175,6 +175,7 @@ The process-dependent P&R keys are all optional:
 | `placement.reference-hpwl` | `cfg-pdks`, `cfg-pnr-platforms` | Positive number. Passed as `global_placement -reference_hpwl`. Unset by default, which keeps the placer's size-derived reference; a fixed value spreads a large design further and can clear global-route overflow |
 | `placement.routability-driven` | `cfg-pdks`, `cfg-pnr-platforms` | Boolean, default `false`. `true` adds `-routability_driven` to `global_placement`, which inflates cells in congested regions and re-spreads them; for congested blocks |
 | `placement.routability-use-grt` | `cfg-pdks`, `cfg-pnr-platforms` | Boolean, default `false`. `true` adds `-routability_use_grt`, so routability mode estimates congestion with the global router instead of RUDY. Requires `placement.routability-driven: true` after platform-over-PDK resolution; otherwise the platform fails to load |
+| `placement.rotated-macro-footprint` | `cfg-pdks`, `cfg-pnr-platforms` | `block` (default), `diamond-legalizer` or `none`. How the flow works around OpenROAD's legalizer for a macro turned by 90 degrees: a hard blockage over the unrotated footprint during global placement only, `detailed_placement -use_diamond_legalizer`, or nothing. Acts only when a macro ends up turned. See [Rotate a macro](../concepts/pnr.md#rotate-a-macro) |
 | `dont-use-cells` | `cfg-pdks`, `cfg-synth-platforms`, `cfg-pnr-platforms` | Cell names or patterns (`*` and `?` wildcards only), one per list entry. Empty by default. See below for scope |
 | `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid. P&R sources it and calls `pdngen`. Unset by default. A `pnr.yaml` run's own `pdn-config` replaces it |
 | `rcx-rules` | `cfg-pdks` | Path to an OpenRCX extraction-rules file. P&R extracts the routed design, writes `<top>.routed.spef`, and times its final reports on it. A `netlist-source: pnr` power run reads that SPEF instead of estimating. Unset by default |
@@ -191,7 +192,7 @@ The process-dependent P&R keys are all optional:
 | `routing-layer-adjustment` | `cfg-pnr-platforms` | Number from 0 to 1. Global-routing capacity withheld on the `routing-layers.signal` layers (`set_global_routing_layer_adjustment`). Unset by default, which keeps the router's default |
 | `max-fanout` | `cfg-pnr-platforms` | Positive integer. `rb pnr` and `rb power` add `set_max_fanout <n> [current_design]` after each `read_sdc`. Unset by default, which leaves the Liberty or SDC limit, or 50 in `repair_design` when neither sets one |
 
-A `placement:` block on a P&R platform overrides its PDK's block field by field: the platform wins where it names a value, the PDK where it does not. See [Place-and-Route](../concepts/pnr.md#tune-the-process-dependent-steps).
+A `placement:` block on a P&R platform overrides its PDK's block field by field: the platform wins where it names a value, the PDK where it does not. A `pnr.yaml` run's own `placement:` block overrides the platform the same way. See [Place-and-Route](../concepts/pnr.md#tune-the-process-dependent-steps).
 
 `dont-use-cells` scope:
 
@@ -835,6 +836,7 @@ runs:
 | `harden` | Default `false` | Publishes the routed result as a hard-macro abstract under `artefacts/<run>/abstract/`: `<top>.lef`, `<top>.lib` (OpenSTA timing model), `<top>.gds`, and `abstract.manifest.json`. Implies `--gds` with `gds-mode: strict`; needs a single-corner platform. See [Harden a block](../concepts/pnr.md#harden-a-block) |
 | `abstract` | Optional, needs `harden: true` | Obstruction style of the abstract LEF. `bloat`: `occupied` (default, `write_abstract_lef -bloat_occupied_layers`) or a non-negative number (`-bloat_factor`). `feedthrough-layers`: a list of layers written with the block's real shapes as obstructions while the others keep the `bloat` style. Part of a hardened block's config digest only when not the default. See [Choose the abstract's obstruction style](../concepts/pnr.md#choose-the-abstracts-obstruction-style) |
 | `buffer-ports` | Default: the value of `harden` | `true` runs `buffer_ports -inputs -outputs` after IO pin placement and before global placement, so each port drives or is driven by one buffer. Part of a hardened block's config digest when `true`. See [Harden a block](../concepts/pnr.md#harden-a-block) |
+| `placement` | Optional | Any `placement.*` key of `cfg-pnr-platforms`, overriding the platform's resolved value field by field for this run. The resolved values must still pass the platform's checks |
 | `fail-on-electrical` | Default `false` | Fails a routed run with any max-slew, max-capacitance or max-fanout violator. Without it such a run passes, qualified with the counts. Not part of a hardened block's config digest. See [Interpret results](../concepts/pnr.md#interpret-results) |
 | `floorplan.utilization` | Default 0.55 | Core utilization from 0 to 1 |
 | `floorplan.aspect` | Default 1.0 | Die aspect ratio |
@@ -845,7 +847,12 @@ runs:
 | `floorplan.macro-placement` | Default `pack` | Who places hard macros: `pack` (rtl_buddy's size-aware packer) or `rtl-mp` (OpenROAD's `rtl_macro_placer`, which keeps macros out of every blockage type). See [RTL-MP macro placement](../concepts/pnr.md#rtl-mp-macro-placement) |
 | `floorplan.blockages` | Optional | List of standard-cell placement blockages. See below |
 | `floorplan.macros` | Optional | Per-macro directives: a fixed `location`, an `orientation`, or a standard-cell `halo`. See below |
+| `floorplan.macros-file` | Optional | YAML or JSON file, relative to `pnr.yaml`, holding a list of `floorplan.macros` entries, applied after the inline ones. Read when the run starts; a missing file or bad entry fails it with `fail_stage: setup`. See [Read macros and pins from planner files](../concepts/pnr.md#read-macros-and-pins-from-planner-files) |
+| `floorplan.macro-snap` | Default `true` | `true` snaps each macro `location` to the site and row grid. `false` keeps it exact, rounded once to the database unit |
 | `floorplan.pins` | Optional | List of IO pin constraints: ports by name or glob on a side, within a range, as a group, or one pin at an exact location. See below |
+| `floorplan.pins-file` | Optional | YAML or JSON file, relative to `pnr.yaml`, holding a list of exact pins (`name`, `location`, optional `layer` and `size`) and `floorplan.pins` entries, applied after the inline ones. Read like `macros-file` |
+| `floorplan.pin-snap` | Default `true` | `true` places each exact pin with `place_pin -force_to_die_boundary`, onto the die edge and a routing track. `false` keeps its centre at its location, to the database unit |
+| `floorplan.pins-complete` | Default `false` | `true` fails the run before pin placement unless every port other than power and ground has exactly one exact pin, or no exact pin and exactly one side or group rule. See [Check that every port is placed](../concepts/pnr.md#check-that-every-port-is-placed) |
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
@@ -856,8 +863,9 @@ Each `floorplan.blockages` entry has:
 - `rect: [x0, y0, x1, y1]` in microns, in die coordinates, non-negative, with `x0 < x1` and `y0 < y1`.
 - `type: hard` (default), `soft`, or `partial`.
 - For `partial` only, `max-density` strictly between 0 and 1. Only global placement honors it; legalization clears a partial blockage like a hard one.
+- `lifetime: flow` (default) or `global-placement`. A `global-placement` blockage exists only while `global_placement` runs: no row is cut under it, macro placement ignores it, and no checkpoint holds it.
 
-Blockages need OpenROAD 26Q1 or later. Macros are kept out of `hard` blockages, and the rows under them are cut before tap insertion. See [Placement blockages](../concepts/pnr.md#floorplan-controls).
+Blockages need OpenROAD 26Q1 or later. Macros are kept out of `hard` blockages with the default lifetime, and the rows under them are cut before tap insertion. See [Placement blockages](../concepts/pnr.md#floorplan-controls).
 
 `pdn` has:
 
@@ -869,8 +877,8 @@ It needs a pdn-config (the PDK's or the run's) for the global connections and vo
 
 Each `floorplan.macros` entry has an `instance` (a full instance name, or a glob over instance names) and at least one of:
 
-- `location: [x, y]`, the lower-left corner in die microns. Snapped to the site grid, it must fit inside the core and clear of other fixed macros. The macro is fixed before macro placement and is a keep-out for the packer. The instance pattern must match exactly one macro.
-- `orientation: R0`, `R180`, `MX` or `MY`. Under `macro-placement: rtl-mp` it needs a `location`.
+- `location: [x, y]`, the lower-left corner of the oriented macro in die microns. Snapped to the site grid unless `macro-snap: false`, it must fit inside the core and clear of other fixed macros. The macro is fixed before macro placement and is a keep-out for the packer. The instance pattern must match exactly one macro.
+- `orientation: R0`, `R90`, `R180`, `R270`, `MX`, `MY`, `MXR90` or `MYR90`. Under `macro-placement: rtl-mp` it needs a `location`.
 - `halo: [x, y]` in microns, non-negative, replacing `placement.macro-cell-halo` for the matched macros.
 
 A pattern that matches no instance, or a standard cell, fails the run. See [Place individual macros](../concepts/pnr.md#place-individual-macros).
@@ -879,9 +887,9 @@ Each `floorplan.pins` entry has `names` (port names or globs, a string or a list
 
 - `side: left`, `right`, `top` or `bottom`, with optional `start` and `end` in die microns along that edge (`start < end`, both non-negative).
 - `group: true`, optionally with `order: true`, alone or with a `side`.
-- `location: [x, y]`, the pin centre in die microns, for a single port, with optional `layer` (default: the PDK pin layer of the nearest edge) and `size: [width, height]` in microns (default: the layer's minimum).
+- `location: [x, y]`, the pin centre in die microns, for a single port, with optional `layer` (default: the PDK pin layer of the nearest edge) and `size: [width, height]` in microns (default: the layer's minimum). `pin-snap` decides whether it moves to the die edge and a track.
 
-A name or glob that matches no port fails the run. A `location` pin is fixed and placed first, before the side and group constraints and the `pin-constraints` file. See [Constrain boundary pins](../concepts/pnr.md#constrain-boundary-pins).
+A name or glob that matches no port fails the run. A `location` pin is fixed and placed first, before the side and group constraints and the `pin-constraints` file, and side and group constraints leave it out. See [Constrain boundary pins](../concepts/pnr.md#constrain-boundary-pins).
 
 The run consumes `<synth dir>/artefacts/<synth>/synth_netlist.v`. The selected PDK and platform provide Liberty, LEF, site, tie and fill cells, CTS buffer, and routing layers.
 
