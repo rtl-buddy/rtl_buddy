@@ -620,6 +620,116 @@ def test_rounds_repair_until_timing_is_met(tmp_path, monkeypatch, stages):
     assert "read_db [file join $RB_PRED_DIR 06_post_route_repair.odb]" in finish
 
 
+def test_a_one_session_run_s_routed_spef_is_vouched_for_for_rb_power(
+    tmp_path, monkeypatch
+):
+    from rtl_buddy.tools.power_openroad import routed_spef_rejection
+
+    backend, artefacts = _repair_backend(
+        tmp_path, monkeypatch, post_route=_PR, env={"RB_STUB_SETUP": "0.1"}
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    script = artefacts / "pnr.tcl"
+    text = script.read_text()
+    # The first session ends before the record of the later ones.
+    first, record = text.split("\nexit 0\n", 1)
+    assert "write_spef" not in first
+    assert "# ---- 06_post_route_repair.tcl ----" in record
+    assert "# ---- 07_finish.tcl ----" in record
+    finish = (run_dir / "07_finish.tcl").read_text()
+    assert "write_spef $OUT_DIR/${DESIGN}.routed.spef\n" in finish
+    assert f"# ---- 07_finish.tcl ----\n{finish}" in record
+    spef = artefacts / "demo_top.routed.spef"
+    spef.write_text("*SPEF\n")
+    assert routed_spef_rejection(str(spef), str(script)) is None
+
+
+def _hook(tmp_path, point, text) -> tuple[str]:
+    path = tmp_path / "hooks" / f"{point}.tcl"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(text)
+    return (str(path),)
+
+
+def _hooked_backend(tmp_path, monkeypatch, hooks, *, stages=False):
+    pnr_cfg = replace(_pnr_cfg(tmp_path, stages=stages), hooks=hooks)
+    backend, artefacts = _backend(
+        tmp_path,
+        monkeypatch,
+        pnr_cfg=pnr_cfg,
+        env={"RB_STUB_SETUP": "-0.2 -0.1 0.01"},
+        stages=stages,
+    )
+    _with_repair(backend, tmp_path, post_route=_PR)
+    return backend, artefacts
+
+
+@pytest.mark.parametrize("stages", [False, True])
+def test_each_round_runs_the_before_detailed_route_hooks(tmp_path, monkeypatch, stages):
+    hooks = {
+        "after-global-route": _hook(tmp_path, "agr", "puts rb_test_agr\n"),
+        "before-detailed-route": _hook(tmp_path, "bdr", "puts rb_test_bdr\n"),
+    }
+    backend, artefacts = _hooked_backend(tmp_path, monkeypatch, hooks, stages=stages)
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    for round_ in (1, 2):
+        text = (run_dir / f"06_post_route_repair.r{round_}.repair.tcl").read_text()
+        hook = text.index("\nrb::hook::run before-detailed-route ")
+        assert text.index("\ncheck_placement -verbose\n") < hook
+        assert hook < text.index("\ndetailed_route \\")
+        assert "rb::hook::run after-global-route" not in text
+    log = (artefacts / "pnr.log").read_text()
+    # The detailed route, then the two repairing rounds.
+    assert log.count("\nrb_test_bdr\n") == 3
+    assert log.count("\nrb_test_agr\n") == 1
+
+
+def test_a_one_session_run_with_rounds_logs_commands_hooks_leave_behind(
+    tmp_path, monkeypatch, caplog
+):
+    hooks = {
+        "after-cts": _hook(
+            tmp_path,
+            "after-cts",
+            "proc rb_test_helper {} {}\nrename check_placement rb_test_check\n",
+        ),
+        "before-detailed-route": _hook(tmp_path, "bdr", "proc rb_test_route {} {}\n"),
+    }
+    backend, artefacts = _hooked_backend(tmp_path, monkeypatch, hooks)
+
+    with caplog.at_level("INFO"):
+        res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+
+    def _logged(event):
+        return [
+            (r.levelname, r.rtl_fields)
+            for r in caplog.records
+            if getattr(r, "rtl_event", None) == event
+        ]
+
+    def _at(point):
+        return {"pnr": "demo_pnr", "point": point, "path": hooks[point][0]}
+
+    assert _logged("pnr.hook_commands_not_kept") == [
+        ("WARNING", {**_at("after-cts"), "commands": ["check_placement"]})
+    ]
+    # The before-detailed-route hook runs in the first session and each round, logged once.
+    assert _logged("pnr.hook_commands_added") == [
+        ("INFO", {**_at("after-cts"), "commands": ["rb_test_check", "rb_test_helper"]}),
+        ("INFO", {**_at("before-detailed-route"), "commands": ["rb_test_route"]}),
+    ]
+
+
 def test_a_dispatched_run_runs_every_round_in_the_stage_job(tmp_path, monkeypatch):
     from test_pnr_dispatch import _dispatched
 

@@ -85,7 +85,7 @@ _ROTATED_MACROS_FILE = "rotated_macros.tcl"
 _BLOCK_POWER_FILE = "block_power.tcl"
 # Sources the run's `hooks:` files; see `_hook_procs_block`.
 _HOOKS_FILE = "hooks.tcl"
-# Wraps `rb::hook::run` in staged sessions to record the commands a hook changes.
+# Wraps `rb::hook::run` in a session a later session follows, to record the commands a hook changes.
 _HOOK_COMMANDS_FILE = "hook_commands.tcl"
 
 # Non-log files the flow writes under `$OUT_DIR`; `test_pnr.py` checks this covers every one.
@@ -286,6 +286,17 @@ def _hook_procs_block(hooks: dict) -> str:
     if not hooks:
         return ""
     return f"\n{files(_TEMPLATE_PACKAGE).joinpath(_HOOKS_FILE).read_text()}"
+
+
+def _with_hook_tracer(substitutions: dict) -> dict:
+    """`substitutions` with the hook-command tracer after `rb::hook::run`, for a session a later session follows; unchanged for a run without hooks."""
+    if not substitutions["hook_procs_block"]:
+        return substitutions
+    return {
+        **substitutions,
+        "hook_procs_block": substitutions["hook_procs_block"]
+        + files(_TEMPLATE_PACKAGE).joinpath(_HOOK_COMMANDS_FILE).read_text(),
+    }
 
 
 def _buffer_ports_tcl(enabled: bool, buffer_cell: str | None) -> str:
@@ -2078,11 +2089,7 @@ class OpenRoadPnr:
         }
         if self._dispatch is not None:
             substitutions["threads_block"] = _threads_block(self._stage_threads(stage))
-        if substitutions["hook_procs_block"] and stage != "finish":
-            substitutions["hook_procs_block"] += (
-                files(_TEMPLATE_PACKAGE).joinpath(_HOOK_COMMANDS_FILE).read_text()
-            )
-        return substitutions
+        return _with_hook_tracer(substitutions) if stage != "finish" else substitutions
 
     def _prelude(self, stage: str, read_tcl: str) -> list[str]:
         """The start of a session of `stage` after `floorplan`: the template head, `read_tcl` opening the database it starts from, and what a database does not keep.
@@ -2323,7 +2330,7 @@ class OpenRoadPnr:
     def _emit_scripts(self) -> str:
         """Write the scripts OpenROAD runs (see `_write_script`) and return the path of `pnr.tcl`.
 
-        A one-session run with post-route repair runs `pnr.tcl` through detailed route, then the later stages' scripts from the checkpoint run directory.
+        A one-session run with post-route repair runs `pnr.tcl` through detailed route, then the later stages' scripts from the checkpoint run directory. Its `pnr.tcl` records those after the `exit` that ends the first session, so it holds the whole flow, as a staged run's does (`rb power` reads it for the `write_spef` that vouches for the routed SPEF).
         """
         script_path = self._script_path()
         if not self._staged:
@@ -2343,9 +2350,19 @@ class OpenRoadPnr:
                     + f"\nrb::ckpt::stage_end {stop} stop\n"
                     + _stage_report_tcl(stop, self._substitutions["corner_reports"])
                 )
-            Path(script_path).write_text(self._render(text, self._substitutions))
-            for stage in self._session_stages():
-                self._write_stage_scripts(stage)
+            text = self._render(
+                text,
+                _with_hook_tracer(self._substitutions)
+                if self._split
+                else self._substitutions,
+            )
+            records = [self._write_stage_scripts(s) for s in self._session_stages()]
+            if records:
+                text += (
+                    "\n# rb pnr: after the session above exits, rb runs each session "
+                    "below as its own OpenROAD session.\n" + "".join(records)
+                )
+            Path(script_path).write_text(text)
             return script_path
         record = [
             "# rb pnr staged run: each stage below ran as its own OpenROAD session.\n"
@@ -4034,7 +4051,8 @@ class OpenRoadPnr:
         return self._run_chain(env)
 
     def _warn_hook_commands(self) -> None:
-        """Log each hook of this staged run that changed global Tcl commands: a warning for commands that existed before it, which later stage sessions have in their original form, and info for new ones, whose later use fails as an unknown command."""
+        """Log each hook of this run's sessions that changed global Tcl commands, once per hook and change: a warning for commands that existed before it, which later sessions have in their original form, and info for new ones, whose later use fails as an unknown command."""
+        seen = set()
         for event in pnr_checkpoints.read_progress(self._ckpt_run_dir):
             if event.get("event") != "hook_commands":
                 continue
@@ -4042,7 +4060,9 @@ class OpenRoadPnr:
                 ("changed", logging.WARNING, "pnr.hook_commands_not_kept"),
                 ("added", logging.INFO, "pnr.hook_commands_added"),
             ):
-                if event.get(key):
+                once = (key, event.get("point"), event.get("path"), str(event.get(key)))
+                if event.get(key) and once not in seen:
+                    seen.add(once)
                     log_event(
                         logger,
                         level,
@@ -4604,8 +4624,12 @@ class OpenRoadPnr:
                         log_file.write(stderr_text + "\n")
                 except OSError:
                     pass
-            if self._split and returncode == 0:
-                returncode, stderr_text, chain_problem = self._continue_in_sessions(env)
+            if self._split:
+                if returncode == 0:
+                    returncode, stderr_text, chain_problem = self._continue_in_sessions(
+                        env
+                    )
+                self._warn_hook_commands()
         self._openroad_returncode = returncode
         if self._dispatch_failure is not None:
             # Not a verdict on the design, so an `xfail:` does not excuse it.
