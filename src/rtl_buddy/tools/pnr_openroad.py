@@ -218,6 +218,24 @@ def _run_hook_block(point: str, hooks: dict) -> str:
     return f"\n{_run_hook_lines(point, paths)}" if paths else ""
 
 
+def _macro_hook_block(fp: PnrFloorplan, paths) -> str:
+    """Return the macro branch's `macro-placement` hook lines, which replace rb's placement.
+
+    Without `floorplan.macros`, `$rb_movable_macros` is set to every macro so a hook can read it either way.
+    """
+    movable = "" if fp.macros else "  set rb_movable_macros $macros\n"
+    return movable + _run_hook_lines("macro-placement", paths, "  ")
+
+
+def _final_reports(log_text: str) -> str:
+    """Return `pnr.log` from its last `>>> Final reports` line on, or all of it without one.
+
+    A report a hook or an earlier step prints never reads as the result.
+    """
+    starts = [m.start() for m in re.finditer(r"^>>> Final reports$", log_text, re.M)]
+    return log_text[starts[-1] :] if starts else log_text
+
+
 def _hook_role(point: str) -> str:
     """Return the manifest input role for a run hook point, such as `hook_after_cts`."""
     return "hook_" + point.replace("-", "_")
@@ -970,7 +988,7 @@ class OpenRoadPnr:
             "initialize_floorplan": _initialize_floorplan_tcl(fp),
             # A `macro-placement` hook replaces the packer or RTL-MP inside the macro branch.
             "macro_place_block": (
-                _run_hook_lines("macro-placement", hooks["macro-placement"], "  ")
+                _macro_hook_block(fp, hooks["macro-placement"])
                 if "macro-placement" in hooks
                 else _macro_place_block(fp, macro_pack_directives)
             ),
@@ -2829,13 +2847,14 @@ class OpenRoadPnr:
         # Logged for every run that got this far; only a pass carries it in the result description.
         no_wire_rc = self._no_wire_rc_qualifier(platform, log_text)
 
-        area = self._parse_area_um2(log_text)
+        final = _final_reports(log_text)
+        area = self._parse_area_um2(final)
         cells = self._parse_cell_count(log_text)
         routed_cells, physical_cells = self._parse_routed_cell_counts(log_text)
-        wns_setup = self._parse_wns(log_text, "max")
-        wns_hold = self._parse_wns(log_text, "min")
-        tns = self._parse_tns(log_text)
-        tns_hold = self._parse_tns(log_text, "min")
+        wns_setup = self._parse_wns(final, "max")
+        wns_hold = self._parse_wns(final, "min")
+        tns = self._parse_tns(final)
+        tns_hold = self._parse_tns(final, "min")
         drcs = self._count_drcs()
 
         ps_per_unit = self._ps_per_unit
@@ -2851,7 +2870,7 @@ class OpenRoadPnr:
             "drc_count": drcs,
             **self._parse_electrical(log_text),
         }
-        corner_fields = self._corner_fields(platform, log_text)
+        corner_fields = self._corner_fields(platform, final)
         # Logged whether or not it fails the run, so a pass with violators never reads as clean.
         electrical = self._describe_electrical(metrics)
         if electrical:

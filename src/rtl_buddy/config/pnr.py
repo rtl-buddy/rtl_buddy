@@ -508,7 +508,7 @@ HOOK_POINTS = (
 def _normalise_hooks(run: str, value, config_dir: str) -> dict[str, tuple[str, ...]]:
     """Return the `hooks:` files by point, in flow order with absolute paths; a point with no file is dropped.
 
-    A point takes one path or a list of paths, relative to `pnr.yaml`.
+    A point takes one path or a list of paths, relative to `pnr.yaml`; null or an empty list is unset.
     """
     where = f"pnr run '{run}': hooks"
     if value is None:
@@ -529,6 +529,8 @@ def _normalise_hooks(run: str, value, config_dir: str) -> dict[str, tuple[str, .
         if point not in value:
             continue
         entry = value[point]
+        if entry is None:
+            continue
         names = [entry] if isinstance(entry, str) else entry
         if not (
             isinstance(names, list) and all(isinstance(n, str) and n for n in names)
@@ -1013,6 +1015,17 @@ class PnrConfigFile:
         )
         checkpoints = _normalise_checkpoints(self.name, self.checkpoints)
         hooks = _normalise_hooks(self.name, self.hooks, config_dir)
+        if "macro-placement" in hooks:
+            for key, is_default in (
+                ("floorplan.macro-placement", macro_placement is MacroPlacement.PACK),
+                ("floorplan.macro-anchor", macro_anchor is MacroAnchor.LOWER_LEFT),
+            ):
+                if not is_default:
+                    raise FatalRtlBuddyError(
+                        f"pnr run '{self.name}': '{key}' steers rb's macro placement "
+                        "and has no effect with a 'macro-placement' hook — remove "
+                        "one of them"
+                    )
 
         blocks = load_block_refs(
             f"pnr run '{self.name}'",

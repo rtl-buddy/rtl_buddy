@@ -43,9 +43,9 @@ from test_pnr_checkpoints import (
 
 from rtl_buddy.config.pnr import (
     HOOK_POINTS,
-    MacroPlacement,
     PnrConfigFile,
     PnrFloorplan,
+    PnrFloorplanFile,
     PnrMacro,
     PnrSuiteConfig,
 )
@@ -126,7 +126,7 @@ def test_hooks_load_from_yaml_relative_to_the_file(tmp_path):
     }
 
 
-@pytest.mark.parametrize("hooks", [None, {}, {"after-cts": []}])
+@pytest.mark.parametrize("hooks", [None, {}, {"after-cts": []}, {"after-cts": None}])
 def test_unset_and_empty_hooks_are_no_hooks(tmp_path, hooks):
     assert _cfg_file(hooks=hooks).initialise(str(tmp_path)).get_hooks() == {}
 
@@ -143,7 +143,7 @@ def test_an_unknown_point_lists_the_valid_ones(tmp_path):
 
 @pytest.mark.parametrize(
     "value",
-    [3, True, "", [""], ["a.tcl", ""], ["a.tcl", 3], [["a.tcl"]], {"a": "b"}, None],
+    [3, True, "", [""], ["a.tcl", ""], ["a.tcl", 3], [["a.tcl"]], {"a": "b"}],
 )
 def test_a_point_needs_non_empty_paths(tmp_path, value):
     with pytest.raises(FatalRtlBuddyError) as err:
@@ -263,6 +263,7 @@ def test_a_run_without_hooks_renders_the_flow_unchanged(tmp_path):
         assert hooked.count(block) == 1
         stripped = stripped.replace(block, "")
     macro_lines = (
+        "  set rb_movable_macros $macros\n"
         f'  puts ">>> Hook macro-placement: {paths["macro-placement"]}"\n'
         f'  rb::hook::run macro-placement "{paths["macro-placement"]}"\n'
     )
@@ -331,21 +332,40 @@ def test_the_macro_placement_hook_replaces_the_packer_after_the_directives(tmp_p
     assert text.index("if {[llength $macros] > 0} {") < apply_at
 
 
-def test_the_macro_placement_hook_replaces_rtl_mp(tmp_path):
-    floorplan = PnrFloorplan(
-        utilization=0.55,
-        aspect=1.0,
-        core_margin=2.0,
-        macro_placement=MacroPlacement.RTL_MP,
+@pytest.mark.parametrize(
+    "floorplan, key",
+    [
+        ({"macro_placement": "rtl-mp"}, "floorplan.macro-placement"),
+        ({"macro_anchor": "upper-right"}, "floorplan.macro-anchor"),
+    ],
+)
+def test_macro_placement_keys_are_rejected_with_a_macro_placement_hook(
+    tmp_path, floorplan, key
+):
+    """They would have no effect, as `macro-anchor` has none with `rtl-mp`."""
+    with pytest.raises(FatalRtlBuddyError) as err:
+        _cfg_file(
+            floorplan=PnrFloorplanFile(utilization=0.5, **floorplan),
+            hooks={"macro-placement": "macros.tcl"},
+        ).initialise(str(tmp_path))
+    assert str(err.value).startswith(
+        f"pnr run 'r': '{key}' steers rb's macro placement and has no effect "
+        "with a 'macro-placement' hook"
     )
+
+
+def test_the_macro_placement_hook_gets_every_macro_as_movable_without_directives(
+    tmp_path,
+):
     text = _render_flow(
         tmp_path,
         _full_platform(tmp_path),
-        floorplan=floorplan,
         hooks={"macro-placement": (str(tmp_path / "macros.tcl"),)},
     )
-    assert "rtl_macro_placer" not in text
-    assert "rb::hook::run macro-placement" in text
+    branch = text[text.index("if {[llength $macros] > 0} {") :]
+    assert branch.index("  set rb_movable_macros $macros\n") < branch.index(
+        "rb::hook::run macro-placement"
+    )
 
 
 def test_the_hook_runs_between_global_placement_and_tie_fanout_repair(tmp_path):
@@ -421,6 +441,40 @@ def test_a_path_with_tcl_metacharacters_is_inert(tmp_path):
     done = _tcl_run(tmp_path, _HOOKS_TCL + lines)
     assert done.returncode == 0, done.stderr
     assert done.stdout.splitlines() == [f">>> Hook after-cts: {hook}", "RAN"]
+
+
+def test_a_path_with_braces_is_inert_inside_the_macro_branch(tmp_path):
+    hook = _write(tmp_path / "a }x{ y.tcl", 'puts "RAN"\n')
+    lines = _run_hook_lines("macro-placement", (str(hook),), "  ")
+    done = _tcl_run(tmp_path, _HOOKS_TCL + f"if {{1}} {{\n{lines}}}\n")
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.splitlines() == [f">>> Hook macro-placement: {hook}", "RAN"]
+
+
+@pytest.mark.parametrize("command", ["break", "continue"])
+def test_a_top_level_break_or_continue_is_a_named_error(tmp_path, command):
+    hook = _write(tmp_path / "loop.tcl", f"{command}\n")
+    done = _tcl_run(
+        tmp_path,
+        _HOOKS_TCL + f"set code [catch {{rb::hook::run after-cts {_q(hook)}}} msg]\n"
+        'puts "CODE $code"\nputs "MSG $msg"\n',
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.splitlines() == [
+        "CODE 1",
+        f"MSG Hook after-cts ({hook}): invoked {command} outside of a loop",
+    ]
+
+
+def test_an_empty_error_still_leads_errorinfo_with_the_prefix(tmp_path):
+    hook = _write(tmp_path / "empty.tcl", 'error ""\n')
+    done = _tcl_run(
+        tmp_path,
+        _HOOKS_TCL + f"catch {{rb::hook::run after-cts {_q(hook)}}} msg opts\n"
+        'puts "INFO [dict get $opts -errorinfo]"\n',
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.startswith(f"INFO Hook after-cts ({hook}): \n")
 
 
 def test_an_error_names_the_point_and_path_and_keeps_errorinfo(tmp_path):
@@ -566,14 +620,15 @@ def test_every_hook_runs_in_flow_order_in_the_real_script(tmp_path, monkeypatch)
 def test_the_macro_placement_hook_sees_the_flow_variables(tmp_path, monkeypatch):
     hook = _write(
         tmp_path / "macros.tcl",
-        'puts "SEES [llength $macros] $block $DESIGN [file tail $OUT_DIR]"\n',
+        'puts "SEES [llength $macros] [llength $rb_movable_macros] $block $DESIGN '
+        '[file tail $OUT_DIR]"\n',
     )
     backend, artefacts = _hooked_backend(
         tmp_path, monkeypatch, {"macro-placement": (str(hook),)}, macros=True
     )
 
     assert isinstance(backend.run(), PnrPassResults)
-    assert "SEES 1 rb_blk demo_top demo_pnr" in _log_lines(artefacts)
+    assert "SEES 1 1 rb_blk demo_top demo_pnr" in _log_lines(artefacts)
 
 
 def test_the_macro_placement_hook_does_not_run_without_macros(tmp_path, monkeypatch):
@@ -665,6 +720,64 @@ def test_a_failing_hook_stops_the_flow_and_is_recorded(tmp_path, monkeypatch):
         for e in events
     )
     assert "DONE" not in "\n".join(_log_lines(artefacts))
+
+
+def test_a_failing_hook_is_the_last_step(tmp_path, monkeypatch):
+    from rtl_buddy.tools.pnr_checkpoints import last_step
+
+    hook = _write(tmp_path / "bad.tcl", 'error "boom"\n')
+    backend, artefacts = _hooked_backend(
+        tmp_path, monkeypatch, {"after-cts": (str(hook),)}
+    )
+
+    assert isinstance(backend.run(), PnrFailResults)
+    assert last_step(_events(_runs(artefacts)[0])) == {
+        "step": "hook after-cts",
+        "status": "error",
+        "error": "boom",
+    }
+
+
+_REPORT_STUBS = r"""
+proc report_worst_slack {args} {
+    set kind [expr {"-min" in $args ? "min" : "max"}]
+    puts "worst slack $kind [expr {[info exists ::rb_final] ? "1.000" : "-9.000"}]"
+}
+proc report_tns {args} {
+    set kind [expr {"-min" in $args ? "min " : ""}]
+    puts "tns $kind[expr {[info exists ::rb_final] ? "0.00" : "-50.00"}]"
+}
+proc report_design_area {args} {
+    puts "Design area [expr {[info exists ::rb_final] ? 100 : 7}] um^2 50% utilization."
+}
+"""
+
+
+def test_a_report_a_hook_prints_does_not_become_the_result(tmp_path, monkeypatch):
+    early = _write(
+        tmp_path / "clock_report.tcl",
+        "report_worst_slack -max\nreport_worst_slack -min\nreport_tns\n"
+        "report_tns -min\nreport_design_area\n",
+    )
+    final = _write(tmp_path / "final.tcl", "set rb_final 1\n")
+    backend, _artefacts = _hooked_backend(
+        tmp_path,
+        monkeypatch,
+        {"after-cts": (str(early),), "before-reports": (str(final),)},
+    )
+    harness = tmp_path / "harness.tcl"
+    harness.write_text(
+        harness.read_text().replace(
+            "source [lindex $argv 0]", _REPORT_STUBS + "source [lindex $argv 0]"
+        )
+    )
+
+    res = backend.run()
+
+    assert isinstance(res, PnrPassResults), res.results
+    assert res.results["area_um2"] == 100.0
+    assert res.results["wns_setup_ps"] > 0 and res.results["wns_hold_ps"] > 0
+    assert res.results["tns_ps"] == 0.0 and res.results["tns_hold_ps"] == 0.0
 
 
 def test_hooks_run_without_checkpoints(tmp_path, monkeypatch):

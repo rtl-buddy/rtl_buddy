@@ -38,13 +38,18 @@ proc rb::hook::run {point path} {
         emit hook_end $point $path [list status ok elapsed_s $elapsed]
         return
     }
+    if {$code == 3 || $code == 4} {
+        set message "invoked [lindex {- - - break continue} $code] outside of a loop"
+        set options [dict create -code error -level 0 -errorinfo $message]
+        set code 1
+    }
     emit hook_end $point $path [list status error elapsed_s $elapsed error $message]
     if {$code == 1} {
         # OpenROAD prints errorInfo, not the message: lead it with the prefix
         # and keep the original trace under it.
         set prefixed "Hook $point ($path): $message"
         set info [dict get $options -errorinfo]
-        if {[string first $message $info] == 0} {
+        if {$message eq "" || [string first $message $info] == 0} {
             set info "$prefixed[string range $info [string length $message] end]"
         }
         dict set options -errorinfo $info
