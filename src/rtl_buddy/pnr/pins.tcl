@@ -139,7 +139,7 @@ proc rb::pins::place {where pattern x y layer size {snap 1}} {
 
 # Classify the signal ports by the entries recorded since `track` was set: a
 # port with more than one exact entry, a port with no exact entry that several
-# region rules match, and a port nothing matches. Supply ports are skipped.
+# side or group rules match, and a port nothing matches. Supply ports are skipped.
 # Each non-empty class is reported on a `RB-PINS-COMPLETE: class count ports`
 # line naming up to `limit` ports, then the flow stops with an error.
 proc rb::pins::check_complete {{limit 10}} {

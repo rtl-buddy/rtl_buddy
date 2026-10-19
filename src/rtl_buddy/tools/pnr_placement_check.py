@@ -30,7 +30,7 @@ DEF_ORIENT = {
 #: What each `RB-PINS-COMPLETE` class means, for the failure description.
 PINS_COMPLETE_CLASSES = {
     "duplicate-exact": "with more than one exact entry",
-    "several-regions": "with no exact entry, matched by several region rules",
+    "several-regions": "with no exact entry, matched by several side or group rules",
     "uncovered": "matched by no entry",
 }
 
