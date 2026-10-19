@@ -185,8 +185,18 @@ def _reap_with_rusage(proc: subprocess.Popen) -> ManagedProcessResult:
     for stream in (proc.stdout, proc.stderr):
         if stream:
             stream.close()
-    _pid, status, usage = os.wait4(proc.pid, 0)
-    proc.returncode = os.waitstatus_to_exitcode(status)
+    usage = None
+    # Popen.wait() takes this lock too, so an interrupt's reaper waits for this
+    # reap and then sees the return code instead of racing os.wait4.
+    with getattr(proc, "_waitpid_lock", threading.Lock()):
+        if proc.returncode is None:
+            try:
+                _pid, status, usage = os.wait4(proc.pid, 0)
+                proc.returncode = os.waitstatus_to_exitcode(status)
+            except ChildProcessError:
+                pass
+    if proc.returncode is None:
+        proc.wait()
     return ManagedProcessResult(
         returncode=proc.returncode, stdout=stdout_data, stderr=stderr_data, rusage=usage
     )

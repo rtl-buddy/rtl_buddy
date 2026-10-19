@@ -3381,14 +3381,19 @@ class OpenRoadPnr:
         )
         if end not in log_text.splitlines():
             return None
-        tried = {
+        written = {
             e.get("stage")
             for e in pnr_checkpoints.read_progress(self._ckpt_run_dir)
-            if e.get("event") == "checkpoint_begin"
+            if e.get("event") == "checkpoint" and e.get("status") == "ok"
         }
         for stage in self._ckpt_stages():
+            if stage in written or stage == self.stop_after:
+                continue
+            error = self._checkpoint_error(stage)
+            if error is not None:
+                return f"checkpoint {_checkpoint_name(stage)} was not written: {error}"
             anchor = pnr_checkpoints.STAGE_ANCHORS.get(stage)
-            if stage in tried or anchor is None or stage == self.stop_after:
+            if anchor is None:
                 continue
             command, edge = anchor
             return (

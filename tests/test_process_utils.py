@@ -404,3 +404,14 @@ def test_rusage_rejects_two_pipes_and_a_timeout(monkeypatch, kwargs):
 
     with pytest.raises(ValueError, match="rusage"):
         process_utils.run_managed_process(["true"], rusage=True, **kwargs)
+
+
+def test_rusage_reap_tolerates_a_reaper_that_won():
+    """An interrupt's reaper may `wait()` the child first; the rusage reap then reports its exit code."""
+    proc = subprocess.Popen(["sh", "-c", "exit 3"], stdout=subprocess.PIPE)
+    proc.wait()
+
+    result = process_utils._reap_with_rusage(proc)
+
+    assert result.returncode == 3
+    assert result.rusage is None
