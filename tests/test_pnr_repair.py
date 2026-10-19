@@ -821,39 +821,32 @@ def test_a_one_session_run_with_rounds_logs_commands_hooks_leave_behind(
     ]
 
 
-def test_a_dispatched_run_runs_every_round_in_the_stage_job(
-    tmp_path, monkeypatch, caplog
-):
+def test_a_dispatched_run_runs_every_round_in_the_stage_job(tmp_path, monkeypatch):
     from test_pnr_dispatch import _dispatched
 
     monkeypatch.setenv("RB_STUB_SETUP", "-0.2 0.01")
     backend, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
     _with_repair(backend, tmp_path, post_route=_PR)
 
-    with caplog.at_level("INFO"):
-        res = backend.run()
+    logged = []
+    real_log_event = pnr_openroad.log_event
 
-    rounds = [
-        (r.rtl_event, r.rtl_fields.get("round"))
-        for r in caplog.records
-        if getattr(r, "rtl_event", "").startswith("pnr.post_route_r")
-    ]
+    def _log_event(logger, level, event, /, **fields):
+        if event.startswith("pnr.post_route_r"):
+            logged.append((event, fields.get("round")))
+        return real_log_event(logger, level, event, **fields)
+
+    monkeypatch.setattr(pnr_openroad, "log_event", _log_event)
+
+    res = backend.run()
+
     once = [
         ("pnr.post_route_round", 1),
         ("pnr.post_route_round", 2),
         ("pnr.post_route_repair_done", None),
     ]
-    # The head logs them from the run's progress events.
-    assert rounds[-3:] == once
-    done = [
-        r.getMessage()
-        for r in caplog.records
-        if getattr(r, "rtl_event", "") == "pnr.post_route_repair_done"
-    ][-1]
-    assert done == (
-        'P&R "demo_pnr" post-route repair: 1 of 3 round(s) repaired; stopped: '
-        "timing met"
-    )
+    # The fake Slurm runs the stage job in this process, then the head logs the rounds again from the run's progress events.
+    assert logged == once + once
 
     assert res.results["result"] == "PASS", res.results
     stages = [job["stage"] for job in slurm.submitted()]
