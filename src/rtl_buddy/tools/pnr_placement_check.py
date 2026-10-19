@@ -229,9 +229,12 @@ def check_routed_def(tags: FloorplanTags, def_path: str) -> list[str]:
     if units is None or tags.dbu is None:
         return [f"{def_path} has no UNITS DISTANCE MICRONS, or the log no {DBU_TAG}"]
     scale = Fraction(units, tags.dbu)
+    # A pin shape is its placement plus an offset, each truncated on its own.
+    pin_slack = 0 if scale.denominator == 1 else 1
 
-    def _def_units(value: int) -> Fraction:
-        return value * scale
+    def _def_units(value: int) -> int:
+        # `write_def` truncates toward zero when DEF units are coarser than the database's.
+        return int(value * scale)
 
     problems = []
     for name, (x, y, orient) in tags.macros.items():
@@ -239,10 +242,10 @@ def check_routed_def(tags: FloorplanTags, def_path: str) -> list[str]:
         want = (_def_units(x), _def_units(y), DEF_ORIENT.get(orient, orient))
         if placed is None:
             problems.append(f"macro {name} is not placed in the routed DEF")
-        elif (Fraction(placed[0]), Fraction(placed[1]), placed[2]) != want:
+        elif tuple(placed) != want:
             problems.append(
                 f"macro {name} is at ({placed[0]}, {placed[1]}) {placed[2]} in the "
-                f"routed DEF, not ({_fmt(want[0])}, {_fmt(want[1])}) {want[2]} "
+                f"routed DEF, not ({want[0]}, {want[1]}) {want[2]} "
                 f"as the floorplan placed it (DEF units)"
             )
     for name, (layer, box) in tags.pins.items():
@@ -252,20 +255,17 @@ def check_routed_def(tags: FloorplanTags, def_path: str) -> list[str]:
             problems.append(f"pin {name} has no shape in the routed DEF")
             continue
         if not any(
-            shape_layer == layer and tuple(Fraction(v) for v in shape) == want_box
+            shape_layer == layer
+            and all(abs(v - w) <= pin_slack for v, w in zip(shape, want_box))
             for shape_layer, shape in shapes
         ):
             got_layer, got = shapes[0]
             problems.append(
                 f"pin {name} is {got_layer} {list(got)} in the routed DEF, not "
-                f"{layer} [{', '.join(_fmt(v) for v in want_box)}] as the floorplan placed it "
+                f"{layer} {list(want_box)} as the floorplan placed it "
                 "(DEF units)"
             )
     return problems
-
-
-def _fmt(value: Fraction) -> str:
-    return str(value.numerator) if value.denominator == 1 else str(float(value))
 
 
 def describe(problems: list[str]) -> str:

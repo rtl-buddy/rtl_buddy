@@ -1034,6 +1034,17 @@ def test_routed_check_scales_def_units(tmp_path):
     assert pnr_placement_check.check_routed_def(tags, path) == []
 
 
+def test_routed_check_truncates_to_coarser_def_units_as_write_def_does(tmp_path):
+    """11 and 13 DBU at 2000 per micron are written as 5 and 6 at 1000; a pin shape may be one unit off."""
+    tags = pnr_placement_check.FloorplanTags(
+        dbu=2000,
+        macros={"u_b": (11, 13, "R0")},
+        pins={"dout": ("metal2", (-261, -101, 301, 181))},
+    )
+    path = _def(tmp_path, units=1000)
+    assert pnr_placement_check.check_routed_def(tags, path) == []
+
+
 def test_routed_check_names_a_moved_macro_and_a_moved_pin(tmp_path):
     problems = pnr_placement_check.check_routed_def(
         _tags(), _def(tmp_path, mx=100010, px=402)
