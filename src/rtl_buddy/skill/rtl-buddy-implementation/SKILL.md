@@ -34,12 +34,11 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
 - **Checkpoints.** For a long or failing P&R, set `checkpoints: true` (or
   `stages: true`, one session per stage) in `pnr.yaml`. A `FAIL` row then
   carries `checkpoint_dir`, `checkpoint_stages` and `last_step`;
-  `checkpoints/latest/progress.jsonl` shows the step a flow is in. A
-  checkpoint is never routed or final: report it as its stage, as for a
-  `--stop-after` or `mode: probe` `PASS` (`routed: false`); a probe skips
-  timing repair, so its slack is not a closure result. `--resume <run> --from <stage>`
-  retries later stages of a staged run; `--dispatch slurm` runs each stage
-  as a Slurm job.
+  `checkpoints/latest/progress.jsonl` shows the current step. A checkpoint
+  is never routed or final: report it as its stage, as for a `--stop-after`
+  or `mode: probe` `PASS` (`routed: false`). `--resume <run> --from <stage>`
+  retries later stages of a staged run; `--dispatch slurm` makes each stage
+  a Slurm job.
 - **Run hooks.** Extra steps go in `hooks:` of the `pnr.yaml` run: Tcl files
   sourced at fixed flow points (`session`, `after-cts`, `macro-placement`, ...),
   never in an edited `pnr.tcl`. A failing hook names its point and file. Staged:
