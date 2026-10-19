@@ -53,7 +53,7 @@ class RotatedMacroFootprint(StrEnum):
     NONE = "none"
 
 
-DEFAULT_ROTATED_MACRO_FOOTPRINT = RotatedMacroFootprint.BLOCK
+DEFAULT_ROTATED_MACRO_FOOTPRINT = RotatedMacroFootprint.DIAMOND_LEGALIZER
 
 
 @serde
@@ -75,7 +75,7 @@ class PlacementFile:
     routability_use_grt: bool | None = field(rename="routability-use-grt", default=None)
     # `global_placement -timing_driven`; `None` inherits, unset means off.
     timing_driven: bool | None = field(rename="timing-driven", default=None)
-    # `block`, `diamond-legalizer` or `none`; `None` inherits, unset means `block`.
+    # `block`, `diamond-legalizer` or `none`; `None` inherits, unset means `diamond-legalizer`.
     rotated_macro_footprint: str | None = field(
         rename="rotated-macro-footprint", default=None
     )

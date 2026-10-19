@@ -178,7 +178,7 @@ cfg-pnr-platforms:
 - **`placement.macro-cell-halo`** (default 1.0 µm) keeps standard cells off macros with a hard blockage. Without it, the router can report a Metal Spacing violation at a pin on a hardened block's edge. `0` disables it.
 - **`placement.tie-separation`** (default 0 µm) is how far from its load each per-load tie cell is placed; see [Flow steps](#flow-steps).
 - **`placement.reference-hpwl`** (positive number, unset by default) passes `-reference_hpwl` to `global_placement`. Unset, the placer's density-penalty controller derives its reference HPWL from the design size, which on a large design spreads cells less and ends routability inflation early, so global route can overflow. A fixed value such as `446000000` spreads cells further and can clear the overflow.
-- **`placement.rotated-macro-footprint`** (`block`, `diamond-legalizer` or `none`; default `block`) works around OpenROAD's legalizer for macros turned by 90 degrees; see [Rotate a macro](#rotate-a-macro).
+- **`placement.rotated-macro-footprint`** (`diamond-legalizer`, `block` or `none`; default `diamond-legalizer`) works around OpenROAD's legalizer for macros turned by 90 degrees; see [Rotate a macro](#rotate-a-macro).
 - **`placement.routability-driven`** (default `false`) adds `-routability_driven` to `global_placement`: the placer estimates congestion, inflates cells in congested regions and re-spreads them. Turn it on for a congested block whose global route overflows. **`placement.routability-use-grt`** (default `false`) adds `-routability_use_grt`, which estimates that congestion with the global router instead of RUDY; slower, closer to the real route. It takes effect only in routability mode, so a platform whose resolved settings enable it without `routability-driven` fails to load. Like the other `placement.*` keys, each is set on the PDK and overridden per platform.
 - **`placement.timing-driven`** (default `false`) adds `-timing_driven` to `global_placement`: the placer estimates slack as it spreads the cells and raises the weight of the nets on the worst paths, so they end up shorter. On OpenROAD 26Q4 the placer also runs a non-virtual `repair_design` inside placement and keeps what it does: it inserts buffers and resizes cells while it places, which grows the design's area (`GPL-0107` logs each pass's area change and `GPL-1013` the total, +5.47% on the template's SKY130 flat example). It uses the SDC and the wire RC that the flow has loaded by then, so set `layer-rc-tcl` where the technology LEF has no layer RC; see [Set wire RC](#set-wire-rc). Without it the placement ignores timing, and the `repair_design` after global placement is the first step that buffers and resizes. Like the other `placement.*` keys, it is set on the PDK, overridden per platform and per run, and part of a [hardened block's](#harden-a-block) configuration.
 - **`cts-buffer`** takes a name or a list. With a list, the first entry is the root buffer.
@@ -190,7 +190,7 @@ cfg-pnr-platforms:
       # ...
       placement:
         density: 0.25
-        rotated-macro-footprint: diamond-legalizer
+        rotated-macro-footprint: block
   ```
 - **`port-buffer`** (unset by default) is the cell `buffer_ports` inserts on each port of a run with `buffer-ports` on, passed as `-buffer_cell`; unset lets OpenROAD choose. See [Harden a block](#harden-a-block).
 - **`cts-sink-clustering`** (default `true`) passes `-sink_clustering_enable` to CTS. Set it to `false` when CTS fails with `CTS-0080 Sink not found`, as it can on coincident clock pins or a large ASAP7 clock tree.
@@ -421,11 +421,11 @@ OpenROAD's default legalizer blocks a turned fixed macro over its master's unrot
 
 | Value | Effect |
 | --- | --- |
-| `block` (default) | A hard placement blockage over each turned macro's unrotated footprint, grown by its [cell halo](#tune-the-process-dependent-steps), then outward to whole rows and sites as the legalizer rounds it, and clipped to the core, exists during global placement only, like a [`lifetime: global-placement`](#floorplan-controls) blockage. No cell is placed where legalization would refuse it, and the area outside the macro stays empty. |
-| `diamond-legalizer` | Every `detailed_placement`, including the one after post-global-route hold repair, runs `-use_diamond_legalizer`, which sees the macro's real box. |
+| `diamond-legalizer` (default) | Every `detailed_placement`, including the one after post-global-route hold repair, runs `-use_diamond_legalizer`, which sees the macro's real box. Global placement is not constrained. |
+| `block` | A hard placement blockage over each turned macro's unrotated footprint, grown by its [cell halo](#tune-the-process-dependent-steps), then outward to whole rows and sites as the legalizer rounds it, and clipped to the core, exists during global placement only, like a [`lifetime: global-placement`](#floorplan-controls) blockage. No cell is placed where legalization would refuse it, but the part of the footprint outside the macro stays empty during global placement, which can lengthen wires and cost timing. |
 | `none` | Neither. |
 
-The log names each blocked footprint under `>>> Rotated macros`, or the switch to the diamond legalizer.
+The log names each blocked footprint under `>>> Rotated macros`, or the switch to the diamond legalizer. A value other than the default is part of a [hardened block's](#harden-a-block) configuration, so setting `block` or `none` makes the block's abstract stale.
 
 ## Read macros and pins from planner files
 

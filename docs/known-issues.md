@@ -235,7 +235,7 @@ With the `default` mapped-run script, `&dch -f` choices and `&nf` area recovery 
 
 ## OpenROAD's legalizer blocks a rotated macro's unrotated footprint
 
-OpenROAD's default `detailed_placement` legalizer treats a fixed macro turned by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) as covering its master's unrotated width and height from its lower-left corner (OpenROAD#11735). Cells that global placement put in that footprint outside the macro are moved out, some far, and the area stays empty. `rb pnr` blocks the footprint during global placement by default; `placement.rotated-macro-footprint` selects the diamond legalizer instead, or neither. See [Rotate a macro](concepts/pnr.md#rotate-a-macro).
+OpenROAD's default `detailed_placement` legalizer treats a fixed macro turned by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) as covering its master's unrotated width and height from its lower-left corner (OpenROAD#11735). Cells that global placement put in that footprint outside the macro are moved out, some far, and the area stays empty. `rb pnr` runs `detailed_placement -use_diamond_legalizer`, which sees the macro's real box, by default. `placement.rotated-macro-footprint: block` blocks the footprint during global placement instead: no cell is placed where legalization would refuse it, but the part of the footprint outside the macro stays empty during global placement, which can lengthen wires and cost timing. `none` selects neither. See [Rotate a macro](concepts/pnr.md#rotate-a-macro).
 
 ## A `pin-constraints` file must not constrain a port that has an exact pin
 

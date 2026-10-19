@@ -377,7 +377,7 @@ class PnrPlatformConfig:
         return self._placement_timing_driven
 
     def get_placement_rotated_macro_footprint(self) -> str:
-        """How the flow handles a macro rotated by 90 degrees (`block`, `diamond-legalizer` or `none`), platform over PDK, default `block`."""
+        """How the flow handles a macro rotated by 90 degrees (`block`, `diamond-legalizer` or `none`), platform over PDK, default `diamond-legalizer`."""
         return self._placement_rotated_macro_footprint
 
     def get_dont_use_cells(self) -> list[str]:

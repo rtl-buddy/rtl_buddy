@@ -27,6 +27,7 @@ from test_pnr_checkpoints import (
     _runs,
 )
 
+from rtl_buddy.config.pdk import PlacementFile
 from rtl_buddy.config.pnr import CHECKPOINT_STAGES, PNR_STAGES, PnrConfigFile
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.tools import pnr_checkpoints, pnr_stages
@@ -301,7 +302,12 @@ def test_global_placement_only_state_lives_in_the_place_session(tmp_path, monkey
             "after-global-placement": (str(hooks / "gp.tcl"),),
         },
     )
-    backend, artefacts = _staged(tmp_path, monkeypatch, pnr_cfg=cfg)
+    backend, artefacts = _staged(
+        tmp_path,
+        monkeypatch,
+        pnr_cfg=cfg,
+        pdk_fields={"placement": PlacementFile(rotated_macro_footprint="block")},
+    )
     monkeypatch.setattr(backend, "_has_tcl_command", lambda *_a: True)
 
     res = backend.run()

@@ -445,7 +445,10 @@ def test_unset_keys_add_nothing_around_global_placement(tmp_path):
     ids=["pack", "rtl-mp"],
 )
 def test_rotated_footprint_block_blocks_it_for_global_placement_only(tmp_path, fp):
-    text = _render(tmp_path, fp)
+    platform = _platform(
+        tmp_path, placement=PlacementFile(rotated_macro_footprint="block")
+    )
+    text = _render(tmp_path, fp, platform)
 
     assert "set rb_rotated_macros [rb::rotated::macros $macros]" in text
     assert (
@@ -488,6 +491,18 @@ def test_rotated_footprint_diamond_legalizer_reaches_every_detailed_placement(tm
     assert "  set RB_DPL_OPTIONS -use_diamond_legalizer\n" in text
     assert "RB_GP_BLOCKAGES" not in text
     assert text.count("detailed_placement {*}$RB_DPL_OPTIONS\n") == 4
+    assert "detailed_placement\n" not in text
+
+
+def test_a_turned_macro_gets_the_diamond_legalizer_unless_the_footprint_is_set(
+    tmp_path,
+):
+    fp = _floorplan(macros=[PnrMacro("u_a", location=(1.0, 2.0), orientation="R90")])
+    text = _render(tmp_path, fp)
+
+    assert "  set RB_DPL_OPTIONS -use_diamond_legalizer\n" in text
+    assert "RB_GP_BLOCKAGES" not in text
+    assert "[rb::rotated::block_footprints $block" not in text
     assert "detailed_placement\n" not in text
 
 
@@ -577,8 +592,15 @@ def test_run_placement_overrides_the_platform_and_pdk_field_by_field(tmp_path):
     assert again.get_placement_density() == 0.45
 
 
-def test_rotated_macro_footprint_defaults_to_block(tmp_path):
-    assert _platform(tmp_path).get_placement_rotated_macro_footprint() == "block"
+def test_rotated_macro_footprint_defaults_to_the_diamond_legalizer(tmp_path):
+    assert (
+        _platform(tmp_path).get_placement_rotated_macro_footprint()
+        == "diamond-legalizer"
+    )
+    explicit = _platform(
+        tmp_path, placement=PlacementFile(rotated_macro_footprint="block")
+    )
+    assert explicit.get_placement_rotated_macro_footprint() == "block"
 
 
 def test_an_unknown_rotated_macro_footprint_fails(tmp_path):
@@ -617,6 +639,25 @@ def test_unset_keys_leave_the_abstract_record_as_it_was(tmp_path):
         assert key not in record["floorplan"]
     assert "lifetime" not in record["floorplan"]["blockages"][0]
     assert "rotated_macro_footprint" not in record["placement"]
+
+
+def test_only_a_non_default_rotated_footprint_enters_the_digest(tmp_path):
+    default = _abstract(tmp_path)
+    assert "rotated_macro_footprint" not in default["placement"]
+
+    def footprint(value):
+        platform = _platform(
+            tmp_path, placement=PlacementFile(rotated_macro_footprint=value)
+        )
+        return _abstract(tmp_path, platform)
+
+    diamond = footprint("diamond-legalizer")
+    assert "rotated_macro_footprint" not in diamond["placement"]
+    assert pnr_abstract.config_digest(diamond) == pnr_abstract.config_digest(default)
+    for value in ("block", "none"):
+        record = footprint(value)
+        assert record["placement"]["rotated_macro_footprint"] == value
+        assert pnr_abstract.config_digest(record) != pnr_abstract.config_digest(default)
 
 
 def test_set_keys_enter_the_abstract_record(tmp_path):
