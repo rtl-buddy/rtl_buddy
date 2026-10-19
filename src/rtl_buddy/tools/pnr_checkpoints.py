@@ -227,14 +227,14 @@ def render_staged_block(
     run_dir: str,
     pred_dir: str | None,
     *,
-    order: tuple[str, ...],
     session: str = "staged run",
 ) -> str:
-    """Return the checkpoint block of one staged session; `order` is the run's stages and `session` names the session in its first log line.
+    """Return the checkpoint block of one staged session; `session` names the session in its first log line.
 
-    `RB_RUN_DIR` is where the session writes its checkpoint and events; `RB_PRED_DIR` holds the checkpoint it starts from. They are the only run-specific lines, so two runs' scripts of a stage compare equal apart from them (see `RUN_BINDING_RE`). A checkpoint that cannot be written fails the session.
+    `RB_RUN_DIR` is where the session writes its checkpoint and events; `RB_PRED_DIR` holds the checkpoint it starts from. They are the only run-specific lines, so two runs' scripts of a stage compare equal apart from them (see `RUN_BINDING_RE`). A checkpoint that cannot be written fails the session. Only `post_route_repair`'s own sessions list it among the stages, so the other stages' scripts are the same whether a run repairs after routing or not.
     """
     index = STAGE_INDEX[stage]
+    order = [s for s in STAGE_INDEX if s != "post_route_repair" or s == stage]
     lines = [
         "",
         f'puts ">>> Stage {index}_{stage} ({session})"',

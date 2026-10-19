@@ -1980,7 +1980,6 @@ class OpenRoadPnr:
                 stage,
                 self._ckpt_run_dir or "",
                 self._pred_dir(stage),
-                order=self._stages,
                 session=session,
             ),
         }

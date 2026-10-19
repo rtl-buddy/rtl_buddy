@@ -681,6 +681,31 @@ def test_a_probe_cannot_be_resumed_into_a_closure_run(tmp_path, monkeypatch):
     assert len(_runs(artefacts)) == 1
 
 
+def test_a_staged_run_without_repair_resumes_into_post_route_repair(
+    tmp_path, monkeypatch
+):
+    plain, artefacts = _repair_backend(tmp_path, monkeypatch, stages=True)
+    assert plain.run().results["result"] == "PASS"
+    (plain_dir,) = _runs(artefacts)
+
+    repair, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        stages=True,
+        resume=str(plain_dir),
+        resume_from="post_route_repair",
+        env={"RB_STUB_SETUP": "-0.2 0.01"},
+    )
+    res = repair.run()
+
+    assert res.results["result"] == "PASS", res.results
+    resumed = next(p for p in _runs(artefacts) if p != plain_dir)
+    assert [r["round"] for r in _rounds(resumed)] == [1, 2]
+    r1 = (resumed / "06_post_route_repair.r1.repair.tcl").read_text()
+    assert f'set RB_PRED_DIR "{plain_dir}"' in r1
+
+
 def test_the_abstract_digest_keeps_the_shorthand_and_names_other_repairs(tmp_path):
     from rtl_buddy.tools import pnr_abstract
 
