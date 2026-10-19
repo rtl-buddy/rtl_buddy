@@ -52,7 +52,9 @@ DESIGN = "demo_top"
 # `RB_STUB_EXIT=<cmd>` exits 0 on entry, as a flow that ends early by accident;
 # `RB_STUB_RULES=1` gives the database global-connection rules, so `rb::global_connect`
 # calls `global_connect`. `global_connect` and the database writers log a
-# `stub: ...` line, which orders them in the log.
+# `stub: ...` line, which orders them in the log;
+# `RB_STUB_DRC=<n>` makes `detailed_route` report n DRC lines and write a maze log;
+# `RB_STUB_ERRLINE=<cmd>` prints an OpenROAD `[ERROR` line in that command, which returns.
 _HARNESS = r"""
 # `clock format` loads msgcat through the auto-loader, which the catch-all
 # `unknown` below would swallow; load it first.
@@ -80,6 +82,9 @@ proc rb_stub {name args} {
         puts "\[ERROR STUB-0001\] $name failed: \"quoted\"\nsecond line"
         error "STUB-0001 $name failed: \"quoted\"\nsecond line"
     }
+    if {[info exists env(RB_STUB_ERRLINE)] && $env(RB_STUB_ERRLINE) eq $name} {
+        puts "\[ERROR STUB-0002\] $name complained but returned"
+    }
     return ""
 }
 foreach cmd {link_design read_sdc initialize_floorplan place_pins
@@ -88,6 +93,17 @@ foreach cmd {link_design read_sdc initialize_floorplan place_pins
              detailed_placement clock_tree_synthesis repair_timing
              check_placement global_route detailed_route filler_placement} {
     proc $cmd {args} [list rb_stub $cmd]
+}
+proc detailed_route {args} {
+    global env
+    if {[info exists env(RB_STUB_DRC)]} {
+        foreach {flag lines} [list -output_drc $env(RB_STUB_DRC) -output_maze 1] {
+            set fh [open [lindex $args [expr {[lsearch -exact $args $flag] + 1}]] w]
+            for {set i 0} {$i < $lines} {incr i} { puts $fh "$flag $i" }
+            close $fh
+        }
+    }
+    rb_stub detailed_route
 }
 proc rb_write {path text} {
     set fh [open $path w]
@@ -100,11 +116,17 @@ proc write_def {path} {
     puts "stub: write_def [file tail $path]"
     rb_write $path "DESIGN $DESIGN ;\nEND DESIGN"
 }
-proc write_db {path} { puts "stub: write_db [file tail $path]"; rb_write $path "odb" }
+proc write_db {path} {
+    rb_stub write_db
+    puts "stub: write_db [file tail $path]"
+    rb_write $path "odb"
+}
 proc write_sdc {args} { rb_write [lindex $args end] "sdc" }
 proc write_verilog {path} { rb_write $path "module m(); endmodule" }
 proc write_guides {path} { rb_write $path "guides" }
 proc write_global_route_segments {path} { rb_write $path "segments" }
+proc write_abstract_lef {args} { rb_write [lindex $args end] "MACRO demo_top" }
+proc write_timing_model {args} { rb_write [lindex $args end] "library (demo_top) {}" }
 source [lindex $argv 0]
 """
 
@@ -145,32 +167,32 @@ def _tcl_command(harness: Path, script: str) -> list[str]:
     return [sys.executable, "-c", _EMBEDDED_DRIVER, str(harness), script]
 
 
-def _pdk(tmp_path, **fields):
+def _pdk(tmp_path, **changes):
+    fields = {
+        "name": "nangate45",
+        "site": "FreePDK45_38x28_10R_NP_162NW_34O",
+        "corners": {"typ": "pdk/lib/typ.lib"},
+        "tech_lef": "pdk/lef/tech.lef",
+        "macro_lef": "pdk/lef/cells.lef",
+        "tie_hi": "LOGIC1_X1/Z",
+        "tie_lo": "LOGIC0_X1/Z",
+        "fill_cells": ["FILLCELL_X1"],
+        "klayout_tech": "pdk/klayout/tech.lyt",
+        "cell_gds": "pdk/gds/cells.gds",
+    }
     return PdkConfig(
-        PdkConfigFile(
-            **fields,
-            name="nangate45",
-            site="FreePDK45_38x28_10R_NP_162NW_34O",
-            corners={"typ": "pdk/lib/typ.lib"},
-            tech_lef="pdk/lef/tech.lef",
-            macro_lef="pdk/lef/cells.lef",
-            tie_hi="LOGIC1_X1/Z",
-            tie_lo="LOGIC0_X1/Z",
-            fill_cells=["FILLCELL_X1"],
-            klayout_tech="pdk/klayout/tech.lyt",
-            cell_gds="pdk/gds/cells.gds",
-        ),
-        str(tmp_path / "root_config.yaml"),
+        PdkConfigFile(**{**fields, **changes}), str(tmp_path / "root_config.yaml")
     )
 
 
-def _platform(pdk):
+def _platform(pdk, signal="metal2-metal6", **platform):
     return PnrPlatformConfig(
         PnrPlatformConfigFile(
             name="nangate45_typ",
             pdk="nangate45",
             cts_buffer="BUF",
-            routing_layers=PnrRoutingLayersFile(signal="metal2-metal6", clock="metal4"),
+            routing_layers=PnrRoutingLayersFile(signal=signal, clock="metal4"),
+            **platform,
         ),
         lambda _name: pdk,
     )
@@ -269,7 +291,8 @@ def _backend(
         )
         return subprocess.CompletedProcess(cmd, done.returncode, None, done.stderr)
 
-    def _session(cmd, *, stdout, env):
+    def _session(cmd, *, stdout, env, cwd):
+        assert cwd == backend.artefact_dir
         done = _run(cmd, stdout=stdout)
         return (
             done.returncode,
@@ -353,19 +376,20 @@ def test_checkpoints_key_loads_from_yaml(tmp_path):
     assert suite.get_runs("one")[0].get_checkpoints() == ("global_route",)
 
 
-def _render(tmp_path, checkpoints):
+def _render(tmp_path, checkpoints, *, pnr_cfg=None, **platform):
+    """Write a one-session run's `pnr.tcl`; `platform` are `PnrPlatformConfigFile` keywords."""
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
     _write_synth_config(tmp_path)
     backend = OpenRoadPnr(
         name="demo/openroad",
-        pnr_cfg=_pnr_cfg(tmp_path, checkpoints),
+        pnr_cfg=pnr_cfg or _pnr_cfg(tmp_path, checkpoints),
         suite_dir=str(tmp_path),
         root_cfg=MagicMock(),
     )
     if checkpoints is not None:
         backend._ckpt_run_dir = str(tmp_path / "ck" / "run")
-    platform = _platform(_pdk(tmp_path))
+    platform = _platform(_pdk(tmp_path), **platform)
     return Path(backend._write_script(platform, backend.pnr_cfg.get_floorplan()))
 
 

@@ -27,6 +27,8 @@ namespace eval rb::ckpt {
     variable order {}
     # Stages whose checkpoint carries the route guides and segments.
     variable routed {}
+    # stage -> {kind file ...}: reports in $OUT_DIR a stage's checkpoint keeps.
+    variable reports {}
     # Globals a staged checkpoint saves for the next session.
     variable state {}
     # 1: this session measures its stages; 0: rb measures the session.
@@ -268,8 +270,9 @@ proc rb::ckpt::write_state {path} {
 
 # One checkpoint: ODB (what a resume re-enters), DEF (what KLayout stream-out
 # reads, so `rb pnr-export --checkpoint` needs no OpenROAD), the SDC, for the
-# stages in `routed` the route guides and global-route segments, and in a
-# staged run the saved globals. Guides alone do not restore the parasitics
+# stages in `routed` the route guides and global-route segments, in a staged
+# run the saved globals, and a copy of each of the stage's `reports` that it
+# wrote. Guides alone do not restore the parasitics
 # `estimate_parasitics -global_routing` needs. The supply connections of the
 # cells added since `pdngen` are made first.
 #
@@ -279,7 +282,8 @@ proc rb::ckpt::write_checkpoint {index stage {strict 0}} {
     variable dir
     variable routed
     variable state
-    global DESIGN
+    variable reports
+    global DESIGN OUT_DIR
     set base [file join $dir "${index}_${stage}"]
     set files [list odb "$base.odb" def "$base.def" sdc "$base.sdc"]
     if {[lsearch -exact $routed $stage] >= 0} {
@@ -287,6 +291,17 @@ proc rb::ckpt::write_checkpoint {index stage {strict 0}} {
     }
     if {[llength $state] > 0} {
         lappend files state "$base.state.tcl"
+    }
+    set copies {}
+    if {[dict exists $reports $stage]} {
+        foreach {kind name} [dict get $reports $stage] {
+            set report [file join $OUT_DIR $name]
+            if {[file exists $report]} {
+                set copy "$base.[file tail $name]"
+                lappend files $kind $copy
+                dict set copies $copy $report
+            }
+        }
     }
     puts ">>> Checkpoint ${index}_${stage}"
     emit checkpoint_begin [list stage [json_str $stage] index [json_str $index]]
@@ -301,6 +316,7 @@ proc rb::ckpt::write_checkpoint {index stage {strict 0}} {
                 guides   { write_guides $path }
                 segments { write_global_route_segments $path }
                 state    { write_state $path }
+                default  { file copy -force [dict get $copies $path] $path }
             }
         }
     } err]} {
@@ -323,12 +339,12 @@ proc rb::ckpt::write_checkpoint {index stage {strict 0}} {
 
 # Arm progress, stage resources and checkpoints. `steps` are the traced flow
 # commands; `config` is a dict of the namespace variables above (anchors,
-# wanted, order, routed, state, account, strict). A session that measures its
-# stages starts measuring the first one here.
+# wanted, order, routed, reports, state, account, strict). A session that
+# measures its stages starts measuring the first one here.
 proc rb::ckpt::arm {ckpt_dir progress_file steps config} {
     variable dir $ckpt_dir
     variable progress $progress_file
-    foreach key {anchors wanted order routed state account strict} {
+    foreach key {anchors wanted order routed reports state account strict} {
         if {[dict exists $config $key]} {
             variable $key [dict get $config $key]
         }
