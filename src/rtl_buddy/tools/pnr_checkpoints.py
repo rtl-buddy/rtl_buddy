@@ -321,7 +321,7 @@ def _written_checkpoints(events: list[dict]) -> dict[str, dict]:
 def last_step(events: list[dict]) -> dict | None:
     """Return `{"step", "status"}` for the step a run was in when its events stop.
 
-    `status` is `running`, `ok` or `error`; a begin with no end is `running`. A run hook counts as the step `hook <point>`.
+    `status` is `running`, `ok` or `error`; a begin with no end is `running`. A run hook counts as the step `hook <point>`, and a run stopped inside one names the hook, not the command it was running.
     """
     open_steps: list[str] = []
     last: dict | None = None
@@ -342,7 +342,9 @@ def last_step(events: list[dict]) -> dict | None:
             if e.get("error"):
                 last["error"] = e.get("error")
     if open_steps:
-        return {"step": open_steps[-1], "status": "running"}
+        # A command a hook runs belongs to the hook.
+        hooks = [s for s in open_steps if s.startswith("hook ")]
+        return {"step": (hooks or open_steps)[-1], "status": "running"}
     return last
 
 
