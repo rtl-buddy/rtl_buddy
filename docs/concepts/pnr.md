@@ -75,7 +75,7 @@ The flow prints the last two after `>>> Final reports` as `RB-CELL-COUNT: routed
 
 A pass is qualified with `pnr.no_wire_rc` when the pre-route steps had no wire RC; see [Set wire RC](#set-wire-rc).
 
-Every run that reached the end of the flow carries `routed: true`. A run ended by [`--stop-after`](#stop-after-a-stage) or by [`mode: probe`](#probe-without-timing-repair) carries `routed: false` and `stopped_after`, and its numbers come from a stage report, not from a routed design. A passing or stopped result carries the run's `mode`.
+Every run that reached the end of the flow carries `routed: true`. A run ended by [`--stop-after`](#stop-after-a-stage) or by [`mode: probe`](#probe-without-timing-repair) carries `routed: false` and `stopped_after`, and its numbers come from a stage report, not from a routed design. Every result carries the run's `mode`.
 
 `max_slew_violation_count`, `max_capacitance_violation_count` and `max_fanout_violation_count` count the routed design's pins that break a Liberty or SDC max-slew, max-capacitance or max-fanout limit, over every corner, as ORFS's `report_metrics` counts them. The summary shows them as the Slew/Cap/Fanout column, `pnr.log` prints them as `RB-ELECTRICAL: max_<check> <n>` after `>>> Final reports`, and `electrical.rpt` lists the violating pins. A pass with any violator is qualified `electrical N max-slew, ... violator(s)` and logs the warning `pnr.electrical_violators`. A count OpenROAD cannot report is left out.
 
@@ -263,8 +263,8 @@ runs:
 | `after-global-placement` | Right after `global_placement`, before `repair_tie_fanout` |
 | `after-repair-design` | Right after `repair_design`, before the legalizing `detailed_placement` |
 | `after-cts` | Right after `clock_tree_synthesis`, before the post-CTS legalization and the setup and hold repair, so the repair sees what the hook sets |
-| `after-global-route` | Right after `global_route`, before the global-route hold repair |
-| `before-detailed-route` | Immediately before `detailed_route` |
+| `after-global-route` | Right after `global_route`, before the [global-route repair](#repair-on-the-global-route) |
+| `before-detailed-route` | Immediately before `detailed_route`, and again before each [post-route repair round's](#repair-on-the-detailed-route) detailed route |
 | `before-reports` | After fill insertion and parasitic extraction, before the final reports |
 
 - The files of a point are sourced in list order at Tcl global scope, so the flow's variables are visible to them: `$OUT_DIR` and `$DESIGN` throughout, `$block` and `$macros` from macro placement on. A variable one file sets is still set in the next. `pnr.log` announces each file as `>>> Hook <point>: <path>`.
@@ -278,7 +278,7 @@ runs:
 - A configured file missing from disk fails the run at `setup`, naming `hooks.<point>[<index>]`, before OpenROAD starts.
 - Every hook file is an input to [stage checkpoints](#keep-stage-checkpoints) and to a [hardened block's](#harden-a-block) abstract, so editing one makes the abstract stale. `hooks` is part of the block's configuration only when set.
 - Commands a hook runs report their progress like the flow's own, but they do not move a stage checkpoint: a `global_placement` inside a hook leaves the `floorplan` checkpoint to the flow's own `global_placement`.
-- In a [staged run](#run-stages-as-separate-sessions) each hook point is sourced in the session of the stage that contains it, and `session` hooks are sourced again in every session. Session state a hook sets, such as a Tcl procedure, a `rename` wrapper or `set_wire_rc`, is gone in the next session; see [what a session keeps](#run-stages-as-separate-sessions). A `session` hook keeps it in every session, but from the first one on, so it also changes the steps before the hook point that it was written for.
+- In a [staged run](#run-stages-as-separate-sessions), and in a one-session run with [`post-route-repair`](#repair-on-the-detailed-route), each hook point is sourced in the session of the stage that contains it, and `session` hooks are sourced again in every session. Session state a hook sets, such as a Tcl procedure, a `rename` wrapper or `set_wire_rc`, is gone in the next session; see [what a session keeps](#run-stages-as-separate-sessions). A `session` hook keeps it in every session, but from the first one on, so it also changes the steps before the hook point that it was written for.
 - `after-pins` runs before rb's `buffer_ports`. A hook that buffers the ports itself needs `buffer-ports: false`, or rb buffers them again after it.
 
 ## Set wire RC
@@ -325,33 +325,34 @@ cfg-pnr-platforms:
 Each block takes:
 
 - `repair-design`: run `repair_design` with `slew-margin` and `cap-margin` (percent, 0 to 100) and `max-wire-length` (microns, positive). `{}` runs it with OpenROAD's defaults. Unset or `null` skips it.
-- `setup-margin` and `hold-margin`: run `repair_timing -setup` or `-hold` with that margin, in ns, at least 0. rb passes the margin in the Liberty time unit, so `0.05` is `-setup_margin 50` on a picosecond library and `-setup_margin 0.05` on a nanosecond one. A margin of `0` passes no option. Unset or `null` skips that repair.
+- `setup-margin` and `hold-margin`: run `repair_timing -setup` or `-hold` with that margin, in ns, at least 0. rb passes the margin in the Liberty time unit, so `0.05` is `-setup_margin 50` on a picosecond library and `-setup_margin 0.05` on a nanosecond one. A margin of `0` passes no option. Unset or `null` skips that repair. With `setup-margin` set, the hold repair also passes it as `-setup_margin`, as ORFS does, so the hold buffers it inserts keep that much setup slack.
 
-A block that sets none of the three repairs is a config error. Each repair is logged before it runs, with its margin in ns and the unit it was passed in:
+A block that sets none of the three repairs is a config error, and so is `post-route-repair` with `rounds` above 1 and neither margin. Both rules apply to the block a run ends up with, the platform's merged with the run's, so a platform may set part of a block, such as `{rounds: 3, margin-step: 0.05}`, that its runs complete; a run that leaves it incomplete fails at `setup`. Each repair is logged before it runs, with its margins in ns and the unit they were passed in:
 
 ```text
 >>> Global-route repair: repair_timing -setup -setup_margin 50 (setup margin 0.05 ns in Liberty time unit 1ps)
+>>> Global-route repair: repair_timing -hold -hold_margin 20 -setup_margin 50 (hold margin 0.02 ns, setup margin 0.05 ns in Liberty time unit 1ps)
 ```
 
 A run sets its own `global-route-repair:` or `post-route-repair:` in `pnr.yaml` over the platform's, field by field and within `repair-design`. A run's `null` field skips that repair, and a run's `global-route-repair: null` or `post-route-repair: null` turns the platform's block off. `global-route-hold-repair: true` on a platform is `global-route-repair: {hold-margin: 0}`; a platform that sets both is a config error.
 
 ### Repair on the global route
 
-After global route and its `after-global-route` hooks, `global-route-repair` runs `estimate_parasitics -global_routing`, the repairs and a legalization. With `reroute: incremental` (the default) these run inside `global_route -start_incremental` and `-end_incremental`, which reroutes the nets they changed; `reroute: full` runs the flow's global route again after the legalization. The closing route is `-verbose`, so `pnr.log` repeats the congestion table. The `global_route` [checkpoint](#keep-stage-checkpoints) holds the design after this repair.
+After global route and its `after-global-route` hooks, `global-route-repair` runs `estimate_parasitics -global_routing`, the repairs and a legalization, in ORFS order. `repair_timing` reroutes the nets it changes itself. With `reroute: incremental` (the default) the legalization, `detailed_placement` alone, runs inside `global_route -start_incremental` and `-end_incremental`, which reroutes the nets of the cells it moved; `reroute: full` runs the flow's global route again after the legalization. The closing route is `-verbose`, so `pnr.log` repeats the congestion table. The `global_route` [checkpoint](#keep-stage-checkpoints) holds the design after this repair.
 
 ### Repair on the detailed route
 
 `post-route-repair` adds the stage `post_route_repair` (`06_post_route_repair`) between `detailed_route` and `finish`. It needs the PDK's [`rcx-rules`](#extract-parasitics-with-rcx-rules); without them the run fails at setup. The stage runs up to `rounds` rounds (default 1), each in fresh OpenROAD sessions:
 
-1. Read the latest routed database (the detailed route's, then each round's), extract its parasitics into `06_post_route_repair.r<k>.spef` and report setup and hold worst slack and TNS on every corner.
-2. Stop when setup and hold worst slack are both at least 0 on every corner, or when the report has no slack.
-3. Otherwise read the database, remove the fill cells and the detailed route, route globally, read that SPEF, run the repairs inside an incremental global route, legalize, route every net in detail again and write the stage's checkpoint. The repairs time the nets they do not change on the SPEF and the nets they change on the global route.
+1. Read the latest routed database (the detailed route's, then each round's), extract its parasitics into `06_post_route_repair.r<k>.spef`, read it once per corner and report setup and hold worst slack and TNS on every corner.
+2. Stop when every side the block repairs meets timing: setup when `setup-margin` is set, hold when `hold-margin` is set, each with worst slack at least 0 on every corner or unconstrained (`INF`, such as hold on a block constrained only by `set_max_delay`). Also stop when the report has no slack for such a side. A side the block does not repair never starts a round, and a block with neither margin (`repair-design` only) repairs in its one round whatever the slack.
+3. Otherwise read the database, remove the fill cells and the detailed route, route globally, read that SPEF once per corner and run the repairs. Then legalize inside an incremental global route, run the `before-detailed-route` hooks, route every net in detail again and write the stage's checkpoint. The repairs time the nets they do not change on the SPEF and the nets they change on the global route.
 
-Round k repairs with the configured margins plus (k - 1) × `margin-step` (default 0). A round whose detailed route reports DRC violations is the last; `finish` continues from it, and its DRC count is the run's. When no round repairs, the stage's checkpoint is the detailed route's. The rounds run without the `after-global-route` and `before-detailed-route` hooks, and `finish` fills and writes the outputs from the stage's checkpoint. A session that fails fails the run in stage `06_post_route_repair`.
+Round k repairs with the configured margins plus (k - 1) × `margin-step` (default 0). A round whose detailed route reports DRC violations is the last; `finish` continues from it, and its DRC count is the run's. When no round repairs, the stage's checkpoint is the detailed route's. The stage keeps the last round that repaired even when it measured worse than an earlier one; see [Quirks & Known Issues](../known-issues.md#post-route-repair-keeps-the-last-repaired-round). Each repairing round runs the `before-detailed-route` hooks before its detailed route. It does not run the `after-global-route` hooks: their work belongs to the `global_route` stage, and running them on each round's global route would repeat it. `finish` fills and writes the outputs from the stage's checkpoint. Why a round routes the whole design again is in [Quirks & Known Issues](../known-issues.md#a-post-route-repair-round-routes-the-design-again), and why a multi-corner run's rounds and final report can disagree is [there too](../known-issues.md#post-route-repair-rounds-and-the-final-report-can-disagree-on-a-multi-corner-platform). A session that fails fails the run in stage `06_post_route_repair`.
 
-`pnr.post_route_round` logs each round's setup and hold WNS and TNS and the margins it repairs with, and `progress.jsonl` records it as a `post_route_round` event. `pnr.post_route_repair_done` gives how many rounds repaired and why the rounds stopped. The checkpoint run directory holds each session's script and log (`06_post_route_repair.r<k>.extract.tcl` and `.r<k>.repair.tcl`) and `06_post_route_repair.plan.json`, the rounds the stage runs.
+`pnr.post_route_round` logs each round's setup and hold WNS and TNS, the sides that are `unconstrained` and the margins it repairs with, and `progress.jsonl` records it as a `post_route_round` event; a [dispatched](#dispatch-the-stages-to-slurm) run's head logs them from there too. `pnr.post_route_repair_done` gives how many rounds repaired and why the rounds stopped. The checkpoint run directory holds each session's script and log (`06_post_route_repair.r<k>.extract.tcl` and `.r<k>.repair.tcl`) and `06_post_route_repair.plan.json`, the rounds the stage runs.
 
-A run with `post-route-repair` and without `stages: true` runs `pnr.tcl` through detailed route and writes the `detailed_route` checkpoint, then runs the rounds and `finish` as sessions of their own, as a [staged run](#run-stages-as-separate-sessions) does.
+A run with `post-route-repair` and without `stages: true` runs `pnr.tcl` through detailed route and writes the `detailed_route` checkpoint, then runs the rounds and `finish` as sessions of their own, as a [staged run](#run-stages-as-separate-sessions) does. Its `pnr.tcl` ends the first session with `exit` and then records the later sessions' scripts, so it holds the whole flow, and those sessions log hook commands that do not reach them as a staged run's do.
 
 ## Probe without timing repair
 
@@ -364,7 +365,7 @@ runs:
     mode: probe        # default closure
 ```
 
-A probe keeps `repair_design`, `repair_tie_fanout` and every legalization, skips the post-CTS setup and hold repair and the global-route repair, and stops after global route as [`--stop-after global_route`](#stop-after-a-stage) does: it writes the `global_route` checkpoint and no routed DEF or ODB. The result is a `PASS` with `routed: false`, `mode: probe` and `stopped_after: global_route`, with the global-route overflow and the timing on the global-route estimate; `xfail:` does not turn it into `XPASS`. `post-route-repair` does not apply, and `--stop-after` may name an earlier stage. A closure run cannot [resume](#resume-a-staged-run) a probe's checkpoints, whose stages skipped timing repair; run the closure from the start.
+A probe keeps `repair_design`, `repair_tie_fanout` and every legalization, skips the post-CTS setup and hold repair and the global-route repair, and stops after global route as [`--stop-after global_route`](#stop-after-a-stage) does: it writes the `global_route` checkpoint and no routed DEF or ODB. The result is a `PASS` with `routed: false`, `mode: probe` and `stopped_after: global_route`, with the global-route overflow and the timing on the global-route estimate. Like any stopped run it is no verdict on a routed design, so `xfail:` turns neither its `PASS` into `XPASS` nor a `FAIL` into `XFAIL`. `post-route-repair` does not apply, and `--stop-after` may name an earlier stage. A closure run cannot [resume](#resume-a-staged-run) a probe's checkpoints, whose stages skipped timing repair; run the closure from the start.
 
 ## Macro placement
 
@@ -712,7 +713,7 @@ runs:
     stages: true
 ```
 
-The stages are `floorplan`, `place`, `cts`, `global_route`, `detailed_route`, `post_route_repair` with [`post-route-repair`](#repair-on-the-detailed-route), and `finish` (fill, parasitic extraction, the `before-reports` hooks, the final reports and the outputs). Each session but `finish` ends by writing its stage's [checkpoint](#keep-stage-checkpoints), which the next session reads, so a staged run writes every checkpoint. `stages: true` with a `checkpoints:` list that leaves a stage out is a config error.
+The stages are `floorplan`, `place`, `cts`, `global_route`, `detailed_route`, `post_route_repair` with [`post-route-repair`](#repair-on-the-detailed-route), and `finish` (fill, parasitic extraction, the `before-reports` hooks, the final reports and the outputs). Each session but `finish` ends by writing its stage's [checkpoint](#keep-stage-checkpoints), which the next session reads, so a staged run writes every checkpoint. `stages: true` with a `checkpoints:` list that leaves out a stage other than `post_route_repair` is a config error.
 
 A staged run's checkpoint directory also holds each session's script and log, `<NN>_<stage>.tcl` and `<NN>_<stage>.log`, and with each checkpoint a `<NN>_<stage>.state.tcl` of the flow variables a later stage reads (the `floorplan.macros` cell halos). The run keeps one `progress.jsonl` and one `manifest.json`. `artefacts/<run>/pnr.log` is the sessions' logs in order, written as each session runs, and `pnr.tcl` is their scripts in order.
 

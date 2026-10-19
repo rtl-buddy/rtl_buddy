@@ -41,7 +41,7 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   a Slurm job.
 - **Run hooks.** Extra steps go in `hooks:` of the `pnr.yaml` run: Tcl files
   sourced at fixed flow points (`session`, `after-cts`, `macro-placement`, ...),
-  never in an edited `pnr.tcl`. A failing hook names its point and file. Staged:
+  never in an edited `pnr.tcl`. A failing hook names its point and file.
   `pnr.hook_commands_not_kept` means use `session`. See
   `rb docs show concepts/pnr#run-tcl-hooks`.
 - **Route progress.** `pnr.log` is written live. Before calling a long route
