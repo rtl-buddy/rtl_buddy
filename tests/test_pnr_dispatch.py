@@ -693,6 +693,65 @@ def test_accounting_that_still_reads_running_is_asked_again(tmp_path, monkeypatc
     assert slurm.sacct_calls == 3
 
 
+@pytest.mark.parametrize(
+    ("stage", "state"),
+    [("finish", "TIMEOUT"), ("cts", "CANCELLED"), ("place", "FAILED")],
+)
+def test_a_stage_whose_job_did_not_complete_fails_though_it_wrote_its_result(
+    tmp_path, monkeypatch, stage, state
+):
+    # The job wrote a successful result, then Slurm ended it before it exited.
+    slurm = _FakeSlurm(monkeypatch, state_of={stage: state})
+    backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+
+    res = backend.run()
+
+    run_dir = _only_run(artefacts)
+    assert pnr_dispatch.read_result(str(run_dir), stage)["ok"] is True
+    jobs = {_stage_of(j): j for j in slurm.submitted()}
+    log = pnr_dispatch.job_file(str(run_dir), stage, "slurm.log")
+    assert res.results["result"] == "FAIL"
+    # The stage whose job did not complete, not the one held behind it.
+    assert res.results["desc"] == (
+        f"stage {_NAMES[stage]}: Slurm job {jobs[stage]['id']} ended {state} after "
+        f"the stage succeeded and wrote its result (see {log})"
+    )
+    assert res.results["fail_stage"] == "dispatch"
+    later = PNR_STAGES[PNR_STAGES.index(stage) + 1 :]
+    assert [jobs[s]["state"] for s in later] == ["CANCELLED"] * len(later)
+    apply_xfail(res)
+    assert res.results["result"] == "FAIL"
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["outcome"]["result"] == "FAIL"
+
+
+def test_a_result_is_taken_as_written_when_accounting_has_no_state(
+    tmp_path, monkeypatch, caplog
+):
+    slurm = _FakeSlurm(monkeypatch, state_of={"finish": "TIMEOUT"})
+    slurm.sacct_rc = 1
+    backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+
+    with caplog.at_level("WARNING"):
+        res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert slurm.sacct_calls == pnr_dispatch._STATE_ATTEMPTS
+    (warning,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "pnr.stage_jobs_unaccounted"
+    ]
+    ids = [j["id"] for j in slurm.submitted()]
+    assert warning.rtl_fields["job_ids"] == ids
+    assert warning.rtl_fields["stages"] == [_NAMES[s] for s in PNR_STAGES]
+    assert warning.getMessage() == (
+        f'P&R "demo_pnr": Slurm accounting has no end state for stage job(s) '
+        f"{' '.join(ids)}, so the results of "
+        f"{', '.join(_NAMES[s] for s in PNR_STAGES)} are taken as the jobs wrote them"
+    )
+
+
 def test_a_job_that_ended_its_stage_without_a_result_says_so(tmp_path, monkeypatch):
     slurm = _FakeSlurm(monkeypatch, died_after={"cts": "TIMEOUT"})
     backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)

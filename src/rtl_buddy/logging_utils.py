@@ -2174,6 +2174,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "jobs asked for, so they are taken to have ended; remove "
                 f"{fields.get('clear')} to stop this warning"
             )
+        case "pnr.stage_jobs_unaccounted":
+            ids = " ".join(map(str, fields.get("job_ids") or []))
+            stages = ", ".join(map(str, fields.get("stages") or []))
+            backend = _BACKEND_NAMES.get(fields.get("backend"), fields.get("backend"))
+            return (
+                f'P&R "{fields.get("pnr")}": {backend} accounting has no end state '
+                f"for stage job(s) {ids}, so the results of {stages} are taken as "
+                "the jobs wrote them"
+            )
         case "pnr.dispatch_resources_default":
             return (
                 f'P&R "{fields.get("pnr")}" has no resources: block, so every stage '

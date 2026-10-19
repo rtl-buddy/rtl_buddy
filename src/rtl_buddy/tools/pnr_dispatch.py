@@ -55,7 +55,7 @@ JOB_CPUS_SOURCE = "requested cpus"
 #: `fail_stage` of a stage the scheduler ended, or that never ran; an `xfail:` never excuses it.
 DISPATCH_FAIL_STAGE = "dispatch"
 
-#: End states of a job that ended itself, so its stage's result is the verdict. In any other state (`TIMEOUT`, `OUT_OF_MEMORY`, `CANCELLED`, `NODE_FAIL`, `PREEMPTED`, ...) the scheduler ended the job, as for a lost `rb test` job.
+#: End states of a job that ended itself, so its failed stage's result is the verdict. In any other state (`TIMEOUT`, `OUT_OF_MEMORY`, `CANCELLED`, `NODE_FAIL`, `PREEMPTED`, ...) the scheduler ended the job, as for a lost `rb test` job.
 _SELF_ENDED_STATES = ("COMPLETED", "FAILED")
 
 #: Accounting can trail a job's exit; a failed stage's state is asked for this many times while it has none or still reads as queued or running.
@@ -439,22 +439,29 @@ class StageChain:
             return ok
 
     def state(self, handle: JobHandle) -> dict:
-        """The scheduler's accounting record of a job that has left the queue, asked again while accounting has no end state for it yet."""
-        record: dict = {}
+        """The scheduler's accounting record of a job that has left the queue (see `states`)."""
+        return self.states([handle]).get(telemetry_key(handle)) or {}
+
+    def states(self, handles: list[JobHandle]) -> dict[str, dict]:
+        """The scheduler's accounting records of jobs that have left the queue, by `telemetry_key`, asked again while accounting has no end state for one of them yet."""
+        records: dict = {}
         for attempt in range(_STATE_ATTEMPTS):
-            record = (
-                self.backend.collect_telemetry([handle]).get(telemetry_key(handle))
-                or {}
+            records = self.backend.collect_telemetry(list(handles))
+            settled = all(
+                _end_state(records, handle) not in _UNSETTLED_STATES
+                for handle in handles
             )
-            state = normalise_scheduler_state(record.get("state"))
-            if (
-                state not in _UNSETTLED_STATES
-                or attempt == _STATE_ATTEMPTS - 1
-                or hurry()
-            ):
+            if settled or attempt == _STATE_ATTEMPTS - 1 or hurry():
                 break
             time.sleep(_STATE_RETRY_S)
-        return record
+        return records
+
+
+def _end_state(records: dict, handle: JobHandle) -> str:
+    """A job's state in accounting `records`, or "" without one."""
+    return normalise_scheduler_state(
+        (records.get(telemetry_key(handle)) or {}).get("state")
+    )
 
 
 def _label(backend) -> str:
@@ -1191,25 +1198,31 @@ def _close_killed_stage(
 
 
 def chain_outcome(run_dir: str, chain: StageChain, *, log_path: str) -> ChainOutcome:
-    """Read how a chain that has left the queue ended, from each job's result and, for the first stage that did not end cleanly, the scheduler's accounting.
+    """Read how a chain that has left the queue ended, from each job's result and the scheduler's accounting.
 
-    The failed stage carries its own `fail_stage` only when its job ran the stage and ended itself (`COMPLETED` or `FAILED`). A job the scheduler ended (any other state), one that refused its stage or never started it, and one that left no result fail with `fail_stage: dispatch`.
+    A stage succeeded only when its job wrote a successful result and ended `COMPLETED`; when accounting gives no end state, the result is taken as written, with a warning (`pnr.stage_jobs_unaccounted`). A job that wrote a successful result and ended in any other state fails its stage with `fail_stage: dispatch`. Otherwise the failed stage carries its own `fail_stage` only when its job ran the stage and ended itself (`COMPLETED` or `FAILED`). A job the scheduler ended (any other state), one that refused its stage or never started it, and one that left no result fail with `fail_stage: dispatch`.
     """
     see_job_writes(run_dir, log_path)
     events = pnr_checkpoints.read_progress(run_dir)
     begun = {e.get("stage"): e for e in events if e.get("event") == "stage_begin"}
     ended = {e.get("stage") for e in events if e.get("event") == "stage_end"}
     label = _label(chain.backend)
+    records = chain.states(chain.handles)
     returncode, stderr = 0, ""
+    unaccounted: list[JobHandle] = []
     for handle in chain.handles:
         stage = handle.spec.stage
         result = read_result(run_dir, stage)
-        if result is not None and result.get("ok"):
+        record = records.get(telemetry_key(handle)) or {}
+        state = _end_state(records, handle)
+        succeeded = result is not None and bool(result.get("ok"))
+        if succeeded and (state == "COMPLETED" or state in _UNSETTLED_STATES):
+            if state != "COMPLETED":
+                unaccounted.append(handle)
             returncode = result.get("returncode", 0)
             stderr = result.get("stderr") or ""
             continue
-        record = chain.state(handle)
-        state = normalise_scheduler_state(record.get("state"))
+        _warn_unaccounted(chain, unaccounted)
         reason = f"{label} job {handle.job_id} ended" + (f" {state}" if state else "")
         name = stage_name(stage)
         outcome = ChainOutcome(
@@ -1218,7 +1231,12 @@ def chain_outcome(run_dir: str, chain: StageChain, *, log_path: str) -> ChainOut
             fail_stage=DISPATCH_FAIL_STAGE,
             reason=reason,
         )
-        if result is not None and result.get("started"):
+        if succeeded:
+            outcome.problem = (
+                f"stage {name}: {reason} after the stage succeeded and wrote its "
+                f"result (see {handle.spec.log_path})"
+            )
+        elif result is not None and result.get("started"):
             outcome.returncode = result.get("returncode")
             outcome.stderr = result.get("stderr") or ""
             outcome.stderr_first_line = result.get(
@@ -1262,4 +1280,20 @@ def chain_outcome(run_dir: str, chain: StageChain, *, log_path: str) -> ChainOut
             log=str(handle.spec.log_path),
         )
         return outcome
+    _warn_unaccounted(chain, unaccounted)
     return ChainOutcome(returncode=returncode, stderr=stderr)
+
+
+def _warn_unaccounted(chain: StageChain, handles: list[JobHandle]) -> None:
+    """Warn that the successful results of `handles` were taken as written, since accounting gave no end state for their jobs."""
+    if not handles:
+        return
+    log_event(
+        logger,
+        logging.WARNING,
+        "pnr.stage_jobs_unaccounted",
+        backend=chain.backend.name,
+        pnr=chain.run,
+        stages=[stage_name(h.spec.stage) for h in handles],
+        job_ids=[h.job_id for h in handles],
+    )
