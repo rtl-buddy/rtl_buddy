@@ -597,3 +597,39 @@ def test_the_default_tie_separation_leaves_the_config_digest_alone(tmp_path):
     changed = pnr_abstract.abstract_config(run_cfg, spread)
     assert changed["placement"]["tie_separation"] == 4.0
     assert pnr_abstract.config_digest(changed) != pnr_abstract.config_digest(default)
+
+
+def test_timing_driven_placement_is_in_the_config_digest_only_when_on(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    suite = _block_suite(tmp_path)
+    run_cfg = PnrSuiteConfig(str(suite)).get_runs("blk_pnr")[0]
+    default = pnr_abstract.abstract_config(run_cfg, _block_platform(tmp_path))
+    assert "timing_driven" not in default["placement"]
+
+    def _platform_with(placement):
+        return PnrPlatformConfig(
+            PnrPlatformConfigFile(
+                name="p", pdk="p", cts_buffer="B", placement=placement
+            ),
+            lambda _n: _block_platform(tmp_path).get_pdk(),
+        )
+
+    off = pnr_abstract.abstract_config(
+        run_cfg, _platform_with(PlacementFile(timing_driven=False))
+    )
+    assert off == default
+
+    on = pnr_abstract.abstract_config(
+        run_cfg, _platform_with(PlacementFile(timing_driven=True))
+    )
+    assert on["placement"]["timing_driven"] is True
+    assert pnr_abstract.config_digest(on) != pnr_abstract.config_digest(default)
+
+    # A run's own placement block counts like the platform's.
+    resolved = _block_platform(tmp_path).with_run_placement(
+        PlacementFile(timing_driven=True), "blk_pnr"
+    )
+    assert pnr_abstract.config_digest(
+        pnr_abstract.abstract_config(run_cfg, resolved)
+    ) == pnr_abstract.config_digest(on)

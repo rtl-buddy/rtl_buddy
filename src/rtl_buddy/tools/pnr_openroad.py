@@ -324,6 +324,11 @@ def _routability_options(platform) -> str:
     return options
 
 
+def _timing_driven_option(platform) -> str:
+    """Return ` -timing_driven` for global placement when set, else `""`."""
+    return " -timing_driven" if platform.get_placement_timing_driven() else ""
+
+
 def _cts_apply_ndr_option(platform) -> str:
     """Return ` -apply_ndr <value>` for the CTS invocation, or `""` for the tool's default."""
     ndr = platform.get_cts_apply_ndr()
@@ -1300,6 +1305,7 @@ class OpenRoadPnr:
             "place_padding": str(platform.get_placement_padding()),
             "reference_hpwl_option": _reference_hpwl_option(platform),
             "routability_options": _routability_options(platform),
+            "timing_driven_option": _timing_driven_option(platform),
             "macro_halo": f"{platform.get_placement_macro_halo():g}",
             "macro_cell_halo": f"{platform.get_placement_macro_cell_halo():g}",
             "macro_pack_procs": self._load_macro_pack(),

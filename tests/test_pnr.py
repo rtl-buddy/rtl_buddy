@@ -3977,6 +3977,119 @@ def test_a_yaml_routability_key_rejects_a_non_boolean():
         )
 
 
+def test_global_placement_is_not_timing_driven_by_default(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path)
+    assert pdk.get_placement_timing_driven() is None
+    platform = _platform(pdk)
+    assert platform.get_placement_timing_driven() is False
+    text = _render_flow(tmp_path, platform)
+    assert "global_placement -density 0.7 -pad_left 1 -pad_right 1\n" in text
+    assert "timing_driven" not in text
+
+
+def test_an_unset_or_false_timing_driven_renders_the_same_script(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    plain = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
+    for placement in (
+        PlacementFile(timing_driven=False),
+        PlacementFile(timing_driven=None),
+    ):
+        platform = _platform(_make_pdk_cfg(tmp_path), placement=placement)
+        assert _render_flow(tmp_path, platform) == plain
+
+
+def test_global_placement_emits_timing_driven(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    platform = _platform(
+        _make_pdk_cfg(tmp_path), placement=PlacementFile(timing_driven=True)
+    )
+    text = _render_flow(tmp_path, platform)
+    assert (
+        "global_placement -density 0.7 -pad_left 1 -pad_right 1 -timing_driven\n"
+    ) in text
+    assert text.count("-timing_driven") == 1
+
+
+def test_timing_driven_follows_the_other_global_placement_options(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    platform = _platform(
+        _make_pdk_cfg(tmp_path),
+        placement=PlacementFile(
+            reference_hpwl=4.46e8, routability_driven=True, timing_driven=True
+        ),
+    )
+    assert (
+        "global_placement -density 0.7 -pad_left 1 -pad_right 1 "
+        "-reference_hpwl 446000000 -routability_driven -timing_driven\n"
+    ) in _render_flow(tmp_path, platform)
+
+
+def test_timing_driven_resolves_run_over_platform_over_pdk(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(timing_driven=True))
+    inherited = _platform(pdk)
+    assert inherited.get_placement_timing_driven() is True
+
+    # The platform opts out of the PDK's setting; a run opts back in.
+    off = _platform(pdk, placement=PlacementFile(timing_driven=False))
+    assert off.get_placement_timing_driven() is False
+    assert "-timing_driven" not in _render_flow(tmp_path, off)
+    on = off.with_run_placement(PlacementFile(timing_driven=True), "r")
+    assert on.get_placement_timing_driven() is True
+    assert "-timing_driven" in _render_flow(tmp_path, on)
+
+    # A run that leaves it unset keeps the platform's value.
+    kept = off.with_run_placement(PlacementFile(density=0.5), "r")
+    assert kept.get_placement_timing_driven() is False
+
+    # A run turns it on over a platform and PDK that leave it unset.
+    plain = _platform(_make_pdk_cfg(tmp_path))
+    run_on = plain.with_run_placement(PlacementFile(timing_driven=True), "r")
+    assert run_on.get_placement_timing_driven() is True
+    assert plain.get_placement_timing_driven() is False
+
+
+def test_yaml_timing_driven_loads_on_a_pdk_a_platform_and_a_run(tmp_path):
+    from serde.yaml import from_yaml
+
+    from rtl_buddy.config.pdk import PlacementFile
+    from rtl_buddy.config.pnr import PnrConfigFile
+
+    platform_file = from_yaml(
+        PnrPlatformConfigFile,
+        'name: "p"\npdk: "p"\nplacement: {timing-driven: true}\n',
+    )
+    platform = PnrPlatformConfig(platform_file, lambda _n: _make_pdk_cfg(tmp_path))
+    assert platform.get_placement_timing_driven() is True
+
+    pdk = _make_pdk_cfg(
+        tmp_path, placement=from_yaml(PlacementFile, "timing-driven: true\n")
+    )
+    assert pdk.get_placement_timing_driven() is True
+
+    run = from_yaml(
+        PnrConfigFile,
+        'name: "r"\ndesc: "r"\nsynth: "s"\nsynth-path: "synth.yaml"\n'
+        'platform: "p"\nplacement: {timing-driven: true}\n',
+    )
+    assert run.placement.timing_driven is True
+
+
+def test_a_yaml_timing_driven_key_rejects_a_non_boolean():
+    from serde import SerdeError
+    from serde.yaml import from_yaml
+
+    with pytest.raises(SerdeError):
+        from_yaml(
+            PnrPlatformConfigFile,
+            'name: "p"\npdk: "p"\nplacement: {timing-driven: "on"}\n',
+        )
+
+
 def _rtl_mp_yaml(tmp_path, floorplan_extra):
     pnr_yaml = tmp_path / "pnr.yaml"
     pnr_yaml.write_text(

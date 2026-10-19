@@ -31,6 +31,7 @@ PLACEMENT_ALL = {
     "reference-hpwl": 1000,
     "routability-driven": True,
     "routability-use-grt": True,
+    "timing-driven": True,
     "rotated-macro-footprint": "none",
 }
 
@@ -294,7 +295,7 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "pnr run 'a': placement",
             ("placement",),
             "density, padding, macro-halo, macro-cell-halo, tie-separation, "
-            "reference-hpwl, routability-driven, routability-use-grt, "
+            "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
             "rotated-macro-footprint",
         ),
         ("pnr run 'a': blocks[1]", ("blocks", 1), "name, pnr, pnr-path"),
@@ -537,7 +538,7 @@ cfg-pnr-platforms:
             ("placement",),
             "cfg-pdks 'pdk1': placement",
             "density, padding, macro-halo, macro-cell-halo, tie-separation, "
-            "reference-hpwl, routability-driven, routability-use-grt, "
+            "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
             "rotated-macro-footprint",
         ),
         (
@@ -560,7 +561,7 @@ cfg-pnr-platforms:
             ("placement",),
             "cfg-pnr-platforms 'pl1': placement",
             "density, padding, macro-halo, macro-cell-halo, tie-separation, "
-            "reference-hpwl, routability-driven, routability-use-grt, "
+            "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
             "rotated-macro-footprint",
         ),
     ],

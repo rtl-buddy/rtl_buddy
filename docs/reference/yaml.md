@@ -163,7 +163,7 @@ cfg-pnr-platforms:
 
 An unknown key in a `cfg-pdks` or `cfg-pnr-platforms` entry, including its `pin-layers`, `routing-layers` and `placement` blocks, is a config error that names the key, the entry and the valid keys. It stops every command that loads `root_config.yaml`. A `corners` mapping takes any corner name.
 
-`placement.*` stands for `placement.density`, `placement.padding`, `placement.macro-halo`, `placement.macro-cell-halo`, `placement.tie-separation`, `placement.reference-hpwl`, `placement.routability-driven`, `placement.routability-use-grt`, and `placement.rotated-macro-footprint`.
+`placement.*` stands for `placement.density`, `placement.padding`, `placement.macro-halo`, `placement.macro-cell-halo`, `placement.tie-separation`, `placement.reference-hpwl`, `placement.routability-driven`, `placement.routability-use-grt`, `placement.timing-driven`, and `placement.rotated-macro-footprint`.
 
 The process-dependent P&R keys are all optional:
 
@@ -177,6 +177,7 @@ The process-dependent P&R keys are all optional:
 | `placement.reference-hpwl` | `cfg-pdks`, `cfg-pnr-platforms` | Positive number. Passed as `global_placement -reference_hpwl`. Unset by default, which keeps the placer's size-derived reference; a fixed value spreads a large design further and can clear global-route overflow |
 | `placement.routability-driven` | `cfg-pdks`, `cfg-pnr-platforms` | Boolean, default `false`. `true` adds `-routability_driven` to `global_placement`, which inflates cells in congested regions and re-spreads them; for congested blocks |
 | `placement.routability-use-grt` | `cfg-pdks`, `cfg-pnr-platforms` | Boolean, default `false`. `true` adds `-routability_use_grt`, so routability mode estimates congestion with the global router instead of RUDY. Requires `placement.routability-driven: true` after platform-over-PDK resolution; otherwise the platform fails to load |
+| `placement.timing-driven` | `cfg-pdks`, `cfg-pnr-platforms` | Boolean, default `false`. `true` adds `-timing_driven` to `global_placement`, which weights the nets on the worst setup paths so placement shortens them. The flow has the SDC and the `layer-rc-tcl` wire RC loaded by then. Part of a hardened block's configuration when `true`. See [Tune the process-dependent steps](../concepts/pnr.md#tune-the-process-dependent-steps) |
 | `placement.rotated-macro-footprint` | `cfg-pdks`, `cfg-pnr-platforms` | `block` (default), `diamond-legalizer` or `none`. How the flow works around OpenROAD's legalizer for a macro turned by 90 degrees: a hard blockage over the unrotated footprint during global placement only, `detailed_placement -use_diamond_legalizer`, or nothing. Acts only when a macro ends up turned. See [Rotate a macro](../concepts/pnr.md#rotate-a-macro) |
 | `dont-use-cells` | `cfg-pdks`, `cfg-synth-platforms`, `cfg-pnr-platforms` | Cell names or patterns (`*` and `?` wildcards only), one per list entry. Empty by default. See below for scope |
 | `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid. P&R sources it and calls `pdngen`. Unset by default. A `pnr.yaml` run's own `pdn-config` replaces it |

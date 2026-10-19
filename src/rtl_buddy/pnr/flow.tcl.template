@@ -113,7 +113,7 @@ puts ">>> IO pin placement"
 place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
 {{ hook_after_pins_block }}{{ buffer_ports_block }}
 {{ @place }}puts ">>> Global placement"
-{{ gp_blockages_create }}global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}{{ routability_options }}
+{{ gp_blockages_create }}global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}{{ routability_options }}{{ timing_driven_option }}
 {{ gp_blockages_destroy }}{{ hook_after_global_placement_block }}{{ tie_fanout_block }}
 puts ">>> Resize"
 estimate_parasitics -placement
