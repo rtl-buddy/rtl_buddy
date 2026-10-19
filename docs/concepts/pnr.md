@@ -51,7 +51,7 @@ The generated `pnr.tcl` runs these steps in order:
 
 1. Source `platform-tcl` when set, read Liberty, LEF, the synthesis netlist and the SDC, set the design's max fanout when `max-fanout` is set, then source `layer-rc-tcl` when set.
 2. Initialize the floorplan, create routing tracks and run `insert_tiecells` for the PDK's `tie-hi` and `tie-lo` ports, one tie cell per constant net.
-3. Place macros, insert tap and endcap cells when `tapcell-tcl` is set, build the power grid and place the IO pins, checking [`pins-complete`](#check-that-every-port-is-placed) when set, then run `buffer_ports -inputs -outputs` when the run buffers its ports (`buffer-ports`, on by default for `harden: true`; see [Harden a block](#harden-a-block)).
+3. Place macros, insert tap and endcap cells when `tapcell-tcl` is set, build the power grid and place the IO pins, checking [`pins-complete`](#check-that-every-port-is-placed) when set and skipping `place_pins` when [every signal port already has an exact pin](#constrain-boundary-pins), then run `buffer_ports -inputs -outputs` when the run buffers its ports (`buffer-ports`, on by default for `harden: true`; see [Harden a block](#harden-a-block)).
 4. Create the [`lifetime: global-placement`](#floorplan-controls) blockages and the [rotated-macro](#rotate-a-macro) blockages, run global placement, with `-reference_hpwl` when `placement.reference-hpwl` is set, `-routability_driven` / `-routability_use_grt` when `placement.routability-driven` / `placement.routability-use-grt` are `true`, and `-timing_driven` when `placement.timing-driven` is `true`, then remove those blockages again. Then run `repair_tie_fanout` for each tie port, which gives every constant-driven load its own tie cell `placement.tie-separation` microns away (default 0).
 5. Run `repair_design`, legalization, clock-tree synthesis (with `-apply_ndr` when `cts-apply-ndr` is set), setup repair when `post-cts-setup-repair` is set, hold repair and a final legalization.
 6. Route globally with `-verbose` and a congestion report, after `set_global_routing_layer_adjustment` when `routing-layer-adjustment` is set, repair hold on the global-route parasitics when `global-route-hold-repair` is set, route in detail at the run's `detailed-route-verbose` level, insert fill, apply the global connections again, extract parasitics when `rcx-rules` is set, then write reports and outputs.
@@ -266,7 +266,7 @@ runs:
 | `after-floorplan` | After the floorplan, tracks, blockages, cut-outs and tie cells, before macro placement |
 | `macro-placement` | In place of rb's macro placement (the packer or RTL-MP), inside the macro branch |
 | `after-pdn` | After the tap cells and the power grid, before IO pin placement |
-| `after-pins` | Right after `place_pins`, before `buffer_ports` |
+| `after-pins` | Right after `place_pins`, or after the skip when every signal port already has an exact pin, before `buffer_ports` |
 | `after-global-placement` | Right after `global_placement`, before `repair_tie_fanout` |
 | `after-repair-design` | Right after `repair_design`, before the legalizing `detailed_placement` |
 | `after-cts` | Right after `clock_tree_synthesis`, before the post-CTS legalization and the setup and hold repair, so the repair sees what the hook sets |
@@ -556,6 +556,7 @@ While it sources the pdn-config, the flow skips each `define_pdn_grid` that is n
 | `size` | With `location` only. `[width, height]` in microns: the pin's x and y extents, as `place_pin -pin_size` takes them. Default: the layer's minimum width and area. |
 
 - Exact pins are placed first, then the edge and group constraints, then the `pin-constraints` file below, all just before `place_pins`. A side or group rule leaves out the pins placed exactly, so a pin both placed and matched by a side keeps its location.
+- When every port other than power and ground already has a fixed pin at that point, from `location` entries or a hook, `place_pins` is skipped and the log says `floorplan.pins: every signal port has a placed pin; skipping place_pins`. The `pin-constraints` file is still sourced and `after-pins` still runs. Without the skip, OpenROAD aborts in `place_pins` as soon as a `pin-constraints` file names a port when no port is left to place. A run with no `location` entry always runs `place_pins`.
 - A name or glob that matches no port fails the run with `floorplan.pins[i]: no port matches '<pattern>'`, where `set_io_pin_constraint` alone would only warn. A `location` entry whose name matches more than one port fails too.
 - A malformed entry fails when `pnr.yaml` loads, naming `floorplan.pins[i]`: an unknown side, `start` at or above `end`, a negative coordinate, `start` or `end` without `side`, `order` without `group`, `location` with `side`, `group` or more than one name, `layer` or `size` without `location`, or an entry that sets none of `side`, `group` and `location`.
 - A `harden: true` run places its pins the same way, and the published abstract carries them. `floorplan.pins` is part of a hardened block's configuration, so changing it makes the block's abstract stale.
@@ -568,7 +569,7 @@ exclude_io_pin_region -region bottom:0-20
 set_io_pin_constraint -mirrored_pins {a_in a_out}
 ```
 
-Put these commands here, not in SDC, which is read before the die exists.
+Put these commands here, not in SDC, which is read before the die exists. Constrain only ports without an exact pin: `place_pins` fails with `PPL-0107` when the file holds a port with an exact pin outside its region, and, as above, constraints have no effect once every signal port has an exact pin.
 
 ## PDK setup notes
 

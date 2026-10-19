@@ -237,6 +237,10 @@ With the `default` mapped-run script, `&dch -f` choices and `&nf` area recovery 
 
 OpenROAD's default `detailed_placement` legalizer treats a fixed macro turned by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) as covering its master's unrotated width and height from its lower-left corner (OpenROAD#11735). Cells that global placement put in that footprint outside the macro are moved out, some far, and the area stays empty. `rb pnr` blocks the footprint during global placement by default; `placement.rotated-macro-footprint` selects the diamond legalizer instead, or neither. See [Rotate a macro](concepts/pnr.md#rotate-a-macro).
 
+## A `pin-constraints` file must not constrain a port that has an exact pin
+
+`rb pnr` leaves ports with an exact pin out of the `floorplan.pins` side and group rules, but it does not read the `pin-constraints` Tcl file. A `set_io_pin_constraint -region` there that holds an exact pin outside that region fails `place_pins` with `PPL-0107`, reported on another pin as `Pin <name> is not placed in its constraint edge`. One that holds it inside its region passes. When every signal port has an exact pin, rb skips `place_pins`, so the file's constraints have no effect. Constrain only ports without an exact pin. See [Constrain boundary pins](concepts/pnr.md#constrain-boundary-pins).
+
 ## Session state does not cross a P&R stage boundary
 
 Each stage of a staged `rb pnr` run (`stages: true`, or `--resume`) is a new OpenROAD session. It reads the previous stage's database, SDC and saved flow variables, and rb repeats the flow's own setup. State an earlier session held only in memory is gone: Tcl variables, procedures and `rename` wrappers, `set_wire_rc`, `set_layer_rc` and `set_dont_use` that a hook ran, STA settings outside the SDC, and the resizer's in-memory state. A hook that renames, deletes or redefines an existing global Tcl command logs the warning `pnr.hook_commands_not_kept`, since later sessions run the original; one that defines new commands logs them at info as `pnr.hook_commands_added`.

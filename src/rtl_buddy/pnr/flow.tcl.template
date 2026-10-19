@@ -112,7 +112,7 @@ foreach inst [$block getInsts] {
 # inside the core is `floorplan.macro-anchor`'s job.
 puts ">>> IO pin placement"
 {{ floorplan_pins_block }}{{ pin_constraints_tcl }}
-place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
+{{ place_pins_block }}
 {{ hook_after_pins_block }}{{ buffer_ports_block }}
 rb::global_connect
 {{ @place }}puts ">>> Global placement"

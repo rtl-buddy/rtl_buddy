@@ -65,6 +65,8 @@ _PDN_GRID_FILE = "pdn_grid.tcl"
 _MACROS_FILE = "macros.tcl"
 # `floorplan.pins` checks and commands; see `_floorplan_pins_block`.
 _PINS_FILE = "pins.tcl"
+# Skips `place_pins` when every signal port already has a fixed pin; see `_place_pins_block`.
+_PLACE_PINS_FILE = "place_pins.tcl"
 # The OpenROAD#11735 workaround for macros turned by 90 degrees; see `_global_placement_blocks`.
 _ROTATED_MACROS_FILE = "rotated_macros.tcl"
 # Ties `blocks:` supply pins and joins top-layer ones to the parent's straps; see `_block_power_tcl`.
@@ -689,6 +691,26 @@ def _floorplan_pins_block(fp: PnrFloorplan) -> str:
     return "\n".join(lines) + "\n"
 
 
+_PLACE_PINS = "place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V"
+
+
+def _place_pins_block(fp: PnrFloorplan) -> str:
+    """Return the `place_pins` command, guarded by a run-time check when the run has an exact pin entry.
+
+    The guard skips `place_pins` when every signal port already has a fixed pin at that point, so pins a hook placed count too. Without an exact pin entry the command is bare and the script is unchanged.
+    """
+    if not any(pin.location is not None for pin in fp.pins):
+        return _PLACE_PINS
+    helper = files(_TEMPLATE_PACKAGE).joinpath(_PLACE_PINS_FILE).read_text()
+    return (
+        helper.rstrip("\n") + "\nif {[rb::pins::all_placed]} {\n"
+        '    puts ">>>   floorplan.pins: every signal port has a placed pin; skipping place_pins"\n'
+        "} else {\n"
+        f"    {_PLACE_PINS}\n"
+        "}"
+    )
+
+
 def _macro_directives_block(fp: PnrFloorplan) -> str:
     """Return the `floorplan.macros` and macros-file Tcl that opens the macro branch, or "" without directives.
 
@@ -1297,6 +1319,7 @@ class OpenRoadPnr:
         substitutions = {
             "pin_constraints_tcl": pin_constraints_tcl,
             "floorplan_pins_block": _floorplan_pins_block(fp),
+            "place_pins_block": _place_pins_block(fp),
             "design": self.pnr_cfg.resolve_synth_cfg().get_top(),
             "netlist": netlist,
             "sdc": sdc,
