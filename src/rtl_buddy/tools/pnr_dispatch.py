@@ -9,8 +9,10 @@ Files under the run directory's `dispatch/`:
     NN_<stage>.slurm.log          # the job's scheduler output
     NN_<stage>.rtl_buddy.log      # the job's rtl_buddy log
     NN_<stage>.result.json        # how the stage ended, written by the job
+    NN_<stage>.tcl                # the stage script as the job ran it, when the job set another thread count
 """
 
+import contextvars
 import json
 import logging
 import os
@@ -24,12 +26,22 @@ from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
 
+from ..config.dispatch import time_to_seconds
 from ..config.openroad_threads import detect_allocation, plan_threads
-from ..dispatch.base import JobHandle, SubmissionAbandoned, telemetry_key
+from ..dispatch.base import (
+    CANCEL_TIMEOUT_S,
+    JobHandle,
+    SubmissionAbandoned,
+    telemetry_key,
+)
 from ..dispatch.retry import normalise_scheduler_state
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_console_event, log_event
-from ..process_utils import terminate_live_managed_processes
+from ..process_utils import (
+    STOP_SIGNALS,
+    signals_blocked,
+    terminate_live_managed_processes,
+)
 from . import pnr_checkpoints
 
 logger = logging.getLogger(__name__)
@@ -37,7 +49,7 @@ logger = logging.getLogger(__name__)
 DISPATCH_DIRNAME = "dispatch"
 JOBS_NAME = "jobs.json"
 
-#: Allocation source of the thread plan the head writes into a dispatched stage's script: the CPUs it asks the job for. The job sets the count again from the CPUs it receives (`_set_job_threads`).
+#: Allocation source of the thread plan the head writes into a dispatched stage's script: the CPUs it asks the job for. The job sets the count again from the CPUs it receives (`job_scripts`).
 JOB_CPUS_SOURCE = "requested cpus"
 
 #: `fail_stage` of a stage the scheduler ended, or that never ran; an `xfail:` never excuses it.
@@ -100,19 +112,23 @@ class QueueWaitExceeded(FatalRtlBuddyError):
     """A stage job waited in the queue longer than `cfg-dispatch.max-wait` without starting."""
 
 
+class NoSchedulerClient(FatalRtlBuddyError):
+    """This host has no client for the scheduler an earlier run's stage jobs were submitted to."""
+
+
 _LIVE: set["StageChain"] = set()
 #: Re-entrant, like every lock the interrupt handler takes: the handler runs in the main thread, which may hold it.
 _LIVE_LOCK = threading.RLock()
 
-#: Set once an interrupt reached `cancel_on_interrupt`; no stage chain opens or submits after it.
+#: Set once an interrupt reached `cancel_on_interrupt`; no stage chain opens or submits after it. Only `_interrupt` sets it, with further signals deferred, since an Event's lock is not re-entrant.
 _INTERRUPTED = threading.Event()
-#: The signal that set `_INTERRUPTED`.
-_INTERRUPT = {"signum": None}
+#: The signal that set `_INTERRUPTED`, and whether another signal followed it (`hurry`).
+_INTERRUPT = {"signum": None, "repeated": False}
 
 #: Main-thread state of `signals_deferred`: how deeply the running code defers signals, and the first signal that arrived meanwhile.
 _DEFERRAL = {"depth": 0, "pending": None}
 
-_HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+_HANDLED_SIGNALS = STOP_SIGNALS
 
 #: After rb cancels a chain, how long the head waits for its jobs to leave the queue, and how often it looks.
 _DRAIN_WAIT_S = 30.0
@@ -124,8 +140,11 @@ _clock = time.monotonic
 
 
 def _pause(wake: threading.Event | None, seconds: float) -> None:
-    """Wait `seconds` between queue polls, or until `wake` is set."""
-    if wake is None:
+    """Wait `seconds` between queue polls, or in a worker thread until `wake` is set.
+
+    The main thread sleeps instead, since the interrupt handler that sets `wake` runs there and an Event's lock is not re-entrant; a signal ends its sleep anyway.
+    """
+    if wake is None or threading.current_thread() is threading.main_thread():
         time.sleep(seconds)
     else:
         wake.wait(seconds)
@@ -139,7 +158,7 @@ def interrupted() -> bool:
 def _reset_interrupted() -> None:
     """Forget an interrupt. Tests only."""
     _INTERRUPTED.clear()
-    _INTERRUPT["signum"] = None
+    _INTERRUPT.update(signum=None, repeated=False)
     _DEFERRAL.update(depth=0, pending=None)
 
 
@@ -171,8 +190,10 @@ class StageChain:
         #: Jobs seen to have left the queue, by `telemetry_key`.
         self._left: set[str] = set()
         self._cancel_requested = False
-        #: Set only once the scheduler took the cancel, so a later call retries one it refused.
-        self._cancelled = False
+        #: Jobs the scheduler took a cancel for, by `telemetry_key`; a later cancel retries the others.
+        self._cancelled: set[str] = set()
+        #: The first exception the chain was left with, which settling the run reports (`settle_cancelled_chain`).
+        self.failure: BaseException | None = None
         #: Set by a cancel, so a wait in another thread notices it at once.
         self._wake = threading.Event()
         self._lock = threading.RLock()
@@ -187,6 +208,8 @@ class StageChain:
     def __exit__(self, exc_type, exc, tb) -> bool:
         try:
             if exc_type is not None:
+                if self.failure is None:
+                    self.failure = exc
                 self.cancel()
         finally:
             with _LIVE_LOCK:
@@ -240,13 +263,12 @@ class StageChain:
             dependency=dependency,
         )
         if cancelled:
-            with signals_deferred():
-                self.backend.cancel_all([handle])
+            self.cancel()
             raise ChainCancelled(self._cancelled_desc())
         return handle
 
     def _cancel_answered(self, spec) -> None:
-        """Cancel the job a submission's recorded answer names, when an exception left the chain without its handle."""
+        """Add the job a submission's recorded answer names to the chain and cancel it, when an exception left the chain without its handle."""
         path = getattr(spec, "submission_path", None)
         if path is None:
             return
@@ -255,22 +277,20 @@ class StageChain:
         except OSError:
             return
         job_id, _, cluster = text.strip().partition(";")
-        if job_id.strip() and job_id.strip() not in {h.job_id for h in self.handles}:
-            with signals_deferred():
-                self.backend.cancel_all(
-                    [
-                        JobHandle(
-                            job_id=job_id.strip(),
-                            spec=spec,
-                            cluster=cluster.strip() or None,
-                        )
-                    ]
+        with self._lock:
+            if not job_id.strip() or job_id.strip() in {h.job_id for h in self.handles}:
+                return
+            self.handles.append(
+                JobHandle(
+                    job_id=job_id.strip(), spec=spec, cluster=cluster.strip() or None
                 )
+            )
+        self.cancel()
 
     def wait(self) -> None:
         """Block until every job of the chain has left the queue.
 
-        `cfg-dispatch.max-wait` bounds how long each job waits in the queue before it starts: the first job from its submission, a later one from when the job before it left the queue. A job that waits longer raises `QueueWaitExceeded`. How long a job runs is bounded by its own `time`. A cancel or an interrupt raises `ChainCancelled`.
+        `cfg-dispatch.max-wait` bounds how long each job waits in the queue before it starts: the first job from its submission, a later one from when the job before it left the queue. A job that waits longer raises `QueueWaitExceeded`. How long a job runs is bounded by its own `time`, so a job is not given up while it may be running: past `max-wait` with the queue not answering, accounting says whether the job started, and without its answer either the job is given up only once it is past `max-wait` plus its `time`. A cancel or an interrupt raises `ChainCancelled`.
         """
         max_wait = getattr(self.backend, "max_wait", None)
         interval = getattr(self.backend, "poll_interval", 5.0)
@@ -280,12 +300,15 @@ class StageChain:
         started: set[str] = set()
         queued_since: dict[str, float] = {}
         current = None
+        #: When the queue last answered, or the wait began.
+        answered = _clock()
         while True:
             if self.cancel_requested:
                 raise ChainCancelled(self._cancelled_desc())
             states = self.backend.queue_states(self.handles)
             now = _clock()
             if states is not None:
+                answered = now
                 current = self._note_queue(states)
                 if current is None:
                     progress.drained(now)
@@ -306,60 +329,109 @@ class StageChain:
                     else now,
                 )
                 if max_wait is not None and now - since > max_wait:
-                    raise QueueWaitExceeded(
-                        f"stage {stage_name(current.spec.stage)}: "
-                        f"{_label(self.backend)} job {current.job_id} waited "
-                        f"{now - since:.0f}s in the queue without starting, longer "
-                        f"than cfg-dispatch.max-wait ({max_wait:g}s); "
-                        f"`squeue -j {current.job_id}` gives the reason it is held"
-                    )
+                    # When the queue did not answer, accounting says whether the job started.
+                    state = None if states is not None else self._accounted(current)
+                    if state in (None, "PENDING"):
+                        raise QueueWaitExceeded(
+                            self._waited_desc(current, now - since, max_wait)
+                        )
+                    if state:
+                        started.add(key)
+                    elif self._ended_by_now(current, now - since, max_wait):
+                        raise QueueWaitExceeded(
+                            self._unseen_desc(current, now - answered, max_wait)
+                        )
             _pause(self._wake, interval)
 
-    def _note_queue(self, states: dict) -> JobHandle | None:
-        """Record which jobs have left the queue and return the first still in it."""
+    def _waited_desc(self, handle: JobHandle, waited: float, max_wait: float) -> str:
+        return (
+            f"stage {stage_name(handle.spec.stage)}: "
+            f"{_label(self.backend)} job {handle.job_id} waited "
+            f"{waited:.0f}s in the queue without starting, longer "
+            f"than cfg-dispatch.max-wait ({max_wait:g}s); "
+            f"`squeue -j {handle.job_id}` gives the reason it is held"
+        )
+
+    def _accounted(self, handle: JobHandle) -> str:
+        """The job's state as accounting records it, or "" without one."""
+        record = (
+            self.backend.collect_telemetry([handle]).get(telemetry_key(handle)) or {}
+        )
+        return normalise_scheduler_state(record.get("state"))
+
+    @staticmethod
+    def _ended_by_now(handle: JobHandle, waited: float, max_wait: float) -> bool:
+        """Whether a job queued `waited` seconds ago has ended even if it started just before `max-wait` ran out: it is past `max-wait` plus its own `time`."""
+        limit = time_to_seconds(
+            getattr(getattr(handle.spec, "resources", None), "time", None)
+        )
+        return limit is not None and waited > max_wait + limit
+
+    def _unseen_desc(
+        self, handle: JobHandle, unanswered: float, max_wait: float
+    ) -> str:
+        return (
+            f"stage {stage_name(handle.spec.stage)}: {_label(self.backend)} job "
+            f"{handle.job_id} could not be seen to start; the queue has not answered "
+            f"for {unanswered:.0f}s, accounting has no state for the job, and it "
+            f"has been queued longer than cfg-dispatch.max-wait ({max_wait:g}s) "
+            f"plus its time ({handle.spec.resources.time})"
+        )
+
+    def _note_queue(self, states: dict, handles=None) -> JobHandle | None:
+        """Record which of `handles` (default: the chain's jobs), polled for `states`, have left the queue; return the first job of the chain still in it."""
+        polled = self.handles if handles is None else handles
         with self._lock:
             self._left.update(
-                telemetry_key(h) for h in self.handles if telemetry_key(h) not in states
+                telemetry_key(h) for h in polled if telemetry_key(h) not in states
             )
         return next((h for h in self.handles if telemetry_key(h) in states), None)
 
     def drain(self, timeout: float = _DRAIN_WAIT_S) -> list[JobHandle]:
-        """After a cancel, wait up to `timeout` seconds for the chain's jobs to leave the queue, less when a signal is pending (`signal_pending`); return those still in it."""
+        """After a cancel, wait up to `timeout` seconds for the chain's jobs to leave the queue, less when a repeated signal asks rb to hurry (`hurry`); return those still in it."""
         deadline = _clock() + timeout
         while True:
-            states = self.backend.queue_states(self.handles)
+            remaining = deadline - _clock()
+            states = self.backend.queue_states(
+                self.handles, timeout_s=max(1.0, min(CANCEL_TIMEOUT_S, remaining))
+            )
             if states is not None:
                 self._note_queue(states)
             live = [h for h in self.handles if telemetry_key(h) not in self._left]
             remaining = deadline - _clock()
-            if not live or remaining <= 0 or signal_pending():
+            if not live or remaining <= 0 or hurry():
                 return live
             _pause(None, min(_DRAIN_POLL_S, remaining))
 
-    def cancel(self) -> bool:
-        """Cancel the chain's jobs still in the queue; return whether the scheduler took the request.
+    def cancel(self, *, poll: bool = True) -> bool:
+        """Cancel the chain's jobs still in the queue; return whether the scheduler took the request for every one.
 
-        The chain counts as cancelled only once it did, so a later call, such as a repeated signal's, retries a refused cancel. Signals are deferred while the scheduler is asked. When the queue cannot be read, every job not yet seen to leave it is cancelled.
+        Each job counts as cancelled only once the scheduler took its cancel, so a later call, such as a repeated signal's, retries a refused one and asks nothing about the rest. With `poll` the queue is read first, so jobs that have left it are not asked about; when it cannot be read, or without `poll` (the interrupt handler, which must not wait on two commands), every job not yet seen to leave is cancelled. Signals are deferred until the call ends.
         """
-        with self._lock:
-            self._cancel_requested = True
-            self._wake.set()
-            if self._cancelled:
-                return True
-            handles = [h for h in self.handles if telemetry_key(h) not in self._left]
-        ok = True
-        if handles:
-            with signals_deferred():
-                states = self.backend.queue_states(handles)
-                if states is not None:
-                    self._note_queue(states)
-                    handles = [h for h in handles if telemetry_key(h) in states]
-                if handles:
-                    ok = self.backend.cancel_all(handles) is not False
-        if ok:
+        with signals_deferred():
             with self._lock:
-                self._cancelled = True
-        return ok
+                self._cancel_requested = True
+                self._wake.set()
+                handles = [
+                    h
+                    for h in self.handles
+                    if telemetry_key(h) not in self._left
+                    and telemetry_key(h) not in self._cancelled
+                ]
+            if handles and poll:
+                states = self.backend.queue_states(handles, timeout_s=CANCEL_TIMEOUT_S)
+                if states is not None:
+                    self._note_queue(states, handles)
+                    handles = [h for h in handles if telemetry_key(h) in states]
+            ok = (
+                not handles
+                or self.backend.cancel_all(handles, timeout_s=CANCEL_TIMEOUT_S)
+                is not False
+            )
+            if ok:
+                with self._lock:
+                    self._cancelled.update(telemetry_key(h) for h in handles)
+            return ok
 
     def state(self, handle: JobHandle) -> dict:
         """The scheduler's accounting record of a job that has left the queue, asked again while accounting has no end state for it yet."""
@@ -373,7 +445,7 @@ class StageChain:
             if (
                 state not in _UNSETTLED_STATES
                 or attempt == _STATE_ATTEMPTS - 1
-                or signal_pending()
+                or hurry()
             ):
                 break
             time.sleep(_STATE_RETRY_S)
@@ -426,22 +498,7 @@ def _cancel_live_chains() -> None:
     with _LIVE_LOCK:
         chains = list(_LIVE)
     for chain in chains:
-        chain.cancel()
-
-
-@contextmanager
-def _signals_held():
-    """Block SIGINT, SIGTERM and SIGHUP in the main thread while the block runs."""
-    if threading.current_thread() is not threading.main_thread() or not hasattr(
-        signal, "pthread_sigmask"
-    ):
-        yield
-        return
-    previous = signal.pthread_sigmask(signal.SIG_BLOCK, set(_HANDLED_SIGNALS))
-    try:
-        yield
-    finally:
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+        chain.cancel(poll=False)
 
 
 @contextmanager
@@ -456,7 +513,7 @@ def signals_deferred(*, block: bool = True):
     _DEFERRAL["depth"] += 1
     try:
         if block:
-            with _signals_held():
+            with signals_blocked(_HANDLED_SIGNALS):
                 yield
         else:
             yield
@@ -476,20 +533,36 @@ def signal_pending() -> bool:
     )
 
 
+def hurry() -> bool:
+    """Whether a wait for the scheduler should end now: a signal followed an interrupt, in any thread, or a signal waits in this (main) thread's `signals_deferred`."""
+    return _INTERRUPT["repeated"] or signal_pending()
+
+
 def _interrupt(signum: int) -> None:
-    """Handle an interrupt: no chain opens or submits from now on, every open chain is cancelled, live tool processes are stopped, and the signal's exception is raised."""
-    if _INTERRUPT["signum"] is None:
-        _INTERRUPT["signum"] = signum
-    _INTERRUPTED.set()
-    with signals_deferred():
-        _cancel_live_chains()
-        terminate_live_managed_processes()
+    """Handle an interrupt: no chain opens or submits from now on, every open chain is cancelled, live tool processes are stopped, and the signal's exception is raised.
+
+    Further signals are deferred meanwhile; they only make waits `hurry`, since this one is raised anyway.
+    """
+    _DEFERRAL["depth"] += 1
+    try:
+        if _INTERRUPT["signum"] is None:
+            _INTERRUPT["signum"] = signum
+        _INTERRUPTED.set()
+        with signals_blocked(_HANDLED_SIGNALS):
+            _cancel_live_chains()
+            terminate_live_managed_processes()
+    finally:
+        _DEFERRAL["depth"] -= 1
+        if _DEFERRAL["depth"] == 0:
+            _DEFERRAL["pending"] = None
     if signum == signal.SIGINT:
         raise KeyboardInterrupt
     raise SystemExit(128 + signum)
 
 
 def _handler(signum, _frame) -> None:
+    if _INTERRUPT["signum"] is not None:
+        _INTERRUPT["repeated"] = True
     if _DEFERRAL["depth"]:
         if _DEFERRAL["pending"] is None:
             _DEFERRAL["pending"] = signum
@@ -524,13 +597,16 @@ def settle_cancelled_chain(
 ) -> str:
     """Finish a chain rb gave up on (an interrupt, `max-wait`, a failed submission or wait) and return the run's failure description.
 
-    The chain's remaining jobs are cancelled (again, if the scheduler refused before), the head waits a bounded time for them to leave the queue, and a stage a cancelled job was running gets its `stage_end` from accounting and its log from `pnr.log`. Jobs still queued after the wait are named with the command that cancels them, and `jobs.json` is marked drained only when none is, so the next `rb pnr` looks them up.
+    The chain's remaining jobs are cancelled (again, if the scheduler refused before), the head waits a bounded time for them to leave the queue, and a stage a cancelled job was running gets its `stage_end` from accounting and its log from `pnr.log`. Jobs still queued after the wait are named with the command that cancels them, and `jobs.json` is marked drained only when none is, so the next `rb pnr` looks them up. The description is that of the first exception the chain was left with (`StageChain.failure`), else `error`'s.
     """
-    if isinstance(error, KeyboardInterrupt | SystemExit):
+    first = chain.failure if chain.failure is not None else error
+    if isinstance(first, KeyboardInterrupt | SystemExit):
         text = _interrupted_desc()
+    elif isinstance(first, FatalRtlBuddyError):
+        text = str(first)
     else:
-        text = str(error)
-    chain.cancel()
+        text = f"{type(first).__name__}: {first}"
+    cancelled = chain.cancel()
     live = chain.drain() if chain.handles else []
     see_job_writes(run_dir, log_path)
     recorded = _recorded_jobs(run_dir) or {}
@@ -556,6 +632,7 @@ def settle_cancelled_chain(
             pnr=chain.run,
             run_dir=run_dir,
             job_ids=[h.job_id for h in live],
+            cancelled=cancelled,
             command=_scancel_command(live),
         )
     killed = _close_cancelled_stage(run_dir, chain, log_path=log_path, live=live)
@@ -638,7 +715,7 @@ def record_jobs(run_dir: str, chain: StageChain, *, drained: bool = False) -> No
 def _recorded_jobs(run_dir: str) -> dict | None:
     """The jobs a run directory's `dispatch/` records and still counts as queued, by job id, as `(cluster, stage)`; None once `jobs.json` records them drained.
 
-    Besides `jobs.json`, each `NN_<stage>.sbatch` answer counts, so a job accepted after its head died is found too.
+    Besides `jobs.json`, each `NN_<stage>.sbatch` answer counts, so a job accepted after its head died is found too, and so does one the submission guard was stopped before it filed (`NN_<stage>.sbatch.tmp`).
     """
     try:
         document = json.loads(Path(jobs_dir(run_dir), JOBS_NAME).read_text())
@@ -652,7 +729,8 @@ def _recorded_jobs(run_dir: str) -> dict | None:
     for job in document.get("jobs") or []:
         if isinstance(job, dict) and job.get("job_id"):
             jobs[str(job["job_id"])] = (job.get("cluster"), job.get("stage"))
-    for answer in sorted(Path(jobs_dir(run_dir)).glob("*.sbatch")):
+    answers = Path(jobs_dir(run_dir))
+    for answer in sorted([*answers.glob("*.sbatch"), *answers.glob("*.sbatch.tmp")]):
         try:
             line = answer.read_text(errors="replace").strip().splitlines()
         except OSError:
@@ -691,16 +769,25 @@ class Orphans:
     command: str
     #: Set when the queue could not be read, so the jobs may or may not be queued.
     error: str | None = None
+    #: Set when this host has no client for the scheduler.
+    no_client: bool = False
 
     def desc(self) -> str:
         runs = ", ".join(os.path.basename(d) for d in self.run_dirs)
         ids = " ".join(self.job_ids)
+        dirs = " ".join(jobs_dir(d) for d in self.run_dirs)
+        if self.no_client:
+            return failure_desc(
+                f"stage job(s) {ids} of earlier dispatched run(s) {runs} may still "
+                f"be queued or running, and {self.error}; run rb pnr where squeue "
+                f"answers, or once they have ended remove {dirs} to run without them"
+            )
         if self.error is not None:
             return failure_desc(
                 f"cannot tell whether stage job(s) {ids} of earlier dispatched "
-                f"run(s) {runs} are still queued ({self.error}); run rb pnr where "
-                "squeue answers, or cancel them with "
-                f"`{self.command}`"
+                f"run(s) {runs} are still queued: {self.error}; run rb pnr again "
+                f"once squeue answers or cancel them with `{self.command}`; once "
+                f"they have ended, removing {dirs} lets rb pnr run without them"
             )
         return failure_desc(
             f"stage job(s) {ids} of earlier dispatched run(s) {runs} are still "
@@ -712,7 +799,7 @@ class Orphans:
 def live_orphans(artefact_dir: str, backend_factory) -> Orphans | None:
     """The stage jobs of earlier dispatched runs in `artefact_dir`'s checkpoints still in the queue, or None.
 
-    Each run directory whose `dispatch/jobs.json` is not marked drained is looked up; one whose jobs have all left the queue is marked drained, so it is not looked up again. `backend_factory()` returns the backend to ask; it is called only when there is something to look up, and one it cannot make, or a queue it cannot read, leaves the jobs counted as queued.
+    Each run directory whose `dispatch/jobs.json` is not marked drained is looked up, among this user's jobs; one whose jobs have all left the queue is marked drained, so it is not looked up again. `backend_factory()` returns the backend to ask; it is called only when there is something to look up. A backend it cannot make, or a queue that cannot be read, leaves the jobs counted as queued. When it raises `NoSchedulerClient`, a run directory whose jobs could have run their whole chain since it last changed is passed with a warning (`_unchecked`).
     """
     found: dict[str, dict] = {}
     for jobs in sorted(
@@ -728,32 +815,50 @@ def live_orphans(artefact_dir: str, backend_factory) -> Orphans | None:
             found[run_dir] = recorded
     if not found:
         return None
-    handles = [
-        JobHandle(job_id=job_id, spec=_OrphanSpec(artefact_dir), cluster=cluster)
-        for recorded in found.values()
-        for job_id, (cluster, _stage) in recorded.items()
-    ]
+    handles = {
+        run_dir: [
+            JobHandle(job_id=job_id, spec=_OrphanSpec(artefact_dir), cluster=cluster)
+            for job_id, (cluster, _stage) in recorded.items()
+        ]
+        for run_dir, recorded in found.items()
+    }
+    every = [h for run in handles.values() for h in run]
+    states, error = None, None
     try:
         backend = backend_factory()
-        live = backend.live_job_ids(handles, timeout_s=_ORPHAN_POLL_TIMEOUT_S)
-        error = None
+    except NoSchedulerClient as e:
+        return _unchecked(artefact_dir, found, handles, str(e))
     except (FatalRtlBuddyError, OSError, NotImplementedError) as e:
-        live = {h.job_id for h in handles}
         error = str(e) or type(e).__name__
-    runs = []
-    for run_dir, recorded in found.items():
-        if live.isdisjoint(recorded):
-            _mark_drained(run_dir)
-        else:
+    else:
+        try:
+            states = backend.queue_states(
+                every, timeout_s=_ORPHAN_POLL_TIMEOUT_S, mine=True
+            )
+        except (FatalRtlBuddyError, OSError, NotImplementedError) as e:
+            error = str(e) or type(e).__name__
+        if states is None and error is None:
+            error = getattr(backend, "last_poll_error", None) or "squeue did not answer"
+    runs, queued = [], []
+    for run_dir, run_handles in handles.items():
+        live = [h for h in run_handles if states is None or telemetry_key(h) in states]
+        if live:
             runs.append(run_dir)
+            queued += live
+        else:
+            _mark_drained(run_dir)
     if not runs:
         return None
-    queued = [h for h in handles if h.job_id in live]
+    return _orphans(artefact_dir, runs, queued, error=error)
+
+
+def _orphans(artefact_dir, runs, queued, *, error=None, no_client=False) -> Orphans:
     orphans = Orphans(
         run_dirs=runs,
         job_ids=[h.job_id for h in queued],
         command=_scancel_command(queued),
         error=error,
+        no_client=no_client,
     )
     log_event(
         logger,
@@ -764,8 +869,77 @@ def live_orphans(artefact_dir: str, backend_factory) -> Orphans | None:
         job_ids=orphans.job_ids,
         command=orphans.command,
         error=error,
+        no_client=no_client,
+        clear=[jobs_dir(d) for d in runs],
     )
     return orphans
+
+
+def _unchecked(
+    artefact_dir: str, found: dict, handles: dict, reason: str
+) -> Orphans | None:
+    """Earlier dispatched runs whose jobs this host cannot look up (`reason`): those whose `dispatch/` changed within the `time` their jobs asked for in all, as `Orphans`, or None.
+
+    The jobs of a run whose record is older than that could have run their whole chain since, so it is passed with a warning (`pnr.stage_jobs_unchecked`) and left as it is, for a host with a scheduler client to look up.
+    """
+    now = time.time()
+    runs, queued = [], []
+    for run_dir, run_handles in handles.items():
+        quiet = _quiet_s(run_dir, now)
+        chain = _chain_time_s(run_dir, found[run_dir])
+        if quiet is None or chain is None or quiet < chain:
+            runs.append(run_dir)
+            queued += run_handles
+            continue
+        log_console_event(
+            logger,
+            logging.WARNING,
+            "pnr.stage_jobs_unchecked",
+            run_dir=run_dir,
+            job_ids=[h.job_id for h in run_handles],
+            reason=reason,
+            quiet_s=round(quiet),
+            chain_s=chain,
+            clear=jobs_dir(run_dir),
+        )
+    if not runs:
+        return None
+    return _orphans(artefact_dir, runs, queued, error=reason, no_client=True)
+
+
+def _quiet_s(run_dir: str, now: float) -> float | None:
+    """How long ago anything in the run directory's `dispatch/` last changed, or None when it cannot be read."""
+    try:
+        times = [p.stat().st_mtime for p in Path(jobs_dir(run_dir)).iterdir()]
+    except OSError:
+        return None
+    return now - max(times) if times else None
+
+
+def _chain_time_s(run_dir: str, recorded: dict) -> int | None:
+    """The `time` the run's recorded jobs (`_recorded_jobs`) asked for in all, in seconds, from `jobs.json`, else the manifest's `dispatch` entry for the job's stage; None when one of them is not known."""
+    try:
+        document = json.loads(Path(jobs_dir(run_dir), JOBS_NAME).read_text())
+    except (OSError, ValueError):
+        document = {}
+    jobs = document.get("jobs") if isinstance(document, dict) else None
+    asked = {
+        str(job.get("job_id")): job.get("time")
+        for job in jobs or []
+        if isinstance(job, dict)
+    }
+    planned = (
+        (pnr_checkpoints.read_manifest(run_dir) or {}).get("dispatch") or {}
+    ).get("stages") or {}
+    total = 0
+    for job_id, (_cluster, stage) in recorded.items():
+        seconds = time_to_seconds(
+            asked.get(job_id) or (planned.get(stage) or {}).get("time")
+        )
+        if seconds is None:
+            return None
+        total += seconds
+    return total
 
 
 #: How long the orphan lookup waits for each `squeue`.
@@ -826,46 +1000,73 @@ def generator() -> str:
 
 _SCRIPT_THREADS_RE = re.compile(r'(\nputs ">>> Threads"\nset_thread_count )\d+(\n)')
 
+#: The scripts a stage job runs in place of the run's recorded ones, by recorded path (see `job_scripts`).
+_JOB_SCRIPTS: contextvars.ContextVar[dict] = contextvars.ContextVar(
+    "pnr_job_scripts", default={}
+)
 
-def _set_job_threads(
-    run_dir: str, stage: str, manifest: dict, *, run_name: str
-) -> dict | None:
-    """Set the thread count of the stage's scripts from the CPUs this job received, and return the thread plan's fields; None when the run sets no thread count.
+
+def session_script(path: str) -> str:
+    """The script an OpenROAD session runs for the run's recorded script `path`: inside `job_scripts`, the job's copy, else `path`."""
+    return _JOB_SCRIPTS.get().get(os.path.abspath(path), path)
+
+
+@contextmanager
+def job_scripts(run_dir: str, scripts: list[str], rewrite):
+    """While the block runs, sessions run a copy of each of `scripts` (recorded scripts of `run_dir`) rewritten by `rewrite(text)`, and the recorded scripts stay as the head wrote them, matching the manifest.
+
+    A copy is written to `dispatch/<script name>` only when `rewrite` changes the script; `session_script` names it. A script that cannot be copied runs as recorded, with a warning.
+    """
+    copies = {}
+    for path in scripts:
+        try:
+            text = Path(path).read_text()
+            updated = rewrite(text)
+            if updated == text:
+                continue
+            copy = os.path.join(jobs_dir(run_dir), os.path.basename(path))
+            Path(f"{copy}.tmp").write_text(updated)
+            os.replace(f"{copy}.tmp", copy)
+        except OSError as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.stage_job_script_unchanged",
+                run_dir=run_dir,
+                script=path,
+                error=str(e),
+            )
+            continue
+        copies[os.path.abspath(path)] = copy
+    token = _JOB_SCRIPTS.set({**_JOB_SCRIPTS.get(), **copies})
+    try:
+        yield copies
+    finally:
+        _JOB_SCRIPTS.reset(token)
+
+
+def _job_thread_plan(stage: str, manifest: dict, *, run_name: str):
+    """The thread plan of `stage` for the CPUs this job received, or None when the run sets no thread count.
 
     The head wrote the count its plan gave for the CPUs it asked for; `sbatch-args` or the site can change what the job gets, so the job resolves `threads:` (recorded in the manifest's `dispatch`) again against its own allocation (`detect_allocation`). Every script the stage runs gets it, each post-route repair session too (`stage_scripts`). The thread count is not part of the stage's identity (`pnr_stages`), so the checkpoint is the same either way.
     """
-    from .pnr_openroad import stage_scripts
-
     entry = ((manifest.get("dispatch") or {}).get("stages") or {}).get(stage) or {}
     requested = entry.get("threads_requested")
     if requested is None:
         return None
-    plan = plan_threads(
+    return plan_threads(
         requested,
         flow="pnr",
         run=f"{run_name} {stage}",
         allocation=detect_allocation(),
     )
-    try:
-        for path in stage_scripts(run_dir, stage):
-            text = Path(path).read_text()
-            updated = _SCRIPT_THREADS_RE.sub(
-                lambda m: f"{m.group(1)}{plan.count}{m.group(2)}", text, count=1
-            )
-            if updated != text:
-                Path(f"{path}.tmp").write_text(updated)
-                os.replace(f"{path}.tmp", path)
-    except (OSError, ValueError, KeyError) as e:
-        log_event(
-            logger,
-            logging.WARNING,
-            "pnr.stage_job_threads_unset",
-            run_dir=run_dir,
-            stage=stage,
-            threads=plan.count,
-            error=str(e),
-        )
-    return plan.fields()
+
+
+def _with_threads(count: int):
+    """A `job_scripts` rewrite that sets a script's thread count to `count`."""
+    return lambda text: _SCRIPT_THREADS_RE.sub(
+        lambda m: f"{m.group(1)}{count}{m.group(2)}", text, count=1
+    )
 
 
 def _artefact_dir(run_dir: str) -> str:
@@ -876,9 +1077,9 @@ def _artefact_dir(run_dir: str) -> str:
 def run_stage_job(run_dir: str, stage: str, *, openroad: str, pnr_log: str) -> bool:
     """Run `stage` of the staged run in `run_dir` inside a dispatched job; return whether it ended cleanly.
 
-    Writes `dispatch/NN_<stage>.result.json` for the head. The stage itself runs as in a local staged run, with the job's id and host added to its stage events.
+    Writes `dispatch/NN_<stage>.result.json` for the head. The stage itself runs as in a local staged run, with the job's id and host added to its stage events, and from a copy of each of its scripts, every post-route repair session's too (`stage_scripts`), with the thread count the job's CPUs give (`job_scripts`).
     """
-    from .pnr_openroad import run_stage
+    from .pnr_openroad import run_stage, stage_scripts
 
     see_job_writes(run_dir, pnr_log)
     refused = _refusal(run_dir, stage)
@@ -900,10 +1101,24 @@ def run_stage_job(run_dir: str, stage: str, *, openroad: str, pnr_log: str) -> b
     env = os.environ.copy()
     env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     fields = {"slurm_job": os.environ.get("SLURM_JOB_ID"), "host": socket.gethostname()}
-    thread_plan = _set_job_threads(run_dir, stage, manifest, run_name=run_name)
-    if thread_plan is not None:
-        fields["thread_plan"] = thread_plan
-    with open(pnr_log, "ab") as log:
+    plan = _job_thread_plan(stage, manifest, run_name=run_name)
+    if plan is not None:
+        fields["thread_plan"] = plan.fields()
+    scripts = []
+    if plan is not None:
+        try:
+            scripts = stage_scripts(run_dir, stage)
+        except (OSError, ValueError, KeyError):
+            # The stage reads the same plan and reports why it cannot.
+            scripts = [os.path.join(run_dir, f"{stage_name(stage)}.tcl")]
+    with (
+        open(pnr_log, "ab") as log,
+        job_scripts(
+            run_dir,
+            scripts,
+            _with_threads(plan.count) if plan is not None else None,
+        ),
+    ):
         outcome = run_stage(
             run_dir,
             stage,

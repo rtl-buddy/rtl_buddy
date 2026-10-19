@@ -1007,8 +1007,23 @@ def test_a_dispatched_round_runs_on_the_cpus_its_job_received(tmp_path, monkeypa
     (run_dir,) = _runs(artefacts)
     sessions = pnr_openroad.stage_scripts(str(run_dir), "post_route_repair")
     assert len(sessions) == 1 + 2 * _PR["rounds"]
+    # The job ran a copy of each session's script; the recorded ones keep the head's count.
     for path in sessions:
-        assert "\nset_thread_count 3\n" in Path(path).read_text(), path
+        recorded = Path(path).read_text()
+        assert "\nset_thread_count 4\n" in recorded, path
+        ran = (run_dir / "dispatch" / Path(path).name).read_text()
+        assert ran == recorded.replace(
+            "\nset_thread_count 4\n", "\nset_thread_count 3\n"
+        ), path
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    (chained,) = [
+        e["script"] for e in manifest["chain"] if e["stage"] == "post_route_repair"
+    ]
+    fingerprint = pnr_openroad._file_fingerprint(sessions[0])
+    assert (fingerprint["sha256"], fingerprint["size"]) == (
+        chained["sha256"],
+        chained["size"],
+    )
     (ended,) = [
         e
         for e in _events(run_dir)

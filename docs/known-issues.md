@@ -282,6 +282,10 @@ The `post_route_repair` stage keeps the last round that repaired, even when that
 
 On a multi-corner platform each post-route repair round reads its SPEF once per corner (`read_spef -corner`), but the final reports read the routed SPEF once for every corner, and OpenSTA then reuses the first corner's reduced parasitics at the others. The rounds can stop on `timing met` while the result reports negative setup at another corner. On the project template's sky130hd tt/ss/ff run the same routed database times ss setup at +190 ps per corner and at -160 ps from the shared read. Take a multi-corner verdict from the rounds' per-corner figures, or re-time the routed database with one `read_spef -corner` per corner. See [rtl_buddy#846](https://github.com/rtl-buddy/rtl_buddy/issues/846).
 
+## An unconfirmed dispatched P&R run blocks later runs
+
+A later `rb pnr` of a configuration refuses to start while an earlier [dispatched](concepts/pnr.md#dispatch-the-stages-to-slurm) run's stage jobs may still be queued and it cannot confirm they have left: while `squeue` does not answer, and on a host without `squeue` while that run's `dispatch/` record changed within the total `time` its jobs asked for. On such a host a record older than that only warns, though a job can wait in the queue for any time before it starts. Run `rb pnr` where `squeue` answers, or, once the jobs have ended, remove the `checkpoints/<run id>/dispatch/` directory the refusal names.
+
 ## `rb phys module` reports no power for an RTL module
 
 The physical model's synthesis half holds RTL module names and its power half holds the Liberty cell of each leaf instance, so `rb phys module u_cpu` reports cell count and area with no instances and no power. Use `rb phys instance u_cpu`, which sums the leaf rows under the instance path. See [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer).
