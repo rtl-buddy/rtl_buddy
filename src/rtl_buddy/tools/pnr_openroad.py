@@ -3344,7 +3344,7 @@ class OpenRoadPnr:
                     pnr_dispatch.record_jobs(run_dir, chain)
                 chain.wait()
         except FatalRtlBuddyError as e:
-            self._dispatch_failure = str(e)
+            self._dispatch_failure = pnr_dispatch.failure_desc(e)
             return None, "", None
         outcome = pnr_dispatch.chain_outcome(run_dir, chain, log_path=log_path)
         if outcome.failed_stage is not None:
@@ -3883,9 +3883,8 @@ class OpenRoadPnr:
                     pass
         self._openroad_returncode = returncode
         if self._dispatch_failure is not None:
-            # Not a verdict on the design, so an `xfail:` does not excuse it.
             return self._fail_after_openroad(
-                f"dispatch: {self._dispatch_failure}", fail_stage="error"
+                self._dispatch_failure, fail_stage=pnr_dispatch.DISPATCH_FAIL_STAGE
             )
 
         try:
@@ -4010,7 +4009,7 @@ class OpenRoadPnr:
             desc = f"{stage_prefix}{len(error_lines)} ERROR(s) in OpenROAD log"
             if self._dispatch_reason:
                 desc = f"{desc} ({self._dispatch_reason})"
-            return self._fail_after_openroad(desc)
+            return self._fail_after_openroad(desc, fail_stage=self._chain_fail_stage)
 
         unwritten = self._unwritten_checkpoint(log_text)
         if unwritten is not None:

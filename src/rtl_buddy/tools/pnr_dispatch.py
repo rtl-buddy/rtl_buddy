@@ -35,6 +35,12 @@ JOBS_NAME = "jobs.json"
 #: Allocation source recorded in a dispatched stage's thread plan: the job's `--cpus-per-task`.
 JOB_CPUS_SOURCE = "SLURM_CPUS_PER_TASK"
 
+#: `fail_stage` of a stage the scheduler ended, or that never ran; an `xfail:` never excuses it.
+DISPATCH_FAIL_STAGE = "dispatch"
+
+#: End states of a job that ended itself, so its stage's result is the verdict. In any other state (`TIMEOUT`, `OUT_OF_MEMORY`, `CANCELLED`, `NODE_FAIL`, `PREEMPTED`, ...) the scheduler ended the job, as for a lost `rb test` job.
+_SELF_ENDED_STATES = ("COMPLETED", "FAILED")
+
 #: Accounting can trail a job's exit; a failed stage's state is asked for this many times.
 _STATE_ATTEMPTS = 3
 _STATE_RETRY_S = 2.0
@@ -43,6 +49,12 @@ _STATE_RETRY_S = 2.0
 _STDERR_KEEP = 8000
 
 _BACKEND_LABELS = {"slurm": "Slurm"}
+
+
+def failure_desc(error) -> str:
+    """The description of a submission or wait failure, prefixed `dispatch:` once."""
+    text = str(error)
+    return text if text.startswith("dispatch: ") else f"dispatch: {text}"
 
 
 def jobs_dir(run_dir: str) -> str:
@@ -343,7 +355,10 @@ def _close_killed_stage(
 
 
 def chain_outcome(run_dir: str, chain: StageChain, *, log_path: str) -> ChainOutcome:
-    """Read how a chain that has left the queue ended, from each job's result and, for the first stage that did not end cleanly, the scheduler's accounting."""
+    """Read how a chain that has left the queue ended, from each job's result and, for the first stage that did not end cleanly, the scheduler's accounting.
+
+    The failed stage carries its own `fail_stage` only when its job ran the stage and ended itself (`COMPLETED` or `FAILED`). A job the scheduler ended (any other state), one that refused its stage or never started it, and one that left no result fail with `fail_stage: dispatch`.
+    """
     events = pnr_checkpoints.read_progress(run_dir)
     begun = {e.get("stage"): e for e in events if e.get("event") == "stage_begin"}
     ended = {e.get("stage") for e in events if e.get("event") == "stage_end"}
@@ -360,16 +375,27 @@ def chain_outcome(run_dir: str, chain: StageChain, *, log_path: str) -> ChainOut
         state = normalise_scheduler_state(record.get("state"))
         reason = f"{label} job {handle.job_id} ended" + (f" {state}" if state else "")
         name = stage_name(stage)
-        outcome = ChainOutcome(returncode=None, failed_stage=stage, reason=reason)
+        outcome = ChainOutcome(
+            returncode=None,
+            failed_stage=stage,
+            fail_stage=DISPATCH_FAIL_STAGE,
+            reason=reason,
+        )
         if result is not None and result.get("started"):
             outcome.returncode = result.get("returncode")
             outcome.stderr = result.get("stderr") or ""
-            outcome.fail_stage = result.get("fail_stage")
+            if not state or state in _SELF_ENDED_STATES:
+                outcome.fail_stage = result.get("fail_stage")
             problem = result.get("problem")
             outcome.problem = f"{problem} ({reason})" if problem else None
         elif result is not None:
             outcome.problem = f"stage {name}: {result.get('problem')} ({reason})"
-        elif stage in begun and stage not in ended:
+        elif stage in ended:
+            outcome.problem = (
+                f"stage {name}: {reason} after the stage ended, without writing "
+                f"its result (see {handle.spec.log_path})"
+            )
+        elif stage in begun:
             _close_killed_stage(
                 run_dir,
                 stage,

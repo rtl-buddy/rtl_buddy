@@ -31,6 +31,7 @@ from rtl_buddy.dispatch.argv import pnr_stage_job_argv
 from rtl_buddy.dispatch.base import JobHandle, PnrStageJobSpec
 from rtl_buddy.dispatch.slurm import SlurmDispatchBackend
 from rtl_buddy.errors import FatalRtlBuddyError
+from rtl_buddy.runner.xfail import apply_xfail
 from rtl_buddy.tools import pnr_checkpoints, pnr_dispatch
 
 _NAMES = {
@@ -58,17 +59,28 @@ class _FakeSlurm:
     """A Slurm that runs each stage job in-process when the head first polls the queue.
 
     `died` maps a stage to the state of a job killed inside it (no result, no
-    `stage_end`); `lost` maps a stage to the state of a job that never started it;
-    `state_of` overrides the final state of a job that ran.
+    `stage_end`); `died_after` to the state of a job killed after its `stage_end`,
+    before it wrote its result; `lost` maps a stage to the state of a job that never
+    started it; `state_of` overrides the final state of a job that ran.
     """
 
-    def __init__(self, monkeypatch, *, died=None, lost=None, state_of=None, **cfg):
+    def __init__(
+        self,
+        monkeypatch,
+        *,
+        died=None,
+        died_after=None,
+        lost=None,
+        state_of=None,
+        **cfg,
+    ):
         self.monkeypatch = monkeypatch
         self.jobs: dict[str, dict] = {}
         self.cancelled: list[str] = []
         self.polls = 0
         self.on_poll = None
         self.died = died or {}
+        self.died_after = died_after or {}
         self.lost = lost or {}
         self.state_of = state_of or {}
         self._next_id = 501
@@ -136,12 +148,15 @@ class _FakeSlurm:
         if stage in self.lost:
             return self.lost[stage]
         real_end = pnr_checkpoints.stage_end
+        real_write = pnr_dispatch._write_result
+
+        def _killed(*_a, **_k):
+            raise _JobDied
+
         if stage in self.died:
-
-            def _killed(*_a, **_k):
-                raise _JobDied
-
             pnr_checkpoints.stage_end = _killed
+        if stage in self.died_after:
+            pnr_dispatch._write_result = _killed
         os.environ["SLURM_JOB_ID"] = job["id"]
         try:
             ok = pnr_dispatch.run_stage_job(
@@ -151,9 +166,10 @@ class _FakeSlurm:
                 pnr_log=opts["--log"],
             )
         except _JobDied:
-            return self.died[stage]
+            return {**self.died, **self.died_after}[stage]
         finally:
             pnr_checkpoints.stage_end = real_end
+            pnr_dispatch._write_result = real_write
             del os.environ["SLURM_JOB_ID"]
         return self.state_of.get(stage, "COMPLETED" if ok else "FAILED")
 
@@ -419,6 +435,10 @@ def test_openroad_killed_for_memory_names_the_stage_and_the_state(
         rf"\(Slurm job {job['id']} ended OUT_OF_MEMORY\)",
         res.results["desc"],
     ), res.results["desc"]
+    # The scheduler ended the job, so the stage's exit is no verdict on the design.
+    assert res.results["fail_stage"] == "dispatch"
+    apply_xfail(res)
+    assert res.results["result"] == "FAIL"
 
 
 def test_a_job_killed_inside_its_stage_is_closed_from_accounting(tmp_path, monkeypatch):
@@ -435,6 +455,7 @@ def test_a_job_killed_inside_its_stage_is_closed_from_accounting(tmp_path, monke
     run_dir = _only_run(artefacts)
     assert (run_dir / "05_detailed_route.log").is_file()
     ended = {e["stage"]: e for e in _events(run_dir) if e["event"] == "stage_end"}
+    assert res.results["fail_stage"] == "dispatch"
     killed = ended["detailed_route"]
     assert killed["status"] == "error"
     assert killed["measured_by"] == "scheduler"
@@ -445,10 +466,11 @@ def test_a_job_killed_inside_its_stage_is_closed_from_accounting(tmp_path, monke
     assert "finish" not in ended
 
 
+@pytest.mark.parametrize("state", ["NODE_FAIL", "CANCELLED", "TIMEOUT", "FAILED"])
 def test_a_job_that_never_started_its_stage_points_at_its_scheduler_log(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, state
 ):
-    slurm = _FakeSlurm(monkeypatch, lost={"cts": "NODE_FAIL"})
+    slurm = _FakeSlurm(monkeypatch, lost={"cts": state})
     backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
 
     res = backend.run()
@@ -458,9 +480,51 @@ def test_a_job_that_never_started_its_stage_points_at_its_scheduler_log(
     log = pnr_dispatch.job_file(str(run_dir), "cts", "slurm.log")
     assert res.results["result"] == "FAIL"
     assert res.results["desc"] == (
-        f"stage 03_cts: Slurm job {job['id']} ended NODE_FAIL before the stage "
+        f"stage 03_cts: Slurm job {job['id']} ended {state} before the stage "
         f"started (see {log})"
     )
+    assert res.results["fail_stage"] == "dispatch"
+    apply_xfail(res)
+    assert res.results["result"] == "FAIL"
+    assert res.results["desc"].startswith("xfail not applied (dispatch failure): ")
+
+
+def test_a_job_that_ended_its_stage_without_a_result_says_so(tmp_path, monkeypatch):
+    slurm = _FakeSlurm(monkeypatch, died_after={"cts": "TIMEOUT"})
+    backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+
+    res = backend.run()
+
+    run_dir = _only_run(artefacts)
+    job = next(j for j in slurm.submitted() if _stage_of(j) == "cts")
+    log = pnr_dispatch.job_file(str(run_dir), "cts", "slurm.log")
+    assert res.results["desc"] == (
+        f"stage 03_cts: Slurm job {job['id']} ended TIMEOUT after the stage ended, "
+        f"without writing its result (see {log})"
+    )
+    assert res.results["fail_stage"] == "dispatch"
+
+
+def test_a_refused_stage_is_a_dispatch_failure(tmp_path, monkeypatch):
+    backend, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
+    real = pnr_dispatch._refusal
+    monkeypatch.setattr(
+        pnr_dispatch,
+        "_refusal",
+        lambda run_dir, stage: (
+            "the stage is refused" if stage == "place" else real(run_dir, stage)
+        ),
+    )
+
+    res = backend.run()
+
+    job = next(j for j in slurm.submitted() if _stage_of(j) == "place")
+    assert res.results["desc"] == (
+        f"stage 02_place: the stage is refused (Slurm job {job['id']} ended FAILED)"
+    )
+    assert res.results["fail_stage"] == "dispatch"
+    apply_xfail(res)
+    assert res.results["result"] == "FAIL"
 
 
 @pytest.mark.parametrize(
@@ -501,9 +565,17 @@ def test_a_failed_wait_cancels_the_chain_and_fails_the_run(tmp_path, monkeypatch
     res = backend.run()
 
     assert res.results["result"] == "FAIL"
-    assert res.results["fail_stage"] == "error"
+    assert res.results["fail_stage"] == "dispatch"
     assert res.results["desc"] == "dispatch: queue drain exceeded max-wait"
     assert sorted(slurm.cancelled) == sorted(j["id"] for j in slurm.submitted())
+
+
+def test_a_dispatch_failure_is_prefixed_once():
+    assert pnr_dispatch.failure_desc("sbatch failed") == "dispatch: sbatch failed"
+    assert (
+        pnr_dispatch.failure_desc(FatalRtlBuddyError("dispatch: 1 of 6 job(s)"))
+        == "dispatch: 1 of 6 job(s)"
+    )
 
 
 def test_a_chain_cancelled_during_a_submission_cancels_the_accepted_job():
