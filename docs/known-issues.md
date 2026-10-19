@@ -252,14 +252,20 @@ A staged run runs the same flow commands as a one-session run of the same config
 
 Compare a staged run with a one-session run at the same `threads:` before relying on it to reproduce one. See [Run stages as separate sessions](concepts/pnr.md#run-stages-as-separate-sessions).
 
-## A post-route repair round routes the design again
+## Post-route repair rounds work around OpenROAD routing failures
 
-Each [`post-route-repair`](concepts/pnr.md#repair-on-the-detailed-route) round that repairs drops the detailed route, routes the whole design globally, repairs, and routes every net in detail again, in OpenROAD sessions of its own. A round therefore costs about a global and a detailed route of the design. The sequence avoids these OpenROAD 26Q4 failures:
+Each [`post-route-repair`](concepts/pnr.md#repair-on-the-detailed-route) round that repairs runs in OpenROAD sessions of its own and orders its steps to avoid these OpenROAD 26Q4 failures:
 
 - A repair in the session that ran detailed route makes the next detailed route fail with `DRT-0218`, so each round reads the routed database in a fresh session.
-- On a database with detailed-route wires, `repair_timing` rebuffers from the global router's in-memory routes. A fresh session has only routes rebuilt from the database's guides, which miss pins, and repair fails with `RSZ-0074` (seen on ASAP7). The global router does not route a net that keeps its wires, so the round removes them and routes globally first.
 - `repair_timing` on global-route parasitics reroutes the nets it changes through an incremental global route of its own. A second one opened around it with `global_route -start_incremental` delivers each netlist change to the router twice; removing a buffer then adds its nets' routing usage twice, and a later rip-up fails with `GRT-0229` and `usage=65535`. The round repairs first and opens the incremental route around the legalization only, as ORFS does.
-- A changed net left without a global route makes detailed route fail with `DRT-1010`; the two incremental routes above give every changed or moved cell's nets one.
+- `repair_timing` builds buffer trees from the global routes. The nets `repair_design` split have none until they are rerouted, and a `repair_timing` right after it fails with `RSZ-0074`, so the round legalizes and reroutes incrementally between them, as ORFS does. The [global-route repair](concepts/pnr.md#repair-on-the-global-route) does the same.
+- A changed net left without a global route makes detailed route fail with `DRT-1010`; the incremental routes above give every changed or moved cell's nets one.
+
+With `reroute: full` a round also removes the detailed route and routes the whole design globally before it repairs, and its detailed route routes every net again, so it costs about a global and a detailed route of the design. With `reroute: eco` its detailed route starts from the routed design and reroutes the nets the repair changed; on the project template's sky130hd blocks it starts with about half the violations and finishes in about half the time.
+
+## An eco post-route repair round fails with `RSZ-0074` on ASAP7
+
+With [`reroute: eco`](concepts/pnr.md#repair-on-the-detailed-route), the default, a post-route repair round keeps the detailed route, and `repair_timing` rebuffers from the global routes OpenROAD rebuilds from the routed database in the round's fresh session. On ASAP7 those routes miss pins, and the repair fails with `RSZ-0074`, also with the placement estimate read first, `-grid_origin` on the incremental routes, the route guides written and read back, or `set_wire_rc` toggled around it. The failure names the fix: set `post-route-repair.reroute: full` on an ASAP7 platform or run. A `full` round removes the detailed route and routes globally before it repairs, so the repair has a global route for every net. On sky130hd `eco` repairs as intended.
 
 ## Post-route repair keeps the last repaired round
 
