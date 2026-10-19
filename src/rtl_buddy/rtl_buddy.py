@@ -47,6 +47,7 @@ from .config.fpv import FpvRegConfig, FpvSuiteConfig
 from .config.mut import MutSuiteConfig
 from .config.model import ModelConfig, ModelConfigLoader
 from .config.pnr import GdsMode, PnrSuiteConfig
+from .config.pnr_repair import PnrMode
 from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .cov import model as cov_model
@@ -11714,7 +11715,10 @@ class RtlBuddy:
                 name=f"{run.get_name()}/results",
                 desc=f"blocked: {noun} {names} did not pass",
                 fail_stage="blocked",
-                fields={"blocked_by": [dep.block for dep in blocked_by]},
+                fields={
+                    "blocked_by": [dep.block for dep in blocked_by],
+                    "mode": run.get_mode().value,
+                },
             )
             return {**row, "results": res}
         synth_row = None
@@ -11729,7 +11733,7 @@ class RtlBuddy:
                         f"{synth_row['desc']}"
                     ),
                     fail_stage="synth",
-                    fields={"synth": synth_row},
+                    fields={"synth": synth_row, "mode": run.get_mode().value},
                 )
                 return {**row, "results": res}
         runner = PnrRunner(
@@ -11748,9 +11752,9 @@ class RtlBuddy:
             dispatch=dispatch,
         )
         res = runner.run()
-        # A stopped run, or a probe's PASS, is no verdict on the routed design, so `xfail` does not apply.
-        probe_pass = res.is_pass() and res.results.get("mode") == "probe"
-        if run.is_xfail() and stop_after is None and not probe_pass:
+        res.results.setdefault("mode", run.get_mode().value)
+        # A stopped run, which a probe is, is no verdict on the routed design, so `xfail` applies neither way.
+        if run.is_xfail() and stop_after is None and run.get_mode() is PnrMode.CLOSURE:
             self._apply_xfail_logged(res, run, "pnr_suite.xfail")
         if synth_row is not None:
             res.results["synth"] = synth_row

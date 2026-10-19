@@ -129,13 +129,13 @@ def run_option_error(
     `stages` are the run's stages (see `run_stages`); a probe ends after `global_route`.
     """
     for flag, stage in (("--stop-after", stop_after), ("--from", resume_from)):
+        if stage is not None and mode is PnrMode.PROBE and after(stage, "global_route"):
+            return f"{flag} {stage}: a probe (mode: probe) ends after global_route"
         if stage is not None and stage not in stages:
             return (
                 f"{flag} {stage}: this run has no {stage} stage; it runs only "
                 "with post-route-repair set"
             )
-        if stage is not None and mode is PnrMode.PROBE and after(stage, "global_route"):
-            return f"{flag} {stage}: a probe (mode: probe) ends after global_route"
     return None
 
 

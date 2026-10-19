@@ -1349,7 +1349,12 @@ class PnrConfigFile:
             else None
         )
         checkpoints = _normalise_checkpoints(self.name, self.checkpoints)
-        if self.stages and checkpoints not in (None, CHECKPOINT_STAGES):
+        # Every stage but `post_route_repair`, which a run without that knob lacks, also counts as all.
+        if (
+            self.stages
+            and checkpoints is not None
+            and set(checkpoints) | {POST_ROUTE_REPAIR_STAGE} != set(CHECKPOINT_STAGES)
+        ):
             raise FatalRtlBuddyError(
                 f"pnr run '{self.name}': 'stages: true' writes every stage "
                 "checkpoint; remove 'checkpoints' or set it to true"

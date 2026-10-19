@@ -6,6 +6,7 @@ OpenROAD backend; post-route rounds and probes run under the stub OpenROAD harne
 """
 
 import json
+import os
 import re
 from dataclasses import replace
 from importlib.resources import files
@@ -23,7 +24,7 @@ from test_pnr_checkpoints import (
 )
 
 from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
-from rtl_buddy.config.pnr import PNR_STAGES, PnrConfigFile
+from rtl_buddy.config.pnr import CHECKPOINT_STAGES, PNR_STAGES, PnrConfigFile
 from rtl_buddy.config.pnr_platform import (
     PnrPlatformConfig,
     PnrPlatformConfigFile,
@@ -269,6 +270,42 @@ def test_mode_defaults_to_closure_and_rejects_others(tmp_path):
         _run(mode="explore")
 
 
+@pytest.mark.parametrize(
+    "checkpoints",
+    [
+        ["floorplan", "place", "cts", "global_route", "detailed_route"],
+        list(CHECKPOINT_STAGES),
+        True,
+    ],
+)
+def test_stages_accept_every_checkpoint_with_or_without_post_route_repair(
+    tmp_path, checkpoints
+):
+    run = PnrConfigFile(
+        name="r",
+        desc="r",
+        synth="s",
+        synth_path="synth.yaml",
+        platform="p",
+        stages=True,
+        checkpoints=checkpoints,
+    ).initialise(str(tmp_path))
+    assert run.get_checkpoints() == CHECKPOINT_STAGES
+
+
+def test_stages_refuse_a_partial_checkpoint_list(tmp_path):
+    with pytest.raises(FatalRtlBuddyError, match="writes every stage checkpoint"):
+        PnrConfigFile(
+            name="r",
+            desc="r",
+            synth="s",
+            synth_path="synth.yaml",
+            platform="p",
+            stages=True,
+            checkpoints=["cts", "global_route"],
+        ).initialise(str(tmp_path))
+
+
 # -- rendering -------------------------------------------------------------------
 
 
@@ -287,16 +324,70 @@ def _real_platform(tmp_path, **kw):
     return _platform(_pdk(tmp_path), **kw)
 
 
-def test_a_flow_without_repair_knobs_renders_as_before(tmp_path):
-    """The template with its placeholders filled as the knobs' absence fills them is the flow."""
-    text = _render(tmp_path, _real_platform(tmp_path))
-    assert (
-        '\nputs ">>> Post-CTS timing repair"\n'
-        "estimate_parasitics -placement\n"
-        "repair_timing -hold\n"
-    ) in text
-    assert "Global-route repair" not in text
-    assert "post_route_repair" not in text
+#: The flow template's post-CTS repair before `post_cts_repair` replaced it.
+_BASE_POST_CTS = (
+    "\n"
+    'puts ">>> Post-CTS timing repair"\n'
+    "estimate_parasitics -placement\n"
+    "{{ setup_repair }}repair_timing -hold\n"
+    "\n"
+)
+
+
+def _base_template(template: str) -> str:
+    """The flow template as it was before the repair knobs: the post-CTS repair written out, and the global-route hold repair's placeholder."""
+    assert template.count("{{ post_cts_repair }}\n") == 1
+    assert template.count("{{ global_route_repair }}") == 1
+    return template.replace("{{ post_cts_repair }}\n", _BASE_POST_CTS).replace(
+        "{{ global_route_repair }}", "{{ global_route_hold_repair }}"
+    )
+
+
+@pytest.mark.parametrize("setup_repair", [False, True])
+@pytest.mark.parametrize("kind", ["one session", "checkpoints", "stages"])
+def test_a_flow_without_repair_knobs_is_the_template_as_before(
+    tmp_path, monkeypatch, kind, setup_repair
+):
+    """Without the knobs, every script a run writes is the earlier template's render, whole."""
+    platform = _real_platform(tmp_path, post_cts_setup_repair=setup_repair)
+
+    def _write(base: bool) -> dict[str, str]:
+        pnr_cfg = _pnr_cfg(
+            tmp_path,
+            CHECKPOINT_STAGES if kind == "checkpoints" else None,
+            stages=kind == "stages",
+        )
+        pnr_cfg.resolve_synth_cfg = MagicMock(
+            return_value=MagicMock(get_top=lambda: "demo_top", get_name=lambda: "s")
+        )
+        backend = OpenRoadPnr("demo/openroad", pnr_cfg, str(tmp_path), MagicMock())
+        backend._ps_per_unit = 1.0
+        if kind != "one session":
+            backend._ckpt_run_dir = str(tmp_path / "ck" / "run")
+            os.makedirs(backend._ckpt_run_dir, exist_ok=True)
+        if base:
+            template = _base_template(backend._load_template())
+            monkeypatch.setattr(backend, "_load_template", lambda: template)
+            render = backend._render
+            filled = {
+                "setup_repair": "repair_timing -setup\n" if setup_repair else "",
+                "global_route_hold_repair": "",
+            }
+            monkeypatch.setattr(
+                backend, "_render", lambda text, subs: render(text, {**subs, **filled})
+            )
+        script = Path(backend._write_script(platform, pnr_cfg.get_floorplan()))
+        written = {"pnr.tcl": script.read_text()}
+        if backend._ckpt_run_dir:
+            for path in sorted(Path(backend._ckpt_run_dir).glob("*.tcl")):
+                written[path.name] = path.read_text()
+        return written
+
+    now = _write(base=False)
+    before = _write(base=True)
+
+    assert now == before
+    assert len(now) == (7 if kind == "stages" else 1)
 
 
 def test_the_template_runs_the_commands_a_repair_runs_again():
@@ -730,14 +821,39 @@ def test_a_one_session_run_with_rounds_logs_commands_hooks_leave_behind(
     ]
 
 
-def test_a_dispatched_run_runs_every_round_in_the_stage_job(tmp_path, monkeypatch):
+def test_a_dispatched_run_runs_every_round_in_the_stage_job(
+    tmp_path, monkeypatch, caplog
+):
     from test_pnr_dispatch import _dispatched
 
     monkeypatch.setenv("RB_STUB_SETUP", "-0.2 0.01")
     backend, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
     _with_repair(backend, tmp_path, post_route=_PR)
 
-    res = backend.run()
+    with caplog.at_level("INFO"):
+        res = backend.run()
+
+    rounds = [
+        (r.rtl_event, r.rtl_fields.get("round"))
+        for r in caplog.records
+        if getattr(r, "rtl_event", "").startswith("pnr.post_route_r")
+    ]
+    once = [
+        ("pnr.post_route_round", 1),
+        ("pnr.post_route_round", 2),
+        ("pnr.post_route_repair_done", None),
+    ]
+    # The head logs them from the run's progress events.
+    assert rounds[-3:] == once
+    done = [
+        r.getMessage()
+        for r in caplog.records
+        if getattr(r, "rtl_event", "") == "pnr.post_route_repair_done"
+    ][-1]
+    assert done == (
+        'P&R "demo_pnr" post-route repair: 1 of 3 round(s) repaired; stopped: '
+        "timing met"
+    )
 
     assert res.results["result"] == "PASS", res.results
     stages = [job["stage"] for job in slurm.submitted()]
@@ -1054,6 +1170,25 @@ def test_post_route_repair_without_rcx_rules_is_a_setup_error(tmp_path, monkeypa
     assert "rcx-rules" in res.results["desc"]
 
 
+@pytest.mark.parametrize("stages", [False, True])
+def test_a_run_that_stops_before_the_rounds_needs_no_rcx_rules(
+    tmp_path, monkeypatch, stages
+):
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        rcx=False,
+        stages=stages,
+        stop_after="detailed_route",
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["stopped_after"] == "detailed_route"
+
+
 def test_stop_after_post_route_repair_needs_the_stage(tmp_path, monkeypatch):
     backend, _artefacts = _repair_backend(
         tmp_path, monkeypatch, stop_after="post_route_repair"
@@ -1090,15 +1225,24 @@ def test_a_probe_passes_unrouted_with_its_global_route_checkpoint(
     assert not re.search(r"^repair_timing", flow, re.MULTILINE)
 
 
-def test_a_probe_cannot_stop_after_detailed_route(tmp_path, monkeypatch):
+@pytest.mark.parametrize("stage", ["detailed_route", "post_route_repair"])
+def test_a_probe_cannot_stop_after_a_stage_past_global_route(
+    tmp_path, monkeypatch, stage
+):
     backend, _artefacts = _repair_backend(
-        tmp_path, monkeypatch, mode=PnrMode.PROBE, stop_after="detailed_route"
+        tmp_path,
+        monkeypatch,
+        mode=PnrMode.PROBE,
+        stop_after=stage,
+        post_route={"setup-margin": 0.1},
     )
 
     res = backend.run()
 
     assert res.results["fail_stage"] == "setup"
-    assert "probe" in res.results["desc"]
+    assert res.results["desc"] == (
+        f"--stop-after {stage}: a probe (mode: probe) ends after global_route"
+    )
 
 
 def test_a_probe_cannot_be_resumed_into_a_closure_run(tmp_path, monkeypatch):

@@ -1361,7 +1361,11 @@ def run_post_route_repair(run_dir: str, session, *, run_name: str) -> PostRouteO
         reason=reason,
     )
     pnr_checkpoints.record_event(
-        run_dir, "post_route_repair_done", repaired_rounds=repaired, reason=reason
+        run_dir,
+        "post_route_repair_done",
+        repaired_rounds=repaired,
+        rounds=len(rounds),
+        reason=reason,
     )
     if plan["report"] is not None:
         returncode, stderr, problem, _errors = _run(
@@ -4050,6 +4054,20 @@ class OpenRoadPnr:
             return 0, "", None
         return self._run_chain(env)
 
+    def _log_dispatched_rounds(self) -> None:
+        """Log the post-route repair rounds of a dispatched run from its progress events: the stage job logged them only to its own log."""
+        codes = {
+            "post_route_round": "pnr.post_route_round",
+            "post_route_repair_done": "pnr.post_route_repair_done",
+        }
+        for event in pnr_checkpoints.read_progress(self._ckpt_run_dir):
+            code = codes.get(event.get("event"))
+            if code is not None:
+                fields = {k: v for k, v in event.items() if k not in ("event", "t")}
+                log_event(
+                    logger, logging.INFO, code, pnr=self.pnr_cfg.get_name(), **fields
+                )
+
     def _warn_hook_commands(self) -> None:
         """Log each hook of this run's sessions that changed global Tcl commands, once per hook and change: a warning for commands that existed before it, which later sessions have in their original form, and info for new ones, whose later use fails as an unknown command."""
         seen = set()
@@ -4401,7 +4419,7 @@ class OpenRoadPnr:
                 name=self.name + "/results", desc=stage_problem, fail_stage="setup"
             )
         # Each round times extracted parasitics.
-        if self._post_route is not None and not rcx_rules:
+        if POST_ROUTE_REPAIR_STAGE in self._run_stages() and not rcx_rules:
             log_event(
                 logger,
                 logging.ERROR,
@@ -4586,6 +4604,7 @@ class OpenRoadPnr:
         chain_problem = None
         if self._dispatch is not None:
             returncode, stderr_text, chain_problem = self._dispatch_chain()
+            self._log_dispatched_rounds()
             self._warn_hook_commands()
         elif self._staged:
             returncode, stderr_text, chain_problem = self._run_chain(env)
