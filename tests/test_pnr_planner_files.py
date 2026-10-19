@@ -1078,6 +1078,7 @@ def _routed_backend(tmp_path, monkeypatch, fp, log, def_text=None, returncode=0)
     platform = MagicMock()
     platform.get_global_route_repair.return_value = None
     platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
     platform.get_dont_use_cells.return_value = []
     root_cfg = MagicMock()
