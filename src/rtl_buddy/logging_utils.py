@@ -2338,6 +2338,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 ". The block is read without it; a later major release will "
                 "make an unknown key fatal"
             )
+        case "config.unknown_key_rejected":
+            msg = f"{fields.get('path')}: {fields.get('block')}: unknown key {fields.get('key')!r}"
+            if fields.get("suggestion"):
+                msg += f", did you mean {fields.get('suggestion')!r}?"
+            known = fields.get("known") or []
+            if known:
+                msg += f" (valid keys: {', '.join(str(k) for k in known)})"
+            return msg
         case "root_config.reg_cfg_unknown_keys":
             return (
                 f"{fields.get('path')}: cfg-rtl-reg has unknown key(s) "

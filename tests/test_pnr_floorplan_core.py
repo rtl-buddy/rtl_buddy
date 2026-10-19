@@ -154,6 +154,31 @@ def test_cutouts_are_checked_hard_blockages_that_cut_rows_and_keep_macros_out(
     assert text.index("Core cut-outs") < text.index('puts ">>> Macro placement"')
 
 
+def test_a_cutout_outside_the_core_fails_with_its_message(tmp_path):
+    text = _render(tmp_path, _floorplan(core_cutouts=[(80.0, 80.0, 140.0, 140.0)]))
+    start = text.index("set blockage_box [[create_blockage")
+    check = text[start : text.index("lappend MACRO_KEEPOUTS", start)]
+    stubs = textwrap.dedent(
+        """\
+        proc rb_box {x0 y0 x1 y1} {
+          set name rb_box[incr ::rb_boxes]
+          set ::$name [dict create xMin $x0 yMin $y0 xMax $x1 yMax $y1]
+          proc $name {method} "dict get \$::$name \$method"
+          return $name
+        }
+        proc create_blockage {args} { return blockage }
+        proc blockage {method} { return [rb_box 200 200 300 300] }
+        proc block {method} { return [rb_box 0 0 100 100] }
+        namespace eval ord { proc get_db_block {} { return block } }
+        """
+    )
+    result = _tcl_eval(stubs + f"catch {{\n{check}}} result\n")
+    assert result.strip() == (
+        "floorplan.core-cutouts[0] {80 80 140 140} um does not overlap the core; "
+        "a cut-out is carved out of the core"
+    )
+
+
 # --- pdn-config and pdn: ------------------------------------------------------
 
 _SKY130_PDN = {

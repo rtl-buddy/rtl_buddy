@@ -92,11 +92,16 @@ def load_yaml(
         loader.dispose()
 
 
-def config_from_yaml(cls: Any, text: str, path: str | PathLike | None = None) -> Any:
-    """``serde.yaml.from_yaml(cls, text)`` parsed through :func:`load_yaml`."""
+def config_from_data(cls: Any, data: Any) -> Any:
+    """``serde.from_dict(cls, data)`` with the options every config file loads with."""
     return from_dict(
         cls,
-        load_yaml(text, path),
+        data,
         reuse_instances=False,
         deserialize_numbers=deserialize_yaml_numbers,
     )
+
+
+def config_from_yaml(cls: Any, text: str, path: str | PathLike | None = None) -> Any:
+    """``serde.yaml.from_yaml(cls, text)`` parsed through :func:`load_yaml`."""
+    return config_from_data(cls, load_yaml(text, path))
