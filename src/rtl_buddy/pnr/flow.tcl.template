@@ -156,6 +156,8 @@ detailed_route \
 {{ @finish }}{{ dont_use_check_block }}
 puts ">>> Fill insertion"
 filler_placement $FILL_CELLS
+# Before extraction, so the SPEF and the reports see the design as written.
+rb::global_connect
 {{ rcx_block }}{{ hook_before_reports_block }}
 puts ">>> Final reports"
 {{ final_parasitics }}
@@ -199,6 +201,7 @@ if {[catch {
   report_check_types -max_slew -max_capacitance -max_fanout -violators > $OUT_DIR/electrical.rpt
 } rb_err]} { puts "rb: electrical.rpt unavailable: $rb_err" }
 
+# Again for cells a before-reports hook added.
 rb::global_connect
 puts ">>> Write outputs"
 write_def     $OUT_DIR/${DESIGN}.def

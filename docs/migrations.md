@@ -108,7 +108,7 @@ A run whose OpenROAD session exits 0 before its flow's end marker fails with `fa
 
 ### Supply pins of added cells are connected
 
-The flow applies the PDK's global connections again (`global_connect`) before it writes each checkpoint and the final outputs. In v6 only the cells present when `pdngen` ran had their supply pins connected; the buffers, tie cells and fill added later kept them unconnected in the routed ODB, DEF and every checkpoint. The generated `pnr.tcl` of every run gains the call, and the routed DEF of a run with a `pdn-config` lists the added cells in its power and ground nets. No `pnr.yaml` change is needed. See [Tune the process-dependent steps](concepts/pnr.md#tune-the-process-dependent-steps).
+The flow applies the PDK's global connections again (`global_connect`) before it writes each checkpoint, before parasitic extraction and before the final outputs. In v6 only the cells present when `pdngen` ran had their supply pins connected; the buffers, tie cells and fill added later kept them unconnected in the routed ODB, DEF and every checkpoint. The generated `pnr.tcl` of every run gains the call, and the routed DEF of a run with a `pdn-config` lists the added cells in its power and ground nets. OpenRCX extracts the connected design, so a run with `rcx-rules` can report slightly different slack. No `pnr.yaml` change is needed. See [Tune the process-dependent steps](concepts/pnr.md#tune-the-process-dependent-steps).
 
 ### Exact pins leave side and group rules
 
