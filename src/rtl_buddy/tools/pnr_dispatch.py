@@ -160,7 +160,7 @@ def _signals_held():
 def cancel_on_interrupt():
     """While open, SIGINT and SIGTERM cancel every open stage chain of this process, then raise `KeyboardInterrupt` or `SystemExit(128 + signal)`.
 
-    Install it in the main thread around runs that dispatch; chains waiting in worker threads are cancelled from here, which lets those threads finish.
+    Install it in the main thread around runs that dispatch; chains waiting in worker threads are cancelled from here, which lets those threads finish. A signal the process ignores stays ignored.
     """
     if threading.current_thread() is not threading.main_thread():
         yield
@@ -174,6 +174,8 @@ def cancel_on_interrupt():
 
     previous = {}
     for signum in (signal.SIGINT, signal.SIGTERM):
+        if signal.getsignal(signum) is signal.SIG_IGN:
+            continue
         previous[signum] = signal.getsignal(signum)
         signal.signal(signum, _handler)
     try:

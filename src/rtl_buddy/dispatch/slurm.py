@@ -1068,7 +1068,8 @@ class SlurmDispatchBackend(DispatchBackend):
 
         The chain's ``afterok`` goes after ``sbatch-args``, because Slurm takes the last
         ``--dependency``: a dependency there or in ``SBATCH_DEPENDENCY`` holds the first
-        stage, and every later stage waits on it through the chain.
+        stage, and every later stage waits on it through the chain. As for every other
+        job, ``--kill-on-invalid-dep=yes`` goes before them, so a site can override it.
         """
         cmd = self._reservation_argv(
             spec.resources,
@@ -1076,8 +1077,11 @@ class SlurmDispatchBackend(DispatchBackend):
             chdir=spec.suite_dir,
             log_path=spec.log_path,
         )
+        gate, *reap = self._dependency_argv(dependency) or [None]
+        cmd += reap
         cmd += self.sbatch_args
-        cmd += self._dependency_argv(dependency)
+        if gate is not None:
+            cmd.append(gate)
         cmd += ["--wrap", shlex.join(pnr_stage_job_argv(spec))]
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=spec.suite_dir)
         if proc.returncode != 0:
