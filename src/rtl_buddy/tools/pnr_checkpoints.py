@@ -602,6 +602,16 @@ def resolve_checkpoint(artefact_dir: str, spec: str) -> CheckpointRef | str:
     event = written.get(stage)
     index = STAGE_INDEX[stage]
     if event is None:
+        manifest = read_manifest(run_dir) or {}
+        source = ((manifest.get("checkpoints") or {}).get(stage) or {}).get(
+            "inherited_from"
+        )
+        if source:
+            return (
+                f"checkpoint {index}_{stage} of resumed run "
+                f"{os.path.basename(run_dir)} was written by run {source}; "
+                f"name {source}/{stage}"
+            )
         return (
             f"checkpoint {index}_{stage} was not written by run "
             f"{os.path.basename(run_dir)} (see {os.path.join(run_dir, PROGRESS_NAME)})"

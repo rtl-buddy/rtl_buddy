@@ -308,6 +308,11 @@ def test_resume_twice_from_one_global_route(tmp_path, monkeypatch):
         assert manifest["checkpoints"]["global_route"]["inherited_from"] == first.name
         assert "inherited_from" not in manifest["checkpoints"]["detailed_route"]
         assert list(manifest["resources"]) == ["detailed_route", "finish"]
+        # An inherited checkpoint is exported from the run that wrote it.
+        why = pnr_checkpoints.resolve_checkpoint(
+            str(artefacts), f"{run_dir.name}/global_route"
+        )
+        assert f"name {first.name}/global_route" in why
         # pnr.log carries the inherited stages' logs first.
         log = (artefacts / "pnr.log").read_bytes()
         assert log.startswith((first / "01_floorplan.log").read_bytes())
