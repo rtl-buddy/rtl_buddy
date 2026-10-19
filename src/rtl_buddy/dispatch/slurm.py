@@ -1069,7 +1069,9 @@ class SlurmDispatchBackend(DispatchBackend):
         The chain's ``afterok`` goes after ``sbatch-args``, because Slurm takes the last
         ``--dependency``: a dependency there or in ``SBATCH_DEPENDENCY`` holds the first
         stage, and every later stage waits on it through the chain. As for every other
-        job, ``--kill-on-invalid-dep=yes`` goes before them, so a site can override it.
+        job, ``--kill-on-invalid-dep=yes`` goes before them, so a site can override it,
+        and so does ``--ntasks=1``: the job runs one rtl_buddy, whose OpenROAD takes
+        every CPU of the task.
         """
         cmd = self._reservation_argv(
             spec.resources,
@@ -1077,6 +1079,7 @@ class SlurmDispatchBackend(DispatchBackend):
             chdir=spec.suite_dir,
             log_path=spec.log_path,
         )
+        cmd.append("--ntasks=1")
         gate, *reap = self._dependency_argv(dependency) or [None]
         cmd += reap
         cmd += self.sbatch_args

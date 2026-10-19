@@ -741,6 +741,7 @@ def test_submit_pnr_stage_argv(monkeypatch):
     assert "--cpus-per-task=8" in argv and "--mem=16G" in argv
     assert "--time=02:00:00" in argv
     assert "--chdir=/proj/pnr/blk" in argv
+    assert argv.index("--ntasks=1") < argv.index("--partition=pd")
     assert any(a.startswith("--job-name=rb:pnr:blk:cts") for a in argv)
     # The chain's dependency wins over one in sbatch-args; the site still owns reaping.
     assert argv.index("--dependency=afterok:41") > argv.index("--dependency=x:1")
