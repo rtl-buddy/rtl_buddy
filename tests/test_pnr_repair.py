@@ -1177,7 +1177,11 @@ def test_a_partial_platform_block_fails_only_the_run_that_leaves_it_partial(
 
     assert res.results["result"] == "FAIL"
     assert res.results["fail_stage"] == "setup"
-    assert "post-route-repair repairs nothing" in res.results["desc"]
+    assert (
+        "pnr run 'demo_pnr' on platform 'pl': post-route-repair repairs nothing"
+        in res.results["desc"]
+    )
+    assert "in the run's post-route-repair or the platform's" in res.results["desc"]
 
 
 def test_multi_corner_rounds_time_each_corner_on_its_own_spef_read(

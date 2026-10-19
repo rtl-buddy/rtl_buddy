@@ -330,7 +330,8 @@ def _repairs(where: str, block: str, merged: dict) -> RepairDesign | None:
     ):
         raise FatalRtlBuddyError(
             f"{where}: {block} repairs nothing: set repair-design, setup-margin or "
-            f"hold-margin, or write {block}: null to turn it off"
+            f"hold-margin in the run's {block} or the platform's, or write "
+            f"{block}: null to turn it off"
         )
     return RepairDesign(**design) if design is not None else None
 

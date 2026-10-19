@@ -33,7 +33,6 @@ from ..config.pnr import (
     with_planner_files,
 )
 from ..config.pnr_repair import (
-    UNSET,
     GlobalRouteRepair,
     PnrMode,
     PostRouteRepair,
@@ -4533,15 +4532,12 @@ class OpenRoadPnr:
                 platform = platform.with_run_placement(
                     self.pnr_cfg.get_placement(), self.pnr_cfg.get_name()
                 )
-            run_repairs = (
+            # Resolved here, so an incomplete repair block fails as a setup error that names the run.
+            platform = platform.with_run_repairs(
                 self.pnr_cfg.global_route_repair,
                 self.pnr_cfg.post_route_repair,
+                self.pnr_cfg.get_name(),
             )
-            if any(layer is not UNSET for layer in run_repairs):
-                platform = platform.with_run_repairs(
-                    *run_repairs, self.pnr_cfg.get_name()
-                )
-            # Resolved here, so an incomplete repair block fails as a setup error.
             platform.get_global_route_repair()
             platform.get_post_route_repair()
             fp = self.pnr_cfg.get_floorplan()
