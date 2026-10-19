@@ -389,6 +389,54 @@ def test_a_resume_may_run_at_another_thread_count(tmp_path, monkeypatch):
     assert "set_thread_count 4" in (second / "05_detailed_route.tcl").read_text()
 
 
+def _with_platform(backend, tmp_path, signal="metal2-metal6", **pdk_changes):
+    """Point `backend` at the stub platform with its signal layers or PDK fields changed."""
+    from test_pnr_checkpoints import _pdk, _platform
+
+    platform = _platform(_pdk(tmp_path, **pdk_changes), signal=signal)
+    backend.root_cfg.get_pnr_platform_cfg.return_value = platform
+    return backend
+
+
+def test_a_routing_layer_change_resumes_only_where_no_inherited_stage_reads_it(
+    tmp_path, monkeypatch
+):
+    first = _stopped_at_global_route(tmp_path, monkeypatch)
+
+    backend, _ = _backend(
+        tmp_path, monkeypatch, resume=first.name, resume_from="global_route"
+    )
+    res = _with_platform(backend, tmp_path, signal="metal2-metal5").run()
+    assert res.results["result"] == "PASS", res.results
+
+    backend, artefacts = _backend(
+        tmp_path, monkeypatch, resume=first.name, resume_from="detailed_route"
+    )
+    _with_platform(backend, tmp_path, signal="metal2-metal5")
+    before = _snapshot(artefacts)
+    res = backend.run()
+    assert res.results["fail_stage"] == "resume"
+    assert "04_global_route.tcl" in res.results["desc"]
+    assert "set SIGNAL_LAYERS   metal2-metal5" in res.results["desc"]
+    assert _snapshot(artefacts) == before
+
+
+def test_a_fill_cell_change_resumes_from_finish(tmp_path, monkeypatch):
+    backend, artefacts = _staged(tmp_path, monkeypatch, stop_after="detailed_route")
+    assert backend.run().results["result"] == "PASS"
+    first = _only_run(artefacts)
+
+    backend, _ = _backend(
+        tmp_path, monkeypatch, resume=first.name, resume_from="finish"
+    )
+    _with_platform(backend, tmp_path, fill_cells=["FILLCELL_X1", "FILLCELL_X2"])
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    second = next(r for r in _runs(artefacts) if r != first)
+    assert "FILLCELL_X2" in (second / "07_finish.tcl").read_text()
+
+
 def _refusal(tmp_path, monkeypatch, run, from_stage="detailed_route", **kw) -> str:
     backend, artefacts = _backend(
         tmp_path, monkeypatch, resume=run, resume_from=from_stage, **kw
@@ -593,6 +641,28 @@ def test_stages_config_refuses_a_partial_checkpoint_list(tmp_path):
             stages=True,
             checkpoints=["cts"],
         ).initialise(str(tmp_path))
+
+
+def test_script_identity_keeps_only_the_header_lines_the_script_reads():
+    header = (
+        "# header\nset A 1\nset B 2\n\nset C 3\nset D $C/x\nset E 5\nset F 6\nset G 7\n"
+    )
+    body = "file mkdir $D\nputs ${B}\nproc p {} { return $::E }\nputs A\nputs $Ffoo\n"
+
+    def ident(text):
+        return pnr_stages.script_identity(
+            header.replace("set " + text, "set " + text + "0") + body
+        )
+
+    base = pnr_stages.script_identity(header + body)
+    # Read as $D (and C through D's value), ${B} and $::E: compared.
+    for read in ("B 2", "C 3", "D $C/x", "E 5"):
+        assert ident(read) != base, read
+    # Never read, or only as a bare word or a longer name: not compared.
+    for unread in ("A 1", "F 6", "G 7"):
+        assert ident(unread) == base, unread
+    # rb's procs are compared.
+    assert pnr_stages.script_identity(header + body.replace("::E", "::G")) != base
 
 
 def test_script_identity_ignores_the_thread_count():

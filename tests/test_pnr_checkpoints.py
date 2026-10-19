@@ -131,31 +131,32 @@ def _tcl_command(harness: Path, script: str) -> list[str]:
     return [sys.executable, "-c", _EMBEDDED_DRIVER, str(harness), script]
 
 
-def _pdk(tmp_path):
+def _pdk(tmp_path, **changes):
+    fields = {
+        "name": "nangate45",
+        "site": "FreePDK45_38x28_10R_NP_162NW_34O",
+        "corners": {"typ": "pdk/lib/typ.lib"},
+        "tech_lef": "pdk/lef/tech.lef",
+        "macro_lef": "pdk/lef/cells.lef",
+        "tie_hi": "LOGIC1_X1/Z",
+        "tie_lo": "LOGIC0_X1/Z",
+        "fill_cells": ["FILLCELL_X1"],
+        "klayout_tech": "pdk/klayout/tech.lyt",
+        "cell_gds": "pdk/gds/cells.gds",
+    }
     return PdkConfig(
-        PdkConfigFile(
-            name="nangate45",
-            site="FreePDK45_38x28_10R_NP_162NW_34O",
-            corners={"typ": "pdk/lib/typ.lib"},
-            tech_lef="pdk/lef/tech.lef",
-            macro_lef="pdk/lef/cells.lef",
-            tie_hi="LOGIC1_X1/Z",
-            tie_lo="LOGIC0_X1/Z",
-            fill_cells=["FILLCELL_X1"],
-            klayout_tech="pdk/klayout/tech.lyt",
-            cell_gds="pdk/gds/cells.gds",
-        ),
-        str(tmp_path / "root_config.yaml"),
+        PdkConfigFile(**{**fields, **changes}), str(tmp_path / "root_config.yaml")
     )
 
 
-def _platform(pdk):
+def _platform(pdk, signal="metal2-metal6", **platform):
     return PnrPlatformConfig(
         PnrPlatformConfigFile(
             name="nangate45_typ",
             pdk="nangate45",
             cts_buffer="BUF",
-            routing_layers=PnrRoutingLayersFile(signal="metal2-metal6", clock="metal4"),
+            routing_layers=PnrRoutingLayersFile(signal=signal, clock="metal4"),
+            **platform,
         ),
         lambda _name: pdk,
     )

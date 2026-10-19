@@ -687,10 +687,19 @@ rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --resume latest --from detailed_r
 The resume is refused, with `fail_stage: resume` and a description that names what differs, unless:
 
 - the run named was a staged run, and its stage before `--from` finished cleanly with its checkpoint written and unchanged since;
-- the script of every stage before `--from`, generated from today's configuration, matches the one that run used, apart from the run directories it names and its thread count, and every input file those stages read has the same content; and
+- the script of every stage before `--from`, generated from today's configuration, is the one that run used, as compared below;
+- every input file those stages read has the same content; and
 - OpenROAD reports the same version.
 
-A setting that only `--from` and later stages read, such as `detailed-route-verbose:` or a `before-detailed-route` hook, may change between the runs. The thread count may differ between stages, so a resume can run on another CPU allocation than the run it resumes; a staged run equals a one-session run of the same configuration only at equal thread counts.
+A stage script is compared up to its end-of-stage line, without:
+
+- the two lines that name run directories (`RB_RUN_DIR` and `RB_PRED_DIR`);
+- the thread count (`set_thread_count`); and
+- each `set NAME value` line of the header at the top of the script whose variable the rest of that stage's script does not read, as `$NAME`, `${NAME}`, `$::NAME` or `${::NAME}`, itself or through another header line it keeps.
+
+Everything else is compared, including rb's own Tcl procedures, so an rtl_buddy version that generates a different script for an earlier stage refuses the resume. The scan sees only the stage script: a hook file, `platform-tcl` or other file that the stage sources and that reads a header variable does not make that variable part of the comparison.
+
+So a setting that only `--from` and later stages read may change between the runs: `detailed-route-verbose:` or a `before-detailed-route` hook, the routing layers (first read by `global_route`), or the fill cells (read by `finish`). The thread count may differ between stages, so a resume can run on another CPU allocation than the run it resumes; a staged run equals a one-session run of the same configuration only at equal thread counts.
 
 A resume is checked before anything is cleared or written. A refused resume, or one that fails setup before it is checked, leaves `checkpoints/latest` and the previous run's outputs as they were, so the same `--resume latest` can be retried once the configuration is put back.
 
