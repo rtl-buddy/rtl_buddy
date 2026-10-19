@@ -278,6 +278,9 @@ class StageChain:
                 if states[key] == "running":
                     started.add(key)
                 progress.observe(current, states[key], now)
+            elif current is None and self.handles:
+                # The queue has not answered yet: the first job counts as waiting.
+                current = self.handles[0]
             if current is not None and telemetry_key(current) not in started:
                 key = telemetry_key(current)
                 since = queued_since.setdefault(

@@ -960,6 +960,35 @@ def test_max_wait_bounds_a_stage_jobs_wait_in_the_queue(tmp_path, monkeypatch):
     assert sorted(slurm.cancelled) == sorted(j["id"] for j in slurm.submitted())
 
 
+def test_max_wait_runs_while_the_queue_cannot_be_read(tmp_path, monkeypatch):
+    slurm = _FakeSlurm(monkeypatch, max_wait=600.0)
+    monkeypatch.setattr(pnr_dispatch, "_clock", _Clock(100))
+    backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+    real = slurm._squeue
+
+    def _squeue(argv):
+        if slurm.hold:
+            return real(argv)
+        slurm.polls += 1
+        return _done(1, stderr="squeue: error: Unable to contact slurm controller")
+
+    slurm._squeue = _squeue
+    real_cancel = slurm._scancel
+
+    def _scancel(argv):
+        # The controller answers again once rb cancels.
+        slurm.hold = True
+        return real_cancel(argv)
+
+    slurm._scancel = _scancel
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "dispatch"
+    assert "longer than cfg-dispatch.max-wait (600s)" in res.results["desc"]
+    assert sorted(slurm.cancelled) == sorted(j["id"] for j in slurm.submitted())
+
+
 def test_max_wait_does_not_bound_a_running_stage_job(tmp_path, monkeypatch):
     slurm = _FakeSlurm(monkeypatch, max_wait=600.0)
     monkeypatch.setattr(pnr_dispatch, "_clock", _Clock(100))
