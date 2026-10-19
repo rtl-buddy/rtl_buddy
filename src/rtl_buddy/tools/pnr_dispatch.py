@@ -71,6 +71,22 @@ def stage_name(stage: str) -> str:
     return f"{pnr_checkpoints.STAGE_INDEX[stage]}_{stage}"
 
 
+def see_job_writes(run_dir: str, log_path: str) -> None:
+    """Open the directories stage jobs write, so this host sees the files jobs on other hosts created there.
+
+    On NFS, a name this host looked up while it was missing, such as an output the run cleared, stays missing here for up to the mount's `acdirmin` after another host creates it. Opening its directory revalidates it.
+    """
+    for path in (
+        run_dir,
+        jobs_dir(run_dir),
+        os.path.dirname(os.path.abspath(log_path)),
+    ):
+        try:
+            os.listdir(path)
+        except OSError:
+            pass
+
+
 def job_file(run_dir: str, stage: str, suffix: str) -> str:
     """`dispatch/NN_<stage>.<suffix>` of a run directory."""
     return os.path.join(jobs_dir(run_dir), f"{stage_name(stage)}.{suffix}")
@@ -516,6 +532,7 @@ def settle_cancelled_chain(
         text = str(error)
     chain.cancel()
     live = chain.drain() if chain.handles else []
+    see_job_writes(run_dir, log_path)
     recorded = _recorded_jobs(run_dir) or {}
     unrecorded = set(recorded) - {h.job_id for h in chain.handles}
     # A submission given up before sbatch answered may still have its job accepted.
@@ -861,6 +878,7 @@ def run_stage_job(run_dir: str, stage: str, *, openroad: str, pnr_log: str) -> b
     """
     from .pnr_openroad import run_stage
 
+    see_job_writes(run_dir, pnr_log)
     refused = _refusal(run_dir, stage)
     if refused is not None:
         log_event(
@@ -961,6 +979,7 @@ def chain_outcome(run_dir: str, chain: StageChain, *, log_path: str) -> ChainOut
 
     The failed stage carries its own `fail_stage` only when its job ran the stage and ended itself (`COMPLETED` or `FAILED`). A job the scheduler ended (any other state), one that refused its stage or never started it, and one that left no result fail with `fail_stage: dispatch`.
     """
+    see_job_writes(run_dir, log_path)
     events = pnr_checkpoints.read_progress(run_dir)
     begun = {e.get("stage"): e for e in events if e.get("event") == "stage_begin"}
     ended = {e.get("stage") for e in events if e.get("event") == "stage_end"}

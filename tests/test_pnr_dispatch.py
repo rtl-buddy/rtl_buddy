@@ -791,6 +791,47 @@ def test_an_interrupt_closes_the_stage_its_job_was_running(tmp_path, monkeypatch
     )
 
 
+def _record_listings(monkeypatch) -> list:
+    """Record each directory listed, with the id of the job listing it (None for the head)."""
+    seen = []
+    listdir = os.listdir
+
+    def _listdir(path="."):
+        seen.append((os.environ.get("SLURM_JOB_ID"), os.path.abspath(path)))
+        return listdir(path)
+
+    monkeypatch.setattr(os, "listdir", _listdir)
+    return seen
+
+
+@pytest.mark.parametrize("interrupt", [None, signal.SIGINT])
+def test_the_head_and_each_job_open_the_directories_jobs_write(
+    tmp_path, monkeypatch, interrupt
+):
+    # On NFS, a host sees a file another host created under a name it looked up
+    # while the file was missing only once it opens the directory.
+    slurm = _FakeSlurm(monkeypatch, interrupt_in=interrupt and {"cts": interrupt})
+    backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+    seen = _record_listings(monkeypatch)
+
+    if interrupt is None:
+        assert backend.run().results["result"] == "PASS"
+    else:
+        with pytest.raises(KeyboardInterrupt):
+            with pnr_dispatch.cancel_on_interrupt():
+                backend.run()
+
+    run_dir = str(_only_run(artefacts))
+    written = {run_dir, os.path.join(run_dir, "dispatch"), str(artefacts)}
+    ran = [j["id"] for j in slurm.submitted() if j["state"] != "CANCELLED"]
+    if interrupt is not None:
+        ran.append(next(j["id"] for j in slurm.submitted() if _stage_of(j) == "cts"))
+    for job_id in ran:
+        assert written <= {path for job, path in seen if job == job_id}
+    last_job = max(i for i, (job, _) in enumerate(seen) if job is not None)
+    assert written <= {path for job, path in seen[last_job:] if job is None}
+
+
 def test_a_repeated_signal_waits_for_the_cancel(tmp_path, monkeypatch):
     backend, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
     _interrupt_at_first_poll(slurm, signal.SIGINT)
