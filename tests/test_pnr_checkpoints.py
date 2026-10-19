@@ -50,6 +50,7 @@ DESIGN = "demo_top"
 # `RB_STUB_FAIL=<cmd>` raises an OpenROAD-style error in that command;
 # `RB_STUB_KILL=<cmd>` SIGKILLs the interpreter on entry;
 # `RB_STUB_EXIT=<cmd>` exits 0 on entry, as a flow that ends early by accident;
+# `RB_STUB_DONE_EARLY=<cmd>` prints the flow's end marker in that command, which returns;
 # `RB_STUB_DRC=<n>` makes `detailed_route` report n DRC lines and write a maze log;
 # `RB_STUB_ERRLINE=<cmd>` prints an OpenROAD `[ERROR` line in that command, which returns.
 # `RB_STUB_CKPT_FAIL=<NN_stage>` makes `write_db` of that checkpoint fail without an `[ERROR` line.
@@ -73,6 +74,9 @@ proc rb_stub {name args} {
     if {[info exists env(RB_STUB_FAIL)] && $env(RB_STUB_FAIL) eq $name} {
         puts "\[ERROR STUB-0001\] $name failed: \"quoted\"\nsecond line"
         error "STUB-0001 $name failed: \"quoted\"\nsecond line"
+    }
+    if {[info exists env(RB_STUB_DONE_EARLY)] && $env(RB_STUB_DONE_EARLY) eq $name} {
+        puts ">>> DONE"
     }
     if {[info exists env(RB_STUB_ERRLINE)] && $env(RB_STUB_ERRLINE) eq $name} {
         puts "\[ERROR STUB-0002\] $name complained but returned"
