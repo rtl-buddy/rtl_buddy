@@ -2143,6 +2143,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('artefact_dir')} are still queued or running; not "
                 f"starting; cancel them with `{fields.get('command')}`"
             )
+        case "pnr.dispatch_resources_default":
+            return (
+                f'P&R "{fields.get("pnr")}" has no resources: block, so every stage '
+                f"job gets {fields.get('cpus')} CPU(s), {fields.get('mem')} of memory "
+                f"and {fields.get('time')} from cfg-dispatch.resources and the "
+                "defaults; size the stages with resources:"
+            )
         case "dispatch.pnr_stage_submission_abandoned":
             job = fields.get("job_id")
             return (

@@ -1168,6 +1168,25 @@ def test_a_job_accepted_after_its_head_died_is_found(tmp_path, monkeypatch):
     assert "stage job(s) 777 of earlier" in res.results["desc"]
 
 
+def test_a_run_without_resources_warns_what_its_jobs_get(tmp_path, monkeypatch, caplog):
+    backend, _, _ = _dispatched(tmp_path, monkeypatch)
+    with caplog.at_level("INFO"):
+        assert backend.run().results["result"] == "PASS"
+
+    (warning,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "pnr.dispatch_resources_default"
+    ]
+    assert warning.rtl_fields == {
+        "pnr": "demo_pnr",
+        "cpus": 2,
+        "mem": "4G",
+        "time": "00:30:00",
+    }
+    assert "has no resources: block" in warning.getMessage()
+
+
 def test_the_console_names_each_job_and_the_run(tmp_path, monkeypatch, caplog):
     backend, _, slurm = _dispatched(
         tmp_path,
@@ -1178,6 +1197,7 @@ def test_the_console_names_each_job_and_the_run(tmp_path, monkeypatch, caplog):
         assert backend.run().results["result"] == "PASS"
 
     events = [r for r in caplog.records if getattr(r, "rtl_event", None)]
+    assert not [r for r in events if r.rtl_event == "pnr.dispatch_resources_default"]
     submitted = [r for r in events if r.rtl_event == "pnr.stage_job_submitted"]
     assert [r.rtl_fields["job_id"] for r in submitted] == [
         j["id"] for j in slurm.submitted()

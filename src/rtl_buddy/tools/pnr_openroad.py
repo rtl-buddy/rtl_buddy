@@ -3344,6 +3344,7 @@ class OpenRoadPnr:
         log_path = self._log_path()
         self._start_chain_log(log_path)
         os.makedirs(pnr_dispatch.jobs_dir(run_dir), exist_ok=True)
+        self._warn_default_resources()
         openroad = shutil.which(self.openroad_executable) or self.openroad_executable
         chain = pnr_dispatch.StageChain(self._dispatch, run=self.pnr_cfg.get_name())
         try:
@@ -3390,6 +3391,21 @@ class OpenRoadPnr:
             self._dispatch_reason = outcome.reason
             self._dispatch_first_line = outcome.stderr_first_line
         return outcome.returncode, outcome.stderr, outcome.problem
+
+    def _warn_default_resources(self) -> None:
+        """Warn when a dispatched run has no `resources:` block, so every stage job gets `cfg-dispatch.resources` or the built-in defaults."""
+        if self.pnr_cfg.get_resources() is not None:
+            return
+        resources = self._stage_job_resources(self._run_stages()[0])
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.dispatch_resources_default",
+            pnr=self.pnr_cfg.get_name(),
+            cpus=resources.cpus,
+            mem=resources.mem,
+            time=resources.time,
+        )
 
     def _queue_backend(self):
         """The backend that looks up an earlier dispatched run's jobs: this run's, or Slurm's."""
