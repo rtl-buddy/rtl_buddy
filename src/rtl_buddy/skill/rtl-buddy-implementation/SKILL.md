@@ -36,7 +36,8 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   carries `checkpoint_dir`, `checkpoint_stages` and `last_step`;
   `checkpoints/latest/progress.jsonl` shows the step a flow is in. A
   checkpoint is never routed or final: report it as its stage, as for a
-  `--stop-after` `PASS` (`routed: false`). `--resume <run> --from <stage>`
+  `--stop-after` or `mode: probe` `PASS` (`routed: false`); a probe skips
+  timing repair, so its slack is not a closure result. `--resume <run> --from <stage>`
   retries later stages of a staged run; `--dispatch slurm` runs each stage as
   a Slurm job sized by the run's `resources:`.
 - **Run hooks.** Extra steps go in `hooks:` of the `pnr.yaml` run: Tcl files
