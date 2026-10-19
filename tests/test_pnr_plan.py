@@ -690,3 +690,20 @@ def test_a_run_that_raises_is_its_own_fail_and_keeps_the_others(
     assert results["sibling"]["results"].is_pass()
     assert results["top"]["results"].results["fail_stage"] == "blocked"
     assert "sibling" in ran
+
+
+@pytest.mark.parametrize("mode, verdict", [("probe", "PASS"), ("closure", "XPASS")])
+def test_an_xfail_run_s_probe_pass_stays_a_pass(tmp_path, monkeypatch, mode, verdict):
+    """A probe's PASS is not a closure result, so `xfail:` does not judge it."""
+    suite = _suite(tmp_path / "pnr.yaml", _run("r", xfail=True))
+    rb, _ran = _driver(monkeypatch, {})
+    passed = PnrPassResults(name="r/results")
+    passed.results["mode"] = mode
+    monkeypatch.setattr(
+        "rtl_buddy.rtl_buddy.PnrRunner",
+        lambda **_kw: type("_Runner", (), {"run": lambda self: passed})(),
+    )
+
+    (row,) = rb._do_pnr_suite(suite)
+
+    assert row["results"].results["result"] == verdict

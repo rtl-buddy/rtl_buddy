@@ -11747,7 +11747,9 @@ class RtlBuddy:
             dispatch=dispatch,
         )
         res = runner.run()
-        if run.is_xfail():
+        # A probe's PASS is not a closure result, so an `xfail:` does not turn it into XPASS.
+        probe_pass = res.is_pass() and res.results.get("mode") == "probe"
+        if run.is_xfail() and not probe_pass:
             self._apply_xfail_logged(res, run, "pnr_suite.xfail")
         if synth_row is not None:
             res.results["synth"] = synth_row
