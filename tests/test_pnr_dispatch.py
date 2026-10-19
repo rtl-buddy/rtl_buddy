@@ -1012,7 +1012,9 @@ def test_a_resumed_dispatch_submits_only_the_stages_it_runs(tmp_path, monkeypatc
     assert list(manifest["resources"]) == ["detailed_route", "finish"]
 
 
-def test_a_stage_job_runs_only_for_an_unfinished_run(tmp_path, monkeypatch):
+def test_a_stage_job_runs_only_for_an_unfinished_run_of_its_version(
+    tmp_path, monkeypatch
+):
     backend, artefacts, _ = _dispatched(tmp_path, monkeypatch)
     assert backend.run().results["result"] == "PASS"
     run_dir = str(_only_run(artefacts))
@@ -1030,6 +1032,29 @@ def test_a_stage_job_runs_only_for_an_unfinished_run(tmp_path, monkeypatch):
     manifest["outcome"] = None
     manifest_path.write_text(json.dumps(manifest))
     assert pnr_dispatch._refusal(run_dir, "finish") is None
+    manifest["generator"] = "rtl-buddy 0.0.1"
+    manifest_path.write_text(json.dumps(manifest))
+    assert pnr_dispatch._refusal(run_dir, "finish") == (
+        f"the job runs {pnr_dispatch.generator()}, but the run was started by "
+        "rtl-buddy 0.0.1; run the head and its jobs from the same rtl_buddy "
+        "installation"
+    )
+
+
+def test_a_job_of_another_rtl_buddy_version_refuses_its_stage(tmp_path, monkeypatch):
+    backend, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
+    monkeypatch.setattr(pnr_dispatch, "generator", lambda: "rtl-buddy 0.0.1")
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert res.results["fail_stage"] == "dispatch"
+    assert res.results["desc"].startswith(
+        "stage 01_floorplan: the job runs rtl-buddy 0.0.1, but the run "
+        "was started by rtl-buddy "
+    )
+    run_dir = _only_run(artefacts)
+    assert not [e for e in _events(run_dir) if e["event"] == "stage_begin"]
 
 
 def _leave_running(artefacts, slurm, *, job_id):

@@ -20,6 +20,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from importlib.metadata import version
 from pathlib import Path
 
 from ..dispatch.base import JobHandle, SubmissionAbandoned, telemetry_key
@@ -777,7 +778,7 @@ def _write_result(run_dir: str, stage: str, **fields) -> None:
 def _refusal(run_dir: str, stage: str) -> str | None:
     """Why a job must not run `stage` of `run_dir`, or None.
 
-    A job runs only while its run has not finished. A later `rb pnr` of the same configuration refuses to start while a job of this run is queued (`live_orphans`), so a job never writes over a newer run.
+    A job runs only while its run has not finished, and only with the rtl_buddy version its head ran (the manifest's `generator`), since the head wrote the stage scripts and reads what the job leaves. A later `rb pnr` of the same configuration refuses to start while a job of this run is queued (`live_orphans`), so a job never writes over a newer run.
     """
     script = os.path.join(run_dir, f"{stage_name(stage)}.tcl")
     if not os.path.isfile(script):
@@ -787,7 +788,18 @@ def _refusal(run_dir: str, stage: str) -> str | None:
         return f"run {os.path.basename(run_dir)} has no readable manifest"
     if manifest.get("outcome") is not None:
         return f"run {os.path.basename(run_dir)} has already finished"
+    head, job = manifest.get("generator"), generator()
+    if head != job:
+        return (
+            f"the job runs {job}, but the run was started by {head}; run the head "
+            "and its jobs from the same rtl_buddy installation"
+        )
     return None
+
+
+def generator() -> str:
+    """This rtl_buddy, as a manifest's `generator` names it."""
+    return f"rtl-buddy {version('rtl-buddy')}"
 
 
 def _artefact_dir(run_dir: str) -> str:
@@ -844,6 +856,7 @@ def run_stage_job(run_dir: str, stage: str, *, openroad: str, pnr_log: str) -> b
         problem=outcome.problem,
         fail_stage=outcome.fail_stage,
         errors=outcome.errors,
+        rtl_buddy=generator(),
         **fields,
     )
     return outcome.ok
