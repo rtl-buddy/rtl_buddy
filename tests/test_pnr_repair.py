@@ -467,9 +467,13 @@ def test_rounds_repair_until_timing_is_met(tmp_path, monkeypatch, stages):
     route = r1.index("\nglobal_route -congestion_iterations")
     assert unroute < route < r1.index("\nestimate_parasitics -global_routing\n")
     assert r1.index("\nestimate_parasitics -global_routing\n") < r1.index("read_spef")
-    assert r1.index("read_spef") < r1.index("global_route -start_incremental")
-    assert r1.index("global_route -start_incremental") < repair
-    assert repair < r1.index("global_route -end_incremental")
+    # ORFS order: repair, then an incremental global route around legalization only.
+    assert r1.index("read_spef") < repair
+    assert repair < r1.index("global_route -start_incremental")
+    assert r1.index("global_route -start_incremental") < r1.index(
+        "\ndetailed_placement"
+    )
+    assert r1.index("\ndetailed_placement") < r1.index("global_route -end_incremental")
     assert r1.index("global_route -end_incremental") < r1.index("\ndetailed_route \\")
     log = (artefacts / "pnr.log").read_text()
     assert (

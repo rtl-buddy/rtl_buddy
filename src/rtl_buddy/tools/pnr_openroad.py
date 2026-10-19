@@ -2156,9 +2156,9 @@ class OpenRoadPnr:
         )
 
     def _post_route_repair_script(self, round_: int, run_dir: str) -> str:
-        """Round `round_`'s repair session, bound to `run_dir`: route the unrouted database globally, repair on the round's SPEF inside an incremental global route, legalize, route in detail and write the stage's checkpoint.
+        """Round `round_`'s repair session, bound to `run_dir`: route the unrouted database globally, repair on the round's SPEF, legalize inside an incremental global route, run the `before-detailed-route` hooks, route in detail and write the stage's checkpoint.
 
-        The rounds work on the unfilled database; `finish` fills after the last. A repair in the session that routed fails detailed routing (DRT-0218), and one outside an incremental global route leaves nets the router cannot reach (DRT-1010). On a detailed-routed database the repair builds buffer trees from global routes that miss pins (RSZ-0074), so the session drops the detailed route and routes globally first; the round's detailed route routes every net again either way. `estimate_parasitics -global_routing` before `read_spef` gives the nets repair changes an estimate.
+        The rounds work on the unfilled database; `finish` fills after the last. A repair in the session that routed fails detailed routing (DRT-0218). On a detailed-routed database the repair builds buffer trees from global routes that miss pins (RSZ-0074), so the session drops the detailed route and routes globally first; the round's detailed route routes every net again either way. `estimate_parasitics -global_routing` before `read_spef` gives the nets repair changes an estimate. The repairs run before `global_route -start_incremental`, in ORFS order: `repair_timing` opens its own incremental route, and a second one open around it delivers each netlist change to the router twice (GRT-0229 on a later rip-up).
         """
         repair = self._post_route
         setup, hold = repair.margins(round_)
@@ -2174,13 +2174,14 @@ class OpenRoadPnr:
             self._read_spef_tcl(
                 f"[file join $RB_RUN_DIR {_post_route_file(f'.r{round_}.spef')}]"
             ),
-            "global_route -start_incremental\n",
             _repair_steps_tcl(
                 title, repair.repair_design, setup, hold, self._ps_per_unit
             ),
+            "global_route -start_incremental\n",
             "detailed_placement{{ dpl_options }}\n",
             _END_INCREMENTAL_CMD,
             "check_placement -verbose\n",
+            "{{ hook_before_detailed_route_block }}",
             f'puts ">>> {title}: detailed route"\n',
             # So the round's DRC count is its own route's.
             "file delete -force $OUT_DIR/route.drc.rpt\n",
