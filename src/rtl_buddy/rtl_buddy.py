@@ -10951,6 +10951,7 @@ class RtlBuddy:
             "openroad_threads",
             "routed",
             "stopped_after",
+            "mode",
             "global_route_overflow",
             "resumed_from",
             "checkpoint_dir",
@@ -11335,8 +11336,9 @@ class RtlBuddy:
                 metavar="STAGE",
                 help=(
                     "end the run after STAGE (floorplan, place, cts, "
-                    "global_route, detailed_route): write its checkpoint and a "
-                    "stage report; the result is a PASS with routed: false, "
+                    "global_route, detailed_route, or post_route_repair when "
+                    "the run sets post-route-repair): write its checkpoint and "
+                    "a stage report; the result is a PASS with routed: false, "
                     "and no routed outputs or abstract. Needs a single named run"
                 ),
                 show_default="run to the end",
@@ -11363,8 +11365,9 @@ class RtlBuddy:
                 metavar="STAGE",
                 help=(
                     "the first stage a --resume runs (place, cts, global_route, "
-                    "detailed_route, finish); it starts from the resumed run's "
-                    "checkpoint of the stage before"
+                    "detailed_route, post_route_repair when the run sets "
+                    "post-route-repair, finish); it starts from the resumed "
+                    "run's checkpoint of the stage before"
                 ),
             ),
         ] = None,

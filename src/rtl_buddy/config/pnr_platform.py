@@ -162,7 +162,6 @@ class PnrPlatformConfig:
         self._cts_buffers = _as_cell_list(cfg.cts_buffer)
         self._cts_sink_clustering = cfg.cts_sink_clustering
         self._post_cts_setup_repair = cfg.post_cts_setup_repair
-        self._global_route_hold_repair = cfg.global_route_hold_repair
         self._read_repairs(cfg)
         self._routing_layer_adjustment = _validate_layer_adjustment(
             cfg.routing_layer_adjustment, f"pnr platform '{self._name}'"
@@ -447,10 +446,6 @@ class PnrPlatformConfig:
     def get_post_cts_setup_repair(self) -> bool:
         """Whether post-CTS repair fixes setup before hold."""
         return self._post_cts_setup_repair
-
-    def get_global_route_hold_repair(self) -> bool:
-        """Whether the platform sets `global-route-hold-repair: true`, the shorthand for a hold-only global-route repair."""
-        return self._global_route_hold_repair
 
     def get_global_route_repair(self) -> GlobalRouteRepair | None:
         """The repair after global route, platform under run, or None when off."""

@@ -13,6 +13,7 @@ import pytest
 
 from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
 from rtl_buddy.config.pnr import PnrConfig, PnrSuiteConfig
+from rtl_buddy.config.pnr_repair import GlobalRouteRepair
 from rtl_buddy.config.pnr_platform import (
     PnrPlatformConfig,
     PnrPlatformConfigFile,
@@ -4315,7 +4316,8 @@ def test_tcl_hooks_are_checkpoint_and_abstract_inputs(tmp_path):
 def test_pnr_platform_leaves_the_flow_knobs_off_by_default(tmp_path):
     platform = _platform(_make_pdk_cfg(tmp_path))
     assert platform.get_post_cts_setup_repair() is False
-    assert platform.get_global_route_hold_repair() is False
+    assert platform.get_global_route_repair() is None
+    assert platform.get_post_route_repair() is None
     assert platform.get_routing_layer_adjustment() is None
     assert platform.get_cts_apply_ndr() is None
     assert platform.get_max_fanout() is None
@@ -4338,7 +4340,7 @@ def test_pnr_flow_knobs_are_kebab_case(tmp_path):
     )
     platform = PnrPlatformConfig(platform_file, lambda _n: _make_pdk_cfg(tmp_path))
     assert platform.get_post_cts_setup_repair() is True
-    assert platform.get_global_route_hold_repair() is True
+    assert platform.get_global_route_repair() == GlobalRouteRepair(hold_margin=0.0)
     assert platform.get_routing_layer_adjustment() == 0.25
     # YAML `none` is the string OpenROAD takes, not an unset key.
     assert platform.get_cts_apply_ndr() == "none"
