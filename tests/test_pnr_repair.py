@@ -730,12 +730,13 @@ def test_rounds_repair_until_timing_is_met(tmp_path, monkeypatch, stages):
     r1 = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
     assert "read_db [file join $RB_PRED_DIR 05_detailed_route.odb]" in r1
     repair = r1.index("\nrepair_timing -setup")
-    # `reroute: eco` keeps the detailed route: no unrouting, no full global route.
+    # `reroute: eco` keeps the detailed route: no unrouting, no full global route,
+    # but the global route the guides restore, under the SPEF.
     assert "(reroute eco)" in r1
     assert "destroyNetWires" not in r1
     assert "global_route -congestion_iterations" not in r1
-    assert not re.search(r"^estimate_parasitics", r1, re.MULTILINE)
-    assert r1.index("read_spef") < r1.index("\nremove_fillers\n") < repair
+    estimate = r1.index("\nestimate_parasitics -global_routing\n")
+    assert estimate < r1.index("read_spef") < r1.index("\nremove_fillers\n") < repair
     # ORFS order: repair, then an incremental global route around legalization only.
     assert repair < r1.index("global_route -start_incremental")
     assert r1.index("global_route -start_incremental") < r1.index(
