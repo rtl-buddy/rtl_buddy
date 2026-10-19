@@ -239,7 +239,7 @@ OpenROAD's default `detailed_placement` legalizer treats a fixed macro turned by
 
 ## Session state does not cross a P&R stage boundary
 
-Each stage of a staged `rb pnr` run (`stages: true`, or `--resume`) is a new OpenROAD session. It reads the previous stage's database, SDC and saved flow variables, and rb repeats the flow's own setup. State an earlier session held only in memory is gone: Tcl variables, procedures and `rename` wrappers, `set_wire_rc`, `set_layer_rc` and `set_dont_use` that a hook ran, STA settings outside the SDC, and the resizer's in-memory state. A hook that defines, renames, deletes or redefines a global Tcl command logs `pnr.hook_commands_not_kept`.
+Each stage of a staged `rb pnr` run (`stages: true`, or `--resume`) is a new OpenROAD session. It reads the previous stage's database, SDC and saved flow variables, and rb repeats the flow's own setup. State an earlier session held only in memory is gone: Tcl variables, procedures and `rename` wrappers, `set_wire_rc`, `set_layer_rc` and `set_dont_use` that a hook ran, STA settings outside the SDC, and the resizer's in-memory state. A hook that renames, deletes or redefines an existing global Tcl command logs the warning `pnr.hook_commands_not_kept`, since later sessions run the original; one that defines new commands logs them at info as `pnr.hook_commands_added`.
 
 Move state that later stages need into a `session` hook, which runs at the start of every session. It then applies from the first stage on, so it also changes the steps that ran before the hook's original point: a `set_wire_rc` moved there from `after-cts` also changes placement. See [Run stages as separate sessions](concepts/pnr.md#run-stages-as-separate-sessions).
 
