@@ -456,6 +456,26 @@ def test_rotated_footprint_block_blocks_it_for_global_placement_only(tmp_path, f
     assert "RB_DPL_OPTIONS" not in text
 
 
+@pytest.mark.parametrize(
+    "point",
+    ["session", "after-floorplan", "macro-placement", "after-pdn", "after-pins"],
+)
+def test_a_hook_before_global_placement_arms_the_rotated_footprint(tmp_path, point):
+    """A hook may turn a macro, so the screen is set up; it blocks only turned ones."""
+    text = _render(tmp_path, _floorplan(), hooks={point: (str(tmp_path / "h.tcl"),)})
+
+    assert "set rb_rotated_macros [rb::rotated::macros $macros]" in text
+
+
+@pytest.mark.parametrize(
+    "point", ["after-global-placement", "after-cts", "before-reports"]
+)
+def test_a_hook_after_global_placement_does_not_arm_it(tmp_path, point):
+    text = _render(tmp_path, _floorplan(), hooks={point: (str(tmp_path / "h.tcl"),)})
+
+    assert "rb::rotated" not in text
+
+
 def test_rotated_footprint_diamond_legalizer_reaches_every_detailed_placement(tmp_path):
     fp = _floorplan(macros=[PnrMacro("u_a", location=(1.0, 2.0), orientation="MXR90")])
     platform = _platform(

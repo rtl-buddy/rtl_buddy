@@ -801,20 +801,32 @@ class GlobalPlacementBlocks:
     dpl_options: str = ""
 
 
-def _may_rotate(fp: PnrFloorplan) -> bool:
-    """Whether a `floorplan.macros` or macros-file entry turns a macro by 90 degrees; RTL-MP only flips macros."""
-    return any(macro.orientation in ROTATED_ORIENTATIONS for macro in fp.macros)
+#: Run hook points before global placement, where a hook may turn a macro.
+_HOOKS_BEFORE_GLOBAL_PLACEMENT = (
+    "session",
+    "after-floorplan",
+    "macro-placement",
+    "after-pdn",
+    "after-pins",
+)
+
+
+def _may_rotate(fp: PnrFloorplan, hooks: dict) -> bool:
+    """Whether a macro may be turned by 90 degrees before global placement: by a `floorplan.macros` or macros-file entry, or by a run hook; RTL-MP only flips macros."""
+    return any(macro.orientation in ROTATED_ORIENTATIONS for macro in fp.macros) or any(
+        point in hooks for point in _HOOKS_BEFORE_GLOBAL_PLACEMENT
+    )
 
 
 def _global_placement_blocks(
-    fp: PnrFloorplan, footprint: str, *, checkpoints: bool
+    fp: PnrFloorplan, footprint: str, hooks: dict, *, checkpoints: bool
 ) -> GlobalPlacementBlocks:
     """Return the Tcl for `lifetime: global-placement` blockages and `placement.rotated-macro-footprint`.
 
     The blockages are created immediately before `global_placement` and destroyed immediately after by the handles the flow created, so no checkpoint, row cut, packer keep-out or RTL-MP run sees them. With checkpoints, the floorplan checkpoint is written before they exist. `footprint` acts only when a macro is rotated at run time: `block` adds a hard blockage over each rotated macro's unrotated footprint (see `rotated_macros.tcl`), `diamond-legalizer` passes `-use_diamond_legalizer` to every `detailed_placement`.
     """
     blockages = fp.global_placement_blockages()
-    rotated = _may_rotate(fp) and footprint != RotatedMacroFootprint.NONE
+    rotated = _may_rotate(fp, hooks) and footprint != RotatedMacroFootprint.NONE
     block_rotated = rotated and footprint == RotatedMacroFootprint.BLOCK
     diamond = rotated and footprint == RotatedMacroFootprint.DIAMOND_LEGALIZER
     if not blockages and not rotated:
@@ -1062,6 +1074,7 @@ class OpenRoadPnr:
         gp_blocks = _global_placement_blocks(
             fp,
             platform.get_placement_rotated_macro_footprint(),
+            self.pnr_cfg.get_hooks(),
             checkpoints=self._ckpt_run_dir is not None,
         )
         # With `rcx-rules`, extract after fill and time the final reports on the SPEF; otherwise they use the global-route estimate.
