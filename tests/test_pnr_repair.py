@@ -343,7 +343,11 @@ proc report_worst_slack {args} {
     }
 }
 proc report_tns {args} {
+    global env
     if {[rb_round] == 0} { return }
+    if {[info exists env(RB_STUB_ERROR)] && $env(RB_STUB_ERROR) == [rb_round]} {
+        puts "\[ERROR STA-0001\] stub"
+    }
     if {[lsearch $args -min] >= 0} { puts "tns min 0.0" } else { puts "tns max -1.5" }
 }
 proc remove_fillers {args} { rb_stub remove_fillers }
@@ -354,6 +358,8 @@ proc detailed_route {args} {
     if {$i >= 0 && [info exists env(RB_STUB_DRC)] && $env(RB_STUB_DRC) == [rb_round]} {
         rb_write [lindex $args [expr {$i + 1}]] "violation"
     }
+    set i [lsearch $args -output_maze]
+    if {$i >= 0} { rb_write [lindex $args [expr {$i + 1}]] "maze r[rb_round]" }
 }
 """
 
@@ -531,6 +537,9 @@ def test_met_timing_keeps_the_detailed_route_as_the_stage_checkpoint(
     assert not (run_dir / "06_post_route_repair.r1.repair.log").exists()
     odb = run_dir / "06_post_route_repair.odb"
     assert odb.read_bytes() == (run_dir / "05_detailed_route.odb").read_bytes()
+    # The detailed route's report copies come along.
+    maze = run_dir / "06_post_route_repair.route.maze.log"
+    assert maze.read_text().strip() == "maze r0"
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert "post_route_repair" in manifest["checkpoints"]
 
@@ -562,6 +571,58 @@ def test_a_round_with_drc_violations_stops_the_rounds(tmp_path, monkeypatch):
     assert _done(run_dir)["repaired_rounds"] == 1
     assert "DRC" in _done(run_dir)["reason"]
     assert res.results["drc_count"] == 1
+    # The stage's checkpoint keeps the last round's router reports.
+    kept = run_dir / "06_post_route_repair.route.drc.rpt"
+    assert kept.read_text().strip() == "violation"
+    maze = run_dir / "06_post_route_repair.route.maze.log"
+    assert maze.read_text().strip() == "maze r1"
+
+
+def test_an_error_line_in_a_round_ends_the_stage(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        stages=True,
+        env={"RB_STUB_SETUP": "-0.2 -0.1", "RB_STUB_ERROR": "1"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL", res.results
+    assert "06_post_route_repair" in res.results["desc"]
+    assert "ERROR" in res.results["desc"]
+    (run_dir,) = _runs(artefacts)
+    assert _rounds(run_dir) == []
+    assert not (run_dir / "06_post_route_repair.r1.repair.log").exists()
+    assert not (run_dir / "07_finish.log").exists()
+
+
+def test_a_resume_from_finish_restores_the_last_round_s_reports(tmp_path, monkeypatch):
+    first, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        stages=True,
+        env={"RB_STUB_SETUP": "-0.2 0.01"},
+    )
+    assert first.run().results["result"] == "PASS"
+    (first_dir,) = _runs(artefacts)
+    (artefacts / "route.maze.log").unlink()
+
+    again, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        stages=True,
+        resume=str(first_dir),
+        resume_from="finish",
+        env={"RB_STUB_SETUP": "-0.2 0.01"},
+    )
+    res = again.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert (artefacts / "route.maze.log").read_text().strip() == "maze r1"
 
 
 def test_a_failed_repair_session_fails_the_stage(tmp_path, monkeypatch):

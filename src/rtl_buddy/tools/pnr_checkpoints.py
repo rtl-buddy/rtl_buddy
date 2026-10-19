@@ -14,6 +14,7 @@ Layout under the run's artefact directory::
         03_cts.{odb,def,sdc}
         04_global_route.{odb,def,sdc,guide,segments}
         05_detailed_route.{odb,def,sdc}
+        05_detailed_route.route.{drc.rpt,maze.log}  # the router's reports, when written
         06_post_route_repair.{odb,def,sdc}   # with post-route-repair set
         export/03_cts/...                 # `rb pnr-export --checkpoint`
 
@@ -80,6 +81,12 @@ DETAIL_ROUTED = ("detailed_route", "post_route_repair")
 
 #: Checkpoints that also carry the route guides and global-route segments; the detailed-route session reads the segments. A routed database's pin access points no longer match the segments, which OpenROAD then refuses (GRT-0263), so a later session takes the global route from the guides the database keeps.
 ROUTE_FILES = ("global_route",)
+
+#: Reports in the artefact directory a stage's checkpoint keeps a copy of, as `kind: file name`: the detailed router's DRC report and log, of the detailed route and of the last post-route repair round, which a run resumed after that stage restores.
+STAGE_REPORTS = {
+    "detailed_route": {"drc": "route.drc.rpt", "maze": "route.maze.log"},
+    "post_route_repair": {"drc": "route.drc.rpt", "maze": "route.maze.log"},
+}
 
 #: Flow globals a staged checkpoint saves for the next session: per-macro cell halos from `floorplan.macros`, which the rotated-macro blockages read in the place session.
 SESSION_STATE = ("MACRO_CELL_HALOS",)
@@ -152,7 +159,7 @@ def _tcl_quote(value: str) -> str:
 def _arm_config(
     *, anchors: dict, wanted, order, account: bool, strict: bool, state=()
 ) -> str:
-    """Return the braced Tcl dict `rb::ckpt::arm` takes; every name in it is a plain identifier. `order` is the run's stages."""
+    """Return the braced Tcl dict `rb::ckpt::arm` takes; every name in it is a plain identifier. `order` is the run's stages; only their reports are listed."""
     return (
         "{"
         + " ".join(
@@ -168,6 +175,13 @@ def _arm_config(
                 + " ".join(f"{stage} {STAGE_INDEX[stage]}" for stage in order)
                 + "}",
                 f"routed {{{' '.join(ROUTE_FILES)}}}",
+                "reports {"
+                + " ".join(
+                    f"{stage} {{{' '.join(f'{k} {v}' for k, v in kinds.items())}}}"
+                    for stage, kinds in STAGE_REPORTS.items()
+                    if stage in order
+                )
+                + "}",
                 f"state {{{' '.join(state)}}}",
                 f"account {int(account)}",
                 f"strict {int(strict)}",
@@ -331,14 +345,17 @@ def written_checkpoint(run_dir: str, stage: str) -> dict | None:
     return dict(event.get("files") or {}) if event else None
 
 
-#: Fields of a `stage_end` event that describe what the stage used.
+#: Fields of a `stage_end` event that describe what the stage used; a staged session's also has `threads`.
 _RESOURCE_FIELDS = ("status", "wall_s", "cpu_s", "peak_rss_kb", "measured_by")
 
 
 def stage_resources(events: list[dict]) -> dict[str, dict]:
-    """Map each stage that ended to its status, wall time, CPU time, peak RSS and how they were measured, in flow order."""
+    """Map each stage that ended to its status, wall time, CPU time, peak RSS and how they were measured, and a staged session's thread count, in flow order."""
     ended = {
-        str(e.get("stage")): {k: e.get(k) for k in _RESOURCE_FIELDS}
+        str(e.get("stage")): {
+            **{k: e.get(k) for k in _RESOURCE_FIELDS},
+            **({"threads": e["threads"]} if "threads" in e else {}),
+        }
         for e in events
         if e.get("event") == "stage_end"
     }
