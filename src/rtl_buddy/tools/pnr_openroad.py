@@ -37,6 +37,7 @@ from ..config.pnr_repair import (
     GlobalRouteRepair,
     PnrMode,
     PostRouteRepair,
+    PostRouteReroute,
     RepairDesign,
     Reroute,
 )
@@ -327,21 +328,39 @@ def _fmt_number(value: float) -> str:
     return f"{value:.10g}"
 
 
+def _legalize_tcl(dpl_options: str) -> str:
+    """Legalize the cells a repair added or moved inside an incremental global route, which reroutes their nets, as ORFS does after each repair."""
+    return (
+        "global_route -start_incremental\n"
+        f"detailed_placement{dpl_options}\n"
+        + _END_INCREMENTAL_CMD
+        + "check_placement -verbose\n"
+    )
+
+
 def _repair_steps_tcl(
     title: str,
     design: RepairDesign | None,
     setup_ns: float | None,
     hold_ns: float | None,
     ps_per_unit: float | None,
+    legalize: str,
 ) -> str:
     """Return `repair_design`, then setup and hold `repair_timing`, each after a log line naming it.
 
     Margins are given in ns and passed in the Liberty time unit (`ps_per_unit` picoseconds), which is what `repair_timing` reads; the log line gives both. A zero margin is the tool's default and passes no option. The hold repair also passes a set setup margin, as ORFS's `repair_timing_helper` does, so it keeps that much setup slack on the paths it delays.
+
+    Between `repair_design` and `repair_timing` runs `legalize` (`_legalize_tcl`), as in ORFS: `repair_timing` builds buffer trees from the global routes, and the nets `repair_design` split have none until they are rerouted (RSZ-0074). The caller legalizes after the timing repair.
     """
     lines = []
     if design is not None:
         command = f"repair_design{design.options()}"
         lines += [f'puts ">>> {title}: {command}"', command]
+        if setup_ns is not None or hold_ns is not None:
+            lines += [
+                f'puts ">>> {title}: legalize after repair_design"',
+                legalize.rstrip("\n"),
+            ]
 
     def _option(kind: str, margin: float) -> tuple[str, str]:
         """`margin`'s option (empty for 0) and its log note."""
@@ -408,12 +427,14 @@ def _global_route_repair_tcl(
             + "check_placement -verbose\n"
         )
     title = "Global-route repair"
+    legalize = _legalize_tcl(dpl_options)
     steps = _repair_steps_tcl(
         title,
         repair.repair_design,
         repair.setup_margin,
         repair.hold_margin,
         ps_per_unit,
+        legalize,
     )
     head = (
         f'puts ">>> {title} (reroute {repair.reroute.value})"\n'
@@ -428,14 +449,7 @@ def _global_route_repair_tcl(
             + f'puts ">>> {title}: global route"\n'
             + _GLOBAL_ROUTE_CMD
         )
-    return (
-        head
-        + steps
-        + "global_route -start_incremental\n"
-        + f"detailed_placement{dpl_options}\n"
-        + _END_INCREMENTAL_CMD
-        + "check_placement -verbose\n"
-    )
+    return head + steps + legalize
 
 
 def _layer_adjustment_tcl(platform) -> str:
@@ -2236,31 +2250,38 @@ class OpenRoadPnr:
         )
 
     def _post_route_repair_script(self, round_: int, run_dir: str) -> str:
-        """Round `round_`'s repair session, bound to `run_dir`: route the unrouted database globally, repair on the round's SPEF, legalize inside an incremental global route, run the `before-detailed-route` hooks, route in detail and write the stage's checkpoint.
+        """Round `round_`'s repair session, bound to `run_dir`: repair on the round's SPEF, legalize inside an incremental global route, run the `before-detailed-route` hooks, route in detail and write the stage's checkpoint.
 
-        The rounds work on the unfilled database; `finish` fills after the last. A repair in the session that routed fails detailed routing (DRT-0218). On a detailed-routed database the repair builds buffer trees from global routes that miss pins (RSZ-0074), so the session drops the detailed route and routes globally first; the round's detailed route routes every net again either way. `estimate_parasitics -global_routing` before `read_spef` gives the nets repair changes an estimate. The repairs run before `global_route -start_incremental`, in ORFS order: `repair_timing` opens its own incremental route, and a second one open around it delivers each netlist change to the router twice (GRT-0229 on a later rip-up).
+        The rounds work on the unfilled database; `finish` fills after the last. A repair in the session that routed fails detailed routing (DRT-0218), so each round is a fresh session that reads the routed database. With `reroute: eco` the session keeps the detailed route and reads the SPEF, so the repair times every net it does not change on its extracted parasitics, and the detailed route reroutes only the nets the repair changed. With `reroute: full` it removes the detailed route and routes globally first, then reads the SPEF: on some PDKs (ASAP7) a repair on a detailed-routed database builds buffer trees from global routes that miss pins (RSZ-0074); its detailed route routes every net again. The repairs run before `global_route -start_incremental`, in ORFS order: `repair_timing` opens its own incremental route, and a second one open around it delivers each netlist change to the router twice (GRT-0229 on a later rip-up).
         """
         repair = self._post_route
         setup, hold = repair.margins(round_)
         title = f"Post-route repair round {round_}"
+        spef = self._read_spef_tcl(
+            f"[file join $RB_RUN_DIR {_post_route_file(f'.r{round_}.spef')}]"
+        )
         parts = self._prelude(POST_ROUTE_REPAIR_STAGE, self._post_route_source(round_))
+        parts.append(
+            f'\nputs ">>> {title} of {repair.rounds}: repair on extracted parasitics '
+            f'(reroute {repair.reroute.value})"\n'
+        )
+        if repair.reroute is PostRouteReroute.FULL:
+            parts += [
+                "remove_fillers\n",
+                "[ord::get_db_block] destroyNetWires\n",
+                f'puts ">>> {title}: global route"\n',
+                _GLOBAL_ROUTE_CMD,
+                "estimate_parasitics -global_routing\n",
+                spef,
+            ]
+        else:
+            parts += [spef, "remove_fillers\n"]
+        legalize = _legalize_tcl("{{ dpl_options }}")
         parts += [
-            f'\nputs ">>> {title} of {repair.rounds}: repair on extracted parasitics"\n',
-            "remove_fillers\n",
-            "[ord::get_db_block] destroyNetWires\n",
-            f'puts ">>> {title}: global route"\n',
-            _GLOBAL_ROUTE_CMD,
-            "estimate_parasitics -global_routing\n",
-            self._read_spef_tcl(
-                f"[file join $RB_RUN_DIR {_post_route_file(f'.r{round_}.spef')}]"
-            ),
             _repair_steps_tcl(
-                title, repair.repair_design, setup, hold, self._ps_per_unit
+                title, repair.repair_design, setup, hold, self._ps_per_unit, legalize
             ),
-            "global_route -start_incremental\n",
-            "detailed_placement{{ dpl_options }}\n",
-            _END_INCREMENTAL_CMD,
-            "check_placement -verbose\n",
+            legalize,
             "{{ hook_before_detailed_route_block }}",
             f'puts ">>> {title}: detailed route"\n',
             # So the round's DRC count is its own route's.
@@ -2275,6 +2296,24 @@ class OpenRoadPnr:
             self._session_substitutions(
                 POST_ROUTE_REPAIR_STAGE, run_dir, f"round {round_}: repair"
             ),
+        )
+
+    def _eco_hint(self, log_text: str) -> str:
+        """What to change when an `eco` post-route repair round failed RSZ-0074, else "".
+
+        On some PDKs (ASAP7) the global routes a fresh session rebuilds from a detailed-routed database miss pins, and `repair_timing` cannot build buffer trees from them.
+        """
+        repair = self._post_route
+        if (
+            repair is None
+            or repair.reroute is not PostRouteReroute.ECO
+            or self._failed_stage != _checkpoint_name(POST_ROUTE_REPAIR_STAGE)
+            or "[ERROR RSZ-0074]" not in log_text
+        ):
+            return ""
+        return (
+            "; the eco round's repair could not use the routes rebuilt from the "
+            "routed database: set post-route-repair.reroute: full"
         )
 
     def _post_route_report_script(self, run_dir: str) -> str:
@@ -4863,6 +4902,7 @@ class OpenRoadPnr:
                 desc = f"{desc}: {first_line.strip()}"
             if self._dispatch_reason:
                 desc = f"{desc} ({self._dispatch_reason})"
+            desc += self._eco_hint(log_text)
             if not self._staged and self.stop_after is not None:
                 stop_unwritten = checkpoint_error(self._ckpt_run_dir, self.stop_after)
             else:
@@ -4879,6 +4919,7 @@ class OpenRoadPnr:
             desc = f"{stage_prefix}{len(error_lines)} ERROR(s) in OpenROAD log"
             if self._dispatch_reason:
                 desc = f"{desc} ({self._dispatch_reason})"
+            desc += self._eco_hint(log_text)
             return self._fail_after_openroad(desc, fail_stage=self._chain_fail_stage)
 
         unwritten = self._unwritten_checkpoint(log_text)

@@ -38,6 +38,13 @@ class Reroute(StrEnum):
     FULL = "full"
 
 
+class PostRouteReroute(StrEnum):
+    """How a `post-route-repair` round routes after repair: `eco` keeps the routed database and reroutes the nets the repair changed; `full` removes the detailed route and routes every net again."""
+
+    ECO = "eco"
+    FULL = "full"
+
+
 # Every field is typed loosely with an `UNSET` default, so a key written as `null` differs from an absent one and the readers below name a bad value.
 @serde
 class RepairDesignFile:
@@ -61,6 +68,7 @@ class PostRouteRepairFile:
     hold_margin: Any = field(rename="hold-margin", default=UNSET)
     rounds: Any = UNSET
     margin_step: Any = field(rename="margin-step", default=UNSET)
+    reroute: Any = UNSET
 
 
 #: The keys of each block, for the unknown-key check.
@@ -112,6 +120,7 @@ class PostRouteRepair:
     hold_margin: float | None = None
     rounds: int = 1
     margin_step: float = 0.0
+    reroute: PostRouteReroute = PostRouteReroute.ECO
 
     def sides(self) -> tuple[str, ...]:
         """The timing sides the rounds repair, `setup` and `hold`, in that order: each whose margin is set."""
@@ -235,6 +244,7 @@ _POST_ROUTE_KEYS = {
     "hold-margin": "hold_margin",
     "rounds": "rounds",
     "margin-step": "margin_step",
+    "reroute": "reroute",
 }
 
 
@@ -247,16 +257,22 @@ def read_global_route_repair(where: str, raw):
     if block is None:
         return None
     layer = _read_margins(where, block)
-    reroute = block["reroute"]
-    if reroute is not UNSET:
-        try:
-            layer["reroute"] = Reroute(reroute)
-        except ValueError:
-            raise FatalRtlBuddyError(
-                f"{where}.reroute must be one of "
-                f"{', '.join(r.value for r in Reroute)}, got {reroute!r}"
-            ) from None
+    _read_reroute(where, block, layer, Reroute)
     return layer
+
+
+def _read_reroute(where: str, block: dict, layer: dict, kind) -> None:
+    """Add the block's `reroute`, one of `kind`'s values, to `layer` when written."""
+    reroute = block["reroute"]
+    if reroute is UNSET:
+        return
+    try:
+        layer["reroute"] = kind(reroute)
+    except ValueError:
+        raise FatalRtlBuddyError(
+            f"{where}.reroute must be one of "
+            f"{', '.join(r.value for r in kind)}, got {reroute!r}"
+        ) from None
 
 
 def read_post_route_repair(where: str, raw):
@@ -284,6 +300,7 @@ def read_post_route_repair(where: str, raw):
         layer["margin_step"] = _number(
             where, "margin-step", step, low=0.0, nullable=False
         )
+    _read_reroute(where, block, layer, PostRouteReroute)
     return layer
 
 
@@ -345,6 +362,7 @@ def resolve_post_route_repair(where: str, layers) -> PostRouteRepair | None:
         hold_margin=merged.get("hold_margin"),
         rounds=merged.get("rounds", 1),
         margin_step=merged.get("margin_step", 0.0),
+        reroute=merged.get("reroute", PostRouteReroute.ECO),
     )
     if repair.rounds > 1 and not repair.sides():
         raise FatalRtlBuddyError(

@@ -35,6 +35,7 @@ from rtl_buddy.config.pnr_repair import (
     GlobalRouteRepair,
     PnrMode,
     PostRouteRepair,
+    PostRouteReroute,
     RepairDesign,
     Reroute,
     read_global_route_repair,
@@ -79,7 +80,11 @@ def test_a_platform_block_resolves_with_its_defaults():
         setup_margin=0.1, reroute=Reroute.INCREMENTAL
     )
     assert platform.get_post_route_repair() == PostRouteRepair(
-        repair_design=RepairDesign(), hold_margin=0.02, rounds=1, margin_step=0.0
+        repair_design=RepairDesign(),
+        hold_margin=0.02,
+        rounds=1,
+        margin_step=0.0,
+        reroute=PostRouteReroute.ECO,
     )
 
 
@@ -90,13 +95,18 @@ def test_a_run_overrides_the_platform_field_by_field():
             "setup-margin": 0.1,
             "hold-margin": 0.05,
         },
-        post_route_repair={"setup-margin": 0.1, "rounds": 2, "margin-step": 0.05},
+        post_route_repair={
+            "setup-margin": 0.1,
+            "rounds": 2,
+            "margin-step": 0.05,
+            "reroute": "full",
+        },
     )
     run_gr = read_global_route_repair(
         "run",
         {"repair-design": {"cap-margin": 30}, "hold-margin": None, "reroute": "full"},
     )
-    run_pr = read_post_route_repair("run", {"rounds": 4})
+    run_pr = read_post_route_repair("run", {"rounds": 4, "reroute": "eco"})
 
     resolved = platform.with_run_repairs(run_gr, run_pr, "r")
 
@@ -107,7 +117,7 @@ def test_a_run_overrides_the_platform_field_by_field():
         reroute=Reroute.FULL,
     )
     assert resolved.get_post_route_repair() == PostRouteRepair(
-        setup_margin=0.1, rounds=4, margin_step=0.05
+        setup_margin=0.1, rounds=4, margin_step=0.05, reroute=PostRouteReroute.ECO
     )
     # The platform keeps its own.
     assert platform.get_global_route_repair().hold_margin == 0.05
@@ -245,6 +255,13 @@ def test_a_bad_reroute_is_refused():
         FatalRtlBuddyError, match="reroute must be one of incremental, full"
     ):
         _platform(global_route_repair={"hold-margin": 0, "reroute": "partial"})
+    with pytest.raises(
+        FatalRtlBuddyError,
+        match="post-route-repair.reroute must be one of eco, full, got 'incremental'",
+    ):
+        _platform(post_route_repair={"hold-margin": 0, "reroute": "incremental"})
+    with pytest.raises(FatalRtlBuddyError, match="got None"):
+        _platform(post_route_repair={"hold-margin": 0, "reroute": None})
 
 
 def test_post_route_margins_step_each_round_after_the_first():
@@ -435,6 +452,9 @@ def test_global_route_repair_passes_margins_in_the_liberty_unit(
         'puts ">>> Global-route repair: repair_design -slew_margin 20 '
         '-max_wire_length 500"\n'
         "repair_design -slew_margin 20 -max_wire_length 500\n"
+        'puts ">>> Global-route repair: legalize after repair_design"\n'
+        "global_route -start_incremental\n"
+        "detailed_placement\n" + _END_INCREMENTAL_CMD + "check_placement -verbose\n"
         f'puts ">>> Global-route repair: repair_timing -setup -setup_margin {setup} '
         f'(setup margin 0.2 ns in Liberty time unit {unit})"\n'
         f"repair_timing -setup -setup_margin {setup}\n"
@@ -544,7 +564,8 @@ def test_a_probe_skips_timing_repair_and_stops_after_global_route(tmp_path):
 # slack from `RB_STUB_SETUP` and `RB_STUB_HOLD` (one value per round, in the
 # Liberty unit; hold defaults to 0), and each corner's from
 # `RB_STUB_SETUP_<corner>` and `RB_STUB_HOLD_<corner>`; `RB_STUB_DRC=<round>`
-# makes that round's detailed route report a violation.
+# makes that round's detailed route report a violation; `RB_STUB_RSZ0074=<round>`
+# makes that round's `repair_timing` fail as OpenROAD's does without usable routes.
 _ROUND_STUBS = r"""
 proc rb_round {} {
     global argv
@@ -586,6 +607,14 @@ proc report_tns {args} {
     if {[lsearch $args -min] >= 0} { puts "tns min 0.0" } else { puts "tns max -1.5" }
 }
 proc remove_fillers {args} { rb_stub remove_fillers }
+proc repair_timing {args} {
+    global env
+    if {[info exists env(RB_STUB_RSZ0074)] && $env(RB_STUB_RSZ0074) == [rb_round]} {
+        puts "\[ERROR RSZ-0074\] Failed to build tree from global routes"
+        error "RSZ-0074"
+    }
+    rb_stub repair_timing
+}
 proc detailed_route {args} {
     global env
     rb_stub detailed_route
@@ -701,13 +730,13 @@ def test_rounds_repair_until_timing_is_met(tmp_path, monkeypatch, stages):
     r1 = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
     assert "read_db [file join $RB_PRED_DIR 05_detailed_route.odb]" in r1
     repair = r1.index("\nrepair_timing -setup")
-    # The repair's buffer trees come from a global route of the unrouted design.
-    unroute = r1.index("\n[ord::get_db_block] destroyNetWires\n")
-    route = r1.index("\nglobal_route -congestion_iterations")
-    assert unroute < route < r1.index("\nestimate_parasitics -global_routing\n")
-    assert r1.index("\nestimate_parasitics -global_routing\n") < r1.index("read_spef")
+    # `reroute: eco` keeps the detailed route: no unrouting, no full global route.
+    assert "(reroute eco)" in r1
+    assert "destroyNetWires" not in r1
+    assert "global_route -congestion_iterations" not in r1
+    assert not re.search(r"^estimate_parasitics", r1, re.MULTILINE)
+    assert r1.index("read_spef") < r1.index("\nremove_fillers\n") < repair
     # ORFS order: repair, then an incremental global route around legalization only.
-    assert r1.index("read_spef") < repair
     assert repair < r1.index("global_route -start_incremental")
     assert r1.index("global_route -start_incremental") < r1.index(
         "\ndetailed_placement"
@@ -726,6 +755,84 @@ def test_rounds_repair_until_timing_is_met(tmp_path, monkeypatch, stages):
     # Finish starts from the last repair.
     finish = (run_dir / "07_finish.tcl").read_text()
     assert "read_db [file join $RB_PRED_DIR 06_post_route_repair.odb]" in finish
+
+
+def test_a_full_reroute_round_routes_the_unrouted_design_first(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_PR, "rounds": 1, "reroute": "full"},
+        env={"RB_STUB_SETUP": "-0.2"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    r1 = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
+    assert "(reroute full)" in r1
+    repair = r1.index("\nrepair_timing -setup")
+    # The repair's buffer trees come from a global route of the unrouted design.
+    unroute = r1.index("\n[ord::get_db_block] destroyNetWires\n")
+    route = r1.index("\nglobal_route -congestion_iterations")
+    assert r1.index("\nremove_fillers\n") < unroute < route
+    assert route < r1.index("\nestimate_parasitics -global_routing\n")
+    assert r1.index("\nestimate_parasitics -global_routing\n") < r1.index("read_spef")
+    assert r1.index("read_spef") < repair < r1.index("global_route -start_incremental")
+    assert r1.index("global_route -end_incremental") < r1.index("\ndetailed_route \\")
+
+
+@pytest.mark.parametrize("reroute", ["eco", "full"])
+def test_a_round_legalizes_after_repair_design_before_repair_timing(
+    tmp_path, monkeypatch, reroute
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={
+            "repair-design": {"slew-margin": 50},
+            "setup-margin": 0.1,
+            "reroute": reroute,
+        },
+        env={"RB_STUB_SETUP": "-0.2"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    r1 = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
+    design = r1.index("\nrepair_design -slew_margin 50\n")
+    timing = r1.index("\nrepair_timing -setup")
+    between = r1[design:timing]
+    assert "legalize after repair_design" in between
+    assert between.index("global_route -start_incremental") < between.index(
+        "\ndetailed_placement"
+    )
+    assert "global_route -end_incremental" in between
+    # And again after the timing repair, before the detailed route.
+    after = r1[timing:]
+    assert after.index("global_route -end_incremental") < after.index(
+        "\ndetailed_route \\"
+    )
+
+
+@pytest.mark.parametrize("reroute, named", [("eco", True), ("full", False)])
+def test_an_eco_round_that_cannot_rebuffer_names_reroute_full(
+    tmp_path, monkeypatch, reroute, named
+):
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_PR, "rounds": 1, "reroute": reroute},
+        env={"RB_STUB_SETUP": "-0.2", "RB_STUB_RSZ0074": "1"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert "06_post_route_repair" in res.results["desc"]
+    assert ("set post-route-repair.reroute: full" in res.results["desc"]) is named
 
 
 def test_a_one_session_run_s_routed_spef_is_vouched_for_for_rb_power(
