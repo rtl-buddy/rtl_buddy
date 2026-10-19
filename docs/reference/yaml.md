@@ -362,7 +362,7 @@ cfg-dispatch:
 | `orphans` | `warn`; values are `warn`, `cancel`, `adopt`. What the next run does about an interrupted run's jobs that are still queued or running. CLI `--orphans` wins. See [Orphaned jobs](#orphaned-jobs) |
 | `poll-interval` | Positive seconds between backend polls |
 | `progress-interval` | 60; non-negative seconds between console updates. 0 disables console progress |
-| `max-wait` | Unset; positive seconds per collection round. Expiry fails the run and cancels outstanding jobs |
+| `max-wait` | Unset; positive seconds per collection round. Expiry fails the run and cancels outstanding jobs. For `rb pnr --dispatch slurm`, how long each stage job may wait in the queue before it starts |
 | `retry.attempts` | 0; extra attempts after the first |
 | `retry.backoff-sec` / `backoff-max-sec` | 60 / 600; non-negative, and the maximum must not be below the initial backoff |
 | `retry.jitter` | 0.5; in `[0, 1)` |
