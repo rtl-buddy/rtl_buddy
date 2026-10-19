@@ -494,11 +494,13 @@ def _xfail_driver(monkeypatch, result: str):
     return rb
 
 
+@pytest.mark.parametrize("marker", ["xfail", "xfail_strict"])
 @pytest.mark.parametrize("result", ["PASS", "FAIL"])
-def test_xfail_does_not_apply_to_a_stopped_run(tmp_path, monkeypatch, result):
+def test_xfail_does_not_apply_to_a_stopped_run(tmp_path, monkeypatch, result, marker):
     from test_pnr_plan import _run, _suite
 
-    suite = _suite(tmp_path / "pnr.yaml", _run("a", xfail=True))
+    run = _run("a", xfail=True).replace("xfail: true", f"{marker}: true")
+    suite = _suite(tmp_path / "pnr.yaml", run)
     rb = _xfail_driver(monkeypatch, result)
 
     (row,) = rb._do_pnr_suite(suite, pnr_name="a", stop_after="cts")
