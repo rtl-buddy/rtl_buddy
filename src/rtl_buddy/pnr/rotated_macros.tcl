@@ -51,6 +51,9 @@ proc rb::rotated::block_footprints {block rotated} {
     set core [$block getCoreArea]
     set core_box [list [$core xMin] [$core yMin] [$core xMax] [$core yMax]]
     set blockages {}
+    if {[llength $rotated] > 0} {
+        puts ">>> Rotated macros: blocking each unrotated footprint for global placement"
+    }
     foreach inst $rotated {
         set cell_halo [list $::MACRO_CELL_HALO $::MACRO_CELL_HALO]
         if {[dict exists $::MACRO_CELL_HALOS [$inst getName]]} {
@@ -68,7 +71,7 @@ proc rb::rotated::block_footprints {block rotated} {
             continue
         }
         lappend blockages [odb::dbBlockage_create $block {*}$box]
-        puts ">>>   [$inst getName] [$inst getOrient]: blocked its unrotated footprint {$box} DBU for global placement"
+        puts ">>>   [$inst getName] [$inst getOrient]: blocked {$box} DBU"
     }
     return $blockages
 }

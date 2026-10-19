@@ -258,7 +258,7 @@ def check_routed_def(tags: FloorplanTags, def_path: str) -> list[str]:
             got_layer, got = shapes[0]
             problems.append(
                 f"pin {name} is {got_layer} {list(got)} in the routed DEF, not "
-                f"{layer} {[_fmt(v) for v in want_box]} as the floorplan placed it "
+                f"{layer} [{', '.join(_fmt(v) for v in want_box)}] as the floorplan placed it "
                 "(DEF units)"
             )
     return problems

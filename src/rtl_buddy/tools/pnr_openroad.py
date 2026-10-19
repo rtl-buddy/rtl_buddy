@@ -763,10 +763,9 @@ def _global_placement_blocks(
         lines.append("set rb_rotated_macros [rb::rotated::macros $macros]")
     destroy = ""
     if blockages or block_rotated:
-        lines += [
-            'puts ">>> Global-placement-only blockages"',
-            "set RB_GP_BLOCKAGES {}",
-        ]
+        lines.append("set RB_GP_BLOCKAGES {}")
+        if blockages:
+            lines.append('puts ">>> Global-placement-only blockages"')
         for blockage in blockages:
             lines.append(f"lappend RB_GP_BLOCKAGES [{_blockage_command(blockage)}]")
         if block_rotated:
@@ -776,8 +775,10 @@ def _global_placement_blocks(
             )
         destroy = (
             "foreach rb_blockage $RB_GP_BLOCKAGES { odb::dbBlockage_destroy $rb_blockage }\n"
-            'puts ">>>   removed [llength $RB_GP_BLOCKAGES] global-placement-only '
+            "if {[llength $RB_GP_BLOCKAGES] > 0} {\n"
+            '  puts ">>>   removed [llength $RB_GP_BLOCKAGES] global-placement-only '
             'blockage(s)"\n'
+            "}\n"
         )
     dpl_options = ""
     if diamond:

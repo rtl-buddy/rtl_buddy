@@ -10,6 +10,7 @@ from typing import Literal
 
 import yaml
 from serde import field, serde
+from serde.compat import SerdeError
 from .yaml_loader import config_from_yaml, load_yaml
 
 from ..errors import FatalRtlBuddyError
@@ -412,9 +413,7 @@ def _load_pin(where: str, entry: PnrPinFile) -> PnrPin:
                 f"got {entry.location!r}"
             )
         layer = entry.layer
-        if layer is not None and (
-            not isinstance(layer, str) or not layer or _TCL_UNSAFE.search(layer)
-        ):
+        if layer is not None and (not layer or _TCL_UNSAFE.search(layer)):
             raise FatalRtlBuddyError(f"{where}: layer {layer!r} is not a layer name")
         size = None
         if entry.size is not None:
@@ -456,11 +455,6 @@ def _load_pin(where: str, entry: PnrPinFile) -> PnrPin:
             f"{where}: start must be below end, got start {entry.start} and "
             f"end {entry.end}"
         )
-    for key in ("group", "order"):
-        if not isinstance(getattr(entry, key), bool):
-            raise FatalRtlBuddyError(
-                f"{where}: {key} must be true or false, got {getattr(entry, key)!r}"
-            )
     if entry.order and not entry.group:
         raise FatalRtlBuddyError(f"{where}: order needs group: true")
     if side is None and not entry.group:
@@ -560,6 +554,8 @@ def _read_planner_file(where: str, path: str) -> list:
     if data is None:
         try:
             data = load_yaml(text, path, fast=True)
+        except FatalRtlBuddyError as e:
+            raise FatalRtlBuddyError(f"{where}: {e}") from None
         except yaml.YAMLError as e:
             raise FatalRtlBuddyError(
                 f"{where}: {path} is not valid YAML: {e}"
@@ -571,6 +567,18 @@ def _read_planner_file(where: str, path: str) -> list:
             f"{where}: {path} must hold a list of entries, got {type(data).__name__}"
         )
     return data
+
+
+def _file_entry_object(where: str, cls, entry: dict):
+    """Build `cls` from one planner-file entry, reporting a wrongly typed value against `where`."""
+    try:
+        return cls(**entry)
+    except SerdeError as e:
+        match = re.search(r"parameter (\w+)=", str(e))
+        key = match.group(1) if match else "an entry value"
+        raise FatalRtlBuddyError(
+            f"{where}: {key} has the wrong type, got {entry.get(key)!r}"
+        ) from None
 
 
 def _file_entry(where: str, entry, keys: tuple[str, ...]) -> dict:
@@ -595,7 +603,9 @@ def _load_macros_file(
         entry = _file_entry(where, raw, _MACRO_FILE_KEYS)
         if "instance" not in entry:
             raise FatalRtlBuddyError(f"{where}: instance is required")
-        macro = _load_macro(where, PnrMacroFile(**entry), placement)
+        macro = _load_macro(
+            where, _file_entry_object(where, PnrMacroFile, entry), placement
+        )
         macros.append(replace(macro, label=f"floorplan.macros-file[{i}]", exact=True))
     return macros
 
@@ -618,7 +628,7 @@ def _load_pins_file(run: str, path: str) -> list[PnrPin]:
             entry["names"] = entry.pop("name")
         if "names" not in entry:
             raise FatalRtlBuddyError(f"{where}: name or names is required")
-        pin = _load_pin(where, PnrPinFile(**entry))
+        pin = _load_pin(where, _file_entry_object(where, PnrPinFile, entry))
         pins.append(replace(pin, label=f"floorplan.pins-file[{i}]", exact=True))
     return pins
 
@@ -1129,12 +1139,6 @@ class PnrConfigFile:
                     f"YAML or JSON file, got {value!r}"
                 )
             planner_files[key] = os.path.abspath(os.path.join(config_dir, value))
-        for key in ("macro_snap", "pin_snap", "pins_complete"):
-            if not isinstance(getattr(self.floorplan, key), bool):
-                raise FatalRtlBuddyError(
-                    f"pnr run '{self.name}': floorplan.{key.replace('_', '-')} must be "
-                    f"true or false, got {getattr(self.floorplan, key)!r}"
-                )
         placement = (
             validate_placement(self.placement, f"pnr run '{self.name}'")
             if self.placement is not None
