@@ -456,8 +456,18 @@ def test_a_path_with_braces_is_inert_inside_the_macro_branch(tmp_path):
     assert done.stdout.splitlines() == [f">>> Hook macro-placement: {hook}", "RAN"]
 
 
-@pytest.mark.parametrize("command", ["break", "continue"])
-def test_a_top_level_break_or_continue_is_a_named_error(tmp_path, command):
+@pytest.mark.parametrize(
+    "command, message",
+    [
+        ("break", "invoked break outside of a loop"),
+        ("continue", "invoked continue outside of a loop"),
+        ("return -level 3", "return reaches past the hook file"),
+        ("return -code 7", "ended with completion code 7"),
+    ],
+)
+def test_a_completion_that_would_end_the_flow_is_a_named_error(
+    tmp_path, command, message
+):
     hook = _write(tmp_path / "loop.tcl", f"{command}\n")
     done = _tcl_run(
         tmp_path,
@@ -467,7 +477,7 @@ def test_a_top_level_break_or_continue_is_a_named_error(tmp_path, command):
     assert done.returncode == 0, done.stderr
     assert done.stdout.splitlines() == [
         "CODE 1",
-        f"MSG Hook after-cts ({hook}): invoked {command} outside of a loop",
+        f"MSG Hook after-cts ({hook}): {message}",
     ]
 
 

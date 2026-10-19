@@ -272,7 +272,7 @@ runs:
 - Results come from the final reports: a report a hook prints earlier does not change the result's area, slack or TNS.
 - `after-pdn` runs whether or not the run has a pdn-config.
 - `pin-constraints` is unchanged: it is sourced just before `place_pins`, and `after-pins` runs after it.
-- A hook that raises a Tcl error fails the run, and the error names the point and file: `Hook after-cts (<path>): <message>`. OpenROAD stops there. An OpenROAD `[ERROR ...]` line a hook catches still fails the run, as anywhere in the flow. `exit` inside a hook is such an error, since it would end OpenROAD with the flow unfinished.
+- A hook that raises a Tcl error fails the run, and the error names the point and file: `Hook after-cts (<path>): <message>`. OpenROAD stops there. An OpenROAD `[ERROR ...]` line a hook catches still fails the run, as anywhere in the flow. `exit`, a top-level `break` or `continue`, and a `return` that reaches past the hook file are such errors too, since each would end the flow unfinished.
 - A configured file missing from disk fails the run at `setup`, naming `hooks.<point>[<index>]`, before OpenROAD starts.
 - Every hook file is an input to [stage checkpoints](#keep-stage-checkpoints) and to a [hardened block's](#harden-a-block) abstract, so editing one makes the abstract stale. `hooks` is part of the block's configuration only when set.
 - Commands a hook runs report their progress like the flow's own, but they do not move a stage checkpoint: a `global_placement` inside a hook leaves the `floorplan` checkpoint to the flow's own `global_placement`.
