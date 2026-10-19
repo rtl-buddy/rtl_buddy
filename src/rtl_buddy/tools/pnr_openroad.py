@@ -58,6 +58,8 @@ _PINS_FILE = "pins.tcl"
 _ROTATED_MACROS_FILE = "rotated_macros.tcl"
 # Ties `blocks:` supply pins and joins top-layer ones to the parent's straps; see `_block_power_tcl`.
 _BLOCK_POWER_FILE = "block_power.tcl"
+# Sources the run's `hooks:` files; see `_hook_procs_block`.
+_HOOKS_FILE = "hooks.tcl"
 
 # Non-log files the flow writes under `$OUT_DIR`; `test_pnr.py` checks this covers every one.
 _FLOW_OUTPUT_NAMES = (
@@ -204,6 +206,54 @@ def _hook_block(title: str, path: str) -> str:
     if not path:
         return ""
     return f'\nputs ">>> {title}"\n{tcl_source(path)}\n'
+
+
+def _run_hook_lines(point: str, paths, indent: str = "") -> str:
+    """Return one announce-and-source pair per hook file of `point`, each line ending in a newline."""
+    return "".join(
+        f"{indent}puts {pnr_checkpoints._tcl_quote(f'>>> Hook {point}: {path}')}\n"
+        f"{indent}rb::hook::run {point} {pnr_checkpoints._tcl_quote(path)}\n"
+        for path in paths
+    )
+
+
+def _run_hook_block(point: str, hooks: dict) -> str:
+    """Return the flow block sourcing a run's hook files at `point`, or `""` when it has none.
+
+    The block carries its own leading newline so a run without hooks renders the template byte-identically.
+    """
+    paths = hooks.get(point)
+    return f"\n{_run_hook_lines(point, paths)}" if paths else ""
+
+
+def _macro_hook_block(fp: PnrFloorplan, paths) -> str:
+    """Return the macro branch's `macro-placement` hook lines, which replace rb's placement.
+
+    Without `floorplan.macros`, `$rb_movable_macros` is set to every macro so a hook can read it either way.
+    """
+    movable = "" if fp.macros else "  set rb_movable_macros $macros\n"
+    return movable + _run_hook_lines("macro-placement", paths, "  ")
+
+
+def _final_reports(log_text: str) -> str:
+    """Return `pnr.log` from its last `>>> Final reports` line on, or all of it without one.
+
+    A report a hook or an earlier step prints never reads as the result.
+    """
+    starts = [m.start() for m in re.finditer(r"^>>> Final reports$", log_text, re.M)]
+    return log_text[starts[-1] :] if starts else log_text
+
+
+def _hook_role(point: str) -> str:
+    """Return the manifest input role for a run hook point, such as `hook_after_cts`."""
+    return "hook_" + point.replace("-", "_")
+
+
+def _hook_procs_block(hooks: dict) -> str:
+    """Return the Tcl that defines `rb::hook::run`, or `""` when the run has no hooks."""
+    if not hooks:
+        return ""
+    return f"\n{files(_TEMPLATE_PACKAGE).joinpath(_HOOKS_FILE).read_text()}"
 
 
 def _buffer_ports_tcl(enabled: bool, buffer_cell: str | None) -> str:
@@ -1055,6 +1105,7 @@ class OpenRoadPnr:
                 escaped = escaped.replace(char, "\\" + char)
             pin_constraints_tcl = f'source "{escaped}"'
         max_fanout = max_fanout_cmd(platform)
+        hooks = self.pnr_cfg.get_hooks()
         substitutions = {
             "pin_constraints_tcl": pin_constraints_tcl,
             "floorplan_pins_block": _floorplan_pins_block(fp),
@@ -1085,7 +1136,12 @@ class OpenRoadPnr:
             "macro_pack_procs": self._load_macro_pack(),
             "macro_directives_block": _macro_directives_block(fp),
             "initialize_floorplan": _initialize_floorplan_tcl(fp),
-            "macro_place_block": _macro_place_block(fp, macro_pack_directives),
+            # A `macro-placement` hook replaces the packer or RTL-MP inside the macro branch.
+            "macro_place_block": (
+                _macro_hook_block(fp, hooks["macro-placement"])
+                if "macro-placement" in hooks
+                else _macro_place_block(fp, macro_pack_directives)
+            ),
             "no_macros_block": _no_macros_block(fp),
             "blockages_block": blockages_block,
             "dont_use_block": dont_use_block,
@@ -1105,6 +1161,25 @@ class OpenRoadPnr:
                 "Tap and endcap cells (tapcell-tcl)", pdk.get_tapcell_tcl()
             ),
             "threads_block": threads_block,
+            "hook_procs_block": _hook_procs_block(hooks),
+            "hook_session_block": _run_hook_block("session", hooks),
+            "hook_after_floorplan_block": _run_hook_block("after-floorplan", hooks),
+            "hook_after_pdn_block": _run_hook_block("after-pdn", hooks),
+            "hook_after_pins_block": _run_hook_block("after-pins", hooks),
+            "hook_after_global_placement_block": _run_hook_block(
+                "after-global-placement", hooks
+            ),
+            "hook_after_repair_design_block": _run_hook_block(
+                "after-repair-design", hooks
+            ),
+            "hook_after_cts_block": _run_hook_block("after-cts", hooks),
+            "hook_after_global_route_block": _run_hook_block(
+                "after-global-route", hooks
+            ),
+            "hook_before_detailed_route_block": _run_hook_block(
+                "before-detailed-route", hooks
+            ),
+            "hook_before_reports_block": _run_hook_block("before-reports", hooks),
             "rcx_block": rcx_block,
             "final_parasitics": final_parasitics,
             "harden_block": (
@@ -2239,6 +2314,10 @@ class OpenRoadPnr:
                 key.replace("-", "_"): _file_fingerprint(path)
                 for key, path in pdk.get_tcl_hooks().items()
             },
+            **{
+                _hook_role(point): [_file_fingerprint(p) for p in paths]
+                for point, paths in self.pnr_cfg.get_hooks().items()
+            },
             "script": _file_fingerprint(script_path),
         }
 
@@ -2439,6 +2518,10 @@ class OpenRoadPnr:
             # Only the configured hooks, so an abstract hardened without any records no extra roles.
             **{
                 key.replace("-", "_"): path for key, path in pdk.get_tcl_hooks().items()
+            },
+            **{
+                _hook_role(point): list(paths)
+                for point, paths in self.pnr_cfg.get_hooks().items()
             },
         }
 
@@ -2674,6 +2757,24 @@ class OpenRoadPnr:
                     desc=f"{key} not found: {path}",
                     fail_stage="setup",
                 )
+
+        for point, paths in self.pnr_cfg.get_hooks().items():
+            for index, path in enumerate(paths):
+                if not os.path.isfile(path):
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "pnr.run_hook_missing",
+                        pnr=self.pnr_cfg.get_name(),
+                        point=point,
+                        index=index,
+                        path=path,
+                    )
+                    return PnrFailResults(
+                        name=self.name + "/results",
+                        desc=f"hooks.{point}[{index}] not found: {path}",
+                        fail_stage="setup",
+                    )
 
         # Read only after detailed route, so check now, before the checkpoint directory is allocated.
         rcx_rules = platform.get_pdk().get_rcx_rules()
@@ -3005,13 +3106,14 @@ class OpenRoadPnr:
         # Logged for every run that got this far; only a pass carries it in the result description.
         no_wire_rc = self._no_wire_rc_qualifier(platform, log_text)
 
-        area = self._parse_area_um2(log_text)
+        final = _final_reports(log_text)
+        area = self._parse_area_um2(final)
         cells = self._parse_cell_count(log_text)
         routed_cells, physical_cells = self._parse_routed_cell_counts(log_text)
-        wns_setup = self._parse_wns(log_text, "max")
-        wns_hold = self._parse_wns(log_text, "min")
-        tns = self._parse_tns(log_text)
-        tns_hold = self._parse_tns(log_text, "min")
+        wns_setup = self._parse_wns(final, "max")
+        wns_hold = self._parse_wns(final, "min")
+        tns = self._parse_tns(final)
+        tns_hold = self._parse_tns(final, "min")
         drcs = self._count_drcs()
 
         ps_per_unit = self._ps_per_unit
@@ -3027,7 +3129,7 @@ class OpenRoadPnr:
             "drc_count": drcs,
             **self._parse_electrical(log_text),
         }
-        corner_fields = self._corner_fields(platform, log_text)
+        corner_fields = self._corner_fields(platform, final)
 
         mismatch = self._check_routed_placement(log_text)
         if mismatch is not None:
@@ -3045,7 +3147,6 @@ class OpenRoadPnr:
                     **(self._close_checkpoints("FAIL", mismatch) or {}),
                 },
             )
-
         # Logged whether or not it fails the run, so a pass with violators never reads as clean.
         electrical = self._describe_electrical(metrics)
         if electrical:
