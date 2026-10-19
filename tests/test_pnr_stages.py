@@ -240,6 +240,7 @@ def test_a_stopped_run_without_its_marker_fails(tmp_path, monkeypatch):
     res = backend.run()
 
     assert res.results["result"] == "FAIL"
+    assert res.results["fail_stage"] == "incomplete"
     assert "--stop-after cts" in res.results["desc"]
 
 
@@ -251,6 +252,7 @@ def test_a_staged_session_that_exits_early_fails_the_chain(tmp_path, monkeypatch
     res = backend.run()
 
     assert res.results["result"] == "FAIL"
+    assert res.results["fail_stage"] == "incomplete"
     assert "03_cts" in res.results["desc"]
     run_dir = _only_run(artefacts)
     assert not (run_dir / "04_global_route.log").exists()
@@ -265,6 +267,7 @@ def test_a_failed_staged_session_names_its_stage(tmp_path, monkeypatch):
 
     assert res.results["result"] == "FAIL"
     assert res.results["desc"].startswith("stage 04_global_route: OpenROAD exited")
+    assert "fail_stage" not in res.results
     run_dir = _only_run(artefacts)
     ended = {e["stage"]: e for e in _events(run_dir) if e["event"] == "stage_end"}
     assert ended["global_route"]["status"] == "error"

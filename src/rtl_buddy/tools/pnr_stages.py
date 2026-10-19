@@ -121,6 +121,9 @@ def after(stage: str, other: str) -> bool:
 #: Printed by each staged session but `finish` once its checkpoint is written.
 STAGE_DONE_MARKER = ">>> End of stage "
 
+#: Printed by the flow's last command, which `finish` and a one-session run end on.
+FLOW_DONE_MARKER = ">>> DONE"
+
 
 def _identity_text(text: str) -> str:
     """A stage script as far as its checkpoint depends on it: up to its end-of-stage line, with the run bindings blanked.

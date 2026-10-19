@@ -131,9 +131,10 @@ def _tcl_command(harness: Path, script: str) -> list[str]:
     return [sys.executable, "-c", _EMBEDDED_DRIVER, str(harness), script]
 
 
-def _pdk(tmp_path):
+def _pdk(tmp_path, **fields):
     return PdkConfig(
         PdkConfigFile(
+            **fields,
             name="nangate45",
             site="FreePDK45_38x28_10R_NP_162NW_34O",
             corners={"typ": "pdk/lib/typ.lib"},
@@ -215,11 +216,12 @@ def _backend(
     env=None,
     stages=False,
     pnr_cfg=None,
+    pdk_fields=None,
     **options,
 ):
     """An `OpenRoadPnr` whose OpenROAD is the stub harness under Tcl.
 
-    `options` are `OpenRoadPnr` keywords (`stop_after`, `resume`, `resume_from`).
+    `pdk_fields` are extra `PdkConfigFile` fields (the PDK Tcl hooks, `pdn_config`); `options` are `OpenRoadPnr` keywords (`stop_after`, `resume`, `resume_from`).
     """
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
@@ -227,7 +229,7 @@ def _backend(
     _write_synth_config(tmp_path)
     monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
-    pdk = _pdk(tmp_path)
+    pdk = _pdk(tmp_path, **(pdk_fields or {}))
     root_cfg = MagicMock()
     root_cfg.get_pnr_platform_cfg.return_value = _platform(pdk)
     backend = OpenRoadPnr(

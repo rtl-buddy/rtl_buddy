@@ -349,7 +349,7 @@ def _run(tmp_path, monkeypatch, threads, log):
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
 
     def _fake_run(cmd, **_kwargs):
-        _kwargs["stdout"].write(log)
+        _kwargs["stdout"].write(log + ">>> DONE\n")
         return MagicMock(returncode=0, stderr="")
 
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)

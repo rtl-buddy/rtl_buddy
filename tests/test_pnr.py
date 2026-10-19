@@ -26,6 +26,9 @@ from rtl_buddy.runner.pnr_results import (
     PnrSkipResults,
 )
 
+# The last line of a flow's log; a run whose log lacks it did not finish.
+_FLOW_DONE = ">>> DONE\n"
+
 
 def _make_pdk_cfg(tmp_path, **overrides):
     base = dict(
@@ -2023,7 +2026,7 @@ def _run_backend_with_export(tmp_path, monkeypatch, *, mode, missing=()):
         if hasattr(kwargs.get("stdout"), "write"):
             kwargs["stdout"].write(
                 "Design area 123.45 um^2 1% utilization\n"
-                "Number of instances:          42\n"
+                "Number of instances:          42\n" + _FLOW_DONE
             )
             (artefacts / "demo_top.routed.odb").write_bytes(b"\x00odb\x00")
             (artefacts / "demo_top.def").write_text("DESIGN demo_top ;\n")
@@ -2350,7 +2353,7 @@ def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatc
 
     def _fake_run(cmd, **_kwargs):
         # OpenROAD exits 0 and writes only its log.
-        _kwargs["stdout"].write("")
+        _kwargs["stdout"].write(_FLOW_DONE)
         result = MagicMock()
         result.returncode = 0
         result.stderr = ""
@@ -2802,7 +2805,7 @@ def test_pnr_error_line_after_writing_removes_the_odb(tmp_path, monkeypatch):
     odb = Path(backend.artefact_dir) / "demo_top.routed.odb"
 
     def _writes_then_errors(cmd, **_kwargs):
-        _kwargs["stdout"].write("[ERROR GRT-0012] detailed route failed\n")
+        _kwargs["stdout"].write("[ERROR GRT-0012] detailed route failed\n" + _FLOW_DONE)
         odb.write_bytes(b"\x00partial odb\x00")
         result = MagicMock()
         result.returncode = 0
@@ -3145,7 +3148,7 @@ def _dont_use_backend(tmp_path, monkeypatch, *, log, returncode, dont_use_cells)
     odb = Path(backend.artefact_dir) / "demo_top.routed.odb"
 
     def _fake_openroad(cmd, **_kwargs):
-        _kwargs["stdout"].write(log)
+        _kwargs["stdout"].write(log + _FLOW_DONE)
         odb.write_bytes(b"\x00odb\x00")
         result = MagicMock()
         result.returncode = returncode
@@ -3604,7 +3607,7 @@ def test_a_rerun_without_rcx_rules_clears_the_previous_spef(tmp_path, monkeypatc
     stale_spef.write_text("*SPEF stale\n")
 
     def _fake_run(cmd, **_kwargs):
-        _kwargs["stdout"].write("")
+        _kwargs["stdout"].write(_FLOW_DONE)
         (artefacts / "demo_top.routed.odb").write_bytes(b"\x00fresh odb\x00")
         result = MagicMock()
         result.returncode = 0

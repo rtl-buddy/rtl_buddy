@@ -300,7 +300,7 @@ def _top_backend(tmp_path, monkeypatch, blocks_yaml):
 
     def _run(cmd, **_kw):
         launched.append(cmd)
-        _kw["stdout"].write("")
+        _kw["stdout"].write(">>> DONE\n")
         result = MagicMock(returncode=0, stdout="", stderr="")
         return result
 
