@@ -80,6 +80,8 @@ Rename `budget.per_module_cap` to `budget.per_file_cap` in every `mut.yaml`. The
 
 ## v6 to v7
 
+### Unknown P&R keys are errors
+
 An unknown key in a P&R run, a P&R platform or a PDK is a config error. Before, it was dropped without a word, so a misspelt key changed the flow silently: a blockage written with `lifetme: global-placement` loaded as a permanent one.
 
 The check covers:
@@ -95,6 +97,14 @@ pnr.yaml: pnr run 'top': floorplan.blockages[2]: unknown key 'lifetme', did you 
 ```
 
 Remove the key or correct its spelling. A `pnr.yaml` error stops `rb pnr`. A `cfg-pdks` or `cfg-pnr-platforms` error stops every command that loads `root_config.yaml`. See [YAML formats](reference/yaml.md#pnryaml).
+
+### The routed DEF must keep located macros and exact pins
+
+A run with a located macro or an exact pin compares them with the routed DEF and fails with `fail_stage: routed_check` when one moved; `xfail:` does not excuse it. In v6 nothing compared them, so a run whose `pin-constraints` file or platform hook moved a located macro or an exact pin passed. Remove the conflicting placement or the floorplan entry. See [Check the routed floorplan](concepts/pnr.md#check-the-routed-floorplan).
+
+### Exact pins leave side and group rules
+
+A port with an exact location in `floorplan.pins` is left out of every side or group rule that also matches it. In v6 it stayed in the rule's list: the run failed with `PPL-0107` when the pin lay outside the rule's edge, and otherwise the rule's other pins were placed around it. Such a config now places the rule's other pins differently.
 
 ## Submodule to uv
 
