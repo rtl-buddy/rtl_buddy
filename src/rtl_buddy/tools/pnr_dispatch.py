@@ -772,25 +772,22 @@ class Orphans:
     #: Set when this host has no client for the scheduler.
     no_client: bool = False
 
-    def _clear(self) -> str:
-        dirs = " ".join(jobs_dir(d) for d in self.run_dirs)
-        return f"once they have ended, removing {dirs} lets rb pnr run without them"
-
     def desc(self) -> str:
         runs = ", ".join(os.path.basename(d) for d in self.run_dirs)
         ids = " ".join(self.job_ids)
+        dirs = " ".join(jobs_dir(d) for d in self.run_dirs)
         if self.no_client:
             return failure_desc(
                 f"stage job(s) {ids} of earlier dispatched run(s) {runs} may still "
                 f"be queued or running, and {self.error}; run rb pnr where squeue "
-                f"answers, or {self._clear()}"
+                f"answers, or once they have ended remove {dirs} to run without them"
             )
         if self.error is not None:
             return failure_desc(
                 f"cannot tell whether stage job(s) {ids} of earlier dispatched "
                 f"run(s) {runs} are still queued: {self.error}; run rb pnr again "
-                f"once squeue answers, cancel them with `{self.command}`, or "
-                f"{self._clear()}"
+                f"once squeue answers or cancel them with `{self.command}`; once "
+                f"they have ended, removing {dirs} lets rb pnr run without them"
             )
         return failure_desc(
             f"stage job(s) {ids} of earlier dispatched run(s) {runs} are still "
