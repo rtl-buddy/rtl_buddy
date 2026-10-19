@@ -8,7 +8,6 @@ Reservations resolve field by field (test, testbench, ``cfg-dispatch``), then th
 See docs/concepts/dispatch.md.
 """
 
-import dataclasses
 import difflib
 import logging
 import math
@@ -20,6 +19,7 @@ from serde import field, serde
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from .unknown_keys import serde_keys
 
 logger = logging.getLogger(__name__)
 
@@ -733,13 +733,6 @@ class DispatchConfigFile:
         )
 
 
-def _serde_keys(cls) -> tuple[str, ...]:
-    """The YAML keys a serde class reads: each field's ``rename``, else its name."""
-    return tuple(
-        f.metadata.get("serde_rename", f.name) for f in dataclasses.fields(cls)
-    )
-
-
 # Nested reservation blocks checked by warn_unknown_block_keys: key -> (class, its own nested blocks).
 _VERILATE_BLOCK = {"verilate": (CompileVerilateFile, {})}
 RESOURCES_BLOCK = (DispatchResourcesFile, {})
@@ -770,7 +763,7 @@ def warn_unknown_block_keys(raw, spec, *, path, block) -> list[str]:
     if not isinstance(raw, dict):
         return []
     cls, nested = spec
-    known = _serde_keys(cls)
+    known = serde_keys(cls)
     found = []
     for key in raw:
         if key in known:
