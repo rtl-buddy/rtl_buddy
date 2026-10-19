@@ -41,9 +41,10 @@ DISPATCH_FAIL_STAGE = "dispatch"
 #: End states of a job that ended itself, so its stage's result is the verdict. In any other state (`TIMEOUT`, `OUT_OF_MEMORY`, `CANCELLED`, `NODE_FAIL`, `PREEMPTED`, ...) the scheduler ended the job, as for a lost `rb test` job.
 _SELF_ENDED_STATES = ("COMPLETED", "FAILED")
 
-#: Accounting can trail a job's exit; a failed stage's state is asked for this many times.
-_STATE_ATTEMPTS = 3
+#: Accounting can trail a job's exit; a failed stage's state is asked for this many times while it has none or still reads as queued or running.
+_STATE_ATTEMPTS = 4
 _STATE_RETRY_S = 2.0
+_UNSETTLED_STATES = ("", "PENDING", "RUNNING", "CONFIGURING", "COMPLETING", "REQUEUED")
 
 #: How much of a failed session's stderr a job result keeps.
 _STDERR_KEEP = 8000
@@ -133,14 +134,15 @@ class StageChain:
             self.backend.cancel_all(handles)
 
     def state(self, handle: JobHandle) -> dict:
-        """The scheduler's accounting record of one job, asked again while it has no state yet."""
+        """The scheduler's accounting record of a job that has left the queue, asked again while accounting has no end state for it yet."""
         record: dict = {}
         for attempt in range(_STATE_ATTEMPTS):
             record = (
                 self.backend.collect_telemetry([handle]).get(telemetry_key(handle))
                 or {}
             )
-            if record.get("state") or attempt == _STATE_ATTEMPTS - 1:
+            state = normalise_scheduler_state(record.get("state"))
+            if state not in _UNSETTLED_STATES or attempt == _STATE_ATTEMPTS - 1:
                 break
             time.sleep(_STATE_RETRY_S)
         return record

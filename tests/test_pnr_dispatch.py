@@ -78,6 +78,7 @@ class _FakeSlurm:
         self.jobs: dict[str, dict] = {}
         self.cancelled: list[str] = []
         self.polls = 0
+        self.sacct_calls = 0
         self.on_poll = None
         self.died = died or {}
         self.died_after = died_after or {}
@@ -174,11 +175,17 @@ class _FakeSlurm:
         return self.state_of.get(stage, "COMPLETED" if ok else "FAILED")
 
     def _sacct(self, argv):
+        self.sacct_calls += 1
         ids = argv[argv.index("--jobs") + 1].split(",")
         lines = []
         for job_id in ids:
             job = self.jobs[job_id]
             state = job["state"] or "CANCELLED"
+            lagging = job.get("accounting_lag", 0)
+            if lagging:
+                # Accounting still has the job's last live state.
+                job["accounting_lag"] = lagging - 1
+                state = "RUNNING"
             lines.append(f"{job_id}|{state}|42|60|8|8|4G||")
             lines.append(f"{job_id}.batch|{state}|42||8|8||01:30.000|2048000K")
         return _done(stdout="\n".join(lines) + "\n")
@@ -487,6 +494,28 @@ def test_a_job_that_never_started_its_stage_points_at_its_scheduler_log(
     apply_xfail(res)
     assert res.results["result"] == "FAIL"
     assert res.results["desc"].startswith("xfail not applied (dispatch failure): ")
+
+
+def test_accounting_that_still_reads_running_is_asked_again(tmp_path, monkeypatch):
+    slurm = _FakeSlurm(monkeypatch, died={"cts": "TIMEOUT"})
+    backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+    real_squeue = slurm._squeue
+
+    def _squeue(argv):
+        done = real_squeue(argv)
+        for job in slurm.jobs.values():
+            job.setdefault("accounting_lag", 2)
+        return done
+
+    slurm._squeue = _squeue
+
+    res = backend.run()
+
+    job = next(j for j in slurm.submitted() if _stage_of(j) == "cts")
+    assert res.results["desc"] == (
+        f"stage 03_cts: Slurm job {job['id']} ended TIMEOUT during the stage"
+    )
+    assert slurm.sacct_calls == 3
 
 
 def test_a_job_that_ended_its_stage_without_a_result_says_so(tmp_path, monkeypatch):
