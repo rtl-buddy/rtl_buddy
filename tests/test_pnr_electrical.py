@@ -65,8 +65,8 @@ def test_a_run_without_port_buffers_renders_the_pin_to_placement_step_unchanged(
     text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
     assert "buffer_ports" not in text
     assert (
-        "place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V\n"
-        "rb::global_connect\n\n"
+        "place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V\n\n"
+        "rb::global_connect\n"
         'puts ">>> Global placement"'
     ) in text
 
