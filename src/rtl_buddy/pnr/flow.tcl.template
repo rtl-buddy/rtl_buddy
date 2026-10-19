@@ -37,6 +37,16 @@ set OUT_DIR         {{ out_dir }}
 # the router keeps a pointer to the file name's Tcl string past the command.
 set CONGESTION_RPT  $OUT_DIR/congestion.rpt
 file mkdir $OUT_DIR
+
+# Buffers and fill cells the flow adds after the power grid is built have no
+# supply connections. The rules `add_global_connection` stored in the database
+# cover them; a database without rules (no `pdn-config`) has nothing to apply.
+namespace eval rb {}
+proc rb::global_connect {} {
+  if {[llength [[ord::get_db_block] getGlobalConnects]] > 0} {
+    ::global_connect
+  }
+}
 {{ threads_block }}{{ checkpoint_block }}{{ platform_tcl_block }}{{ hook_procs_block }}
 puts ">>> Reading Liberty + LEF"
 {{ read_liberty }}
@@ -189,6 +199,7 @@ if {[catch {
   report_check_types -max_slew -max_capacitance -max_fanout -violators > $OUT_DIR/electrical.rpt
 } rb_err]} { puts "rb: electrical.rpt unavailable: $rb_err" }
 
+rb::global_connect
 puts ">>> Write outputs"
 write_def     $OUT_DIR/${DESIGN}.def
 write_verilog $OUT_DIR/${DESIGN}.routed.v

@@ -270,7 +270,8 @@ proc rb::ckpt::write_state {path} {
 # reads, so `rb pnr-export --checkpoint` needs no OpenROAD), the SDC, for the
 # stages in `routed` the route guides and global-route segments, and in a
 # staged run the saved globals. Guides alone do not restore the parasitics
-# `estimate_parasitics -global_routing` needs.
+# `estimate_parasitics -global_routing` needs. The supply connections of the
+# cells added since `pdngen` are made first.
 #
 # The `checkpoint` event is written after every file is on disk; a checkpoint
 # without one is incomplete. With `strict` a failed write is an error.
@@ -290,6 +291,7 @@ proc rb::ckpt::write_checkpoint {index stage {strict 0}} {
     puts ">>> Checkpoint ${index}_${stage}"
     emit checkpoint_begin [list stage [json_str $stage] index [json_str $index]]
     if {[catch {
+        rb::global_connect
         file mkdir $dir
         foreach {kind path} $files {
             switch -- $kind {

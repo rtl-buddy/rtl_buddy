@@ -49,12 +49,21 @@ DESIGN = "demo_top"
 # Writers put a recognisable file at the given path (a DEF with its DESIGN statement).
 # `RB_STUB_FAIL=<cmd>` raises an OpenROAD-style error in that command;
 # `RB_STUB_KILL=<cmd>` SIGKILLs the interpreter on entry;
-# `RB_STUB_EXIT=<cmd>` exits 0 on entry, as a flow that ends early by accident.
+# `RB_STUB_EXIT=<cmd>` exits 0 on entry, as a flow that ends early by accident;
+# `RB_STUB_RULES=1` gives the database global-connection rules, so `rb::global_connect`
+# calls `global_connect`. `global_connect` and the database writers log a
+# `stub: ...` line, which orders them in the log.
 _HARNESS = r"""
 # `clock format` loads msgcat through the auto-loader, which the catch-all
 # `unknown` below would swallow; load it first.
 clock format [clock seconds]
-proc unknown {args} { return "" }
+proc unknown {args} {
+    global env
+    if {[lindex $args 1] eq "getGlobalConnects" && [info exists env(RB_STUB_RULES)]} {
+        return rule
+    }
+    return ""
+}
 namespace eval ord {}
 proc ord::microns_to_dbu {x} { return [expr {int($x * 1000)}] }
 proc rb_stub {name args} {
@@ -85,8 +94,13 @@ proc rb_write {path text} {
     puts $fh $text
     close $fh
 }
-proc write_def {path} { global DESIGN; rb_write $path "DESIGN $DESIGN ;\nEND DESIGN" }
-proc write_db {path} { rb_write $path "odb" }
+proc global_connect {} { puts "stub: global_connect" }
+proc write_def {path} {
+    global DESIGN
+    puts "stub: write_def [file tail $path]"
+    rb_write $path "DESIGN $DESIGN ;\nEND DESIGN"
+}
+proc write_db {path} { puts "stub: write_db [file tail $path]"; rb_write $path "odb" }
 proc write_sdc {args} { rb_write [lindex $args end] "sdc" }
 proc write_verilog {path} { rb_write $path "module m(); endmodule" }
 proc write_guides {path} { rb_write $path "guides" }
@@ -358,7 +372,7 @@ def _render(tmp_path, checkpoints):
 def test_flow_without_checkpoints_renders_the_template_unchanged(tmp_path):
     """Without `checkpoints:` the flow is byte-identical to the template render."""
     text = _render(tmp_path, None).read_text()
-    assert 'file mkdir $OUT_DIR\n\nputs ">>> Reading Liberty + LEF"' in text
+    assert '}\n\nputs ">>> Reading Liberty + LEF"' in text
     assert "rb::ckpt" not in text
     assert "progress.jsonl" not in text
     assert "trace add" not in text
