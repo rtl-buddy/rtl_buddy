@@ -154,6 +154,8 @@ puts ">>> Global route"
 {{ layer_adjustment }}{{ @/layers }}global_route -congestion_iterations 20 -congestion_report_file $CONGESTION_RPT -verbose
 {{ hook_after_global_route_block }}{{ global_route_hold_repair }}rb::global_connect
 {{ @detailed_route }}{{ hook_before_detailed_route_block }}
+# Again for cells a before-detailed-route hook added.
+rb::global_connect
 puts ">>> Detail route"
 detailed_route \
     -output_drc  $OUT_DIR/route.drc.rpt \
