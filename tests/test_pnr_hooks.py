@@ -437,8 +437,22 @@ def test_an_error_names_the_point_and_path_and_keeps_errorinfo(tmp_path):
     assert "CODE 1" in out
     assert f"MSG Hook after-cts ({hook}): boom" in out
     info = out[out.index("INFO ") + len("INFO ") :]
-    assert info.startswith("boom\n")
+    # OpenROAD prints errorInfo, so its first line carries the prefix and the trace follows.
+    assert info.startswith(f"Hook after-cts ({hook}): boom\n")
     assert f'(file "{hook}" line 2)' in info
+
+
+def test_a_multi_line_error_keeps_every_line_under_the_prefix(tmp_path):
+    hook = _write(tmp_path / "bad.tcl", 'error "first line\nsecond line"\n')
+    done = _tcl_run(
+        tmp_path,
+        _HOOKS_TCL + f"catch {{rb::hook::run after-pins {_q(hook)}}} msg opts\n"
+        'puts "INFO [dict get $opts -errorinfo]"\n',
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.startswith(
+        f"INFO Hook after-pins ({hook}): first line\nsecond line\n    while executing"
+    )
 
 
 def test_hook_events_need_no_checkpoints(tmp_path):
@@ -716,6 +730,11 @@ def test_a_missing_hook_file_fails_at_setup_before_openroad(tmp_path, monkeypatc
         "after-cts",
         1,
         str(missing),
+    )
+    from rtl_buddy.logging_utils import _human_message
+
+    assert _human_message("pnr.run_hook_missing", fields) == (
+        f'P&R "demo_pnr": hooks.after-cts[1] not found: {missing}'
     )
 
 
