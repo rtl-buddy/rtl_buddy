@@ -2113,9 +2113,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{_format_elapsed(fields.get('elapsed_s'))} elapsed"
             )
         case "pnr.stage_jobs_drained":
+            jobs = fields.get("jobs")
             return (
-                f'P&R "{fields.get("pnr")}": all {fields.get("jobs")} stage jobs '
-                f"have left the queue ({_format_elapsed(fields.get('elapsed_s'))})"
+                f'P&R "{fields.get("pnr")}": '
+                + ("its stage job has" if jobs == 1 else f"all {jobs} stage jobs have")
+                + f" left the queue ({_format_elapsed(fields.get('elapsed_s'))})"
             )
         case "pnr.stage_job_failed":
             state = fields.get("state")

@@ -8,6 +8,7 @@ did not complete is reaped, as `--kill-on-invalid-dep=yes` makes Slurm do.
 """
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -34,6 +35,7 @@ from rtl_buddy.dispatch.argv import pnr_stage_job_argv
 from rtl_buddy.dispatch.base import JobHandle, PnrStageJobSpec, SubmissionAbandoned
 from rtl_buddy.dispatch.slurm import SlurmDispatchBackend
 from rtl_buddy.errors import FatalRtlBuddyError
+from rtl_buddy import logging_utils
 from rtl_buddy.runner.xfail import apply_xfail
 from rtl_buddy.tools import pnr_checkpoints, pnr_dispatch, pnr_openroad
 
@@ -1263,6 +1265,9 @@ def test_the_console_names_each_job_and_the_run(tmp_path, monkeypatch, caplog):
         monkeypatch,
         resources=PnrResources(base=DispatchResourcesFile(cpus=1)),
     )
+    # The console's first line would set logging up and drop caplog's handler.
+    logging_utils.setup_logging(color=False)
+    logging.getLogger().addHandler(caplog.handler)
     with caplog.at_level("INFO"):
         assert backend.run().results["result"] == "PASS"
 
@@ -1280,6 +1285,9 @@ def test_the_console_names_each_job_and_the_run(tmp_path, monkeypatch, caplog):
     assert drained.getMessage().startswith(
         'P&R "demo_pnr": all 6 stage jobs have left the queue'
     )
+    assert logging_utils._human_message(
+        "pnr.stage_jobs_drained", {"pnr": "demo_pnr", "jobs": 1, "elapsed_s": 20}
+    ) == ('P&R "demo_pnr": its stage job has left the queue (20s)')
 
 
 def _guard_backend(tmp_path, monkeypatch, sbatch_body):
