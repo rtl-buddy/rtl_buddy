@@ -18,7 +18,11 @@ import math
 import os
 import re
 import shlex
+import shutil
+import signal
 import subprocess
+import tempfile
+import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -42,12 +46,52 @@ from .base import (
     JobHandle,
     PnrStageJobSpec,
     RunnableJobSpec,
+    SubmissionAbandoned,
     TestJobSpec,
     telemetry_key,
 )
 from .progress import DispatchProgress, group_job_ids
 
 logger = logging.getLogger(__name__)
+
+#: Runs a P&R stage job's `sbatch` in a session of its own, so the terminal's Ctrl-C never kills it halfway, and leaves its answer in `$1` (stderr in `$1.err`). When the head has given the submission up, which it marks by creating `$2`, the script cancels the job sbatch accepted. The head marks before it looks for the answer, and the script writes the answer before it looks for the mark, so one of them always sees the other.
+_GUARDED_SBATCH = r"""
+answer=$1 marker=$2 cluster=$3
+shift 3
+"$@" >"$answer.tmp" 2>"$answer.err"
+rc=$?
+mv -f "$answer.tmp" "$answer"
+if [ -e "$marker" ]; then
+    line=
+    IFS= read -r line <"$answer" || true
+    line=$(printf '%s' "$line" | tr -d '[:space:]')
+    id=${line%%;*}
+    case $line in *";"*) cluster=${line#*;} ;; esac
+    if [ -n "$id" ]; then
+        if [ -n "$cluster" ]; then scancel -M "$cluster" "$id"; else scancel "$id"; fi
+    fi
+fi
+exit $rc
+"""
+
+#: How often a waiting P&R submission checks whether it has been given up.
+_SUBMIT_POLL_S = 0.2
+
+_HELD_SIGNALS = {signal.SIGINT, signal.SIGTERM, signal.SIGHUP}
+
+
+def _hold_signals():
+    """Block SIGINT, SIGTERM and SIGHUP in the main thread; return the mask to restore, or None."""
+    if threading.current_thread() is not threading.main_thread() or not hasattr(
+        signal, "pthread_sigmask"
+    ):
+        return None
+    return signal.pthread_sigmask(signal.SIG_BLOCK, _HELD_SIGNALS)
+
+
+def _release_signals(previous) -> None:
+    if previous is not None:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
 def _runnable_job_argv(spec: RunnableJobSpec) -> list[str]:
@@ -1062,9 +1106,17 @@ class SlurmDispatchBackend(DispatchBackend):
         return JobHandle(job_id=job_id, spec=spec, cluster=cluster)
 
     def submit_pnr_stage(
-        self, spec: PnrStageJobSpec, *, dependency: str | None = None
+        self,
+        spec: PnrStageJobSpec,
+        *,
+        dependency: str | None = None,
+        abandon=None,
     ) -> JobHandle:
         """Submit one P&R stage job, chained behind the previous stage's job.
+
+        ``sbatch`` runs through ``_GUARDED_SBATCH`` (see :meth:`_guarded_sbatch`), so an
+        interrupt, or ``abandon`` returning true, gives the submission up at once, and
+        a job sbatch has accepted or accepts later is cancelled.
 
         The chain's ``afterok`` goes after ``sbatch-args``, because Slurm takes the last
         ``--dependency``: a dependency there or in ``SBATCH_DEPENDENCY`` holds the first
@@ -1086,13 +1138,15 @@ class SlurmDispatchBackend(DispatchBackend):
         if gate is not None:
             cmd.append(gate)
         cmd += ["--wrap", shlex.join(pnr_stage_job_argv(spec))]
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=spec.suite_dir)
-        if proc.returncode != 0:
+        returncode, stdout, stderr = self._guarded_sbatch(
+            cmd, spec=spec, abandon=abandon
+        )
+        if returncode != 0:
             raise FatalRtlBuddyError(
-                f"sbatch failed for {spec.display_name()} (rc={proc.returncode}): "
-                f"{proc.stderr.strip()}"
+                f"sbatch failed for {spec.display_name()} (rc={returncode}): "
+                f"{stderr.strip()}"
             )
-        job_id, cluster = self._accepted_on(proc.stdout)
+        job_id, cluster = self._accepted_on(stdout)
         if not job_id:
             raise FatalRtlBuddyError(
                 f"sbatch returned no job id for {spec.display_name()}"
@@ -1112,6 +1166,107 @@ class SlurmDispatchBackend(DispatchBackend):
             cluster=cluster,
         )
         return JobHandle(job_id=job_id, spec=spec, cluster=cluster)
+
+    def _guarded_sbatch(
+        self, cmd: list[str], *, spec: PnrStageJobSpec, abandon
+    ) -> tuple[int, str, str]:
+        """Run ``cmd`` (an sbatch argv) through ``_GUARDED_SBATCH`` and return its exit code, stdout and stderr.
+
+        The answer goes to ``spec.submission_path``, or a temporary directory. While
+        sbatch runs, ``abandon`` is polled; once it returns true, or an exception
+        reaches this call, the submission is marked given up: a job sbatch already
+        accepted is cancelled here and one it accepts later by the script, and
+        :class:`SubmissionAbandoned` (or the exception) is raised. The mark needs no
+        process handle, so an exception that lands while the script starts still
+        reaches the job.
+        """
+        scratch = None
+        if spec.submission_path is None:
+            scratch = tempfile.mkdtemp(prefix="rb-sbatch-")
+            answer = Path(scratch, "sbatch")
+        else:
+            answer = Path(spec.submission_path)
+        marker = Path(f"{answer}.cancel")
+        error = Path(f"{answer}.err")
+        for stale in (answer, marker, error, Path(f"{answer}.tmp")):
+            stale.unlink(missing_ok=True)
+        guard = [
+            "/bin/sh",
+            "-c",
+            _GUARDED_SBATCH,
+            "rb-sbatch",
+            str(answer),
+            str(marker),
+            self.cluster or "",
+            *cmd,
+        ]
+        try:
+            proc = subprocess.Popen(
+                guard,
+                cwd=spec.suite_dir,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            while True:
+                try:
+                    returncode = proc.wait(timeout=_SUBMIT_POLL_S)
+                    break
+                except subprocess.TimeoutExpired:
+                    if abandon is not None and abandon():
+                        raise SubmissionAbandoned(
+                            f"submission of {spec.display_name()} given up"
+                        ) from None
+        except BaseException:
+            self._abandon_submission(spec, answer, marker)
+            raise
+        stdout = answer.read_text(errors="replace") if answer.exists() else ""
+        stderr = error.read_text(errors="replace") if error.exists() else ""
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
+        elif not stderr.strip():
+            error.unlink(missing_ok=True)
+        return returncode, stdout, stderr
+
+    def _abandon_submission(
+        self, spec: PnrStageJobSpec, answer: Path, marker: Path
+    ) -> None:
+        """Mark a submission given up and cancel the job sbatch already accepted, if any; `_GUARDED_SBATCH` cancels one it accepts later."""
+        held = _hold_signals()
+        try:
+            marker.touch()
+            job_id, cluster = (
+                self._accepted_on(answer.read_text(errors="replace"))
+                if answer.exists()
+                else ("", None)
+            )
+            if job_id:
+                self.cancel_all([JobHandle(job_id=job_id, spec=spec, cluster=cluster)])
+            log_event(
+                logger,
+                logging.WARNING,
+                "dispatch.pnr_stage_submission_abandoned",
+                backend=self.name,
+                pnr=spec.run_name,
+                stage=spec.stage,
+                job_id=job_id or None,
+                cluster=cluster,
+                answer=str(answer),
+            )
+        except OSError as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "dispatch.pnr_stage_submission_abandoned",
+                backend=self.name,
+                pnr=spec.run_name,
+                stage=spec.stage,
+                answer=str(answer),
+                error=str(e),
+            )
+        finally:
+            _release_signals(held)
 
     def _cluster_selection(self) -> str | None:
         """Cluster selection as written, or ``None`` for the local cluster.
@@ -1798,13 +1953,40 @@ class SlurmDispatchBackend(DispatchBackend):
                 live.update(_expand_squeue_id(record["id"], ids_here))
         return live
 
-    def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
+    def queue_states(
+        self, handles: Sequence[JobHandle | None]
+    ) -> dict[str, str] | None:
+        """One poll of these jobs, as ``wait_all`` makes it: ``{telemetry key: "pending"
+        or "running"}`` for each job still queued, or ``None`` when a cluster's poll
+        failed. Jobs pending on a dependency that can never be met are cancelled.
+        """
+        if not any(h is not None for h in handles):
+            return {}
+        cwd = self._cwd_of(handles)
+        states: dict[str, str] = {}
+        for cluster, base_ids in self._base_ids_by_cluster(handles).items():
+            lines, status = self._poll_queue(base_ids, cluster=cluster, cwd=cwd)
+            if status == "drained":
+                continue
+            if status == "unknown":
+                return None
+            records = self._reap_never_satisfied(lines, cwd=cwd, cluster=cluster)
+            cluster_states, _ = self._outstanding(records, handles, cluster=cluster)
+            states.update(cluster_states)
+        return states
+
+    def cancel_all(self, handles: Sequence[JobHandle | None]) -> bool:
+        """``scancel`` these jobs; return whether every ``scancel`` exited 0.
+
+        ``scancel`` exits 0 for a job that has already ended, so ``False`` means the
+        controller refused or could not be reached.
+        """
         if not handles:
-            return
+            return True
         # Base ids: cancelling an array id cancels every element. One command per
         # cluster, since an id means something only on the cluster that issued it.
         by_cluster = self._base_ids_by_cluster(handles)
-        self._scancel(by_cluster, cwd=self._cwd_of(handles))
+        results = self._scancel(by_cluster, cwd=self._cwd_of(handles))
         log_event(
             logger,
             logging.WARNING,
@@ -1817,6 +1999,7 @@ class SlurmDispatchBackend(DispatchBackend):
             # afterwards.
             job_ids=group_job_ids(h.job_id for h in handles if h is not None),
         )
+        return all(proc.returncode == 0 for _, _, proc in results)
 
     def build_outcome(self, handle: JobHandle) -> str | None:
         """The build job's scheduler state, or ``None`` without accounting.

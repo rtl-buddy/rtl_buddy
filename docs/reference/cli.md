@@ -735,8 +735,8 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 │                                               resources: block over                  │
 │                                               cfg-dispatch.resources; implies        │
 │                                               stages: true. Blocks until the last    │
-│                                               stage ends; Ctrl-C or SIGTERM cancels  │
-│                                               the jobs. local runs here              │
+│                                               stage ends; Ctrl-C, SIGTERM or SIGHUP  │
+│                                               cancels the jobs. local runs here      │
 │                                               [default: (local)]                     │
 │ --help                                        Show this message and exit.            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯

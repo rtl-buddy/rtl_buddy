@@ -277,6 +277,9 @@ def _format_duration(duration: Any) -> str | None:
         return str(duration)
 
 
+_BACKEND_NAMES = {"slurm": "Slurm"}
+
+
 def _format_elapsed(seconds: Any) -> str:
     """Compact wall-clock duration: ``45s`` / ``12m34s`` / ``1h02m03s``."""
     try:
@@ -2080,6 +2083,73 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"({fields.get('path')}) defined, renamed or deleted the Tcl "
                 f"command(s) {shown}, which "
                 "later stage sessions do not have; move it to a session hook"
+            )
+        case "pnr.stage_job_submitted":
+            after = fields.get("dependency")
+            return (
+                f'P&R "{fields.get("pnr")}": stage {fields.get("stage")} is '
+                f"{_BACKEND_NAMES.get(fields.get('backend'), fields.get('backend'))} "
+                f"job {fields.get('job_id')}"
+                + (f", held until job {after} succeeds" if after else "")
+            )
+        case "pnr.stage_job_waiting":
+            return (
+                f'P&R "{fields.get("pnr")}": stage {fields.get("stage")} '
+                f"(job {fields.get('job_id')}) {fields.get('state')}, "
+                f"{fields.get('stages_left')} stage job(s) left, "
+                f"{_format_elapsed(fields.get('elapsed_s'))} elapsed"
+            )
+        case "pnr.stage_jobs_drained":
+            return (
+                f'P&R "{fields.get("pnr")}": all {fields.get("jobs")} stage jobs '
+                f"have left the queue ({_format_elapsed(fields.get('elapsed_s'))})"
+            )
+        case "pnr.stage_job_failed":
+            state = fields.get("state")
+            return (
+                f"P&R stage {fields.get('stage')}: job {fields.get('job_id')} "
+                + (f"ended {state}" if state else "ended")
+                + ("" if fields.get("started") else " without finishing its stage")
+                + f"; its output is in {fields.get('log')}"
+            )
+        case "pnr.stage_job_refused":
+            return (
+                f"P&R stage job refused stage {fields.get('stage')} of "
+                f"{fields.get('run_dir')}: {fields.get('reason')}"
+            )
+        case "pnr.stage_job_threads_unset":
+            return (
+                f"P&R stage job could not set {fields.get('threads')} thread(s) in "
+                f"the script of stage {fields.get('stage')} "
+                f"({fields.get('error')}); it runs at the head's count"
+            )
+        case "pnr.stage_jobs_survived_cancel":
+            ids = " ".join(map(str, fields.get("job_ids") or []))
+            return (
+                f'P&R "{fields.get("pnr")}": stage job(s) {ids} are still queued '
+                "after rb cancelled them; the next rb pnr of this configuration "
+                f"waits for them; cancel them with `{fields.get('command')}`"
+            )
+        case "pnr.stage_jobs_orphaned":
+            ids = " ".join(map(str, fields.get("job_ids") or []))
+            if fields.get("error"):
+                return (
+                    f"P&R: cannot tell whether stage job(s) {ids} of an earlier "
+                    f"dispatched run in {fields.get('artefact_dir')} are still "
+                    f"queued ({fields.get('error')}); not starting"
+                )
+            return (
+                f"P&R: stage job(s) {ids} of an earlier dispatched run in "
+                f"{fields.get('artefact_dir')} are still queued or running; not "
+                f"starting; cancel them with `{fields.get('command')}`"
+            )
+        case "dispatch.pnr_stage_submission_abandoned":
+            job = fields.get("job_id")
+            return (
+                f"dispatch: gave up submitting stage {fields.get('stage')} of P&R "
+                f'"{fields.get("pnr")}"'
+                + (f"; cancelled job {job}, which it had accepted" if job else "")
+                + (f" ({fields.get('error')})" if fields.get("error") else "")
             )
         case "pnr.stopped":
             return (

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config.dispatch import JobResources
+from ..errors import FatalRtlBuddyError
 from ..seed_mode import SeedMode
 
 
@@ -177,6 +178,8 @@ class PnrStageJobSpec:
     ``root_config.yaml`` is found from. The job runs stage ``stage`` of the checkpoint run
     directory ``run_dir`` with the ``openroad`` the head resolved, appending its output to
     ``pnr_log``. Every path is absolute, on storage shared with the head.
+    ``submission_path`` is where the submission leaves the scheduler's answer (see
+    :meth:`DispatchBackend.submit_pnr_stage`); ``None`` uses a temporary directory.
     """
 
     suite_dir: str
@@ -187,9 +190,14 @@ class PnrStageJobSpec:
     pnr_log: str
     resources: JobResources = field(default_factory=JobResources)
     log_path: Path | None = None
+    submission_path: Path | None = None
 
     def display_name(self) -> str:
         return f"pnr:{self.run_name}:{self.stage}"
+
+
+class SubmissionAbandoned(FatalRtlBuddyError):
+    """A submission given up before the scheduler answered; any job it submits is cancelled."""
 
 
 @dataclass
@@ -298,16 +306,31 @@ class DispatchBackend(ABC):
         )
 
     def submit_pnr_stage(
-        self, spec: PnrStageJobSpec, *, dependency: str | None = None
+        self,
+        spec: PnrStageJobSpec,
+        *,
+        dependency: str | None = None,
+        abandon=None,
     ) -> JobHandle:
-        """Submit one P&R stage job; return its handle without waiting.
+        """Submit one P&R stage job; return its handle without waiting for the job.
 
         ``dependency`` is the previous stage's job id, which must succeed first; a
-        failed predecessor removes this job.
+        failed predecessor removes this job. ``abandon`` is polled while the scheduler
+        has not answered; once it returns true, or an exception such as an interrupt
+        reaches the call, the submission is given up (:class:`SubmissionAbandoned`)
+        and any job it goes on to submit is cancelled.
         """
         raise NotImplementedError(
             f"the {self.name} backend does not run P&R stages as jobs"
         )
+
+    def queue_states(
+        self, handles: Sequence[JobHandle | None]
+    ) -> dict[str, str] | None:
+        """The jobs of ``handles`` still queued, as ``{telemetry key: "pending" or
+        "running"}``, or ``None`` when the queue could not be read.
+        """
+        raise NotImplementedError(f"the {self.name} backend has no queue to read")
 
     def advance(self) -> None:
         """Let a self-executing backend make progress without blocking.
@@ -336,11 +359,12 @@ class DispatchBackend(ABC):
         return set()
 
     @abstractmethod
-    def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
+    def cancel_all(self, handles: Sequence[JobHandle | None]) -> bool | None:
         """Best-effort cancellation of all outstanding jobs.
 
         Tolerates ``None`` entries, such as the absent build handle of a
-        zero-test suite.
+        zero-test suite. A scheduler-backed override returns whether the scheduler
+        took every request, so a caller can retry one it refused.
         """
 
     # The scheduler arguments this backend appends to every submission. Right-sizing

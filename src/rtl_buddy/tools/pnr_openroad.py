@@ -1197,6 +1197,8 @@ class OpenRoadPnr:
         self._dispatch = dispatch
         # Why submitting or waiting on the stage jobs failed; the scheduler's account of a failed stage job.
         self._dispatch_failure: str | None = None
+        # The run's FAIL once rb gave the stage jobs up (an interrupt, `max-wait`, a failed submission).
+        self._dispatch_results: PnrFailResults | None = None
         self._dispatch_reason: str | None = None
         # The failed stage job's first stderr line, which the job keeps whole.
         self._dispatch_first_line: str | None = None
@@ -3318,14 +3320,14 @@ class OpenRoadPnr:
     def _dispatch_chain(self) -> tuple[int | None, str, str | None]:
         """Run a staged run's stages as one chained job each and return what `_run_chain` returns.
 
-        Every stage script is already written, so the jobs run the configuration as it was at submission. The head blocks until the chain has left the queue; an exception, including an interrupt, cancels the jobs it submitted. A submission or wait that fails sets `_dispatch_failure`.
+        Every stage script is already written, so the jobs run the configuration as it was at submission. The head blocks until the chain has left the queue. When rb gives the jobs up (an interrupt, `max-wait`, a failed submission or wait), they are cancelled and the run is finished here (`_dispatch_results`); an interrupt is then raised again.
         """
         run_dir = self._ckpt_run_dir
         log_path = self._log_path()
         self._start_chain_log(log_path)
         os.makedirs(pnr_dispatch.jobs_dir(run_dir), exist_ok=True)
         openroad = shutil.which(self.openroad_executable) or self.openroad_executable
-        chain = pnr_dispatch.StageChain(self._dispatch)
+        chain = pnr_dispatch.StageChain(self._dispatch, run=self.pnr_cfg.get_name())
         try:
             with chain:
                 for stage in self._run_stages():
@@ -3341,13 +3343,28 @@ class OpenRoadPnr:
                             log_path=Path(
                                 pnr_dispatch.job_file(run_dir, stage, "slurm.log")
                             ),
+                            submission_path=Path(
+                                pnr_dispatch.job_file(run_dir, stage, "sbatch")
+                            ),
                         )
                     )
                     pnr_dispatch.record_jobs(run_dir, chain)
                 chain.wait()
-        except FatalRtlBuddyError as e:
-            self._dispatch_failure = pnr_dispatch.failure_desc(e)
+        except (FatalRtlBuddyError, KeyboardInterrupt, SystemExit) as e:
+            # A repeated signal ends the wait for the cancelled jobs early, and is raised once the run is finished.
+            with pnr_dispatch.signals_deferred(block=False):
+                self._dispatch_failure = pnr_dispatch.settle_cancelled_chain(
+                    run_dir, chain, log_path=log_path, error=e
+                )
+                self._openroad_returncode = None
+                self._dispatch_results = self._fail_after_openroad(
+                    self._dispatch_failure,
+                    fail_stage=pnr_dispatch.DISPATCH_FAIL_STAGE,
+                )
+            if not isinstance(e, FatalRtlBuddyError):
+                raise
             return None, "", None
+        pnr_dispatch.record_jobs(run_dir, chain, drained=True)
         outcome = pnr_dispatch.chain_outcome(run_dir, chain, log_path=log_path)
         if outcome.failed_stage is not None:
             self._failed_stage = _checkpoint_name(outcome.failed_stage)
@@ -3355,6 +3372,14 @@ class OpenRoadPnr:
             self._dispatch_reason = outcome.reason
             self._dispatch_first_line = outcome.stderr_first_line
         return outcome.returncode, outcome.stderr, outcome.problem
+
+    def _queue_backend(self):
+        """The backend that looks up an earlier dispatched run's jobs: this run's, or Slurm's."""
+        if self._dispatch is not None:
+            return self._dispatch
+        from ..dispatch.slurm import SlurmDispatchBackend
+
+        return SlurmDispatchBackend(self.root_cfg.get_dispatch_cfg())
 
     def _warn_hook_commands(self) -> None:
         """Warn about each hook of this staged run that changed global Tcl commands, which later stage sessions do not have."""
@@ -3485,6 +3510,16 @@ class OpenRoadPnr:
             if self.resume is not None and option_error is None
             else None
         )
+
+        if option_error is None:
+            # Before anything is cleared: a job of an earlier run would write into this one.
+            orphans = pnr_dispatch.live_orphans(self.artefact_dir, self._queue_backend)
+            if orphans is not None:
+                return PnrFailResults(
+                    name=self.name + "/results",
+                    desc=orphans.desc(),
+                    fail_stage=pnr_dispatch.DISPATCH_FAIL_STAGE,
+                )
 
         # A resume clears only once it is accepted, so a refused one leaves the previous run as it was.
         if self.resume is None:
@@ -3884,11 +3919,9 @@ class OpenRoadPnr:
                         log_file.write(stderr_text + "\n")
                 except OSError:
                     pass
+        if self._dispatch_results is not None:
+            return self._dispatch_results
         self._openroad_returncode = returncode
-        if self._dispatch_failure is not None:
-            return self._fail_after_openroad(
-                self._dispatch_failure, fail_stage=pnr_dispatch.DISPATCH_FAIL_STAGE
-            )
 
         try:
             log_text = Path(log_path).read_text()

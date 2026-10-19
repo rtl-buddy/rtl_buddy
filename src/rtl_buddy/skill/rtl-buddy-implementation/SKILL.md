@@ -38,7 +38,9 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   checkpoint is never routed or final: report it as its stage, as for a
   `--stop-after` `PASS` (`routed: false`). `--resume <run> --from <stage>`
   retries later stages of a staged run; `--dispatch slurm` runs each stage
-  as a Slurm job.
+  as a Slurm job. A run refused with `fail_stage: dispatch` that names the
+  stage jobs of an earlier dispatched run waits for them: let them end or run
+  the `scancel` command it prints.
 - **Run hooks.** Extra steps go in `hooks:` of the `pnr.yaml` run: Tcl files
   sourced at fixed flow points (`session`, `after-cts`, `macro-placement`, ...),
   never in an edited `pnr.tcl`. A failing hook names its point and file. Staged:

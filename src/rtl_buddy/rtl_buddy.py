@@ -11445,8 +11445,8 @@ class RtlBuddy:
                     "slurm: run each stage as its own job, each held until the "
                     "one before succeeds, sized by the run's resources: block "
                     "over cfg-dispatch.resources; implies stages: true. Blocks "
-                    "until the last stage ends; Ctrl-C or SIGTERM cancels the "
-                    "jobs. local runs here"
+                    "until the last stage ends; Ctrl-C, SIGTERM or SIGHUP "
+                    "cancels the jobs. local runs here"
                 ),
                 show_default="local",
             ),
