@@ -498,6 +498,29 @@ def test_exit_in_a_hook_is_an_error_and_exit_is_restored(tmp_path):
     ]
 
 
+def test_custom_error_info_still_leads_with_the_prefix(tmp_path):
+    hook = _write(tmp_path / "custom.tcl", 'error boom "detail line"\n')
+    done = _tcl_run(
+        tmp_path,
+        _HOOKS_TCL + f"catch {{rb::hook::run after-cts {_q(hook)}}} msg opts\n"
+        'puts "INFO [dict get $opts -errorinfo]"\n',
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.startswith(f"INFO Hook after-cts ({hook}): boom\ndetail line")
+
+
+def test_a_run_killed_in_a_hook_command_names_the_hook():
+    from rtl_buddy.tools.pnr_checkpoints import last_step
+
+    events = [
+        {"event": "step_begin", "step": "place_pins"},
+        {"event": "step_end", "step": "place_pins", "status": "ok"},
+        {"event": "hook_begin", "point": "after-pins"},
+        {"event": "step_begin", "step": "global_placement"},
+    ]
+    assert last_step(events) == {"step": "hook after-pins", "status": "running"}
+
+
 def test_an_empty_error_still_leads_errorinfo_with_the_prefix(tmp_path):
     hook = _write(tmp_path / "empty.tcl", 'error ""\n')
     done = _tcl_run(
