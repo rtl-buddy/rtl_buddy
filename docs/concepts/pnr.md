@@ -253,7 +253,7 @@ runs:
 | `before-detailed-route` | Immediately before `detailed_route` |
 | `before-reports` | After fill insertion and parasitic extraction, before the final reports |
 
-- The files of a point are sourced in list order at Tcl global scope, so the flow's variables, such as `$OUT_DIR`, `$DESIGN`, `$block` and `$macros`, are visible to them and a variable one file sets is still set in the next. `pnr.log` announces each file as `>>> Hook <point>: <path>`.
+- The files of a point are sourced in list order at Tcl global scope, so the flow's variables are visible to them: `$OUT_DIR` and `$DESIGN` throughout, `$block` and `$macros` from macro placement on. A variable one file sets is still set in the next. `pnr.log` announces each file as `>>> Hook <point>: <path>`.
 - `session` is for state the saved database does not keep, such as wire RC and extra `set_dont_use` cells. A hook that adds don't-use cells extends rb's list.
 - `macro-placement` runs inside the flow's macro branch, so it does not run when the netlist has no macros. The [`floorplan.macros`](#place-individual-macros) directives still apply before it, with the macros left to place in `$rb_movable_macros`, and the cell-halo blockages around every macro are still created after it. `floorplan.macro-placement` and `floorplan.macro-anchor` do not apply while the hook is set.
 - `after-pdn` runs whether or not the run has a pdn-config.
