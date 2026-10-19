@@ -68,6 +68,8 @@ proc rb::hook::run {point path} {
     set info [dict get $options -errorinfo]
     if {$message eq "" || [string first $message $info] == 0} {
         set info "$prefixed[string range $info [string length $message] end]"
+    } else {
+        set info "$prefixed\n$info"
     }
     dict set options -errorinfo $info
     return -options $options $prefixed
