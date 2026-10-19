@@ -252,6 +252,10 @@ A staged run runs the same flow commands as a one-session run of the same config
 
 Compare a staged run with a one-session run at the same `threads:` before relying on it to reproduce one. See [Run stages as separate sessions](concepts/pnr.md#run-stages-as-separate-sessions).
 
+## An unconfirmed dispatched P&R run blocks later runs
+
+A later `rb pnr` of a configuration refuses to start while an earlier [dispatched](concepts/pnr.md#dispatch-the-stages-to-slurm) run's stage jobs may still be queued and it cannot confirm they have left: while `squeue` does not answer, and on a host without `squeue` while that run's `dispatch/` record changed within the total `time` its jobs asked for. On such a host a record older than that only warns, though a job can wait in the queue for any time before it starts. Run `rb pnr` where `squeue` answers, or, once the jobs have ended, remove the `checkpoints/<run id>/dispatch/` directory the refusal names.
+
 ## `rb phys module` reports no power for an RTL module
 
 The physical model's synthesis half holds RTL module names and its power half holds the Liberty cell of each leaf instance, so `rb phys module u_cpu` reports cell count and area with no instances and no power. Use `rb phys instance u_cpu`, which sums the leaf rows under the instance path. See [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer).
