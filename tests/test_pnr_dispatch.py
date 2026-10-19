@@ -399,6 +399,24 @@ def test_the_result_is_the_same_as_the_run_staged_locally(tmp_path, monkeypatch,
         }
 
 
+def test_the_description_keeps_the_first_stderr_line_the_job_cut(tmp_path, monkeypatch):
+    env = {"RB_STUB_FAIL": "global_route"}
+    local_root, dispatched_root = tmp_path / "local", tmp_path / "dispatched"
+    local_root.mkdir()
+    dispatched_root.mkdir()
+    local, _ = _backend(local_root, monkeypatch, stages=True, env=env)
+    expected = local.run().results["desc"]
+    monkeypatch.setattr(pnr_dispatch, "_STDERR_KEEP", 12)
+    dispatched, artefacts, _ = _dispatched(dispatched_root, monkeypatch, env=env)
+
+    got = dispatched.run().results["desc"]
+
+    result = pnr_dispatch.read_result(str(_only_run(artefacts)), "global_route")
+    assert "STUB-0001" not in result["stderr"]
+    assert "STUB-0001" in expected
+    assert got.startswith(expected + " (Slurm job ")
+
+
 def test_a_failed_middle_stage_fails_the_run_and_reaps_the_rest(tmp_path, monkeypatch):
     backend, artefacts, slurm = _dispatched(
         tmp_path, monkeypatch, env={"RB_STUB_FAIL": "global_route"}

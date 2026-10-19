@@ -229,6 +229,10 @@ def read_result(run_dir: str, stage: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _first_line(text: str) -> str:
+    return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+
+
 def _write_result(run_dir: str, stage: str, **fields) -> None:
     path = job_file(run_dir, stage, "result.json")
     Path(path + ".tmp").write_text(json.dumps({"stage": stage, **fields}) + "\n")
@@ -306,6 +310,7 @@ def run_stage_job(run_dir: str, stage: str, *, openroad: str, pnr_log: str) -> b
         started=True,
         returncode=outcome.returncode,
         stderr=outcome.stderr[-_STDERR_KEEP:],
+        stderr_first_line=_first_line(outcome.stderr),
         problem=outcome.problem,
         fail_stage=outcome.fail_stage,
         errors=outcome.errors,
@@ -320,6 +325,8 @@ class ChainOutcome:
 
     returncode: int | None = 0
     stderr: str = ""
+    #: The session's first non-empty stderr line, kept whole however much of `stderr` the job kept.
+    stderr_first_line: str = ""
     problem: str | None = None
     failed_stage: str | None = None
     fail_stage: str | None = None
@@ -386,6 +393,9 @@ def chain_outcome(run_dir: str, chain: StageChain, *, log_path: str) -> ChainOut
         if result is not None and result.get("started"):
             outcome.returncode = result.get("returncode")
             outcome.stderr = result.get("stderr") or ""
+            outcome.stderr_first_line = result.get(
+                "stderr_first_line", _first_line(outcome.stderr)
+            )
             if not state or state in _SELF_ENDED_STATES:
                 outcome.fail_stage = result.get("fail_stage")
             problem = result.get("problem")

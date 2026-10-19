@@ -1198,6 +1198,8 @@ class OpenRoadPnr:
         # Why submitting or waiting on the stage jobs failed; the scheduler's account of a failed stage job.
         self._dispatch_failure: str | None = None
         self._dispatch_reason: str | None = None
+        # The failed stage job's first stderr line, which the job keeps whole.
+        self._dispatch_first_line: str | None = None
         # A dispatched stage's thread plan, resolved against its job's CPUs.
         self._stage_thread_plans: dict[str, ThreadPlan] = {}
         # A resumed or dispatched run is staged whatever its config says.
@@ -3351,6 +3353,7 @@ class OpenRoadPnr:
             self._failed_stage = _checkpoint_name(outcome.failed_stage)
             self._chain_fail_stage = outcome.fail_stage
             self._dispatch_reason = outcome.reason
+            self._dispatch_first_line = outcome.stderr_first_line
         return outcome.returncode, outcome.stderr, outcome.problem
 
     def _warn_hook_commands(self) -> None:
@@ -3988,6 +3991,8 @@ class OpenRoadPnr:
                 log=log_path,
             )
             first_line = next((ln for ln in stderr_text.splitlines() if ln.strip()), "")
+            if self._dispatch_first_line is not None:
+                first_line = self._dispatch_first_line
             desc = f"{stage_prefix}OpenROAD exited with code {returncode}"
             if first_line:
                 desc = f"{desc}: {first_line.strip()}"
