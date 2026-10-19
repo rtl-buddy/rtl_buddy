@@ -170,6 +170,29 @@ class CoverageJobSpec:
 
 
 @dataclass
+class PnrStageJobSpec:
+    """One stage of a staged ``rb pnr`` run, run as one job (``rb _pnr-stage-job``).
+
+    ``suite_dir`` is the directory of ``pnr.yaml``: the job's working directory and where
+    ``root_config.yaml`` is found from. The job runs stage ``stage`` of the checkpoint run
+    directory ``run_dir`` with the ``openroad`` the head resolved, appending its output to
+    ``pnr_log``. Every path is absolute, on storage shared with the head.
+    """
+
+    suite_dir: str
+    run_name: str
+    run_dir: str
+    stage: str
+    openroad: str
+    pnr_log: str
+    resources: JobResources = field(default_factory=JobResources)
+    log_path: Path | None = None
+
+    def display_name(self) -> str:
+        return f"pnr:{self.run_name}:{self.stage}"
+
+
+@dataclass
 class JobHandle:
     """An accepted submission: the backend's job id plus its spec.
 
@@ -272,6 +295,18 @@ class DispatchBackend(ABC):
         """
         raise NotImplementedError(
             f"the {self.name} backend does not run the coverage tail as a job"
+        )
+
+    def submit_pnr_stage(
+        self, spec: PnrStageJobSpec, *, dependency: str | None = None
+    ) -> JobHandle:
+        """Submit one P&R stage job; return its handle without waiting.
+
+        ``dependency`` is the previous stage's job id, which must succeed first; a
+        failed predecessor removes this job.
+        """
+        raise NotImplementedError(
+            f"the {self.name} backend does not run P&R stages as jobs"
         )
 
     def advance(self) -> None:

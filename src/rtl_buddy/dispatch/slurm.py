@@ -27,13 +27,20 @@ from typing import NamedTuple
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..tool_manifest import require as require_tool
-from .argv import build_job_argv, coverage_job_argv, elab_job_argv, test_job_argv
+from .argv import (
+    build_job_argv,
+    coverage_job_argv,
+    elab_job_argv,
+    pnr_stage_job_argv,
+    test_job_argv,
+)
 from .base import (
     BUILD_PHASE_VERILATE,
     BuildJobSpec,
     CoverageJobSpec,
     DispatchBackend,
     JobHandle,
+    PnrStageJobSpec,
     RunnableJobSpec,
     TestJobSpec,
     telemetry_key,
@@ -1047,6 +1054,51 @@ class SlurmDispatchBackend(DispatchBackend):
             backend=self.name,
             job_id=job_id,
             suite_dir=spec.suite_dir,
+            time=spec.resources.time,
+            cpus=spec.resources.cpus,
+            mem=spec.resources.mem,
+            cluster=cluster,
+        )
+        return JobHandle(job_id=job_id, spec=spec, cluster=cluster)
+
+    def submit_pnr_stage(
+        self, spec: PnrStageJobSpec, *, dependency: str | None = None
+    ) -> JobHandle:
+        """Submit one P&R stage job, chained behind the previous stage's job.
+
+        The chain's ``afterok`` goes after ``sbatch-args``, because Slurm takes the last
+        ``--dependency``: a dependency there or in ``SBATCH_DEPENDENCY`` holds the first
+        stage, and every later stage waits on it through the chain.
+        """
+        cmd = self._reservation_argv(
+            spec.resources,
+            job_name=tagged_job_name(f"rb:{spec.display_name()}", self.job_tag),
+            chdir=spec.suite_dir,
+            log_path=spec.log_path,
+        )
+        cmd += self.sbatch_args
+        cmd += self._dependency_argv(dependency)
+        cmd += ["--wrap", shlex.join(pnr_stage_job_argv(spec))]
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=spec.suite_dir)
+        if proc.returncode != 0:
+            raise FatalRtlBuddyError(
+                f"sbatch failed for {spec.display_name()} (rc={proc.returncode}): "
+                f"{proc.stderr.strip()}"
+            )
+        job_id, cluster = self._accepted_on(proc.stdout)
+        if not job_id:
+            raise FatalRtlBuddyError(
+                f"sbatch returned no job id for {spec.display_name()}"
+            )
+        log_event(
+            logger,
+            logging.INFO,
+            "dispatch.pnr_stage_submitted",
+            backend=self.name,
+            job_id=job_id,
+            pnr=spec.run_name,
+            stage=spec.stage,
+            dependency=dependency,
             time=spec.resources.time,
             cpus=spec.resources.cpus,
             mem=spec.resources.mem,

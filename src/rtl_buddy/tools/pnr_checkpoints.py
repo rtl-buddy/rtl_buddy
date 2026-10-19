@@ -16,7 +16,7 @@ Layout under the run's artefact directory::
         05_detailed_route.{odb,def,sdc}
         export/03_cts/...                 # `rb pnr-export --checkpoint`
 
-A staged run (`stages: true`) adds each stage's session script and log, `NN_<stage>.{tcl,log}`, and a `NN_<stage>.state.tcl` per checkpoint with the flow globals the next session needs.
+A staged run (`stages: true`) adds each stage's session script and log, `NN_<stage>.{tcl,log}`, and a `NN_<stage>.state.tcl` per checkpoint with the flow globals the next session needs. A dispatched run adds `dispatch/`: the submitted jobs (`jobs.json`) and, per stage job, its scheduler output, rtl_buddy log and result.
 
 - Checkpoints are never final outputs. They live below `checkpoints/`, out of reach of the up-front clear and of `rb power`'s `<top>.routed.odb` path.
 - Each run writes its own run-id directory, which later runs never overwrite or delete. Every `rb pnr` run removes `latest` first; a checkpointed run re-points it when it launches OpenROAD.
@@ -240,9 +240,11 @@ def _append_event(run_dir: str, event: str, **fields) -> None:
         f.write(json.dumps(record) + "\n")
 
 
-def stage_begin(run_dir: str, stage: str) -> None:
-    """Record that rb launched a staged session."""
-    _append_event(run_dir, "stage_begin", stage=stage, index=STAGE_INDEX[stage])
+def stage_begin(run_dir: str, stage: str, **fields) -> None:
+    """Record that rb launched a staged session; `fields` are added to the event."""
+    _append_event(
+        run_dir, "stage_begin", stage=stage, index=STAGE_INDEX[stage], **fields
+    )
 
 
 def stage_end(
@@ -253,8 +255,9 @@ def stage_end(
     resources: dict,
     status: str,
     checkpoint: dict | None = None,
+    **fields,
 ) -> None:
-    """Record a staged session's exit, the resources rb measured for it and, when it wrote one, its checkpoint's files with their fingerprints.
+    """Record a staged session's exit, the resources rb measured for it and, when it wrote one, its checkpoint's files with their fingerprints; `fields` are added to the event.
 
     The fingerprints are recorded here, not only in the manifest, so a run rb did not see finish can still be resumed.
     """
@@ -267,6 +270,7 @@ def stage_end(
         status=status,
         returncode=returncode,
         **resources,
+        **fields,
         **({"checkpoint": _relativise(checkpoint, root)} if checkpoint else {}),
     )
 
@@ -382,7 +386,7 @@ def begin_run(
 ) -> str:
     """Write the manifest and first event, point `latest` here, and return the manifest path.
 
-    Call after the flow scripts exist and just before OpenROAD starts, so `inputs.script` hashes the exact `pnr.tcl` OpenROAD runs. A staged run passes `staged`: its `chain` of stage sessions (script and log per stage, including stages a resume inherits), `resumed_from`, and the checkpoints it inherits, which `finish_run` keeps beside the ones it writes. `stop_after` is recorded for either kind of run.
+    Call after the flow scripts exist and just before OpenROAD starts, so `inputs.script` hashes the exact `pnr.tcl` OpenROAD runs. A staged run passes `staged`: its `chain` of stage sessions (script and log per stage, including stages a resume inherits), `resumed_from`, the checkpoints it inherits, which `finish_run` keeps beside the ones it writes, and for a dispatched run its `dispatch` backend and stage reservations. `stop_after` is recorded for either kind of run.
     """
     root = project_root_or_none(artefact_dir)
     staged = staged or {}
@@ -406,7 +410,7 @@ def begin_run(
         "inputs": _relativise(inputs, root),
         **{
             key: _relativise(staged[key], root)
-            for key in ("staged", "stop_after", "resumed_from", "chain")
+            for key in ("staged", "stop_after", "resumed_from", "chain", "dispatch")
             if staged.get(key) is not None
         },
         # Set by `finish_run`; stays None if rb itself is killed.

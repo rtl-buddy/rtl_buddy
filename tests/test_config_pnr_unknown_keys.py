@@ -120,6 +120,19 @@ RUN_SIZED = {
     "reglvl": 1000,
     "tool_overrides": {"any": 1},
     "threads": 2,
+    "resources": {
+        "cpus": 4,
+        "mem": "8G",
+        "time": "02:00:00",
+        "stages": {
+            "floorplan": {"cpus": 1},
+            "place": {"mem": "4G"},
+            "cts": {"time": "00:30:00"},
+            "global_route": {"cpus": 2, "mem": "4G", "time": "01:00:00"},
+            "detailed_route": {"cpus": 16, "mem": "16G", "time": "12:00:00"},
+            "finish": {"cpus": 2},
+        },
+    },
     "detailed-route-verbose": 1,
     "xfail": True,
     "xfail_strict": False,
@@ -249,8 +262,8 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "pdn-config, pdn, platform, floorplan, lef-paths, lib-paths, gds-paths, "
             "gds-mode, gds-allow-empty, checkpoints, stages, hooks, harden, abstract, "
             "buffer-ports, fail-on-electrical, blocks, placement, reglvl, "
-            "tool_overrides, threads, detailed-route-verbose, xfail, xfail_strict, "
-            "xfail_match",
+            "tool_overrides, threads, resources, detailed-route-verbose, xfail, "
+            "xfail_strict, xfail_match",
         ),
         (
             "pnr run 'a': floorplan",
@@ -298,6 +311,17 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "rotated-macro-footprint",
         ),
         ("pnr run 'a': blocks[1]", ("blocks", 1), "name, pnr, pnr-path"),
+        ("pnr run 'a': resources", ("resources",), "cpus, mem, time, stages"),
+        (
+            "pnr run 'a': resources.stages",
+            ("resources", "stages"),
+            "floorplan, place, cts, global_route, detailed_route, finish",
+        ),
+        (
+            "pnr run 'a': resources.stages.detailed_route",
+            ("resources", "stages", "detailed_route"),
+            "cpus, mem, time",
+        ),
     ],
     ids=lambda v: v if isinstance(v, str) and v.startswith("pnr run") else None,
 )
