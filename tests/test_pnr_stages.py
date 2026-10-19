@@ -575,6 +575,71 @@ def test_a_staged_run_hardens_in_its_finish_session(tmp_path, monkeypatch):
     assert hardened == ["finish"]
 
 
+def _hook(tmp_path, point, text) -> tuple[str]:
+    path = tmp_path / "hooks" / f"{point}.tcl"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(text)
+    return (str(path),)
+
+
+def test_a_staged_run_warns_about_commands_a_hook_leaves_in_its_session(
+    tmp_path, monkeypatch, caplog
+):
+    """A hook other than `session` that defines or renames a global command warns; later stage sessions do not have it."""
+    hooks = {
+        "session": _hook(tmp_path, "session", "proc rb_test_session {} {}\n"),
+        "after-cts": _hook(
+            tmp_path,
+            "after-cts",
+            "proc rb_test_helper {} {}\nrename check_placement rb_test_check\n",
+        ),
+        "after-global-route": _hook(tmp_path, "after-global-route", "set x 1\n"),
+        "before-reports": _hook(
+            tmp_path, "before-reports", "proc rb_test_report {} {}\n"
+        ),
+    }
+    cfg = replace(_pnr_cfg(tmp_path, stages=True), hooks=hooks)
+    backend, artefacts = _staged(tmp_path, monkeypatch, pnr_cfg=cfg)
+
+    with caplog.at_level("WARNING"):
+        res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    warned = [
+        r.rtl_fields
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "pnr.hook_commands_not_kept"
+    ]
+    assert warned == [
+        {
+            "pnr": "demo_pnr",
+            "point": "after-cts",
+            "path": hooks["after-cts"][0],
+            "commands": ["check_placement", "rb_test_check", "rb_test_helper"],
+        }
+    ]
+    message = next(
+        r.getMessage()
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "pnr.hook_commands_not_kept"
+    )
+    assert "later stage sessions do not have" in message
+    assert "session hook" in message
+
+
+def test_a_failing_hook_still_fails_a_staged_session(tmp_path, monkeypatch):
+    hooks = {"after-cts": _hook(tmp_path, "after-cts", "error boom\n")}
+    cfg = replace(_pnr_cfg(tmp_path, stages=True), hooks=hooks)
+    backend, artefacts = _staged(tmp_path, monkeypatch, pnr_cfg=cfg)
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert res.results["desc"].startswith("stage 03_cts: ")
+    log = (_only_run(artefacts) / "03_cts.log").read_text()
+    assert "Hook after-cts" in log and "boom" in log
+
+
 def _stopped_at_global_route(tmp_path, monkeypatch) -> Path:
     backend, artefacts = _staged(tmp_path, monkeypatch, stop_after="global_route")
     assert backend.run().results["result"] == "PASS"

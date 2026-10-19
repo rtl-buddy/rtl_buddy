@@ -71,6 +71,8 @@ _ROTATED_MACROS_FILE = "rotated_macros.tcl"
 _BLOCK_POWER_FILE = "block_power.tcl"
 # Sources the run's `hooks:` files; see `_hook_procs_block`.
 _HOOKS_FILE = "hooks.tcl"
+# Wraps `rb::hook::run` in staged sessions to record the commands a hook changes.
+_HOOK_COMMANDS_FILE = "hook_commands.tcl"
 
 # Non-log files the flow writes under `$OUT_DIR`; `test_pnr.py` checks this covers every one.
 _FLOW_OUTPUT_NAMES = (
@@ -1439,6 +1441,10 @@ class OpenRoadPnr:
                 stage, run_dir, self._pred_dir(stage, run_dir)
             ),
         }
+        if substitutions["hook_procs_block"] and stage != "finish":
+            substitutions["hook_procs_block"] += (
+                files(_TEMPLATE_PACKAGE).joinpath(_HOOK_COMMANDS_FILE).read_text()
+            )
         parts = [flow.head()]
         if stage == "floorplan":
             parts += [flow.piece("load"), flow.piece("session")]
@@ -3151,6 +3157,20 @@ class OpenRoadPnr:
                     return returncode, stderr, problem
         return returncode, stderr, None
 
+    def _warn_hook_commands(self) -> None:
+        """Warn about each hook of this staged run that changed global Tcl commands, which later stage sessions do not have."""
+        for event in pnr_checkpoints.read_progress(self._ckpt_run_dir):
+            if event.get("event") == "hook_commands":
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "pnr.hook_commands_not_kept",
+                    pnr=self.pnr_cfg.get_name(),
+                    point=event.get("point"),
+                    path=event.get("path"),
+                    commands=event.get("commands"),
+                )
+
     def _checkpoint_error(self, stage: str) -> str | None:
         """The error of this run's failed attempt to write `stage`'s checkpoint, or None."""
         for event in pnr_checkpoints.read_progress(self._ckpt_run_dir):
@@ -3633,6 +3653,7 @@ class OpenRoadPnr:
         chain_problem = None
         if self._staged:
             returncode, stderr_text, chain_problem = self._run_chain(env)
+            self._warn_hook_commands()
         else:
             # No `-log`: OpenROAD block-buffers that file, so a long route showed nothing for minutes.
             # Its stdout is flushed per message, so it goes to the log directly instead.

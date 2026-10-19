@@ -2070,6 +2070,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'P&R "{fields.get("pnr")}": --resume {fields.get("resume")} '
                 f"--from {fields.get('from_stage')} refused: {fields.get('reason')}"
             )
+        case "pnr.hook_commands_not_kept":
+            return (
+                f'P&R "{fields.get("pnr")}": hook {fields.get("point")} '
+                f"({fields.get('path')}) defined, renamed or deleted the Tcl "
+                f"command(s) {', '.join(fields.get('commands') or [])}, which "
+                "later stage sessions do not have; move it to a session hook"
+            )
         case "pnr.stopped":
             return (
                 f'P&R "{fields.get("pnr")}" stopped after {fields.get("stage")} '
