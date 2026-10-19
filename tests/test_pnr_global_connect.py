@@ -56,7 +56,7 @@ def test_the_final_outputs_are_written_after_the_connections_are_made(
     assert lines.index("stub: write_db demo_top.routed.odb") > outputs
 
 
-def test_a_run_without_checkpoints_connects_once_before_its_outputs(
+def test_a_run_without_checkpoints_connects_after_fill_and_before_its_outputs(
     tmp_path, monkeypatch
 ):
     backend, artefacts = _backend(tmp_path, monkeypatch, checkpoints=None, env=_RULES)
@@ -64,8 +64,29 @@ def test_a_run_without_checkpoints_connects_once_before_its_outputs(
     assert backend.run().results["result"] == "PASS"
 
     lines = _log(artefacts)
-    assert lines.count(_CONNECT) == 1
+    assert lines.count(_CONNECT) == 2
+    assert lines.index(_CONNECT) > lines.index(">>> Fill insertion")
     assert lines[lines.index(">>> Write outputs") - 1] == _CONNECT
+
+
+@pytest.mark.parametrize("stages", [False, True])
+def test_extraction_sees_the_connected_design(tmp_path, monkeypatch, stages):
+    (tmp_path / "pdk").mkdir()
+    (tmp_path / "pdk" / "rcx.rules").write_text("rules\n")
+    backend, artefacts = _backend(
+        tmp_path,
+        monkeypatch,
+        stages=stages,
+        env=_RULES,
+        pdk_fields={"rcx_rules": "pdk/rcx.rules"},
+    )
+
+    assert backend.run().results["result"] == "PASS"
+
+    lines = _log(artefacts)
+    extraction = lines.index(">>> Parasitic extraction (OpenRCX)")
+    assert lines[extraction - 1] == _CONNECT
+    assert extraction > lines.index(">>> Fill insertion")
 
 
 def test_a_stopped_run_connects_before_its_checkpoint(tmp_path, monkeypatch):
@@ -100,7 +121,7 @@ def test_a_database_without_rules_is_left_alone(tmp_path, monkeypatch, stages):
     assert _CONNECT not in _log(artefacts)
 
 
-def test_the_flow_defines_one_guarded_connect_before_any_stage():
+def test_the_flow_defines_a_guarded_connect_before_any_stage():
     from importlib.resources import files
 
     text = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
@@ -108,5 +129,5 @@ def test_the_flow_defines_one_guarded_connect_before_any_stage():
 
     assert "proc rb::global_connect" in head
     assert "getGlobalConnects" in head
-    assert text.count("\nrb::global_connect\n") == 1
+    assert text.count("\nrb::global_connect\n") == 2
     assert text.index("\nrb::global_connect\n") > text.index("filler_placement")

@@ -3430,6 +3430,8 @@ def test_pnr_flow_without_rcx_rules_keeps_the_estimated_final_reports(tmp_path):
 
     assert (
         "filler_placement $FILL_CELLS\n"
+        "# Before extraction, so the SPEF and the reports see the design as written.\n"
+        "rb::global_connect\n"
         "\n"
         'puts ">>> Final reports"\n'
         "estimate_parasitics -global_routing\n"
