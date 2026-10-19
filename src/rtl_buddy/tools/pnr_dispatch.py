@@ -14,6 +14,7 @@ Files under the run directory's `dispatch/`:
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import threading
@@ -23,6 +24,7 @@ from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
 
+from ..config.openroad_threads import detect_allocation, plan_threads
 from ..dispatch.base import JobHandle, SubmissionAbandoned, telemetry_key
 from ..dispatch.retry import normalise_scheduler_state
 from ..errors import FatalRtlBuddyError
@@ -35,8 +37,8 @@ logger = logging.getLogger(__name__)
 DISPATCH_DIRNAME = "dispatch"
 JOBS_NAME = "jobs.json"
 
-#: Allocation source recorded in a dispatched stage's thread plan: the job's `--cpus-per-task`.
-JOB_CPUS_SOURCE = "SLURM_CPUS_PER_TASK"
+#: Allocation source of the thread plan the head writes into a dispatched stage's script: the CPUs it asks the job for. The job sets the count again from the CPUs it receives (`_set_job_threads`).
+JOB_CPUS_SOURCE = "requested cpus"
 
 #: `fail_stage` of a stage the scheduler ended, or that never ran; an `xfail:` never excuses it.
 DISPATCH_FAIL_STAGE = "dispatch"
@@ -802,6 +804,48 @@ def generator() -> str:
     return f"rtl-buddy {version('rtl-buddy')}"
 
 
+_SCRIPT_THREADS_RE = re.compile(r'(\nputs ">>> Threads"\nset_thread_count )\d+(\n)')
+
+
+def _set_job_threads(
+    run_dir: str, stage: str, manifest: dict, *, run_name: str
+) -> dict | None:
+    """Set the stage script's thread count from the CPUs this job received, and return the thread plan's fields; None when the run sets no thread count.
+
+    The head wrote the count its plan gave for the CPUs it asked for; `sbatch-args` or the site can change what the job gets, so the job resolves `threads:` (recorded in the manifest's `dispatch`) again against its own allocation (`detect_allocation`). The thread count is not part of the stage's identity (`pnr_stages`), so the checkpoint is the same either way.
+    """
+    entry = ((manifest.get("dispatch") or {}).get("stages") or {}).get(stage) or {}
+    requested = entry.get("threads_requested")
+    if requested is None:
+        return None
+    plan = plan_threads(
+        requested,
+        flow="pnr",
+        run=f"{run_name} {stage}",
+        allocation=detect_allocation(),
+    )
+    path = Path(run_dir, f"{stage_name(stage)}.tcl")
+    try:
+        text = path.read_text()
+        updated = _SCRIPT_THREADS_RE.sub(
+            lambda m: f"{m.group(1)}{plan.count}{m.group(2)}", text, count=1
+        )
+        if updated != text:
+            Path(f"{path}.tmp").write_text(updated)
+            os.replace(f"{path}.tmp", path)
+    except OSError as e:
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.stage_job_threads_unset",
+            run_dir=run_dir,
+            stage=stage,
+            threads=plan.count,
+            error=str(e),
+        )
+    return plan.fields()
+
+
 def _artefact_dir(run_dir: str) -> str:
     """The artefact directory of a checkpoint run directory (`<artefact dir>/checkpoints/<run id>`), where its sessions run."""
     return os.path.dirname(os.path.dirname(os.path.abspath(run_dir)))
@@ -833,6 +877,9 @@ def run_stage_job(run_dir: str, stage: str, *, openroad: str, pnr_log: str) -> b
     env = os.environ.copy()
     env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     fields = {"slurm_job": os.environ.get("SLURM_JOB_ID"), "host": socket.gethostname()}
+    thread_plan = _set_job_threads(run_dir, stage, manifest, run_name=run_name)
+    if thread_plan is not None:
+        fields["thread_plan"] = thread_plan
     with open(pnr_log, "ab") as log:
         outcome = run_stage(
             run_dir,

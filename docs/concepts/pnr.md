@@ -741,7 +741,7 @@ runs:
         detailed_route: {cpus: 16, mem: 32G, time: "12:00:00"}
 ```
 
-`threads: auto` takes each job's CPUs, so here detailed routing runs on 16 threads and every other stage on 4. A fixed `threads:` count is the same in every stage, clamped to the CPUs of a smaller job. A run that is not dispatched ignores `resources:`.
+`threads: auto` takes each job's CPUs, so here detailed routing runs on 16 threads and every other stage on 4. A fixed `threads:` count is the same in every stage, clamped to the CPUs of a smaller job. Each job counts the CPUs it received when it starts, as a run inside an allocation does (see [OpenROAD threads](#openroad-threads)), so a `--cpus-per-task` in `cfg-dispatch.sbatch-args` or a site that grants a different count sets the thread count too. A run that is not dispatched ignores `resources:`.
 
 Every job asks for one task (`--ntasks=1`); `cfg-dispatch.sbatch-args` come after the reservation and apply to every job. The jobs are named `rb:pnr:<run>:<stage>`, tagged by `RTL_BUDDY_JOB_TAG` (see [Tag job names for one caller](dispatch.md#tag-job-names-for-one-caller)). The console shows each job id as Slurm accepts it, then the stage `rb pnr` waits on and its state.
 
@@ -763,7 +763,7 @@ Ctrl-C, SIGTERM or SIGHUP cancels the run's own jobs, and no others, including a
 
 An `rb pnr` killed outright (SIGKILL, or the end of the allocation it runs in) leaves its jobs to run the rest of the chain unattended: the checks it makes after the last job never run and its manifest is never finished. While a job of an earlier dispatched run of the same configuration is queued or running, every `rb pnr` of it, dispatched or not, refuses to start before it clears anything, naming the jobs and the `scancel` command. A job refuses its stage when its run has already finished, or when it runs another rtl_buddy version than the `rb pnr` that started the run.
 
-The run directory's `dispatch/` holds `jobs.json`, with each stage's job id, dependency and reservation and whether all have left the queue, and for each stage Slurm's answer to the submission (`<NN>_<stage>.sbatch`), the job's Slurm output (`<NN>_<stage>.slurm.log`), its rtl_buddy log (`<NN>_<stage>.rtl_buddy.log`) and how it ended (`<NN>_<stage>.result.json`). The manifest's `dispatch` entry records the backend and each stage's reservation and OpenROAD thread count.
+The run directory's `dispatch/` holds `jobs.json`, with each stage's job id, dependency and reservation and whether all have left the queue, and for each stage Slurm's answer to the submission (`<NN>_<stage>.sbatch`), the job's Slurm output (`<NN>_<stage>.slurm.log`), its rtl_buddy log (`<NN>_<stage>.rtl_buddy.log`) and how it ended (`<NN>_<stage>.result.json`). The manifest's `dispatch` entry records the backend and, for each stage, its reservation, `threads:` and the thread count that reservation gives. Each stage's `stage_begin` and `stage_end` record the count its job set (`thread_plan`), and the run's `openroad_threads` result is the last stage job's.
 
 ### Stage resources
 

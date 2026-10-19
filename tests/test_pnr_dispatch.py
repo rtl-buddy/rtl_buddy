@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import pytest
 from test_pnr_checkpoints import _backend, _events, _pnr_cfg, _runs
 
+from rtl_buddy.config import openroad_threads
 from rtl_buddy.config.dispatch import (
     DispatchConfigFile,
     DispatchResourcesFile,
@@ -144,6 +145,12 @@ class _FakeSlurm:
         monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
         monkeypatch.setattr(pnr_dispatch.time, "sleep", lambda s: None)
         monkeypatch.setattr(pnr_dispatch, "_pause", lambda wake, s: None)
+        # A job's allocation is what the fake gives it, whatever this host's affinity.
+        monkeypatch.setattr(
+            pnr_dispatch,
+            "detect_allocation",
+            lambda: openroad_threads.detect_allocation(dict(os.environ)),
+        )
         monkeypatch.delenv("SBATCH_CLUSTERS", raising=False)
         self.backend = SlurmDispatchBackend(DispatchConfigFile(**cfg).initialise())
 
@@ -238,6 +245,8 @@ class _FakeSlurm:
         if stage in self.died_in_session or stage in self.interrupt_in:
             pnr_openroad._run_session = _cut_session
         os.environ["SLURM_JOB_ID"] = job["id"]
+        if "--cpus-per-task" in job["flags"]:
+            os.environ["SLURM_CPUS_PER_TASK"] = job["flags"]["--cpus-per-task"]
         try:
             ok = pnr_dispatch.run_stage_job(
                 opts["--run-dir"],
@@ -252,6 +261,7 @@ class _FakeSlurm:
             pnr_dispatch._write_result = real_write
             pnr_openroad._run_session = real_session
             del os.environ["SLURM_JOB_ID"]
+            os.environ.pop("SLURM_CPUS_PER_TASK", None)
         return self.state_of.get(stage, "COMPLETED" if ok else "FAILED")
 
     def _sacct(self, argv):
@@ -412,12 +422,51 @@ def test_stage_reservations_layer_field_by_field(tmp_path, monkeypatch):
         "cpus": 16,
         "mem": "32G",
         "time": "01:00:00",
+        "threads_requested": "auto",
         "threads": 16,
     }
     assert manifest["dispatch"]["stages"]["cts"]["threads"] == 4
     ended = {e["stage"]: e for e in _events(run_dir) if e["event"] == "stage_end"}
     assert ended["detailed_route"]["threads"] == 16
     assert ended["cts"]["threads"] == 4
+    assert ended["cts"]["thread_plan"] == {
+        "requested": "auto",
+        "effective": 4,
+        "allocation": 4,
+        "allocation_source": "SLURM_CPUS_PER_TASK",
+    }
+
+
+def test_threads_auto_takes_the_cpus_the_job_received(tmp_path, monkeypatch):
+    # sbatch-args come after the reservation, so the job gets 3 CPUs, not 4.
+    slurm = _FakeSlurm(monkeypatch, sbatch_args=["--cpus-per-task=3"])
+    cfg = replace(_pnr_cfg(tmp_path, stages=True), threads="auto")
+    backend, artefacts, _ = _dispatched(
+        tmp_path,
+        monkeypatch,
+        slurm=slurm,
+        cfg=cfg,
+        resources=PnrResources(base=DispatchResourcesFile(cpus=4)),
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    run_dir = _only_run(artefacts)
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    # The head planned for the CPUs it asked for; each job set what it received.
+    assert manifest["dispatch"]["stages"]["cts"]["threads"] == 4
+    for stage in PNR_STAGES:
+        script = (run_dir / f"{_NAMES[stage]}.tcl").read_text()
+        assert "set_thread_count 3\n" in script
+    ended = [e for e in _events(run_dir) if e["event"] == "stage_end"]
+    assert all(e["threads"] == 3 for e in ended)
+    assert res.results["openroad_threads"] == {
+        "requested": "auto",
+        "effective": 3,
+        "allocation": 3,
+        "allocation_source": "SLURM_CPUS_PER_TASK",
+    }
 
 
 def test_a_fixed_thread_count_is_the_same_in_every_stage(tmp_path, monkeypatch):

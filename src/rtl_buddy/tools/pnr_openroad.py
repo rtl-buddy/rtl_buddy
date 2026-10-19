@@ -1295,7 +1295,7 @@ class OpenRoadPnr:
     def _threads_fields(self) -> dict:
         """Return the `openroad_threads` result field with OpenROAD's reported count.
 
-        Empty if no plan was resolved, meaning OpenROAD never launched.
+        A dispatched run's is the plan its last stage job resolved. Empty if no plan was resolved, meaning OpenROAD never launched.
         """
         if self._thread_plan is None:
             return {}
@@ -1303,7 +1303,24 @@ class OpenRoadPnr:
             reported = parse_reported_threads(Path(self._log_path()).read_text())
         except OSError:
             reported = None
-        return {"openroad_threads": self._thread_plan.fields(reported)}
+        fields = self._thread_plan.fields(reported)
+        job = self._last_job_threads()
+        if job is not None:
+            fields = {
+                **job,
+                "effective": reported if reported is not None else job.get("effective"),
+            }
+        return {"openroad_threads": fields}
+
+    def _last_job_threads(self) -> dict | None:
+        """The thread plan the last stage job that ran resolved against its own CPUs, or None."""
+        if self._dispatch is None or self._ckpt_run_dir is None:
+            return None
+        for stage in reversed(self._run_stages()):
+            result = pnr_dispatch.read_result(self._ckpt_run_dir, stage) or {}
+            if isinstance(result.get("thread_plan"), dict):
+                return result["thread_plan"]
+        return None
 
     def _load_template(self) -> str:
         return files(_TEMPLATE_PACKAGE).joinpath(_TEMPLATE_FILE).read_text()
@@ -3261,7 +3278,7 @@ class OpenRoadPnr:
         }
 
     def _dispatch_record(self) -> dict | None:
-        """The manifest's `dispatch` entry: the backend, and each stage job's reservation and OpenROAD threads."""
+        """The manifest's `dispatch` entry: the backend, and each stage job's reservation, the run's `threads:` and the OpenROAD threads that reservation gives (the job sets them again from the CPUs it receives)."""
         if self._dispatch is None:
             return None
         stages = {}
@@ -3272,6 +3289,7 @@ class OpenRoadPnr:
                 "cpus": resources.cpus,
                 "mem": resources.mem,
                 "time": resources.time,
+                "threads_requested": plan.requested,
                 "threads": plan.count if plan.emit else None,
             }
         return {"backend": self._dispatch.name, "stages": stages}
