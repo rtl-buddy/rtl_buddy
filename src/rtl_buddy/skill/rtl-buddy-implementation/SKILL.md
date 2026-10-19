@@ -35,9 +35,10 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   `stages: true`, one session per stage) in `pnr.yaml`. A `FAIL` row then
   carries `checkpoint_dir`, `checkpoint_stages` and `last_step`;
   `checkpoints/latest/progress.jsonl` shows the step a flow is in. A
-  checkpoint is never routed or final: report it as its stage. A `--stop-after`
-  `PASS` has `routed: false`: quote it as that stage, not as a routed result.
-  `--resume <run> --from <stage>` retries later stages of a staged run.
+  checkpoint is never routed or final: report it as its stage, as for a
+  `--stop-after` `PASS` (`routed: false`). `--resume <run> --from <stage>`
+  retries later stages of a staged run; `--dispatch slurm` runs each stage as
+  a Slurm job sized by the run's `resources:`.
 - **Run hooks.** Extra steps go in `hooks:` of the `pnr.yaml` run: Tcl files
   sourced at fixed flow points (`session`, `after-cts`, `macro-placement`, ...),
   never in an edited `pnr.tcl`. A failing hook names its point and file. See

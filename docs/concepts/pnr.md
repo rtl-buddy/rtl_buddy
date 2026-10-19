@@ -599,7 +599,7 @@ runs:
 - Unset gives 1 thread. A positive integer gives that many. `auto` gives the CPUs of the allocation the run is in, or 1 with none; never the host's core count.
 - Zero, negative numbers, booleans, quoted numbers and other strings fail configuration loading.
 
-`rb pnr` is not dispatched. Run it inside an allocation (`srun -c 8 rb pnr ...` or an `sbatch` script) to give OpenROAD CPUs. The allocation is `SLURM_CPUS_PER_TASK` (else `SLURM_CPUS_ON_NODE`) in a Slurm job, or a smaller CPU affinity mask on Linux. A container CPU quota (`docker --cpus`) is not visible.
+Without `--dispatch`, `rb pnr` runs OpenROAD where it is started. Run it inside an allocation (`srun -c 8 rb pnr ...` or an `sbatch` script) to give OpenROAD CPUs, or give each stage a job of its own with [`--dispatch slurm`](#dispatch-the-stages-to-slurm). The allocation is `SLURM_CPUS_PER_TASK` (else `SLURM_CPUS_ON_NODE`) in a Slurm job, or a smaller CPU affinity mask on Linux. A container CPU quota (`docker --cpus`) is not visible.
 
 A count above the allocation is clamped to it with an `openroad.threads_capped` warning naming both numbers. Outside an allocation an explicit count is used as given.
 
@@ -692,11 +692,44 @@ The resume is refused, with `fail_stage: resume` and a description that names wh
 
 A setting that only `--from` and later stages read, such as `detailed-route-verbose:` or a `before-detailed-route` hook, may change between the runs.
 
+### Dispatch the stages to Slurm
+
+`--dispatch slurm` runs each stage of a staged run as its own Slurm job:
+
+```bash
+rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --dispatch slurm
+```
+
+rb writes every stage's script into the run directory first, so the jobs run the configuration as it was when the run started. It then submits one job per stage, each held until the one before it succeeds (`--dependency=afterok`), and waits until the last one has left the queue. Each job runs its stage as a local staged run does and adds to the same `pnr.log`, `progress.jsonl` and checkpoints, so the result, manifest and outputs are those of the same run staged locally. `--dispatch slurm` makes a run staged whatever its `stages:` setting. With `--stop-after` or `--resume` it submits only the stages the run runs. `--dispatch local`, the default, runs the stages where `rb pnr` runs; `cfg-dispatch.backend` does not apply to `rb pnr`.
+
+Each job's reservation is resolved field by field, most specific first, from the run's `resources.stages.<stage>`, the run's `resources:`, `cfg-dispatch.resources`, then the built-in defaults:
+
+```yaml
+runs:
+  - name: demo_pnr_nangate45
+    # ...
+    threads: auto
+    resources:
+      cpus: 4
+      mem: 8G
+      time: "02:00:00"
+      stages:
+        detailed_route: {cpus: 16, mem: 32G, time: "12:00:00"}
+```
+
+`threads: auto` takes each job's CPUs, so here detailed routing runs on 16 threads and every other stage on 4. A fixed `threads:` count is the same in every stage, clamped to the CPUs of a smaller job. A run that is not dispatched ignores `resources:`. `cfg-dispatch.sbatch-args` apply to every job, and the jobs are named `rb:pnr:<run>:<stage>`, tagged by `RTL_BUDDY_JOB_TAG` (see [Tag job names for one caller](dispatch.md#tag-job-names-for-one-caller)).
+
+A stage whose job fails, is cancelled, runs out of time or is killed for memory fails the run, and Slurm removes the jobs after it. The description names the stage and how the job ended, for example `stage 05_detailed_route: OpenROAD exited with code -9 (Slurm job 1234 ended OUT_OF_MEMORY)`. A job killed inside its stage gets the stage's `stage_end` from Slurm's accounting. A job that cannot be submitted, or a wait longer than `cfg-dispatch.max-wait` (which bounds the whole chain), cancels the jobs and fails the run with `fail_stage: error`.
+
+Ctrl-C or SIGTERM cancels the run's own jobs, and no others, before `rb pnr` exits. An `rb pnr` killed outright (SIGKILL) leaves its jobs queued. The next `rb pnr` of the same run moves `checkpoints/latest`, and a job left over from the old run then refuses to start its stage.
+
+The run directory's `dispatch/` holds `jobs.json`, with each stage's job id, dependency and reservation, and for each stage the job's Slurm output (`<NN>_<stage>.slurm.log`), its rtl_buddy log (`<NN>_<stage>.rtl_buddy.log`) and how it ended (`<NN>_<stage>.result.json`). The manifest's `dispatch` entry records the backend and each stage's reservation and OpenROAD thread count.
+
 ### Stage resources
 
 Each stage's wall time, CPU time (user plus system) and peak resident memory are recorded as `stage_end` events in `progress.jsonl` and under `resources` in the manifest, with `measured_by` naming how:
 
-- In a staged run rb measures each session as a process (`measured_by: process`).
+- In a staged run rb measures each session as a process (`measured_by: process`). A [dispatched](#dispatch-the-stages-to-slurm) stage is measured the same way inside its job, and its `stage_begin` and `stage_end` name the job (`slurm_job`) and `host`. A job killed inside its stage gets a `stage_end` with Slurm's accounting (`measured_by: scheduler`, and the job's `slurm_state`).
 - In a one-session run with `checkpoints:` or `--stop-after`, the flow measures each stage from inside OpenROAD (`measured_by: session`) at the stage boundaries of the [checkpoint table](#keep-stage-checkpoints): wall time from the Tcl clock, CPU time from `/proc/self/stat`, and peak memory from `VmHWM`, reset at each stage boundary through `/proc/self/clear_refs`. The reset starts from the memory the process already holds, so a stage's peak includes what earlier stages left resident (the `finish` stage after detailed routing, for example). Without `/proc` the CPU time and peak memory are `null`, and the peak memory is `null` after the first stage when the reset is refused.
 
 ## Stream-out inputs
