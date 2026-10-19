@@ -38,7 +38,6 @@ from ..config.pnr_repair import (
     PostRouteRepair,
     RepairDesign,
     Reroute,
-    UNSET,
 )
 from ..dispatch.base import PnrStageJobSpec
 from ..errors import FatalRtlBuddyError
@@ -325,28 +324,33 @@ def _repair_steps_tcl(
 ) -> str:
     """Return `repair_design`, then setup and hold `repair_timing`, each after a log line naming it.
 
-    Margins are given in ns and passed in the Liberty time unit (`ps_per_unit` picoseconds), which is what `repair_timing` reads; the log line gives both. A zero margin is the tool's default and passes no option.
+    Margins are given in ns and passed in the Liberty time unit (`ps_per_unit` picoseconds), which is what `repair_timing` reads; the log line gives both. A zero margin is the tool's default and passes no option. The hold repair also passes a set setup margin, as ORFS's `repair_timing_helper` does, so it keeps that much setup slack on the paths it delays.
     """
     lines = []
     if design is not None:
         command = f"repair_design{design.options()}"
         lines += [f'puts ">>> {title}: {command}"', command]
-    for kind, margin in (("setup", setup_ns), ("hold", hold_ns)):
-        if margin is None:
-            continue
+
+    def _option(kind: str, margin: float) -> tuple[str, str]:
+        """`margin`'s option (empty for 0) and its log note."""
         if margin == 0:
-            command = f"repair_timing -{kind}"
-            lines += [f'puts ">>> {title}: {command} ({kind} margin 0 ns)"', command]
-            continue
+            return "", f"{kind} margin 0 ns"
         if ps_per_unit is None:
             raise RuntimeError("the Liberty time unit is unknown; cannot set a margin")
         value = _fmt_number(margin * 1000.0 / ps_per_unit)
-        command = f"repair_timing -{kind} -{kind}_margin {value}"
-        lines += [
-            f'puts ">>> {title}: {command} ({kind} margin {_fmt_number(margin)} ns '
-            f'in Liberty time unit {format_time_unit(ps_per_unit)})"',
-            command,
-        ]
+        return f" -{kind}_margin {value}", f"{kind} margin {_fmt_number(margin)} ns"
+
+    for kind, margin in (("setup", setup_ns), ("hold", hold_ns)):
+        if margin is None:
+            continue
+        options = [_option(kind, margin)]
+        if kind == "hold" and setup_ns is not None:
+            options.append(_option("setup", setup_ns))
+        command = f"repair_timing -{kind}" + "".join(opt for opt, _ in options)
+        note = ", ".join(n for _, n in options)
+        if any(opt for opt, _ in options):
+            note += f" in Liberty time unit {format_time_unit(ps_per_unit)}"
+        lines += [f'puts ">>> {title}: {command} ({note})"', command]
     return "".join(f"{line}\n" for line in lines)
 
 
@@ -1136,6 +1140,11 @@ def _worst_slack(log_text: str, kind: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
+def _unconstrained(log_text: str, kind: str) -> bool:
+    """Whether `report_worst_slack -max` (`kind="max"`) or `-min` in `log_text` is INF: no path of that kind is constrained."""
+    return bool(re.search(rf"^worst slack {kind}\s+INF\s*$", log_text, re.MULTILINE))
+
+
 def _total_negative_slack(log_text: str, kind: str = "max") -> float | None:
     """Parse `report_tns` (`kind="max"`, setup) or `report_tns -min` (`"min"`, hold).
 
@@ -1167,7 +1176,7 @@ class PostRouteOutcome:
 
 
 def _round_timing(text: str, round_: int, plan: dict) -> dict:
-    """Round `round_`'s worst slack and TNS, setup and hold, in ps, with each corner's on a multi-corner platform; a value the log lacks is None."""
+    """Round `round_`'s worst slack and TNS, setup and hold, in ps, with each corner's on a multi-corner platform; a value the log lacks is None. `unconstrained` names each side whose worst slack is INF."""
     text = text[text.rfind(f"{_ROUND_TIMING_MARKER}{round_}") :]
     ps = plan["ps_per_unit"]
 
@@ -1179,6 +1188,11 @@ def _round_timing(text: str, round_: int, plan: dict) -> dict:
         "wns_hold_ps": _ps(_worst_slack(text, "min")),
         "tns_ps": _ps(_total_negative_slack(text)),
         "tns_hold_ps": _ps(_total_negative_slack(text, "min")),
+        "unconstrained": [
+            side
+            for side, kind in (("setup", "max"), ("hold", "min"))
+            if _unconstrained(text, kind)
+        ],
     }
     if plan["corners"]:
         timing["corners"] = openroad_corners.parse_corner_timing(
@@ -1187,12 +1201,21 @@ def _round_timing(text: str, round_: int, plan: dict) -> dict:
     return timing
 
 
-def _timing_met(timing: dict) -> bool | None:
-    """Whether setup and hold worst slack are non-negative on every corner (the worst over corners is reported); None when either is missing."""
-    setup, hold = timing["wns_setup_ps"], timing["wns_hold_ps"]
-    if setup is None or hold is None:
+def _timing_met(timing: dict, sides) -> bool | None:
+    """Whether the worst slack of each of `sides` (`setup`, `hold`: the ones the rounds repair) is non-negative on every corner (the worst over corners is reported); None when one is missing.
+
+    An unconstrained side is met. With no side (a repair-design-only block) timing never stops the round.
+    """
+    if not sides:
+        return False
+    slacks = [
+        timing[f"wns_{side}_ps"]
+        for side in sides
+        if side not in timing["unconstrained"]
+    ]
+    if any(slack is None for slack in slacks):
         return None
-    return setup >= 0 and hold >= 0
+    return all(slack >= 0 for slack in slacks)
 
 
 def _report_lines(path: str) -> int:
@@ -1235,7 +1258,7 @@ def _carry_checkpoint(run_dir: str, plan: dict) -> None:
 def run_post_route_repair(run_dir: str, session, *, run_name: str) -> PostRouteOutcome:
     """Run the post-route repair stage's sessions from the scripts and plan in `run_dir`.
 
-    `session(path, label)` runs OpenROAD on one script and returns its exit code, stderr, resources and log. Round k's first session extracts the latest routed database and times every corner. The rounds stop when setup and hold worst slack are non-negative on every corner, when that timing cannot be read, or when a round's detailed route has DRC violations; otherwise round k's second session repairs on its SPEF, routes and writes the stage's checkpoint, which the next round starts from. When no round repaired, the stage's checkpoint is the detailed route's. A session that fails, logs an `[ERROR` line or exits without ending its step ends the stage there. A `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint.
+    `session(path, label)` runs OpenROAD on one script and returns its exit code, stderr, resources and log. Round k's first session extracts the latest routed database and times every corner. The rounds stop when the worst slack of each side they repair (setup with `setup-margin` set, hold with `hold-margin` set) is non-negative on every corner or unconstrained, when that timing cannot be read, or when a round's detailed route has DRC violations; otherwise round k's second session repairs on its SPEF, routes and writes the stage's checkpoint, which the next round starts from. When no round repaired, the stage's checkpoint is the detailed route's. A session that fails, logs an `[ERROR` line or exits without ending its step ends the stage there. A `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint.
     """
     plan = json.loads(Path(run_dir, POST_ROUTE_PLAN).read_text())
     sections: list[bytes] = []
@@ -1289,7 +1312,7 @@ def run_post_route_repair(run_dir: str, session, *, run_name: str) -> PostRouteO
         if returncode != 0 or problem is not None or errors:
             return _outcome(returncode, stderr, problem)
         timing = _round_timing(sections[-1].decode(errors="replace"), round_, plan)
-        met = _timing_met(timing)
+        met = _timing_met(timing, plan["sides"])
         fields = {
             "round": round_,
             "rounds": len(rounds),
@@ -2284,6 +2307,7 @@ class OpenRoadPnr:
         source = self._predecessor(POST_ROUTE_REPAIR_STAGE)
         return {
             "rounds": rounds,
+            "sides": list(repair.sides()),
             "report": report,
             "ps_per_unit": self._ps_per_unit,
             "corners": list(self._corners),
@@ -4324,14 +4348,12 @@ class OpenRoadPnr:
                 platform = platform.with_run_placement(
                     self.pnr_cfg.get_placement(), self.pnr_cfg.get_name()
                 )
-            run_repairs = (
+            # Always, so an incomplete merged repair block fails here, as a setup error.
+            platform = platform.with_run_repairs(
                 self.pnr_cfg.global_route_repair,
                 self.pnr_cfg.post_route_repair,
+                self.pnr_cfg.get_name(),
             )
-            if any(layer is not UNSET for layer in run_repairs):
-                platform = platform.with_run_repairs(
-                    *run_repairs, self.pnr_cfg.get_name()
-                )
             fp = self.pnr_cfg.get_floorplan()
             if fp.macros_file is not None or fp.pins_file is not None:
                 self.pnr_cfg = replace(

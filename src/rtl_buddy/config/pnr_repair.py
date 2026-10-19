@@ -1,6 +1,6 @@
 """Timing-repair knobs of `rb pnr`: `global-route-repair` and `post-route-repair`, set on a P&R platform and overridden by a run field by field, and the run's `mode`.
 
-A block is read in two steps. :func:`read_global_route_repair` and :func:`read_post_route_repair` turn one level's YAML into a layer: the keys it writes, validated, with `null` kept as a value (skip that repair), or `None` for a block written as `null` (off). :func:`resolve_global_route_repair` and :func:`resolve_post_route_repair` merge the platform's layer and the run's into the repair the flow runs.
+A block is read in two steps. :func:`read_global_route_repair` and :func:`read_post_route_repair` turn one level's YAML into a layer: the keys it writes, validated, with `null` kept as a value (skip that repair), or `None` for a block written as `null` (off). :func:`resolve_global_route_repair` and :func:`resolve_post_route_repair` merge the platform's layer and the run's into the repair the flow runs. Rules about the whole block (it must repair something; several rounds need a margin) apply only there, to the merged block a run uses, so a platform may set part of a block that its runs complete.
 """
 
 import math
@@ -113,6 +113,17 @@ class PostRouteRepair:
     rounds: int = 1
     margin_step: float = 0.0
 
+    def sides(self) -> tuple[str, ...]:
+        """The timing sides the rounds repair, `setup` and `hold`, in that order: each whose margin is set."""
+        return tuple(
+            side
+            for side, margin in (
+                ("setup", self.setup_margin),
+                ("hold", self.hold_margin),
+            )
+            if margin is not None
+        )
+
     def margins(self, round_: int) -> tuple[float | None, float | None]:
         """The setup and hold margins of round `round_` (from 1): each set margin plus `margin-step` for every earlier round."""
         step = self.margin_step * (round_ - 1)
@@ -127,8 +138,16 @@ def _fmt(value: float) -> str:
     return f"{value:.10g}"
 
 
-def _number(where: str, key: str, value, *, low: float, high: float | None = None):
-    """Return `value` as a float in [low, high], or raise naming `key`."""
+def _number(
+    where: str,
+    key: str,
+    value,
+    *,
+    low: float,
+    high: float | None = None,
+    nullable: bool = True,
+):
+    """Return `value` as a float in [low, high], or raise naming `key` and, when `nullable`, that `null` is accepted too."""
     if isinstance(value, str):
         try:
             value = float(value)
@@ -142,8 +161,9 @@ def _number(where: str, key: str, value, *, low: float, high: float | None = Non
         or (high is not None and value > high)
     ):
         bound = f"from {low:g} to {high:g}" if high is not None else f">= {low:g}"
+        alternative = " or null" if nullable else ""
         raise FatalRtlBuddyError(
-            f"{where}.{key} must be a number {bound} or null, got {value!r}"
+            f"{where}.{key} must be a number {bound}{alternative}, got {value!r}"
         )
     return float(value)
 
@@ -261,7 +281,9 @@ def read_post_route_repair(where: str, raw):
             raise FatalRtlBuddyError(
                 f"{where}.margin-step must be a number >= 0, got null"
             )
-        layer["margin_step"] = _number(where, "margin-step", step, low=0.0)
+        layer["margin_step"] = _number(
+            where, "margin-step", step, low=0.0, nullable=False
+        )
     return layer
 
 
@@ -310,17 +332,27 @@ def resolve_global_route_repair(where: str, layers) -> GlobalRouteRepair | None:
 
 
 def resolve_post_route_repair(where: str, layers) -> PostRouteRepair | None:
-    """The post-route repair `layers` (platform first, then run) configure, or None when off."""
+    """The post-route repair `layers` (platform first, then run) configure, or None when off.
+
+    More than one round needs a setup or hold margin: the rounds stop when the sides they repair are met, and a block without either has no such side.
+    """
     merged = _merge(layers)
     if merged is None:
         return None
-    return PostRouteRepair(
+    repair = PostRouteRepair(
         repair_design=_repairs(where, "post-route-repair", merged),
         setup_margin=merged.get("setup_margin"),
         hold_margin=merged.get("hold_margin"),
         rounds=merged.get("rounds", 1),
         margin_step=merged.get("margin_step", 0.0),
     )
+    if repair.rounds > 1 and not repair.sides():
+        raise FatalRtlBuddyError(
+            f"{where}: post-route-repair.rounds is {repair.rounds}, but the block "
+            "sets no setup-margin or hold-margin: the rounds stop once the sides "
+            "they repair meet timing, so a repair-design-only block runs one round"
+        )
+    return repair
 
 
 #: The layer `global-route-hold-repair: true` stands for: a hold-only repair with no margin.

@@ -194,7 +194,7 @@ class PnrPlatformConfig:
         )
 
     def _read_repairs(self, cfg: PnrPlatformConfigFile) -> None:
-        """Read the platform's repair blocks into layers a run's blocks go over, and resolve them alone."""
+        """Read the platform's repair blocks into layers a run's blocks go over. They are resolved per run (see `with_run_repairs`), so a partial platform block fails only the runs that leave it partial."""
         where = f"pnr platform '{self._name}'"
         gr_layer = read_global_route_repair(where, cfg.global_route_repair)
         if cfg.global_route_hold_repair:
@@ -209,24 +209,23 @@ class PnrPlatformConfig:
         self._post_route_repair_layer = read_post_route_repair(
             where, cfg.post_route_repair
         )
-        self._global_route_repair: GlobalRouteRepair | None = None
-        self._post_route_repair: PostRouteRepair | None = None
-        self._resolve_repairs(UNSET, UNSET, where)
+        # Resolved on first use, or by `with_run_repairs`.
+        self._repairs: (
+            tuple[GlobalRouteRepair | None, PostRouteRepair | None] | None
+        ) = None
 
     def _resolve_repairs(self, gr_run, pr_run, where: str) -> None:
-        self._global_route_repair = resolve_global_route_repair(
-            where, [self._global_route_repair_layer, gr_run]
-        )
-        self._post_route_repair = resolve_post_route_repair(
-            where, [self._post_route_repair_layer, pr_run]
+        self._repairs = (
+            resolve_global_route_repair(
+                where, [self._global_route_repair_layer, gr_run]
+            ),
+            resolve_post_route_repair(where, [self._post_route_repair_layer, pr_run]),
         )
 
     def with_run_repairs(
         self, global_route_repair, post_route_repair, run: str
     ) -> "PnrPlatformConfig":
-        """Return this platform with a P&R run's repair layers (see `pnr_repair`) over its own, field by field."""
-        if global_route_repair is UNSET and post_route_repair is UNSET:
-            return self
+        """Return this platform with a P&R run's repair layers (see `pnr_repair`) over its own, field by field; raise when the merged block is incomplete."""
         resolved = copy.copy(self)
         resolved._resolve_repairs(
             global_route_repair,
@@ -234,6 +233,11 @@ class PnrPlatformConfig:
             f"pnr run '{run}' on platform '{self._name}'",
         )
         return resolved
+
+    def _resolved_repairs(self):
+        if self._repairs is None:
+            self._resolve_repairs(UNSET, UNSET, f"pnr platform '{self._name}'")
+        return self._repairs
 
     def _resolve_placement(
         self, layers: list[PlacementFile], where: str, levels: str
@@ -449,11 +453,11 @@ class PnrPlatformConfig:
 
     def get_global_route_repair(self) -> GlobalRouteRepair | None:
         """The repair after global route, platform under run, or None when off."""
-        return self._global_route_repair
+        return self._resolved_repairs()[0]
 
     def get_post_route_repair(self) -> PostRouteRepair | None:
         """The repair rounds after detailed route, platform under run, or None when off."""
-        return self._post_route_repair
+        return self._resolved_repairs()[1]
 
     def get_routing_layer_adjustment(self) -> float | None:
         """Global-route capacity adjustment, 0 to 1, or `None` for the router's default."""

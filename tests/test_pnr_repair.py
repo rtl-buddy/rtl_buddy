@@ -120,7 +120,8 @@ def test_a_run_turns_a_platform_repair_off_with_null_and_on_without_one():
     )
     assert off.get_global_route_repair() is None
     assert off.get_post_route_repair() == PostRouteRepair(setup_margin=0.0)
-    assert platform.with_run_repairs(UNSET, UNSET, "r") is platform
+    alone = platform.with_run_repairs(UNSET, UNSET, "r")
+    assert alone.get_global_route_repair() == platform.get_global_route_repair()
 
 
 def test_the_hold_repair_shorthand_is_a_hold_only_global_route_repair():
@@ -136,14 +137,77 @@ def test_the_shorthand_and_the_block_together_are_refused():
     assert "'pl'" in str(exc.value)
 
 
-def test_a_block_that_repairs_nothing_is_refused():
-    with pytest.raises(FatalRtlBuddyError, match="post-route-repair repairs nothing"):
-        _platform(post_route_repair={"rounds": 3})
+def test_a_block_that_repairs_nothing_is_refused_where_a_run_uses_it():
+    platform = _platform(post_route_repair={"rounds": 1})
+    with pytest.raises(
+        FatalRtlBuddyError,
+        match="pnr run 'r' on platform 'pl': post-route-repair repairs nothing",
+    ):
+        platform.with_run_repairs(UNSET, UNSET, "r")
+    with pytest.raises(FatalRtlBuddyError, match="pnr platform 'pl': post-route"):
+        platform.get_post_route_repair()
     platform = _platform(global_route_repair={"setup-margin": 0.1})
     with pytest.raises(FatalRtlBuddyError, match="global-route-repair repairs nothing"):
         platform.with_run_repairs(
             read_global_route_repair("run", {"setup-margin": None}), UNSET, "r"
         )
+
+
+def test_a_partial_platform_block_loads_and_a_run_completes_it():
+    platform = _platform(
+        global_route_repair={"reroute": "full"},
+        post_route_repair={"rounds": 3, "margin-step": 0.05},
+    )
+    resolved = platform.with_run_repairs(
+        read_global_route_repair("run", {"hold-margin": 0.01}),
+        read_post_route_repair("run", {"setup-margin": 0.1}),
+        "r",
+    )
+    assert resolved.get_global_route_repair() == GlobalRouteRepair(
+        hold_margin=0.01, reroute=Reroute.FULL
+    )
+    assert resolved.get_post_route_repair() == PostRouteRepair(
+        setup_margin=0.1, rounds=3, margin_step=0.05
+    )
+
+
+def test_a_root_config_with_a_partial_platform_block_loads(minimal_project):
+    from test_config_pnr_unknown_keys import PDK_ALL, _with_root_blocks
+
+    from rtl_buddy.config.root import RootConfig
+
+    _with_root_blocks(
+        minimal_project,
+        [PDK_ALL],
+        [
+            {
+                "name": "pl1",
+                "pdk": "pdk1",
+                "corner": "typ",
+                "cts-buffer": "b",
+                "routing-layers": {"signal": "m2-m6", "clock": "m4"},
+                "global-route-repair": {"reroute": "full"},
+                "post-route-repair": {"rounds": 3, "margin-step": 0.05},
+            }
+        ],
+    )
+
+    cfg = RootConfig(name="partial")
+
+    assert sorted(cfg.pnr_platform_cfgs) == ["pl1"]
+
+
+def test_several_rounds_need_a_margin():
+    platform = _platform(post_route_repair={"repair-design": {}, "rounds": 2})
+    with pytest.raises(
+        FatalRtlBuddyError,
+        match="post-route-repair.rounds is 2, but the block sets no setup-margin",
+    ):
+        platform.with_run_repairs(UNSET, UNSET, "r")
+    one = _platform(post_route_repair={"repair-design": {}})
+    assert one.get_post_route_repair().sides() == ()
+    both = _platform(post_route_repair={"hold-margin": 0, "rounds": 2})
+    assert both.get_post_route_repair().sides() == ("hold",)
 
 
 @pytest.mark.parametrize(
@@ -164,6 +228,10 @@ def test_a_block_that_repairs_nothing_is_refused():
         ({"setup-margin": 0, "rounds": 0}, "rounds must be a positive integer"),
         ({"setup-margin": 0, "rounds": 1.5}, "rounds must be a positive integer"),
         ({"setup-margin": 0, "margin-step": None}, "margin-step must be a number"),
+        (
+            {"setup-margin": 0, "margin-step": -1},
+            r"margin-step must be a number >= 0, got -1$",
+        ),
     ],
 )
 def test_a_bad_post_route_value_is_refused_naming_the_key(block, words):
@@ -263,8 +331,9 @@ def test_global_route_repair_passes_margins_in_the_liberty_unit(
         f'(setup margin 0.2 ns in Liberty time unit {unit})"\n'
         f"repair_timing -setup -setup_margin {setup}\n"
         f'puts ">>> Global-route repair: repair_timing -hold -hold_margin {hold} '
-        f'(hold margin 0.05 ns in Liberty time unit {unit})"\n'
-        f"repair_timing -hold -hold_margin {hold}\n"
+        f"-setup_margin {setup} (hold margin 0.05 ns, setup margin 0.2 ns in Liberty "
+        f'time unit {unit})"\n'
+        f"repair_timing -hold -hold_margin {hold} -setup_margin {setup}\n"
         "global_route -start_incremental\n"
         "detailed_placement\n" + _END_INCREMENTAL_CMD + "check_placement -verbose\n"
     ) in text
@@ -272,6 +341,48 @@ def test_global_route_repair_passes_margins_in_the_liberty_unit(
     assert text.index(
         "check_placement -verbose\n", text.index("Global-route repair")
     ) < (text.index(">>> Detail route"))
+
+
+@pytest.mark.parametrize(
+    "block, hold_line",
+    [
+        (
+            {"setup-margin": 0.2, "hold-margin": 0},
+            "repair_timing -hold -setup_margin 200 (hold margin 0 ns, setup margin "
+            "0.2 ns in Liberty time unit 1ps)",
+        ),
+        (
+            {"setup-margin": 0, "hold-margin": 0.05},
+            "repair_timing -hold -hold_margin 50 (hold margin 0.05 ns, setup margin "
+            "0 ns in Liberty time unit 1ps)",
+        ),
+        (
+            {"setup-margin": 0, "hold-margin": 0},
+            "repair_timing -hold (hold margin 0 ns, setup margin 0 ns)",
+        ),
+        (
+            {"hold-margin": 0.05},
+            "repair_timing -hold -hold_margin 50 (hold margin "
+            "0.05 ns in Liberty time unit 1ps)",
+        ),
+    ],
+)
+def test_the_hold_repair_keeps_a_set_setup_margin(tmp_path, block, hold_line):
+    text = _render(tmp_path, _real_platform(tmp_path, global_route_repair=block))
+    command = hold_line.split(" (")[0]
+    assert f'puts ">>> Global-route repair: {hold_line}"\n{command}\n' in text
+
+
+def test_the_hold_repair_shorthand_renders_as_before(tmp_path):
+    text = _render(tmp_path, _real_platform(tmp_path, global_route_hold_repair=True))
+    assert (
+        'puts ">>> Global-route repair (reroute incremental)"\n'
+        "estimate_parasitics -global_routing\n"
+        'puts ">>> Global-route repair: repair_timing -hold (hold margin 0 ns)"\n'
+        "repair_timing -hold\n"
+        "global_route -start_incremental\n"
+    ) in text
+    assert "setup_margin" not in text
 
 
 def test_a_full_reroute_routes_again_after_legalizing(tmp_path):
@@ -294,7 +405,7 @@ def test_a_run_repair_overrides_the_platform_in_the_flow(tmp_path):
     gr = read_global_route_repair("run", {"setup-margin": 0.1})
     text = _render(tmp_path, platform.with_run_repairs(gr, UNSET, "r"))
     setup = text.index("repair_timing -setup -setup_margin 100\n")
-    assert setup < text.index("repair_timing -hold\n", setup)
+    assert setup < text.index("repair_timing -hold -setup_margin 100\n", setup)
 
 
 def test_a_probe_skips_timing_repair_and_stops_after_global_route(tmp_path):
@@ -321,9 +432,11 @@ def test_a_probe_skips_timing_repair_and_stops_after_global_route(tmp_path):
 
 # -- runs under the stub harness -------------------------------------------------
 
-# Each round's extraction session reports the round's setup slack from
-# `RB_STUB_SETUP` (one value per round, in the Liberty unit) and a hold slack
-# of 0; `RB_STUB_DRC=<round>` makes that round's detailed route report a violation.
+# Each round's extraction session reports the round's setup and hold worst
+# slack from `RB_STUB_SETUP` and `RB_STUB_HOLD` (one value per round, in the
+# Liberty unit; hold defaults to 0), and each corner's from
+# `RB_STUB_SETUP_<corner>` and `RB_STUB_HOLD_<corner>`; `RB_STUB_DRC=<round>`
+# makes that round's detailed route report a violation.
 _ROUND_STUBS = r"""
 proc rb_round {} {
     global argv
@@ -332,16 +445,30 @@ proc rb_round {} {
     }
     return 0
 }
+proc rb_slack {var {default ""}} {
+    global env
+    if {![info exists env($var)]} { return $default }
+    return [lindex $env($var) [expr {[rb_round] - 1}]]
+}
 proc report_worst_slack {args} {
     global env
     set round [rb_round]
     if {$round == 0 || ![info exists env(RB_STUB_SETUP)]} { return }
     if {[lsearch $args -max] >= 0} {
-        puts "worst slack max [lindex $env(RB_STUB_SETUP) [expr {$round - 1}]]"
+        puts "worst slack max [rb_slack RB_STUB_SETUP]"
     } else {
-        puts "worst slack min 0.0"
+        puts "worst slack min [rb_slack RB_STUB_HOLD 0.0]"
     }
 }
+namespace eval sta {}
+set sta_report_default_digits 2
+proc sta::find_scene {name} { return $name }
+proc sta::format_time {value digits} { return $value }
+proc sta::worst_slack_scene {scene min_max} {
+    set kind [expr {$min_max eq "max" ? "SETUP" : "HOLD"}]
+    return [rb_slack RB_STUB_${kind}_$scene 0.0]
+}
+proc sta::total_negative_slack_scene_cmd {scene min_max} { return 0.0 }
 proc report_tns {args} {
     global env
     if {[rb_round] == 0} { return }
@@ -364,7 +491,7 @@ proc detailed_route {args} {
 """
 
 
-def _rcx_pdk(tmp_path) -> PdkConfig:
+def _rcx_pdk(tmp_path, corners=None) -> PdkConfig:
     (tmp_path / "pdk").mkdir(exist_ok=True)
     (tmp_path / "pdk" / "rcx.rules").write_text("rules\n")
     base = _pdk(tmp_path)
@@ -372,7 +499,7 @@ def _rcx_pdk(tmp_path) -> PdkConfig:
         PdkConfigFile(
             name="nangate45",
             site=base.get_site(),
-            corners={"typ": "pdk/lib/typ.lib"},
+            corners=corners or {"typ": "pdk/lib/typ.lib"},
             tech_lef="pdk/lef/tech.lef",
             macro_lef="pdk/lef/cells.lef",
             tie_hi="LOGIC1_X1/Z",
@@ -386,10 +513,13 @@ def _rcx_pdk(tmp_path) -> PdkConfig:
     )
 
 
-def _with_repair(backend, tmp_path, *, post_route=None, rcx=True) -> None:
-    """Give a stub-harness backend a platform whose `post-route-repair` is `post_route`, and the round stubs."""
-    pdk = _rcx_pdk(tmp_path) if rcx else _pdk(tmp_path)
+def _with_repair(backend, tmp_path, *, post_route=None, rcx=True, corners=None) -> None:
+    """Give a stub-harness backend a platform whose `post-route-repair` is `post_route`, and the round stubs. `corners` makes it a multi-corner platform."""
+    pdk_corners = {c: "pdk/lib/typ.lib" for c in corners} if corners else None
+    pdk = _rcx_pdk(tmp_path, pdk_corners) if rcx else _pdk(tmp_path)
     extra = {"post_route_repair": post_route} if post_route is not None else {}
+    if corners:
+        extra["sta_corners"] = list(corners)
     backend.root_cfg.get_pnr_platform_cfg.return_value = _platform(pdk, **extra)
     (tmp_path / "harness.tcl").write_text(
         _HARNESS.replace(
@@ -407,6 +537,7 @@ def _repair_backend(
     rcx=True,
     stages=False,
     env=None,
+    corners=None,
     **options,
 ):
     """A stub-harness backend whose platform sets `post_route` as its `post-route-repair`."""
@@ -414,7 +545,7 @@ def _repair_backend(
     backend, artefacts = _backend(
         tmp_path, monkeypatch, pnr_cfg=pnr_cfg, env=env, stages=stages, **options
     )
-    _with_repair(backend, tmp_path, post_route=post_route, rcx=rcx)
+    _with_repair(backend, tmp_path, post_route=post_route, rcx=rcx, corners=corners)
     return backend, artefacts
 
 
@@ -558,6 +689,136 @@ def test_unreadable_timing_stops_the_rounds(tmp_path, monkeypatch):
     (only,) = _rounds(run_dir)
     assert only["wns_setup_ps"] is None and only["repair"] is False
     assert _done(run_dir)["reason"] == "timing was not reported"
+
+
+def test_negative_hold_repairs_when_the_block_repairs_hold(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={"hold-margin": 0.01, "rounds": 3, "margin-step": 0.01},
+        env={"RB_STUB_SETUP": "-0.5 -0.5 -0.5", "RB_STUB_HOLD": "-0.02 -0.01 0.0"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    rounds = _rounds(run_dir)
+    # Setup is not repaired, so its violation does not keep the rounds going.
+    assert [r["repair"] for r in rounds] == [True, True, False]
+    assert [r["wns_hold_ps"] for r in rounds] == [-20.0, -10.0, 0.0]
+    assert [r["hold_margin_ns"] for r in rounds] == [0.01, 0.02, None]
+    assert [r["setup_margin_ns"] for r in rounds] == [None, None, None]
+    assert _done(run_dir)["reason"] == "timing met"
+    r1 = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
+    assert "\nrepair_timing -hold -hold_margin 0.01\n" in r1
+    assert "repair_timing -setup" not in r1
+
+
+def test_a_side_the_block_does_not_repair_does_not_start_a_round(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        env={"RB_STUB_SETUP": "0.01 0.01 0.01", "RB_STUB_HOLD": "-0.2 -0.2 -0.2"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    (only,) = _rounds(run_dir)
+    assert only["repair"] is False and only["wns_hold_ps"] == -200.0
+    assert _done(run_dir) | {"reason": "timing met", "repaired_rounds": 0} == _done(
+        run_dir
+    )
+
+
+def test_an_unconstrained_side_counts_as_met(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={"setup-margin": 0, "hold-margin": 0, "rounds": 2},
+        env={"RB_STUB_SETUP": "-0.1 0.0", "RB_STUB_HOLD": "INF INF"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    rounds = _rounds(run_dir)
+    assert [r["repair"] for r in rounds] == [True, False]
+    assert [r["unconstrained"] for r in rounds] == [["hold"], ["hold"]]
+    assert [r["wns_hold_ps"] for r in rounds] == [None, None]
+    assert _done(run_dir)["reason"] == "timing met"
+
+
+def test_a_repair_design_only_block_repairs_once(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={"repair-design": {"slew-margin": 10}},
+        env={"RB_STUB_SETUP": "0.5"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    (only,) = _rounds(run_dir)
+    assert only["repair"] is True
+    assert _done(run_dir)["repaired_rounds"] == 1
+    r1 = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
+    assert "\nrepair_design -slew_margin 10\n" in r1
+    assert not re.search(r"^repair_timing", r1, re.MULTILINE)
+
+
+def test_a_partial_platform_block_fails_only_the_run_that_leaves_it_partial(
+    tmp_path, monkeypatch
+):
+    backend, _artefacts = _repair_backend(
+        tmp_path, monkeypatch, post_route={"rounds": 3, "margin-step": 0.05}
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert res.results["fail_stage"] == "setup"
+    assert "post-route-repair repairs nothing" in res.results["desc"]
+
+
+def test_multi_corner_rounds_time_each_corner_on_its_own_spef_read(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={"setup-margin": 0, "hold-margin": 0, "rounds": 3},
+        corners=["ss", "ff"],
+        env={
+            "RB_STUB_SETUP": "-0.3 0.1",
+            "RB_STUB_HOLD": "0.05 -0.02",
+            "RB_STUB_SETUP_ss": "-0.3 0.1",
+            "RB_STUB_SETUP_ff": "0.4 0.5",
+            "RB_STUB_HOLD_ss": "0.2 0.2",
+            "RB_STUB_HOLD_ff": "0.05 -0.02",
+        },
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    rounds = _rounds(run_dir)
+    # Round 2 meets setup on every corner, but hold fails at ff.
+    assert [r["repair"] for r in rounds] == [True, True, False]
+    assert rounds[0]["corners"]["ss"]["wns_setup_ps"] == -300.0
+    assert rounds[1]["corners"]["ff"]["wns_hold_ps"] == -20.0
+    for script in ("r1.extract", "r1.repair"):
+        text = (run_dir / f"06_post_route_repair.{script}.tcl").read_text()
+        assert re.search(r"^read_spef -corner ss .*\.r1\.spef\]$", text, re.MULTILINE)
+        assert re.search(r"^read_spef -corner ff .*\.r1\.spef\]$", text, re.MULTILINE)
+        assert not re.search(r"^read_spef \[", text, re.MULTILINE)
 
 
 def test_a_round_with_drc_violations_stops_the_rounds(tmp_path, monkeypatch):

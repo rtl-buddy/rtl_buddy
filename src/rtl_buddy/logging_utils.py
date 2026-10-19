@@ -2105,10 +2105,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             def _ns(ps):
                 return "n/a" if ps is None else f"{ps / 1000:.3f} ns"
 
+            def _wns(side):
+                if side in (fields.get("unconstrained") or ()):
+                    return "unconstrained"
+                return _ns(fields.get(f"wns_{side}_ps"))
+
             timing = (
-                f"setup WNS {_ns(fields.get('wns_setup_ps'))} "
+                f"setup WNS {_wns('setup')} "
                 f"TNS {_ns(fields.get('tns_ps'))}, "
-                f"hold WNS {_ns(fields.get('wns_hold_ps'))} "
+                f"hold WNS {_wns('hold')} "
                 f"TNS {_ns(fields.get('tns_hold_ps'))}"
             )
             if fields.get("repair"):
