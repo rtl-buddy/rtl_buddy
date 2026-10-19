@@ -873,6 +873,28 @@ def test_a_dispatched_eco_round_that_cannot_rebuffer_names_reroute_full(
     assert "set post-route-repair.reroute: full" in res.results["desc"]
 
 
+def test_an_eco_round_that_ends_early_after_rsz_0074_names_reroute_full(
+    tmp_path, monkeypatch
+):
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_PR, "rounds": 1},
+        env={"RB_STUB_SETUP": "-0.2", "RB_STUB_RSZ0074": "1"},
+    )
+    # The round logs the error and exits 0, before its end.
+    harness = tmp_path / "harness.tcl"
+    text = harness.read_text()
+    assert text.count('error "RSZ-0074"') == 1
+    harness.write_text(text.replace('error "RSZ-0074"', "exit 0"))
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert "before the end of round 1" in res.results["desc"]
+    assert "set post-route-repair.reroute: full" in res.results["desc"]
+
+
 def test_an_eco_round_overrides_design_is_routed_around_its_repairs_only(
     tmp_path, monkeypatch
 ):
