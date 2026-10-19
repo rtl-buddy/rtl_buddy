@@ -103,7 +103,6 @@ proc rb::pins::nearest_edge {die x y} {
 # `RB-FLOORPLAN-PIN: x0 y0 x1 y1 layer name` line in DBU, which rb compares
 # with the routed DEF.
 proc rb::pins::place {where pattern x y layer size {snap 1}} {
-    variable track
     set matched [ports $where $pattern]
     if {[llength $matched] != 1} {
         error "$where: '$pattern' matches [llength $matched] ports; a location places exactly one (floorplan.pins)"

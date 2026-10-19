@@ -651,6 +651,27 @@ def _macro_directives_block(fp: PnrFloorplan) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _no_macros_block(fp: PnrFloorplan) -> str:
+    """Return the `else` of the macro branch that fails the run when entries locate macros but the netlist has none, or "" when no entry has a location.
+
+    It names up to three located entries.
+    """
+    located = [
+        f"{macro.label or f'floorplan.macros[{index}]'} ({macro.instance})"
+        for index, macro in enumerate(fp.macros)
+        if macro.location is not None
+    ]
+    if not located:
+        return ""
+    more = f", +{len(located) - 3} more" if len(located) > 3 else ""
+    entries = "1 entry gives" if len(located) == 1 else f"{len(located)} entries give"
+    message = (
+        f"floorplan.macros: the netlist has no hard macros, but {entries} a macro "
+        f"location: {', '.join(located[:3])}{more}"
+    )
+    return f" else {{\n  error {{{message}}}\n}}"
+
+
 _PACK_PLACEMENT = """\
   set core [$block getCoreArea]
   set halo_dbu [expr {{int(round([ord::microns_to_dbu $MACRO_HALO]))}}]
@@ -731,10 +752,8 @@ class GlobalPlacementBlocks:
 
 
 def _may_rotate(fp: PnrFloorplan) -> bool:
-    """Whether a macro can end up turned by 90 degrees: a directive orients one so, or RTL-MP places them."""
-    return fp.macro_placement is MacroPlacement.RTL_MP or any(
-        macro.orientation in ROTATED_ORIENTATIONS for macro in fp.macros
-    )
+    """Whether a `floorplan.macros` or macros-file entry turns a macro by 90 degrees; RTL-MP only flips macros."""
+    return any(macro.orientation in ROTATED_ORIENTATIONS for macro in fp.macros)
 
 
 def _global_placement_blocks(
@@ -771,7 +790,7 @@ def _global_placement_blocks(
         if block_rotated:
             lines.append(
                 "lappend RB_GP_BLOCKAGES "
-                "{*}[rb::rotated::block_footprints $block $rb_rotated_macros]"
+                "{*}[rb::rotated::block_footprints $block $rb_rotated_macros $site_grid_dbu]"
             )
         destroy = (
             "foreach rb_blockage $RB_GP_BLOCKAGES { odb::dbBlockage_destroy $rb_blockage }\n"
@@ -1067,6 +1086,7 @@ class OpenRoadPnr:
             "macro_directives_block": _macro_directives_block(fp),
             "initialize_floorplan": _initialize_floorplan_tcl(fp),
             "macro_place_block": _macro_place_block(fp, macro_pack_directives),
+            "no_macros_block": _no_macros_block(fp),
             "blockages_block": blockages_block,
             "dont_use_block": dont_use_block,
             "dont_use_check_block": dont_use_check_block,
@@ -2112,15 +2132,18 @@ class OpenRoadPnr:
             f"({', '.join(causes)}); see {_NO_WIRE_RC_DOCS}"
         )
 
-    def _fail_after_openroad(self, desc: str) -> PnrFailResults:
+    def _fail_after_openroad(
+        self, desc: str, fail_stage: str | None = None
+    ) -> PnrFailResults:
         """Return a FAIL for a run that already invoked OpenROAD, after removing its outputs.
 
-        OpenROAD may leave a partial `<top>.routed.odb`, which `rb power` would accept by existence. Every post-OpenROAD failure return must go through here.
+        OpenROAD may leave a partial `<top>.routed.odb`, which `rb power` would accept by existence. Every post-OpenROAD failure return must go through here. `fail_stage` marks a failure that is not a verdict on the design, so `xfail:` does not excuse it.
         """
         self._clear_stale_outputs()
         return PnrFailResults(
             name=self.name + "/results",
             desc=desc,
+            fail_stage=fail_stage,
             fields={
                 **self._blocks_fields(),
                 **self._threads_fields(),
@@ -2955,7 +2978,8 @@ class OpenRoadPnr:
                 desc=desc,
                 log=log_path,
             )
-            return self._fail_after_openroad(desc)
+            # `fail_stage` keeps an `xfail:` from excusing pin entries that do not cover the ports.
+            return self._fail_after_openroad(desc, fail_stage="pins_complete")
 
         if result.returncode != 0:
             log_event(

@@ -92,7 +92,7 @@ if {[llength $macros] > 0} {
         [expr {[$bbox xMax] + $halo_x_dbu}] [expr {[$bbox yMax] + $halo_y_dbu}] \
         $inst
   }
-}
+}{{ no_macros_block }}
 {{ tapcell_block }}{{ pdn_block }}
 # Pins are placed after the macros and power grid so the pin placer sees placed
 # macros (unplaced ones raise PPL-0015). `place_pins` only avoids boundary

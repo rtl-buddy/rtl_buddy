@@ -422,6 +422,8 @@ def test_unset_keys_add_nothing_around_global_placement(tmp_path):
     for fp in (
         _floorplan(),
         _floorplan(macros=[PnrMacro("u_a", location=(1.0, 2.0), orientation="MX")]),
+        # RTL-MP only flips macros, so it alone turns none.
+        _floorplan(macro_placement=MacroPlacement.RTL_MP),
     ):
         text = _render(tmp_path, fp)
         assert "RB_GP_BLOCKAGES" not in text
@@ -435,16 +437,20 @@ def test_unset_keys_add_nothing_around_global_placement(tmp_path):
     "fp",
     [
         _floorplan(macros=[PnrMacro("u_a", location=(1.0, 2.0), orientation="R270")]),
-        _floorplan(macro_placement=MacroPlacement.RTL_MP),
+        _floorplan(
+            macro_placement=MacroPlacement.RTL_MP,
+            macros=[PnrMacro("u_a", location=(1.0, 2.0), orientation="R90")],
+        ),
     ],
-    ids=["rotated-directive", "rtl-mp"],
+    ids=["pack", "rtl-mp"],
 )
 def test_rotated_footprint_block_blocks_it_for_global_placement_only(tmp_path, fp):
     text = _render(tmp_path, fp)
 
     assert "set rb_rotated_macros [rb::rotated::macros $macros]" in text
     assert (
-        "lappend RB_GP_BLOCKAGES {*}[rb::rotated::block_footprints $block $rb_rotated_macros]\n"
+        "lappend RB_GP_BLOCKAGES "
+        "{*}[rb::rotated::block_footprints $block $rb_rotated_macros $site_grid_dbu]\n"
         "global_placement -density"
     ) in text
     assert "RB_DPL_OPTIONS" not in text
@@ -473,6 +479,56 @@ def test_rotated_footprint_none_leaves_the_flow_alone(tmp_path):
     text = _render(tmp_path, fp, platform)
 
     assert "rb::rotated" not in text and "RB_DPL_OPTIONS" not in text
+
+
+def test_located_macros_fail_at_macro_placement_on_a_netlist_without_any(tmp_path):
+    fp = _floorplan(
+        macros=[
+            PnrMacro("u_a", location=(1.0, 2.0)),
+            PnrMacro("u_b*", orientation="MX"),
+            PnrMacro(
+                "u_c",
+                location=(3.0, 4.0),
+                label="floorplan.macros-file[0]",
+                exact=True,
+            ),
+        ]
+    )
+    text = _render(tmp_path, fp)
+
+    branch_end = (
+        "        $inst\n"
+        "  }\n"
+        "} else {\n"
+        "  error {floorplan.macros: the netlist has no hard macros, but 2 entries give "
+        "a macro location: floorplan.macros[0] (u_a), floorplan.macros-file[0] (u_c)}\n"
+        "}\n"
+    )
+    assert branch_end in text
+    assert text.index(branch_end) < text.index('puts ">>> IO pin placement"')
+
+
+def test_the_no_macros_failure_names_three_located_entries_and_counts_the_rest(
+    tmp_path,
+):
+    fp = _floorplan(
+        macros=[PnrMacro(f"u_{i}", location=(float(i), 1.0)) for i in range(5)]
+    )
+    assert (
+        "  error {floorplan.macros: the netlist has no hard macros, but 5 entries give "
+        "a macro location: floorplan.macros[0] (u_0), floorplan.macros[1] (u_1), "
+        "floorplan.macros[2] (u_2), +2 more}\n"
+    ) in _render(tmp_path, fp)
+
+
+def test_entries_without_a_location_leave_the_macro_branch_alone(tmp_path):
+    for fp in (
+        _floorplan(),
+        _floorplan(macros=[PnrMacro("u_a", orientation="MX", halo=(1.0, 1.0))]),
+    ):
+        text = _render(tmp_path, fp)
+        assert "the netlist has no hard macros" not in text
+        assert "        $inst\n  }\n}\n" in text
 
 
 # ── placement: on the PDK, platform and run ─────────────────────────────────
@@ -605,10 +661,12 @@ def _helper(name: str) -> str:
     ("args", "expected"),
     [
         # A 400 x 480 R90 macro at (100, 200): its unrotated footprint is 480 x 400.
-        ("100 200 480 400 0 0 {0 0 1000 1000}", "100 200 580 600"),
-        ("100 200 480 400 5 7 {0 0 1000 1000}", "95 193 585 607"),
-        ("100 200 480 400 5 7 {98 0 560 1000}", "98 193 560 607"),
-        ("100 200 480 400 0 0 {600 0 1000 1000}", ""),
+        ("100 200 480 400 0 0 {1 1} {0 0 1000 1000}", "100 200 580 600"),
+        ("100 200 480 400 5 7 {1 1} {0 0 1000 1000}", "95 193 585 607"),
+        # Outward to whole 10-DBU sites and 100-DBU rows from the core corner (3, 50).
+        ("100 200 480 400 5 7 {10 100} {3 50 1000 1000}", "93 150 593 650"),
+        ("100 200 480 400 5 7 {1 1} {98 0 560 1000}", "98 193 560 607"),
+        ("100 200 480 400 0 0 {1 1} {600 0 1000 1000}", ""),
     ],
 )
 def test_rotated_footprint_box(args, expected):
@@ -616,6 +674,81 @@ def test_rotated_footprint_box(args, expected):
         _helper("rotated_macros.tcl") + f"\nset result [rb::rotated::footprint {args}]"
     )
     assert result == expected
+
+
+# A stub database for `rb::rotated::block_footprints`: one macro `m`, whose master is
+# 4100 x 6050 DBU, at (`::llx`, `::lly`) in orientation `::orient`, in a core from
+# (500, 700) with 100-DBU sites and 1000-DBU rows.
+_FAKE_ROTATED = """
+rename puts rb_real_puts
+set ::printed {}
+proc puts {args} { lappend ::printed [lindex $args end] }
+namespace eval ord {}
+namespace eval odb {}
+proc ord::microns_to_dbu {um} { return [expr {$um * 1000}] }
+set ::created {}
+proc odb::dbBlockage_create {block args} {
+    lappend ::created [list $block {*}$args]
+    return "blockage[llength $::created]"
+}
+set MACRO_CELL_HALO 0.5
+set MACRO_CELL_HALOS {}
+proc fake_block {cmd} { return [dict get {getCoreArea fake_core} $cmd] }
+proc fake_core {cmd} {
+    return [dict get {xMin 500 yMin 700 xMax 100500 yMax 100700} $cmd]
+}
+proc fake_master {cmd} { return [dict get {getWidth 4100 getHeight 6050} $cmd] }
+proc fake_bbox {cmd} { return [dict get [list xMin $::llx yMin $::lly] $cmd] }
+proc m {cmd} {
+    return [dict get [list getName m getOrient $::orient getMaster fake_master \
+        getBBox fake_bbox] $cmd]
+}
+"""
+
+
+def _block_footprints(orient: str, llx: int, lly: int, halos: str = "") -> list[str]:
+    script = (
+        _helper("rotated_macros.tcl")
+        + _FAKE_ROTATED
+        + f"""
+set ::orient {orient}
+set ::llx {llx}
+set ::lly {lly}
+set MACRO_CELL_HALOS [dict create {halos}]
+set handles [rb::rotated::block_footprints fake_block [rb::rotated::macros {{m}}] {{100 1000}}]
+set result [join [concat $handles $::created [lsearch -all -inline $::printed {{>>>   *}}]] |]
+"""
+    )
+    result = _tcl_eval(script)
+    return result.split("|") if result else []
+
+
+@pytest.mark.parametrize("orient", ["R90", "R270", "MXR90", "MYR90"])
+def test_block_footprints_screens_a_turned_macro_on_whole_rows_and_sites(orient):
+    """The unrotated 4100 x 6050 footprint from (10500, 20700), grown by the macro's
+    1.23 x 2.34 um halo to (9270, 18360)-(15830, 29090), then outward to the grid.
+    """
+    assert _block_footprints(orient, 10500, 20700, "m {1.23 2.34}") == [
+        "blockage1",
+        "fake_block 9200 17700 15900 29700",
+        f">>>   m {orient}: blocked {{9200 17700 15900 29700}} DBU",
+    ]
+
+
+@pytest.mark.parametrize("orient", ["R0", "R180", "MX", "MY"])
+def test_block_footprints_leaves_an_unturned_macro_alone(orient):
+    assert _block_footprints(orient, 10500, 20700, "m {1.23 2.34}") == []
+
+
+def test_block_footprints_takes_the_default_halo_and_clips_to_the_core():
+    """At the core corner with the 0.5 um default halo: (0, 200)-(5100, 7250) grows to
+    (0, -300)-(5100, 7700) and is clipped to the core at (500, 700).
+    """
+    assert _block_footprints("R90", 500, 700) == [
+        "blockage1",
+        "fake_block 500 700 5100 7700",
+        ">>>   m R90: blocked {500 700 5100 7700} DBU",
+    ]
 
 
 _FAKE_DB = """
@@ -1009,6 +1142,51 @@ def test_pins_complete_failure_fails_the_run_with_each_class(tmp_path, monkeypat
     )
     _level, fields = _one_event(events, "pnr.pins_incomplete")
     assert fields["classes"] == {"uncovered": 2}
+
+
+def test_xfail_does_not_excuse_a_pins_complete_failure(tmp_path, monkeypatch):
+    from rtl_buddy.runner.xfail import apply_xfail
+
+    log = "RB-PINS-COMPLETE: uncovered 2 a b\n"
+    backend, _ = _routed_backend(
+        tmp_path, monkeypatch, _floorplan(pins_complete=True), log, returncode=1
+    )
+
+    res = backend.run()
+    assert res.results["fail_stage"] == "pins_complete"
+    # Even an `xfail_match` that names the failure leaves it a FAIL.
+    apply_xfail(res, match="pins-complete")
+
+    assert res.results["result"] == "FAIL"
+    assert not res.is_pass()
+    assert res.results["desc"] == (
+        "xfail not applied (pins_complete): "
+        "floorplan.pins-complete: 2 port(s) matched by no entry (a, b)"
+    )
+
+
+def test_a_located_macro_on_a_netlist_without_hard_macros_stops_at_macro_placement(
+    tmp_path, monkeypatch
+):
+    """Under the stub OpenROAD the netlist has no instances, so no hard macros."""
+    from test_pnr_checkpoints import _backend
+
+    backend, artefacts = _backend(tmp_path, monkeypatch, checkpoints=None)
+    backend.pnr_cfg.floorplan = _floorplan(
+        macros=[PnrMacro("u_inner/u_sram", location=(10.0, 20.0), orientation="R90")]
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert res.results["desc"] == (
+        "OpenROAD exited with code 1: floorplan.macros: the netlist has no hard "
+        "macros, but 1 entry gives a macro location: floorplan.macros[0] "
+        "(u_inner/u_sram)"
+    )
+    log = (artefacts / "pnr.log").read_text()
+    assert ">>> Macro placement" in log
+    assert ">>> IO pin placement" not in log
 
 
 def test_a_bad_planner_file_fails_at_setup_before_openroad(tmp_path, monkeypatch):

@@ -850,9 +850,9 @@ runs:
 | `floorplan.macros-file` | Optional | YAML or JSON file, relative to `pnr.yaml`, holding a list of `floorplan.macros` entries, applied after the inline ones. Read when the run starts; a missing file or bad entry fails it with `fail_stage: setup`. See [Read macros and pins from planner files](../concepts/pnr.md#read-macros-and-pins-from-planner-files) |
 | `floorplan.macro-snap` | Default `true` | `true` snaps each macro `location` to the site and row grid. `false` keeps it exact, rounded once to the database unit |
 | `floorplan.pins` | Optional | List of IO pin constraints: ports by name or glob on a side, within a range, as a group, or one pin at an exact location. See below |
-| `floorplan.pins-file` | Optional | YAML or JSON file, relative to `pnr.yaml`, holding a list of exact pins (`name`, `location`, optional `layer` and `size`) and `floorplan.pins` entries, applied after the inline ones. Read like `macros-file` |
+| `floorplan.pins-file` | Optional | YAML or JSON file, relative to `pnr.yaml`, holding a list of exact pins (`name`, `location`, optional `layer`, optional `size: [width, height]`, the x and y extents) and `floorplan.pins` entries, applied after the inline ones. Read like `macros-file` |
 | `floorplan.pin-snap` | Default `true` | `true` places each exact pin with `place_pin -force_to_die_boundary`, onto the die edge and a routing track. `false` keeps its centre at its location, to the database unit |
-| `floorplan.pins-complete` | Default `false` | `true` fails the run before pin placement unless every port other than power and ground has exactly one exact pin, or no exact pin and exactly one side or group rule. See [Check that every port is placed](../concepts/pnr.md#check-that-every-port-is-placed) |
+| `floorplan.pins-complete` | Default `false` | `true` fails the run before pin placement, with `fail_stage: pins_complete`, unless every port other than power and ground has exactly one exact pin, or no exact pin and exactly one side or group rule. See [Check that every port is placed](../concepts/pnr.md#check-that-every-port-is-placed) |
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
@@ -887,7 +887,7 @@ Each `floorplan.pins` entry has `names` (port names or globs, a string or a list
 
 - `side: left`, `right`, `top` or `bottom`, with optional `start` and `end` in die microns along that edge (`start < end`, both non-negative).
 - `group: true`, optionally with `order: true`, alone or with a `side`.
-- `location: [x, y]`, the pin centre in die microns, for a single port, with optional `layer` (default: the PDK pin layer of the nearest edge) and `size: [width, height]` in microns (default: the layer's minimum). `pin-snap` decides whether it moves to the die edge and a track.
+- `location: [x, y]`, the pin centre in die microns, for a single port, with optional `layer` (default: the PDK pin layer of the nearest edge) and `size: [width, height]` in microns, the pin's x and y extents (default: the layer's minimum). `pin-snap` decides whether it moves to the die edge and a track.
 
 A name or glob that matches no port fails the run. A `location` pin is fixed and placed first, before the side and group constraints and the `pin-constraints` file, and side and group constraints leave it out. See [Constrain boundary pins](../concepts/pnr.md#constrain-boundary-pins).
 
