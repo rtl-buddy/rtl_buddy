@@ -243,6 +243,7 @@ def test_a_stopped_run_without_its_marker_fails(tmp_path, monkeypatch):
     res = backend.run()
 
     assert res.results["result"] == "FAIL"
+    assert res.results["fail_stage"] == "incomplete"
     assert "--stop-after cts" in res.results["desc"]
 
 
@@ -254,6 +255,7 @@ def test_a_staged_session_that_exits_early_fails_the_chain(tmp_path, monkeypatch
     res = backend.run()
 
     assert res.results["result"] == "FAIL"
+    assert res.results["fail_stage"] == "incomplete"
     assert "03_cts" in res.results["desc"]
     run_dir = _only_run(artefacts)
     assert not (run_dir / "04_global_route.log").exists()
@@ -272,6 +274,154 @@ def test_a_failed_staged_session_names_its_stage(tmp_path, monkeypatch):
     ended = {e["stage"]: e for e in _events(run_dir) if e["event"] == "stage_end"}
     assert ended["global_route"]["status"] == "error"
     assert "checkpoint" not in ended["global_route"]
+
+
+def test_a_staged_checkpoint_that_cannot_be_written_fails_as_checkpoint(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _staged(
+        tmp_path, monkeypatch, env={"RB_STUB_FAIL": "write_db"}
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert res.results["fail_stage"] == "checkpoint"
+    assert res.results["desc"].startswith("stage 01_floorplan: ")
+    assert not (_only_run(artefacts) / "02_place.log").exists()
+
+
+def test_a_stop_checkpoint_that_cannot_be_written_fails_as_checkpoint(
+    tmp_path, monkeypatch
+):
+    backend, _ = _backend(
+        tmp_path,
+        monkeypatch,
+        checkpoints=None,
+        stop_after="place",
+        env={"RB_STUB_FAIL": "write_db"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert res.results["fail_stage"] == "checkpoint"
+
+
+def test_an_error_line_in_a_staged_session_stops_the_chain(tmp_path, monkeypatch):
+    """A session that logs an OpenROAD `[ERROR` but exits 0 fails the run after its
+    stage, which is recorded not clean, so no resume can start past it.
+    """
+    backend, artefacts = _staged(
+        tmp_path, monkeypatch, env={"RB_STUB_ERRLINE": "check_placement"}
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert res.results["desc"] == "stage 03_cts: 1 ERROR(s) in OpenROAD log"
+    assert "fail_stage" not in res.results or res.results["fail_stage"] is None
+    run_dir = _only_run(artefacts)
+    assert not (run_dir / "04_global_route.log").exists()
+    ended = {e["stage"]: e for e in _events(run_dir) if e["event"] == "stage_end"}
+    assert ended["cts"]["status"] == "error"
+    assert "checkpoint" not in ended["cts"]
+
+    desc = _refusal(tmp_path, monkeypatch, run_dir.name, from_stage="global_route")
+    assert "stage cts" in desc and "did not finish cleanly" in desc
+
+
+def test_a_hook_that_wraps_an_anchor_fails_the_unbroken_run_as_checkpoint(
+    tmp_path, monkeypatch
+):
+    hook = tmp_path / "wrap_cts.tcl"
+    hook.write_text(
+        "rename clock_tree_synthesis rb_test_cts\n"
+        "proc clock_tree_synthesis {args} { rb_test_cts {*}$args }\n"
+    )
+    cfg = replace(
+        _pnr_cfg(tmp_path, CHECKPOINT_STAGES),
+        hooks={"after-repair-design": (str(hook),)},
+    )
+    backend, _ = _backend(tmp_path, monkeypatch, pnr_cfg=cfg)
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert res.results["fail_stage"] == "checkpoint"
+    assert "checkpoint 02_place was not written" in res.results["desc"]
+    assert "entering clock_tree_synthesis" in res.results["desc"]
+
+
+def _xfail_driver(monkeypatch, result: str):
+    """`_stage_driver`, with each run returning `result` (PASS or FAIL)."""
+    from test_pnr_plan import _Locks
+
+    from rtl_buddy.rtl_buddy import RtlBuddy
+    from rtl_buddy.runner.pnr_results import PnrFailResults, PnrPassResults
+
+    class _Runner:
+        def __init__(self, *, name, **kw):
+            self.name = name
+
+        def run(self):
+            if result == "PASS":
+                return PnrPassResults(
+                    name=f"{self.name}/results",
+                    fields={"routed": False, "stopped_after": "cts"},
+                )
+            return PnrFailResults(name=f"{self.name}/results", desc="1 ERROR(s)")
+
+    monkeypatch.setattr("rtl_buddy.rtl_buddy.PnrRunner", _Runner)
+    rb = RtlBuddy.__new__(RtlBuddy)
+    rb.root_cfg = None
+    rb._artifact_locks = _Locks()
+    return rb
+
+
+@pytest.mark.parametrize("result", ["PASS", "FAIL"])
+def test_xfail_does_not_apply_to_a_stopped_run(tmp_path, monkeypatch, result):
+    from test_pnr_plan import _run, _suite
+
+    suite = _suite(tmp_path / "pnr.yaml", _run("a", xfail=True))
+    rb = _xfail_driver(monkeypatch, result)
+
+    (row,) = rb._do_pnr_suite(suite, pnr_name="a", stop_after="cts")
+
+    assert row["results"].results["result"] == result
+
+
+def test_xfail_applies_to_a_full_run(tmp_path, monkeypatch):
+    from test_pnr_plan import _run, _suite
+
+    suite = _suite(tmp_path / "pnr.yaml", _run("a", xfail=True))
+    rb = _xfail_driver(monkeypatch, "PASS")
+
+    (row,) = rb._do_pnr_suite(suite, pnr_name="a")
+
+    assert row["results"].results["result"] == "XPASS"
+
+
+@pytest.mark.parametrize(
+    ("env", "excused"),
+    [
+        ({"RB_STUB_ERRLINE": "global_route"}, True),
+        ({"RB_STUB_EXIT": "global_route"}, False),
+        ({"RB_STUB_FAIL": "write_db"}, False),
+    ],
+)
+def test_xfail_excuses_a_staged_verdict_but_not_a_broken_chain(
+    tmp_path, monkeypatch, env, excused
+):
+    from rtl_buddy.runner.xfail import apply_xfail
+
+    backend, _ = _staged(tmp_path, monkeypatch, env=env)
+    res = backend.run()
+    assert res.results["result"] == "FAIL"
+
+    apply_xfail(res)
+
+    assert (res.results["result"] == "XFAIL") is excused, res.results["desc"]
 
 
 def _stopped_at_global_route(tmp_path, monkeypatch) -> Path:

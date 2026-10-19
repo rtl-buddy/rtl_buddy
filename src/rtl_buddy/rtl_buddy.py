@@ -11636,7 +11636,8 @@ class RtlBuddy:
             resume_from=resume_from,
         )
         res = runner.run()
-        if run.is_xfail():
+        # A stopped run is no verdict on the routed design, so `xfail` does not apply.
+        if run.is_xfail() and stop_after is None:
             self._apply_xfail_logged(res, run, "pnr_suite.xfail")
         if synth_row is not None:
             res.results["synth"] = synth_row
