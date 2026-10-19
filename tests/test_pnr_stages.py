@@ -8,7 +8,10 @@ resumed run reads what an earlier run wrote.
 import json
 import os
 import re
+import signal
+import subprocess
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -545,17 +548,72 @@ def test_run_session_measures_the_child_process(tmp_path):
             [
                 sys.executable,
                 "-c",
-                "import sys; b = bytearray(64 * 1024 * 1024); print('ok'); "
-                "sys.stderr.write('err')",
+                "import os, sys; b = bytearray(64 * 1024 * 1024); "
+                "print(os.getcwd()); sys.stderr.write('err')",
             ],
             stdout=log,
             env=dict(os.environ),
+            cwd=str(tmp_path),
         )
     assert code == 0 and stderr == "err"
-    assert out.read_text() == "ok\n"
+    assert out.read_text() == f"{tmp_path}\n"
     assert used["measured_by"] == "process"
     assert used["wall_s"] > 0 and used["cpu_s"] >= 0
     assert used["peak_rss_kb"] >= 60 * 1024
+
+
+#: An `rb` that runs one session, which records its pid and sleeps.
+_RB_IN_A_SESSION = """
+import os, sys
+from rtl_buddy.tools.pnr_openroad import _run_session
+session = [
+    sys.executable,
+    "-c",
+    "import os, time; "
+    "open(os.environ['RB_SESSION_PID'], 'w').write(str(os.getpid())); "
+    "time.sleep(600)",
+]
+with open(os.devnull, "w") as log:
+    _run_session(session, stdout=log, env=dict(os.environ), cwd=sys.argv[1])
+"""
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _wait_for(condition, what: str, seconds: float = 60) -> None:
+    deadline = time.monotonic() + seconds
+    while not condition():
+        assert time.monotonic() < deadline, f"timed out waiting for {what}"
+        time.sleep(0.05)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_terminating_rb_terminates_its_openroad_session(tmp_path):
+    pid_file = tmp_path / "session.pid"
+    rb = subprocess.Popen(
+        [sys.executable, "-c", _RB_IN_A_SESSION, str(tmp_path)],
+        env={**os.environ, "RB_SESSION_PID": str(pid_file)},
+    )
+    try:
+        _wait_for(
+            lambda: pid_file.is_file() and pid_file.read_text().strip(),
+            "the session to start",
+        )
+        session = int(pid_file.read_text())
+
+        rb.terminate()
+
+        assert rb.wait(timeout=60) == 128 + signal.SIGTERM
+        _wait_for(lambda: not _alive(session), "the session to end", 30)
+    finally:
+        rb.kill()
+        rb.wait()
 
 
 def test_gr_overflow_is_read_from_the_last_usage_table():

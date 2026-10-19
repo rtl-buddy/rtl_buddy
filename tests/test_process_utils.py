@@ -372,3 +372,35 @@ def test_timeout_pauser_rejects_pipe_stdout(monkeypatch):
             timeout=1,
             timeout_pauser=lambda: True,
         )
+
+
+@pytest.mark.skipif(not hasattr(os, "wait4"), reason="needs os.wait4")
+def test_rusage_reports_the_child_and_its_one_pipe(tmp_path):
+    import sys
+
+    result = process_utils.run_managed_process(
+        [sys.executable, "-c", "import sys; sys.stderr.write('e'); sys.exit(3)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(tmp_path),
+        rusage=True,
+    )
+
+    assert result.returncode == 3
+    assert result.stderr == "e"
+    assert result.rusage.ru_maxrss > 0
+    assert process_utils._live_processes == {}
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"capture_output": True}, {"stdout": subprocess.DEVNULL, "timeout": 1}]
+)
+def test_rusage_rejects_two_pipes_and_a_timeout(monkeypatch, kwargs):
+    def _fail_popen(*args, **kw):
+        raise AssertionError("Popen should not be called before validation")
+
+    monkeypatch.setattr(process_utils.subprocess, "Popen", _fail_popen)
+
+    with pytest.raises(ValueError, match="rusage"):
+        process_utils.run_managed_process(["true"], rusage=True, **kwargs)

@@ -34,6 +34,7 @@ from ..config.pnr import (
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
 from ..pnr.klayout.def2stream import REPORT_SCHEMA
+from ..process_utils import run_managed_process
 from ..runner.pnr_results import PnrFailResults, PnrPassResults, PnrResults
 from . import openroad_corners
 from .artifact_paths import (
@@ -970,28 +971,29 @@ def _maxrss_kb(maxrss: int) -> int:
     return maxrss // 1024 if sys.platform == "darwin" else maxrss
 
 
-def _run_session(cmd: list[str], *, stdout, env) -> tuple[int, str, dict]:
-    """Run one OpenROAD session and return its exit code, stderr and the resources it used: wall time, CPU time (user + system) and peak RSS of the process."""
+def _run_session(cmd: list[str], *, stdout, env, cwd: str) -> tuple[int, str, dict]:
+    """Run one OpenROAD session in `cwd` and return its exit code, stderr and the resources it used: wall time, CPU time (user + system) and peak RSS of the process.
+
+    The session is a managed process, so terminating rb terminates it.
+    """
     begin = time.monotonic()
-    proc = subprocess.Popen(
-        cmd, stdout=stdout, stderr=subprocess.PIPE, text=True, env=env
+    result = run_managed_process(
+        cmd,
+        stdout=stdout,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        env=env,
+        rusage=True,
     )
-    try:
-        stderr = proc.stderr.read()
-        proc.stderr.close()
-        _pid, status, usage = os.wait4(proc.pid, 0)
-    except BaseException:
-        proc.kill()
-        proc.wait()
-        raise
-    proc.returncode = os.waitstatus_to_exitcode(status)
+    usage = result.rusage
     return (
-        proc.returncode,
-        stderr,
+        result.returncode,
+        result.stderr or "",
         {
             "wall_s": round(time.monotonic() - begin, 3),
-            "cpu_s": round(usage.ru_utime + usage.ru_stime, 2),
-            "peak_rss_kb": _maxrss_kb(usage.ru_maxrss),
+            "cpu_s": round(usage.ru_utime + usage.ru_stime, 2) if usage else None,
+            "peak_rss_kb": _maxrss_kb(usage.ru_maxrss) if usage else None,
             "measured_by": "process",
         },
     )
@@ -3045,7 +3047,7 @@ class OpenRoadPnr:
                 pnr_checkpoints.stage_begin(run_dir, stage)
                 with task_status(f"pnr {self.pnr_cfg.get_name()} [openroad {name}]"):
                     returncode, stderr, resources = _run_session(
-                        cmd, stdout=log, env=env
+                        cmd, stdout=log, env=env, cwd=self.artefact_dir
                     )
                 stderr = (stderr or "").strip()
                 if stderr:
@@ -3519,18 +3521,12 @@ class OpenRoadPnr:
                 task_status(f"pnr {self.pnr_cfg.get_name()} [openroad]"),
                 open(log_path, "w") as log_file,
             ):
-                result = subprocess.run(
-                    cmd,
-                    stdout=log_file,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=False,
-                    env=env,
+                returncode, stderr_text, _ = _run_session(
+                    cmd, stdout=log_file, env=env, cwd=self.artefact_dir
                 )
-            returncode = result.returncode
 
             # Tcl errors go to stderr; append them so the diagnostic survives.
-            stderr_text = (result.stderr or "").strip()
+            stderr_text = stderr_text.strip()
             if stderr_text:
                 try:
                     with open(log_path, "a") as log_file:

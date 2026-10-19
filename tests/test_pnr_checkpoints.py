@@ -253,7 +253,8 @@ def _backend(
         )
         return subprocess.CompletedProcess(cmd, done.returncode, None, done.stderr)
 
-    def _session(cmd, *, stdout, env):
+    def _session(cmd, *, stdout, env, cwd):
+        assert cwd == backend.artefact_dir
         done = _run(cmd, stdout=stdout)
         return (
             done.returncode,
