@@ -363,7 +363,7 @@ runs:
     mode: probe        # default closure
 ```
 
-A probe keeps `repair_design`, `repair_tie_fanout` and every legalization, skips the post-CTS setup and hold repair and the global-route repair, and stops after global route as [`--stop-after global_route`](#stop-after-a-stage) does: it writes the `global_route` checkpoint and no routed DEF or ODB. The result is a `PASS` with `routed: false`, `mode: probe` and `stopped_after: global_route`, with the global-route overflow and the timing on the global-route estimate. `post-route-repair` does not apply, and `--stop-after` may name an earlier stage. A closure run cannot [resume](#resume-a-staged-run) a probe's checkpoints, whose stages skipped timing repair; run the closure from the start.
+A probe keeps `repair_design`, `repair_tie_fanout` and every legalization, skips the post-CTS setup and hold repair and the global-route repair, and stops after global route as [`--stop-after global_route`](#stop-after-a-stage) does: it writes the `global_route` checkpoint and no routed DEF or ODB. The result is a `PASS` with `routed: false`, `mode: probe` and `stopped_after: global_route`, with the global-route overflow and the timing on the global-route estimate; `xfail:` does not turn it into `XPASS`. `post-route-repair` does not apply, and `--stop-after` may name an earlier stage. A closure run cannot [resume](#resume-a-staged-run) a probe's checkpoints, whose stages skipped timing repair; run the closure from the start.
 
 ## Macro placement
 
