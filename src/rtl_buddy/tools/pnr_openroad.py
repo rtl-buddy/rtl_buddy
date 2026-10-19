@@ -957,9 +957,9 @@ def _last_logged_step(log_text: str) -> str | None:
 
 def _flow_done(log_text: str) -> bool:
     """Whether `log_text` ends its flow: `>>> DONE` is a line of it and the last step it announces."""
-    return _FLOW_DONE_MARKER in log_text.splitlines() and _last_logged_step(
-        log_text
-    ) == _FLOW_DONE_MARKER.removeprefix(">>> ")
+    if _FLOW_DONE_MARKER not in log_text.splitlines():
+        return False
+    return _last_logged_step(log_text) == _FLOW_DONE_MARKER.removeprefix(">>> ")
 
 
 def _read_checkpoint_tcl(stage: str) -> str:
