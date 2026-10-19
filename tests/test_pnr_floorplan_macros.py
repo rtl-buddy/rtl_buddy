@@ -47,8 +47,10 @@ def test_directives_load(tmp_path):
     ]
 
 
-@pytest.mark.parametrize("orientation", ["R0", "R180", "MX", "MY"])
-def test_every_row_compatible_orientation_loads(tmp_path, orientation):
+@pytest.mark.parametrize(
+    "orientation", ["R0", "R90", "R180", "R270", "MX", "MY", "MXR90", "MYR90"]
+)
+def test_every_orientation_loads(tmp_path, orientation):
     (macro,) = _macros(tmp_path, {"instance": "m", "orientation": orientation})
     assert macro.orientation == orientation
 
@@ -62,8 +64,7 @@ def test_every_row_compatible_orientation_loads(tmp_path, orientation):
         ({"instance": "m", "location": [1]}, r"location must be \[x, y\]"),
         ({"instance": "m", "location": [-1, 2]}, "die coordinates, which start at 0"),
         ({"instance": "m", "orientation": "N"}, "unknown orientation 'N'"),
-        ({"instance": "m", "orientation": "R90"}, "rotates the macro by 90 degrees"),
-        ({"instance": "m", "orientation": "MXR90"}, "rotates the macro by 90"),
+        ({"instance": "m", "orientation": "r90"}, "unknown orientation 'r90'"),
         ({"instance": "m", "halo": [1, -1]}, "halo must be non-negative"),
         ({"instance": "m", "halo": [1, 2, 3]}, r"halo must be \[x, y\]"),
     ],
@@ -154,7 +155,11 @@ def test_directives_fix_macros_before_the_packer_and_feed_it_keepouts(tmp_path):
     assert (
         "  if {[llength $rb_movable_macros] > 0} {\n  set core [$block getCoreArea]\n"
     ) in text
-    assert "  foreach inst $rb_movable_macros {\n    set master" in text
+    # The packer packs a directive's macros by their oriented size.
+    assert (
+        "  foreach inst $rb_movable_macros {\n    set bbox [$inst getBBox]\n"
+        "    lappend footprints [list [$inst getName] [$bbox getDX] [$bbox getDY]]\n"
+    ) in text
     assert (
         "      $footprints $halo_dbu $site_grid_dbu $dbu_per_micron \\\n"
         "      lower-left $MACRO_KEEPOUTS]\n"
