@@ -875,6 +875,40 @@ def test_a_dispatched_run_runs_every_round_in_the_stage_job(tmp_path, monkeypatc
     assert "post_route_repair" in manifest["resources"]
 
 
+def test_a_dispatched_round_runs_on_the_cpus_its_job_received(tmp_path, monkeypatch):
+    from test_pnr_dispatch import _dispatched, _FakeSlurm
+
+    from rtl_buddy.config.dispatch import DispatchResourcesFile
+    from rtl_buddy.config.pnr import PnrResources
+
+    monkeypatch.setenv("RB_STUB_SETUP", "-0.2 0.01")
+    # sbatch-args come after the reservation, so the job gets 3 CPUs, not 4.
+    slurm = _FakeSlurm(monkeypatch, sbatch_args=["--cpus-per-task=3"])
+    backend, artefacts, _ = _dispatched(
+        tmp_path,
+        monkeypatch,
+        slurm=slurm,
+        cfg=replace(_pnr_cfg(tmp_path, stages=True), threads="auto"),
+        resources=PnrResources(base=DispatchResourcesFile(cpus=4)),
+    )
+    _with_repair(backend, tmp_path, post_route=_PR)
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    sessions = pnr_openroad.stage_scripts(str(run_dir), "post_route_repair")
+    assert len(sessions) == 1 + 2 * _PR["rounds"]
+    for path in sessions:
+        assert "\nset_thread_count 3\n" in Path(path).read_text(), path
+    (ended,) = [
+        e
+        for e in _events(run_dir)
+        if e["event"] == "stage_end" and e["stage"] == "post_route_repair"
+    ]
+    assert ended["threads"] == 3
+
+
 def test_rounds_stop_after_the_last_round(tmp_path, monkeypatch):
     backend, artefacts = _repair_backend(
         tmp_path,

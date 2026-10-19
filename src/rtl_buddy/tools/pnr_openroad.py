@@ -1188,6 +1188,18 @@ def _post_route_file(suffix: str) -> str:
 POST_ROUTE_PLAN = _post_route_file(".plan.json")
 
 
+def stage_scripts(run_dir: str, stage: str) -> list[str]:
+    """The script files of `stage` in the staged run in `run_dir`: `NN_<stage>.tcl` and, for post-route repair, which runs other sessions and keeps that file as their record, every session in its plan."""
+    files = [f"{_checkpoint_name(stage)}.tcl"]
+    if stage == POST_ROUTE_REPAIR_STAGE:
+        plan = json.loads(Path(run_dir, POST_ROUTE_PLAN).read_text())
+        for entry in plan["rounds"]:
+            files += [entry["extract"], entry["repair"]]
+        if plan.get("report"):
+            files.append(plan["report"])
+    return [os.path.join(run_dir, name) for name in files]
+
+
 @dataclass
 class PostRouteOutcome:
     """How the post-route repair stage's sessions ended: the last session's exit code and stderr, why the stage failed if a session exited 0 without ending its step, the resources of all its sessions, and its log."""

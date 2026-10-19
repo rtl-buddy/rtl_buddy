@@ -830,10 +830,12 @@ _SCRIPT_THREADS_RE = re.compile(r'(\nputs ">>> Threads"\nset_thread_count )\d+(\
 def _set_job_threads(
     run_dir: str, stage: str, manifest: dict, *, run_name: str
 ) -> dict | None:
-    """Set the stage script's thread count from the CPUs this job received, and return the thread plan's fields; None when the run sets no thread count.
+    """Set the thread count of the stage's scripts from the CPUs this job received, and return the thread plan's fields; None when the run sets no thread count.
 
-    The head wrote the count its plan gave for the CPUs it asked for; `sbatch-args` or the site can change what the job gets, so the job resolves `threads:` (recorded in the manifest's `dispatch`) again against its own allocation (`detect_allocation`). The thread count is not part of the stage's identity (`pnr_stages`), so the checkpoint is the same either way.
+    The head wrote the count its plan gave for the CPUs it asked for; `sbatch-args` or the site can change what the job gets, so the job resolves `threads:` (recorded in the manifest's `dispatch`) again against its own allocation (`detect_allocation`). Every script the stage runs gets it, each post-route repair session too (`stage_scripts`). The thread count is not part of the stage's identity (`pnr_stages`), so the checkpoint is the same either way.
     """
+    from .pnr_openroad import stage_scripts
+
     entry = ((manifest.get("dispatch") or {}).get("stages") or {}).get(stage) or {}
     requested = entry.get("threads_requested")
     if requested is None:
@@ -844,16 +846,16 @@ def _set_job_threads(
         run=f"{run_name} {stage}",
         allocation=detect_allocation(),
     )
-    path = Path(run_dir, f"{stage_name(stage)}.tcl")
     try:
-        text = path.read_text()
-        updated = _SCRIPT_THREADS_RE.sub(
-            lambda m: f"{m.group(1)}{plan.count}{m.group(2)}", text, count=1
-        )
-        if updated != text:
-            Path(f"{path}.tmp").write_text(updated)
-            os.replace(f"{path}.tmp", path)
-    except OSError as e:
+        for path in stage_scripts(run_dir, stage):
+            text = Path(path).read_text()
+            updated = _SCRIPT_THREADS_RE.sub(
+                lambda m: f"{m.group(1)}{plan.count}{m.group(2)}", text, count=1
+            )
+            if updated != text:
+                Path(f"{path}.tmp").write_text(updated)
+                os.replace(f"{path}.tmp", path)
+    except (OSError, ValueError, KeyError) as e:
         log_event(
             logger,
             logging.WARNING,
