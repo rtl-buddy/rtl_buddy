@@ -354,6 +354,41 @@ def _snapshot(root: Path) -> dict:
     }
 
 
+def test_a_resume_may_run_at_another_thread_count(tmp_path, monkeypatch):
+    """`threads: auto` on a bigger allocation resumes, and each stage records its own count."""
+    from rtl_buddy.config import openroad_threads
+
+    cfg = replace(_pnr_cfg(tmp_path, stages=True), threads="auto")
+    for cpus in (2, 4):
+        monkeypatch.setattr(
+            openroad_threads,
+            "detect_allocation",
+            lambda *a, cpus=cpus, **k: (cpus, "SLURM_CPUS_PER_TASK"),
+        )
+        options = (
+            {"stop_after": "global_route"}
+            if cpus == 2
+            else {"resume": "latest", "resume_from": "detailed_route"}
+        )
+        backend, artefacts = _backend(tmp_path, monkeypatch, pnr_cfg=cfg, **options)
+        res = backend.run()
+        assert res.results["result"] == "PASS", res.results
+
+    first, second = _runs(artefacts)
+    for run_dir, stages, threads in (
+        (first, PNR_STAGES[:4], 2),
+        (second, PNR_STAGES[4:], 4),
+    ):
+        ended = [e for e in _events(run_dir) if e["event"] == "stage_end"]
+        assert [(e["stage"], e["threads"]) for e in ended] == [
+            (stage, threads) for stage in stages
+        ]
+        manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert {r["threads"] for r in manifest["resources"].values()} == {threads}
+    assert "set_thread_count 2" in (first / "01_floorplan.tcl").read_text()
+    assert "set_thread_count 4" in (second / "05_detailed_route.tcl").read_text()
+
+
 def _refusal(tmp_path, monkeypatch, run, from_stage="detailed_route", **kw) -> str:
     backend, artefacts = _backend(
         tmp_path, monkeypatch, resume=run, resume_from=from_stage, **kw
@@ -558,6 +593,14 @@ def test_stages_config_refuses_a_partial_checkpoint_list(tmp_path):
             stages=True,
             checkpoints=["cts"],
         ).initialise(str(tmp_path))
+
+
+def test_script_identity_ignores_the_thread_count():
+    def script(threads):
+        block = f'\nputs ">>> Threads"\nset_thread_count {threads}\n' if threads else ""
+        return f'file mkdir $OUT_DIR\n{block}\nputs ">>> Stage"\nflow\n'
+
+    assert len({pnr_stages.script_identity(script(n)) for n in (None, 2, 32)}) == 1
 
 
 def test_script_identity_ignores_run_bindings_and_the_stop_report():

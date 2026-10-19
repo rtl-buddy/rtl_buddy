@@ -277,14 +277,17 @@ def written_checkpoint(run_dir: str, stage: str) -> dict | None:
     return dict(event.get("files") or {}) if event else None
 
 
-#: Fields of a `stage_end` event that describe what the stage used.
+#: Fields of a `stage_end` event that describe what the stage used; a staged session's also has `threads`.
 _RESOURCE_FIELDS = ("status", "wall_s", "cpu_s", "peak_rss_kb", "measured_by")
 
 
 def stage_resources(events: list[dict]) -> dict[str, dict]:
-    """Map each stage that ended to its status, wall time, CPU time, peak RSS and how they were measured, in flow order."""
+    """Map each stage that ended to its status, wall time, CPU time, peak RSS and how they were measured, and a staged session's thread count, in flow order."""
     ended = {
-        str(e.get("stage")): {k: e.get(k) for k in _RESOURCE_FIELDS}
+        str(e.get("stage")): {
+            **{k: e.get(k) for k in _RESOURCE_FIELDS},
+            **({"threads": e["threads"]} if "threads" in e else {}),
+        }
         for e in events
         if e.get("event") == "stage_end"
     }

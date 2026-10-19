@@ -122,15 +122,20 @@ def after(stage: str, other: str) -> bool:
 STAGE_DONE_MARKER = ">>> End of stage "
 
 
-def _identity_text(text: str) -> str:
-    """A stage script as far as its checkpoint depends on it: up to its end-of-stage line, with the run bindings blanked.
+#: The `threads:` block of a stage script; the thread count is not part of its identity.
+_THREADS_RE = re.compile(r'\nputs ">>> Threads"\nset_thread_count [^\n]*\n')
 
-    What follows that line, `exit` or a `--stop-after` report, does not change the checkpoint, so a stopped run's stage counts as the same stage.
+
+def _identity_text(text: str) -> str:
+    """A stage script as far as its checkpoint depends on it: up to its end-of-stage line, with the run bindings blanked and the thread count left out.
+
+    What follows that line, `exit` or a `--stop-after` report, does not change the checkpoint, so a stopped run's stage counts as the same stage. A stage may run at another thread count than the stages before it.
     """
     done = text.find(f'puts "{STAGE_DONE_MARKER}')
     if done >= 0:
         end = text.find("\n", done)
         text = text[: end + 1] if end >= 0 else text
+    text = _THREADS_RE.sub("", text, count=1)
     return pnr_checkpoints.RUN_BINDING_RE.sub(r"set RB_\1_DIR <run>", text)
 
 

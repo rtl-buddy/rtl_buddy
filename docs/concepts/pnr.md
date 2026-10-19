@@ -687,10 +687,10 @@ rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --resume latest --from detailed_r
 The resume is refused, with `fail_stage: resume` and a description that names what differs, unless:
 
 - the run named was a staged run, and its stage before `--from` finished cleanly with its checkpoint written and unchanged since;
-- the script of every stage before `--from`, generated from today's configuration, matches the one that run used, apart from the run directories it names, and every input file those stages read has the same content; and
+- the script of every stage before `--from`, generated from today's configuration, matches the one that run used, apart from the run directories it names and its thread count, and every input file those stages read has the same content; and
 - OpenROAD reports the same version.
 
-A setting that only `--from` and later stages read, such as `detailed-route-verbose:` or a `before-detailed-route` hook, may change between the runs.
+A setting that only `--from` and later stages read, such as `detailed-route-verbose:` or a `before-detailed-route` hook, may change between the runs. The thread count may differ between stages, so a resume can run on another CPU allocation than the run it resumes; a staged run equals a one-session run of the same configuration only at equal thread counts.
 
 A resume is checked before anything is cleared or written. A refused resume, or one that fails setup before it is checked, leaves `checkpoints/latest` and the previous run's outputs as they were, so the same `--resume latest` can be retried once the configuration is put back.
 
@@ -698,7 +698,7 @@ A resume is checked before anything is cleared or written. A refused resume, or 
 
 Each stage's wall time, CPU time (user plus system) and peak resident memory are recorded as `stage_end` events in `progress.jsonl` and under `resources` in the manifest, with `measured_by` naming how:
 
-- In a staged run rb measures each session as a process (`measured_by: process`).
+- In a staged run rb measures each session as a process (`measured_by: process`) and also records its thread count (`threads`, the count OpenROAD reported, else the one `threads:` set).
 - In a one-session run with `checkpoints:` or `--stop-after`, the flow measures each stage from inside OpenROAD (`measured_by: session`) at the stage boundaries of the [checkpoint table](#keep-stage-checkpoints): wall time from the Tcl clock, CPU time from `/proc/self/stat`, and peak memory from `VmHWM`, reset at each stage boundary through `/proc/self/clear_refs`. The reset starts from the memory the process already holds, so a stage's peak includes what earlier stages left resident (the `finish` stage after detailed routing, for example). Without `/proc` the CPU time and peak memory are `null`, and the peak memory is `null` after the first stage when the reset is refused.
 
 ## Stream-out inputs

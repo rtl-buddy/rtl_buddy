@@ -3043,7 +3043,7 @@ class OpenRoadPnr:
     def _run_chain(self, env) -> tuple[int, str, str | None]:
         """Run a staged run's sessions in order and return the last one's exit code and stderr, and why the chain stopped if a session exited 0 without ending its stage.
 
-        Each session's output is appended to `pnr.log` as it runs and copied to its own `NN_<stage>.log` when it exits; a resumed run's `pnr.log` starts with the logs of the stages it inherits. rb records each session's wall time, CPU time and peak RSS, and the checkpoint it wrote, in `progress.jsonl`.
+        Each session's output is appended to `pnr.log` as it runs and copied to its own `NN_<stage>.log` when it exits; a resumed run's `pnr.log` starts with the logs of the stages it inherits. rb records each session's wall time, CPU time, peak RSS and thread count, and the checkpoint it wrote, in `progress.jsonl`.
         """
         run_dir = self._ckpt_run_dir
         log_path = self._log_path()
@@ -3090,6 +3090,9 @@ class OpenRoadPnr:
                     f.seek(start)
                     section = f.read()
                 Path(run_dir, f"{name}.log").write_bytes(section)
+                resources["threads"] = self._threads().fields(
+                    parse_reported_threads(section.decode(errors="replace"))
+                )["effective"]
                 problem = None
                 checkpoint = None
                 if returncode == 0 and stage != "finish":
