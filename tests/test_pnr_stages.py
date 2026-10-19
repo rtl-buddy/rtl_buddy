@@ -469,6 +469,18 @@ def test_a_hook_that_wraps_an_anchor_fails_the_unbroken_run_as_checkpoint(
     assert "entering clock_tree_synthesis" in res.results["desc"]
 
 
+def test_a_checkpoint_the_unbroken_run_failed_to_write_fails_it_as_checkpoint(
+    tmp_path, monkeypatch
+):
+    backend, _ = _backend(tmp_path, monkeypatch, env={"RB_STUB_CKPT_FAIL": "02_place"})
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL", res.results
+    assert res.results["fail_stage"] == "checkpoint"
+    assert "checkpoint 02_place was not written: cannot write" in res.results["desc"]
+
+
 def _xfail_driver(monkeypatch, result: str):
     """`_stage_driver`, with each run returning `result` (PASS or FAIL)."""
     from test_pnr_plan import _Locks
@@ -596,7 +608,11 @@ def test_a_staged_run_warns_about_commands_a_hook_leaves_in_its_session(
             "after-cts",
             "proc rb_test_helper {} {}\nrename check_placement rb_test_check\n",
         ),
-        "after-global-route": _hook(tmp_path, "after-global-route", "set x 1\n"),
+        "after-global-route": _hook(
+            tmp_path,
+            "after-global-route",
+            "set x 1\nproc _0000c20b00000000_p_Net {} {}\n",
+        ),
         "before-reports": _hook(
             tmp_path, "before-reports", "proc rb_test_report {} {}\n"
         ),
@@ -681,10 +697,11 @@ def test_resume_twice_from_one_global_route(tmp_path, monkeypatch):
         assert "inherited_from" not in manifest["checkpoints"]["detailed_route"]
         assert list(manifest["resources"]) == ["detailed_route", "finish"]
         # An inherited checkpoint is exported from the run that wrote it.
-        why = pnr_checkpoints.resolve_checkpoint(
+        ref = pnr_checkpoints.resolve_checkpoint(
             str(artefacts), f"{run_dir.name}/global_route"
         )
-        assert f"name {first.name}/global_route" in why
+        assert ref.run_dir == str(first)
+        assert ref.def_path == str(first / "04_global_route.def")
         # pnr.log carries the inherited stages' logs first.
         log = (artefacts / "pnr.log").read_bytes()
         assert log.startswith((first / "01_floorplan.log").read_bytes())
