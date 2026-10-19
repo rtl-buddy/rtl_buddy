@@ -56,7 +56,40 @@ def test_the_final_outputs_are_written_after_the_connections_are_made(
     assert lines.index("stub: write_db demo_top.routed.odb") > outputs
 
 
-def test_a_run_without_checkpoints_connects_after_fill_and_before_its_outputs(
+#: The flow step that opens each stage after the first, which the connections at the end of the stage before it precede.
+_OPENERS = (
+    ">>> Global placement",
+    ">>> Clock tree synthesis",
+    ">>> Global route",
+    ">>> Detail route",
+    ">>> Fill insertion",
+)
+
+
+@pytest.mark.parametrize("checkpoints", [None, CHECKPOINT_STAGES])
+def test_every_stage_of_a_one_session_run_ends_with_the_connections_made(
+    tmp_path, monkeypatch, checkpoints
+):
+    """A run behaves the same with or without checkpoints: the connections do not wait for a checkpoint."""
+    backend, artefacts = _backend(
+        tmp_path, monkeypatch, checkpoints=checkpoints, env=_RULES
+    )
+
+    assert backend.run().results["result"] == "PASS"
+
+    lines = _log(artefacts)
+    for opener in _OPENERS:
+        at = lines.index(opener)
+        last = max(i for i, line in enumerate(lines[:at]) if line == _CONNECT)
+        # Only a checkpoint write may sit between the connections and the next stage.
+        assert all(
+            line.startswith((">>> Checkpoint", "stub: write_"))
+            for line in lines[last + 1 : at]
+        ), opener
+    assert lines[lines.index(">>> Write outputs") - 1] == _CONNECT
+
+
+def test_a_run_without_checkpoints_connects_at_every_stage_end_and_after_fill(
     tmp_path, monkeypatch
 ):
     backend, artefacts = _backend(tmp_path, monkeypatch, checkpoints=None, env=_RULES)
@@ -64,9 +97,26 @@ def test_a_run_without_checkpoints_connects_after_fill_and_before_its_outputs(
     assert backend.run().results["result"] == "PASS"
 
     lines = _log(artefacts)
-    assert lines.count(_CONNECT) == 2
-    assert lines.index(_CONNECT) > lines.index(">>> Fill insertion")
-    assert lines[lines.index(">>> Write outputs") - 1] == _CONNECT
+    # Five stage ends, after fill, and before the outputs.
+    assert lines.count(_CONNECT) == 7
+    connects = [i for i, line in enumerate(lines) if line == _CONNECT]
+    assert connects[5] > lines.index(">>> Fill insertion")
+
+
+def test_every_staged_session_connects_before_it_writes_its_checkpoint(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _backend(tmp_path, monkeypatch, stages=True, env=_RULES)
+
+    assert backend.run().results["result"] == "PASS"
+
+    (run_dir,) = _runs(artefacts)
+    for stage in CHECKPOINT_STAGES:
+        name = f"{pnr_checkpoints.STAGE_INDEX[stage]}_{stage}"
+        script = (run_dir / f"{name}.tcl").read_text()
+        assert script.index("\nrb::global_connect\n") < script.index(
+            f"rb::ckpt::stage_end {stage}"
+        )
 
 
 @pytest.mark.parametrize("stages", [False, True])
@@ -129,5 +179,6 @@ def test_the_flow_defines_a_guarded_connect_before_any_stage():
 
     assert "proc rb::global_connect" in head
     assert "getGlobalConnects" in head
-    assert text.count("\nrb::global_connect\n") == 2
-    assert text.index("\nrb::global_connect\n") > text.index("filler_placement")
+    # The end of five stages, after fill, and before the outputs.
+    assert text.count("rb::global_connect\n") == 7
+    assert text.rindex("rb::global_connect\n") > text.index("filler_placement")
