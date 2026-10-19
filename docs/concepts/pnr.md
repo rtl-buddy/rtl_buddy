@@ -692,6 +692,8 @@ The resume is refused, with `fail_stage: resume` and a description that names wh
 
 A setting that only `--from` and later stages read, such as `detailed-route-verbose:` or a `before-detailed-route` hook, may change between the runs.
 
+A resume is checked before anything is cleared or written. A refused resume, or one that fails setup before it is checked, leaves `checkpoints/latest` and the previous run's outputs as they were, so the same `--resume latest` can be retried once the configuration is put back.
+
 ### Stage resources
 
 Each stage's wall time, CPU time (user plus system) and peak resident memory are recorded as `stage_end` events in `progress.jsonl` and under `resources` in the manifest, with `measured_by` naming how:

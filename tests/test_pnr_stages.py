@@ -338,17 +338,34 @@ def test_a_resume_may_change_settings_of_the_stages_it_runs(tmp_path, monkeypatc
     assert backend.run().results["result"] == "PASS"
 
 
+def _snapshot(root: Path) -> dict:
+    """Every path under `root` with its link target or content."""
+    if not root.is_dir():
+        return {}
+    return {
+        str(p.relative_to(root)): (
+            os.readlink(p)
+            if p.is_symlink()
+            else p.read_bytes()
+            if p.is_file()
+            else None
+        )
+        for p in root.rglob("*")
+    }
+
+
 def _refusal(tmp_path, monkeypatch, run, from_stage="detailed_route", **kw) -> str:
     backend, artefacts = _backend(
         tmp_path, monkeypatch, resume=run, resume_from=from_stage, **kw
     )
-    before = set(_runs(artefacts)) if (artefacts / "checkpoints").is_dir() else set()
+    before = _snapshot(artefacts)
     res = backend.run()
     assert res.results["result"] == "FAIL"
     assert res.results["fail_stage"] == "resume"
     assert res.results["desc"].startswith("resume refused: ")
-    # A refused resume leaves no run directory behind.
-    assert set(_runs(artefacts)) == before
+    # A refused resume clears and writes nothing: no run directory, and `latest` and
+    # the previous outputs stay as they were.
+    assert _snapshot(artefacts) == before
     return res.results["desc"]
 
 
@@ -361,6 +378,25 @@ def test_resume_refuses_a_changed_setting_of_an_earlier_stage(tmp_path, monkeypa
 
     assert "01_floorplan.tcl" in desc
     assert "set CORE_UTIL_PCT   55.00" in desc and "60.00" in desc
+
+
+def test_a_refused_resume_keeps_latest_for_the_next_try(tmp_path, monkeypatch):
+    first = _stopped_at_global_route(tmp_path, monkeypatch)
+    cfg = _pnr_cfg(tmp_path, stages=True)
+    _refusal(
+        tmp_path,
+        monkeypatch,
+        "latest",
+        pnr_cfg=replace(cfg, floorplan=replace(cfg.floorplan, utilization=0.6)),
+    )
+
+    backend, _ = _backend(
+        tmp_path, monkeypatch, resume="latest", resume_from="detailed_route"
+    )
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["resumed_from"]["run_id"] == first.name
 
 
 def test_resume_refuses_a_changed_input_file(tmp_path, monkeypatch):
