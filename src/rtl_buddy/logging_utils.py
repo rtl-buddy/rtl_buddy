@@ -2097,6 +2097,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{_capped_names(fields.get('commands'))}, which later stage "
                 "sessions do not have"
             )
+        case "pnr.post_route_eco_unguarded":
+            return (
+                f'P&R "{fields.get("pnr")}": post-route repair round(s) '
+                f"{_capped_names(fields.get('rounds'))} ran their eco repairs on "
+                "detailed-routing parasitics, since this OpenROAD's repair_timing "
+                "does not call design_is_routed; they may fail RSZ-0074, which "
+                "post-route-repair.reroute: full avoids"
+            )
         case "pnr.stage_job_submitted":
             after = fields.get("dependency")
             return (

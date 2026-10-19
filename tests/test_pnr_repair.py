@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from test_pnr_macro_pack import _tcl_eval
 from test_pnr_checkpoints import (
     _HARNESS,
     _backend,
@@ -566,7 +567,9 @@ def test_a_probe_skips_timing_repair_and_stops_after_global_route(tmp_path):
 # `RB_STUB_SETUP_<corner>` and `RB_STUB_HOLD_<corner>`; `RB_STUB_DRC=<round>`
 # makes that round's detailed route report a violation; `RB_STUB_RSZ0074=<round>`
 # makes that round's `repair_timing` fail as OpenROAD's does without usable routes.
+# `repair_timing` and `detailed_route` log what `design_is_routed` answers them.
 _ROUND_STUBS = r"""
+proc design_is_routed {args} { return 1 }
 proc rb_round {} {
     global argv
     if {[regexp {\.r(\d+)\.(extract|repair)\.tcl$} [lindex $argv 0] -> round]} {
@@ -609,6 +612,7 @@ proc report_tns {args} {
 proc remove_fillers {args} { rb_stub remove_fillers }
 proc repair_timing {args} {
     global env
+    puts "stub: repair_timing routed [design_is_routed]"
     if {[info exists env(RB_STUB_RSZ0074)] && $env(RB_STUB_RSZ0074) == [rb_round]} {
         puts "\[ERROR RSZ-0074\] Failed to build tree from global routes"
         error "RSZ-0074"
@@ -617,6 +621,7 @@ proc repair_timing {args} {
 }
 proc detailed_route {args} {
     global env
+    puts "stub: detailed_route routed [design_is_routed]"
     rb_stub detailed_route
     set i [lsearch $args -output_drc]
     if {$i >= 0 && [info exists env(RB_STUB_DRC)] && $env(RB_STUB_DRC) == [rb_round]} {
@@ -729,21 +734,37 @@ def test_rounds_repair_until_timing_is_met(tmp_path, monkeypatch, stages):
     assert "read_db [file join $RB_RUN_DIR 06_post_route_repair.odb]" in r2
     r1 = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
     assert "read_db [file join $RB_PRED_DIR 05_detailed_route.odb]" in r1
-    repair = r1.index("\nrepair_timing -setup")
     # `reroute: eco` keeps the detailed route: no unrouting, no full global route,
-    # but the global route the guides restore, under the SPEF.
+    # and the repairs on placement parasitics under the SPEF, inside one
+    # incremental global route that legalization closes.
     assert "(reroute eco)" in r1
     assert "destroyNetWires" not in r1
     assert "global_route -congestion_iterations" not in r1
-    estimate = r1.index("\nestimate_parasitics -global_routing\n")
-    assert estimate < r1.index("read_spef") < r1.index("\nremove_fillers\n") < repair
-    # ORFS order: repair, then an incremental global route around legalization only.
-    assert repair < r1.index("global_route -start_incremental")
-    assert r1.index("global_route -start_incremental") < r1.index(
-        "\ndetailed_placement"
-    )
-    assert r1.index("\ndetailed_placement") < r1.index("global_route -end_incremental")
-    assert r1.index("global_route -end_incremental") < r1.index("\ndetailed_route \\")
+    assert "\nestimate_parasitics -global_routing" not in r1
+    order = [
+        "\nestimate_parasitics -placement\n",
+        "\nread_spef ",
+        "\nremove_fillers\n",
+        "\nglobal_route -start_incremental\n",
+        "\nrb::eco::repair 1 {\n",
+        "\nrepair_timing -setup",
+        "\n}\n",
+        "\ndetailed_placement",
+        "\ncheck_placement -verbose\n",
+        "\nglobal_route -end_incremental",
+        "\ndetailed_route \\",
+    ]
+    at = r1.index("(reroute eco)")
+    for text in order:
+        at = r1.index(text, at)
+    assert r1.count("global_route -start_incremental") == 1
+    # The repairs saw an unrouted design; the detailed route the original answer.
+    r1_log = (run_dir / "06_post_route_repair.r1.repair.log").read_text()
+    assert "stub: repair_timing routed 0" in r1_log
+    assert "stub: repair_timing routed 1" not in r1_log
+    assert "stub: detailed_route routed 1" in r1_log
+    assert "stub: detailed_route routed 0" not in r1_log
+    assert "post_route_eco_unguarded" not in {e["event"] for e in _events(run_dir)}
     log = (artefacts / "pnr.log").read_text()
     assert (
         ">>> Post-route repair round 2: repair_timing -setup -setup_margin 0.15 " in log
@@ -783,9 +804,8 @@ def test_a_full_reroute_round_routes_the_unrouted_design_first(tmp_path, monkeyp
     assert r1.index("global_route -end_incremental") < r1.index("\ndetailed_route \\")
 
 
-@pytest.mark.parametrize("reroute", ["eco", "full"])
-def test_a_round_legalizes_after_repair_design_before_repair_timing(
-    tmp_path, monkeypatch, reroute
+def test_a_full_round_legalizes_after_repair_design_before_repair_timing(
+    tmp_path, monkeypatch
 ):
     backend, artefacts = _repair_backend(
         tmp_path,
@@ -793,7 +813,7 @@ def test_a_round_legalizes_after_repair_design_before_repair_timing(
         post_route={
             "repair-design": {"slew-margin": 50},
             "setup-margin": 0.1,
-            "reroute": reroute,
+            "reroute": "full",
         },
         env={"RB_STUB_SETUP": "-0.2"},
     )
@@ -834,6 +854,158 @@ def test_an_eco_round_that_cannot_rebuffer_names_reroute_full(
     assert res.results["result"] == "FAIL"
     assert "06_post_route_repair" in res.results["desc"]
     assert ("set post-route-repair.reroute: full" in res.results["desc"]) is named
+
+
+def test_a_dispatched_eco_round_that_cannot_rebuffer_names_reroute_full(
+    tmp_path, monkeypatch
+):
+    from test_pnr_dispatch import _dispatched
+
+    monkeypatch.setenv("RB_STUB_SETUP", "-0.2")
+    monkeypatch.setenv("RB_STUB_RSZ0074", "1")
+    backend, _artefacts, _slurm = _dispatched(tmp_path, monkeypatch)
+    _with_repair(backend, tmp_path, post_route={**_PR, "rounds": 1})
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert "06_post_route_repair" in res.results["desc"]
+    assert "set post-route-repair.reroute: full" in res.results["desc"]
+
+
+def test_an_eco_round_overrides_design_is_routed_around_its_repairs_only(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={
+            "repair-design": {"slew-margin": 50},
+            "setup-margin": 0.1,
+            "hold-margin": 0.05,
+        },
+        env={"RB_STUB_SETUP": "-0.2"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    r1 = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
+    body = r1.split("\nrb::eco::repair 1 {\n", 1)[1].split("\n}\n", 1)[0]
+    commands = [
+        line.split()[0]
+        for line in body.splitlines()
+        if not line.startswith('puts ">>> Post-route repair round 1: ')
+    ]
+    # No legalize between the repairs: they build buffer trees from Steiner trees.
+    assert commands == ["repair_design", "repair_timing", "repair_timing"]
+    assert r1.count("rb::eco::repair 1 ") == 1
+
+
+def test_an_eco_round_without_the_override_warns_and_repairs_as_routed(
+    tmp_path, monkeypatch, caplog
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_PR, "rounds": 2},
+        env={"RB_STUB_SETUP": "-0.2 -0.1"},
+    )
+    # A `repair_timing` that does not call `design_is_routed` itself.
+    harness = tmp_path / "harness.tcl"
+    text = harness.read_text()
+    stub = 'puts "stub: repair_timing routed [design_is_routed]"'
+    assert stub in text
+    harness.write_text(
+        "proc rb_routed {} { return [design_is_routed] }\n"
+        + text.replace(stub, stub.replace("design_is_routed", "rb_routed"))
+    )
+
+    with caplog.at_level("INFO"):
+        res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    r1_log = (run_dir / "06_post_route_repair.r1.repair.log").read_text()
+    assert "stub: repair_timing routed 1" in r1_log
+    assert "repair_timing does not call design_is_routed" in r1_log
+    unguarded = [
+        e for e in _events(run_dir) if e["event"] == "post_route_eco_unguarded"
+    ]
+    assert [e["round"] for e in unguarded] == [1, 2]
+    (warning,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "pnr.post_route_eco_unguarded"
+    ]
+    assert warning.levelname == "WARNING"
+    assert warning.rtl_fields == {"pnr": "demo_pnr", "rounds": [1, 2]}
+    message = warning.getMessage()
+    assert "RSZ-0074" in message
+    assert "post-route-repair.reroute: full" in message
+
+
+# `rb::eco::repair` under a bare interpreter: `design_is_routed` answers 1, and
+# `repair_timing` asks it unless `RB_UNGUARDED` is set.
+_ECO_STUBS = """
+set ::events {}
+namespace eval rb::ckpt {}
+proc rb::ckpt::emit {event fields} { lappend ::events [list $event {*}$fields] }
+proc design_is_routed {args} { return 1 }
+if {[info exists ::RB_UNGUARDED]} {
+    proc repair_timing {args} { return [rb_routed] }
+} else {
+    proc repair_timing {args} { return [design_is_routed] }
+}
+proc rb_routed {} { return [design_is_routed] }
+"""
+
+
+def _eco_tcl(script: str, unguarded: bool = False) -> str:
+    return _tcl_eval(
+        ("set ::RB_UNGUARDED 1\n" if unguarded else "")
+        + _ECO_STUBS
+        + files("rtl_buddy.pnr").joinpath("eco_repair.tcl").read_text()
+        + script
+    )
+
+
+def test_eco_repair_overrides_design_is_routed_inside_and_restores_it():
+    result = _eco_tcl(
+        "set inside [rb::eco::repair 1 {list [repair_timing] [design_is_routed]}]\n"
+        "set result [list $inside [design_is_routed] [repair_timing] $::events]\n"
+    )
+    assert result == "{0 0} 1 1 {}"
+
+
+def test_eco_repair_restores_design_is_routed_and_rethrows_a_failed_repair():
+    result = _eco_tcl(
+        """
+proc failing_repair {} {
+    error "RSZ-0074 no tree" "repair_timing traceback" {RSZ 74}
+}
+set code [catch {rb::eco::repair 1 {failing_repair}} message options]
+set result [list $code $message [dict get $options -errorcode] \\
+    [string match "repair_timing traceback*" [dict get $options -errorinfo]] \\
+    [design_is_routed] [llength [info commands ::rb::eco::design_is_routed]]]
+"""
+    )
+    assert result == "1 {RSZ-0074 no tree} {RSZ 74} 1 1 0"
+
+
+def test_eco_repair_runs_unchanged_and_records_it_when_repair_timing_does_not_ask():
+    result = _eco_tcl(
+        "set inside [rb::eco::repair 2 {repair_timing}]\n"
+        "set result [list $inside [design_is_routed] $::events]\n",
+        unguarded=True,
+    )
+    printed, answer = result.rstrip("\n").rsplit("\n", 1)
+    assert printed == (
+        ">>> Post-route repair round 2: repair_timing does not call "
+        "design_is_routed; repairing on the routed parasitics source"
+    )
+    assert answer == "1 1 {{post_route_eco_unguarded round 2}}"
 
 
 def test_a_one_session_run_s_routed_spef_is_vouched_for_for_rb_power(

@@ -88,6 +88,8 @@ _BLOCK_POWER_FILE = "block_power.tcl"
 _HOOKS_FILE = "hooks.tcl"
 # Wraps `rb::hook::run` in a session a later session follows, to record the commands a hook changes.
 _HOOK_COMMANDS_FILE = "hook_commands.tcl"
+# Runs an `eco` post-route repair round's repairs on Steiner trees; see `_post_route_repair_script`.
+_ECO_REPAIR_FILE = "eco_repair.tcl"
 
 # Non-log files the flow writes under `$OUT_DIR`; `test_pnr.py` checks this covers every one.
 _FLOW_OUTPUT_NAMES = (
@@ -343,19 +345,19 @@ def _repair_steps_tcl(
     setup_ns: float | None,
     hold_ns: float | None,
     ps_per_unit: float | None,
-    legalize: str,
+    legalize: str | None,
 ) -> str:
     """Return `repair_design`, then setup and hold `repair_timing`, each after a log line naming it.
 
     Margins are given in ns and passed in the Liberty time unit (`ps_per_unit` picoseconds), which is what `repair_timing` reads; the log line gives both. A zero margin is the tool's default and passes no option. The hold repair also passes a set setup margin, as ORFS's `repair_timing_helper` does, so it keeps that much setup slack on the paths it delays.
 
-    Between `repair_design` and `repair_timing` runs `legalize` (`_legalize_tcl`), as in ORFS: `repair_timing` builds buffer trees from the global routes, and the nets `repair_design` split have none until they are rerouted (RSZ-0074). The caller legalizes after the timing repair.
+    Between `repair_design` and `repair_timing` runs `legalize` (`_legalize_tcl`), as in ORFS: `repair_timing` on global-route parasitics builds buffer trees from the global routes, and the nets `repair_design` split have none until they are rerouted (RSZ-0074). `None` runs nothing there, for repairs that build them from Steiner trees. The caller legalizes after the timing repair.
     """
     lines = []
     if design is not None:
         command = f"repair_design{design.options()}"
         lines += [f'puts ">>> {title}: {command}"', command]
-        if setup_ns is not None or hold_ns is not None:
+        if legalize is not None and (setup_ns is not None or hold_ns is not None):
             lines += [
                 f'puts ">>> {title}: legalize after repair_design"',
                 legalize.rstrip("\n"),
@@ -2252,7 +2254,11 @@ class OpenRoadPnr:
     def _post_route_repair_script(self, round_: int, run_dir: str) -> str:
         """Round `round_`'s repair session, bound to `run_dir`: repair on the round's SPEF, legalize inside an incremental global route, run the `before-detailed-route` hooks, route in detail and write the stage's checkpoint.
 
-        The rounds work on the unfilled database; `finish` fills after the last. A repair in the session that routed fails detailed routing (DRT-0218), so each round is a fresh session that reads the routed database. With `reroute: eco` the session keeps the detailed route, restores the global route from the database's guides with `estimate_parasitics -global_routing` and reads the SPEF over it, so the repair times every net it does not change on its extracted parasitics and the nets it changes on the global route, and the detailed route reroutes only the nets the repair changed. Without the estimate a later eco round's rebuffering crashes in `GlobalRouter::getPinGridPositions` (signal 11). With `reroute: full` it removes the detailed route and routes globally first, then reads the SPEF: the global routes rebuilt from a detailed-routed database's guides can miss pins, and a repair that builds buffer trees from them fails (RSZ-0074, seen on ASAP7 and with `repair_design`); its detailed route routes every net again. The repairs run before `global_route -start_incremental`, in ORFS order: `repair_timing` opens its own incremental route, and a second one open around it delivers each netlist change to the router twice (GRT-0229 on a later rip-up).
+        The rounds work on the unfilled database; `finish` fills after the last. A repair in the session that routed fails detailed routing (DRT-0218), so each round is a fresh session that reads the routed database.
+
+        With `reroute: eco` the session keeps the routed database's wires. It estimates placement parasitics and reads the SPEF over them, opens an incremental global route and runs the repairs in `rb::eco::repair` (`eco_repair.tcl`), which makes `design_is_routed` answer 0 for them alone: `repair_timing` then keeps the placement source instead of switching to detailed-routing parasitics, times the nets it does not change on the SPEF and the nets it changes on Steiner trees, and opens no incremental route of its own, so the session's one sees each netlist change once. Legalizing closes that route, which reroutes only the changed nets, and the detailed route keeps every other net's wires. On detailed-routing parasitics the repairs would build buffer trees from the global routes a fresh session rebuilds from the guides, which can miss pins (RSZ-0074), and a second incremental route open around them delivers each change twice (GRT-0229 on a later rip-up).
+
+        With `reroute: full` it removes the detailed route and routes globally first, then reads the SPEF over the global-route estimate; the repairs run before `global_route -start_incremental`, in ORFS order, since `repair_timing` on global-route parasitics opens its own incremental route. Its detailed route routes every net again.
         """
         repair = self._post_route
         setup, hold = repair.margins(round_)
@@ -2266,6 +2272,7 @@ class OpenRoadPnr:
             f'(reroute {repair.reroute.value})"\n'
         )
         if repair.reroute is PostRouteReroute.FULL:
+            legalize = _legalize_tcl("{{ dpl_options }}")
             parts += [
                 "remove_fillers\n",
                 "[ord::get_db_block] destroyNetWires\n",
@@ -2273,19 +2280,32 @@ class OpenRoadPnr:
                 _GLOBAL_ROUTE_CMD,
                 "estimate_parasitics -global_routing\n",
                 spef,
+                _repair_steps_tcl(
+                    title,
+                    repair.repair_design,
+                    setup,
+                    hold,
+                    self._ps_per_unit,
+                    legalize,
+                ),
+                legalize,
             ]
         else:
+            steps = _repair_steps_tcl(
+                title, repair.repair_design, setup, hold, self._ps_per_unit, None
+            )
             parts += [
-                "estimate_parasitics -global_routing\n",
+                files(_TEMPLATE_PACKAGE).joinpath(_ECO_REPAIR_FILE).read_text(),
+                "estimate_parasitics -placement\n",
                 spef,
                 "remove_fillers\n",
+                "global_route -start_incremental\n",
+                f"rb::eco::repair {round_} {{\n{steps}}}\n",
+                "detailed_placement{{ dpl_options }}\n",
+                "check_placement -verbose\n",
+                _END_INCREMENTAL_CMD,
             ]
-        legalize = _legalize_tcl("{{ dpl_options }}")
         parts += [
-            _repair_steps_tcl(
-                title, repair.repair_design, setup, hold, self._ps_per_unit, legalize
-            ),
-            legalize,
             "{{ hook_before_detailed_route_block }}",
             f'puts ">>> {title}: detailed route"\n',
             # So the round's DRC count is its own route's.
@@ -2305,7 +2325,7 @@ class OpenRoadPnr:
     def _eco_hint(self, log_text: str) -> str:
         """What to change when an `eco` post-route repair round failed RSZ-0074, else "".
 
-        The global routes a fresh session rebuilds from a detailed-routed database's guides can miss pins, and the repairs cannot build buffer trees from them (seen on ASAP7 and with `repair_design`).
+        An eco round's repairs build buffer trees from Steiner trees while `rb::eco::repair` can override `design_is_routed`; where it cannot (`pnr.post_route_eco_unguarded`), they build them from the global routes a fresh session rebuilds from the routed database's guides, which can miss pins.
         """
         repair = self._post_route
         if (
@@ -4227,6 +4247,22 @@ class OpenRoadPnr:
                         commands=event.get(key),
                     )
 
+    def _warn_eco_unguarded(self) -> None:
+        """Warn once when `eco` post-route repair rounds ran their repairs without the `design_is_routed` override (`eco_repair.tcl`), because this OpenROAD's `repair_timing` does not call it."""
+        rounds = [
+            event.get("round")
+            for event in pnr_checkpoints.read_progress(self._ckpt_run_dir)
+            if event.get("event") == "post_route_eco_unguarded"
+        ]
+        if rounds:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.post_route_eco_unguarded",
+                pnr=self.pnr_cfg.get_name(),
+                rounds=rounds,
+            )
+
     def _unwritten_checkpoint(self, log_text: str) -> str | None:
         """Why a one-session run that reached its end left a requested checkpoint unwritten, or None.
 
@@ -4754,9 +4790,11 @@ class OpenRoadPnr:
             returncode, stderr_text, chain_problem = self._dispatch_chain()
             self._log_dispatched_rounds()
             self._warn_hook_commands()
+            self._warn_eco_unguarded()
         elif self._staged:
             returncode, stderr_text, chain_problem = self._run_chain(env)
             self._warn_hook_commands()
+            self._warn_eco_unguarded()
         else:
             # No `-log`: OpenROAD block-buffers that file, so a long route showed nothing for minutes.
             # Its stdout is flushed per message, so it goes to the log directly instead.
@@ -4797,6 +4835,7 @@ class OpenRoadPnr:
                         env
                     )
                 self._warn_hook_commands()
+                self._warn_eco_unguarded()
         if self._dispatch_results is not None:
             return self._dispatch_results
         self._openroad_returncode = returncode
@@ -4889,7 +4928,8 @@ class OpenRoadPnr:
                 log=log_path,
             )
             return self._fail_after_openroad(
-                chain_problem, fail_stage=self._chain_fail_stage
+                chain_problem + self._eco_hint(log_text),
+                fail_stage=self._chain_fail_stage,
             )
         if returncode != 0:
             log_event(
