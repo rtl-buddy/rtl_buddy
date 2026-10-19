@@ -437,6 +437,61 @@ def test_a_fill_cell_change_resumes_from_finish(tmp_path, monkeypatch):
     assert "FILLCELL_X2" in (second / "07_finish.tcl").read_text()
 
 
+def _two_corners(backend, tmp_path):
+    """Point `backend` at a `tt` + `ss` platform whose Liberty files exist."""
+    from test_pnr_checkpoints import _pdk, _platform
+
+    corners = {}
+    for corner in ("tt", "ss"):
+        lib = tmp_path / "pdk" / "lib" / f"{corner}.lib"
+        lib.parent.mkdir(parents=True, exist_ok=True)
+        if not lib.exists():
+            lib.write_text(f'library ({corner}) {{ time_unit : "1ns" ; }}\n')
+        corners[corner] = f"pdk/lib/{corner}.lib"
+    backend.root_cfg.get_pnr_platform_cfg.return_value = _platform(
+        _pdk(tmp_path, corners=corners), sta_corners=["tt", "ss"]
+    )
+    return backend
+
+
+def test_every_session_of_a_multi_corner_run_reads_every_corner(tmp_path, monkeypatch):
+    backend, artefacts = _staged(tmp_path, monkeypatch, stop_after="cts")
+
+    res = _two_corners(backend, tmp_path).run()
+
+    assert res.results["result"] == "PASS", res.results
+    run_dir = _only_run(artefacts)
+    ss = tmp_path / "pdk" / "lib" / "ss.lib"
+    for stage in PNR_STAGES[:3]:
+        script = (run_dir / f"{_NAMES[stage]}.tcl").read_text()
+        assert "define_corners tt ss" in script
+        assert f"read_liberty -corner ss {ss}" in script
+        assert script.index(f"read_liberty -corner ss {ss}") < script.index("read_lef")
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert [Path(f["path"]).name for f in manifest["inputs"]["liberty"]] == [
+        "tt.lib",
+        "ss.lib",
+    ]
+
+
+def test_resume_refuses_a_changed_liberty_of_any_corner(tmp_path, monkeypatch):
+    backend, artefacts = _staged(tmp_path, monkeypatch, stop_after="cts")
+    assert _two_corners(backend, tmp_path).run().results["result"] == "PASS"
+    first = _only_run(artefacts)
+    ss = tmp_path / "pdk" / "lib" / "ss.lib"
+    ss.write_text(ss.read_text() + "/* recharacterised */\n")
+
+    backend, _ = _backend(tmp_path, monkeypatch, resume=first.name, resume_from="cts")
+    _two_corners(backend, tmp_path)
+    before = _snapshot(artefacts)
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "resume"
+    assert "input liberty differs" in res.results["desc"]
+    assert "ss.lib" in res.results["desc"]
+    assert _snapshot(artefacts) == before
+
+
 def _refusal(tmp_path, monkeypatch, run, from_stage="detailed_route", **kw) -> str:
     backend, artefacts = _backend(
         tmp_path, monkeypatch, resume=run, resume_from=from_stage, **kw

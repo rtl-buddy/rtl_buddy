@@ -691,6 +691,8 @@ The resume is refused, with `fail_stage: resume` and a description that names wh
 - every input file those stages read has the same content; and
 - OpenROAD reports the same version.
 
+The input files are those the [checkpoint manifest](#keep-stage-checkpoints) fingerprints: the netlist, the SDC, the Liberty of every corner, the LEF, `pin-constraints`, the planner files, the `pdn-config`, the PDK Tcl hooks (`platform-tcl`, `layer-rc-tcl`, `tracks-tcl`, `tapcell-tcl`) and the run's `hooks:` files. A file that one of them sources or reads in turn, such as a file a hook, `platform-tcl`, a `pdn-config` or the SDC sources, is not checked, and neither are environment variables.
+
 A stage script is compared up to its end-of-stage line, without:
 
 - the two lines that name run directories (`RB_RUN_DIR` and `RB_PRED_DIR`);

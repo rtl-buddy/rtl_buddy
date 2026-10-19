@@ -2559,7 +2559,7 @@ class OpenRoadPnr:
     def _checkpoint_inputs(self, platform, script_path: str | None) -> dict:
         """Return fingerprints of the files the generated script reads, for the checkpoint manifest.
 
-        `netlist` is the file OpenROAD reads; when that is the `blocks:`-stripped copy, `synth_netlist` records the synth netlist it was made from. `script` is left out without `script_path`.
+        Files those files source themselves are not followed. `netlist` is the file OpenROAD reads; when that is the `blocks:`-stripped copy, `synth_netlist` records the synth netlist it was made from. `script` is left out without `script_path`.
         """
         pdk = platform.get_pdk()
         stripped = (
@@ -2573,10 +2573,15 @@ class OpenRoadPnr:
             ),
             **stripped,
             "sdc": _file_fingerprint(self.pnr_cfg.get_constraints()),
+            # Every corner's, each corner in `corners:` order.
             "liberty": [
                 _file_fingerprint(p)
                 for p in [
-                    *platform.get_sta_lib_paths(),
+                    *(
+                        lib
+                        for libs in platform.get_sta_corner_lib_paths().values()
+                        for lib in libs
+                    ),
                     *self.pnr_cfg.get_lib_paths(),
                 ]
             ],

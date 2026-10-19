@@ -11349,10 +11349,12 @@ class RtlBuddy:
                 metavar="RUN",
                 help=(
                     "resume a staged run (stages: true) in a new checkpoint run "
-                    "directory: a run id under the run's checkpoints/, a "
-                    "checkpoint run directory, or latest. Needs --from and a "
-                    "single named run; refused when anything the stages before "
-                    "--from read has changed"
+                    "directory: latest, a run id under the run's checkpoints/, "
+                    "or a checkpoint run directory. Needs --from and a single "
+                    "named run; refused when the scripts, input files or "
+                    "OpenROAD of the stages before --from have changed. Files "
+                    "that hooks, platform-tcl, a pdn-config or the SDC source "
+                    "themselves, and environment variables, are not checked"
                 ),
             ),
         ] = None,
