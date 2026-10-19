@@ -73,7 +73,14 @@ class _GuardedSbatch:
         assert argv[:2] == ["/bin/sh", "-c"] and argv[3] == "rb-sbatch"
         self.slurm = slurm
         self.answer, self.marker, self.cluster = argv[4], argv[5], argv[6]
-        self.cmd = argv[7:]
+        # sbatch runs under `timeout`, so the script files an answer in bounded time.
+        assert argv[7:11] == [
+            "timeout",
+            "-k",
+            "10",
+            f"{slurm_module.SUBMIT_TIMEOUT_S:g}",
+        ]
+        self.cmd = argv[11:]
         self.waits = slurm.sbatch_waits
         self.returncode = None
 
@@ -1452,6 +1459,115 @@ def test_a_job_accepted_after_its_head_died_is_found(tmp_path, monkeypatch, answ
     assert "stage job(s) 777 of earlier" in res.results["desc"]
 
 
+def _leave_unanswered(artefacts, *suffixes):
+    """Make the dispatched run in `artefacts` look as if its head was killed before sbatch answered its first submission: no job recorded, and an empty `01_floorplan.<suffix>` for each of `suffixes`."""
+    run_dir = _only_run(artefacts)
+    dispatch = run_dir / "dispatch"
+    (dispatch / "jobs.json").unlink()
+    for answer in dispatch.glob("*.sbatch"):
+        answer.unlink()
+    for suffix in suffixes:
+        (dispatch / f"01_floorplan.{suffix}").write_text("")
+    return run_dir
+
+
+def _without_squeue(monkeypatch):
+    which = pnr_openroad.shutil.which
+    monkeypatch.setattr(
+        pnr_openroad.shutil,
+        "which",
+        lambda cmd, *a, **k: None if cmd == "squeue" else which(cmd, *a, **k),
+    )
+
+
+# `.sbatch.tmp`: the guard still waits on sbatch; `.sbatch.cancel`: the head gave the
+# submission up, and the guard cancels the job once sbatch answers.
+@pytest.mark.parametrize(
+    ("suffixes", "dispatched"),
+    [
+        (("sbatch.tmp",), True),
+        (("sbatch.cancel",), True),
+        (("sbatch.tmp", "sbatch.cancel"), True),
+        (("sbatch.tmp",), False),
+    ],
+)
+def test_a_submission_sbatch_has_not_answered_blocks_a_later_run(
+    tmp_path, monkeypatch, suffixes, dispatched
+):
+    first, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
+    assert first.run().results["result"] == "PASS"
+    run_dir = _leave_unanswered(artefacts, *suffixes)
+    log = (artefacts / "pnr.log").read_bytes()
+    slurm.calls.clear()
+    if dispatched:
+        again, _, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+    else:
+        # No job id to look up, so no scheduler client is needed to refuse.
+        again, _ = _backend(tmp_path, monkeypatch, stages=True)
+        _without_squeue(monkeypatch)
+
+    res = again.run()
+
+    assert res.results["result"] == "FAIL"
+    assert res.results["fail_stage"] == "dispatch"
+    named = run_dir / "dispatch" / f"01_floorplan.{suffixes[0]}"
+    assert res.results["desc"] == (
+        f"dispatch: stage job submission(s) {named} of earlier dispatched run(s) "
+        f"{run_dir.name} have no answer from sbatch yet, and a job sbatch accepts "
+        "would write into this run's outputs; run rb pnr again once sbatch has "
+        "answered (a submission without an answer for 660s is taken to have "
+        "failed), or once the submission is known to have died remove "
+        f"{run_dir / 'dispatch'} to run without it"
+    )
+    # Nothing was cleared, started or asked of Slurm.
+    assert _runs(artefacts) == [run_dir]
+    assert (artefacts / "pnr.log").read_bytes() == log
+    assert slurm.calls == []
+    if not dispatched:
+        return
+
+    # sbatch answers with a job that has already ended.
+    (run_dir / "dispatch" / "01_floorplan.sbatch.tmp").unlink(missing_ok=True)
+    (run_dir / "dispatch" / "01_floorplan.sbatch").write_text(
+        f"{slurm.submitted()[0]['id']}\n"
+    )
+    assert again.run().results["result"] == "PASS"
+    recorded = json.loads((run_dir / "dispatch" / "jobs.json").read_text())
+    assert recorded["drained"] is True
+
+
+def test_a_submission_without_an_answer_for_long_is_taken_to_have_failed(
+    tmp_path, monkeypatch, caplog
+):
+    first, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
+    assert first.run().results["result"] == "PASS"
+    run_dir = _leave_unanswered(artefacts, "sbatch.tmp")
+    unanswered = run_dir / "dispatch" / "01_floorplan.sbatch.tmp"
+    then = time.time() - pnr_dispatch._UNRESOLVED_AFTER_S - 5
+    os.utime(unanswered, (then, then))
+    again, _, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+
+    with caplog.at_level("WARNING"):
+        assert again.run().results["result"] == "PASS"
+
+    (warning,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "pnr.stage_submission_presumed_failed"
+    ]
+    assert warning.rtl_fields["file"] == str(unanswered)
+    assert re.fullmatch(
+        rf"P&R: stage job submission {re.escape(str(unanswered))} of the earlier "
+        rf"dispatched run {re.escape(str(run_dir))} has had no answer from sbatch "
+        r"for 11m0\ds, more than the 11m00s a submission is given, so it is taken "
+        r"to have failed",
+        warning.getMessage(),
+    ), warning.getMessage()
+    # Recorded as drained, so the next run does not warn again.
+    recorded = json.loads((run_dir / "dispatch" / "jobs.json").read_text())
+    assert recorded["drained"] is True
+
+
 def test_the_orphan_lookup_asks_only_for_this_users_jobs(tmp_path, monkeypatch):
     first, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
     assert first.run().results["result"] == "PASS"
@@ -1927,6 +2043,24 @@ def test_a_given_up_sbatch_returns_at_once_and_its_job_is_cancelled(
     while not log.exists() and time.monotonic() < deadline:
         threading.Event().wait(0.05)
     assert log.read_text() == "-M c2 4242\n"
+
+
+def test_an_sbatch_that_does_not_answer_is_stopped_and_fails(tmp_path, monkeypatch):
+    backend, spec = _guard_backend(tmp_path, monkeypatch, "sleep 30\necho 4242\n")
+    monkeypatch.setattr(slurm_module, "SUBMIT_TIMEOUT_S", 1.0)
+    start = time.monotonic()
+
+    with pytest.raises(
+        FatalRtlBuddyError,
+        match=r"^sbatch failed for pnr:blk:cts \(rc=124\): sbatch did not answer "
+        r"within 1s$",
+    ):
+        backend.submit_pnr_stage(spec)
+
+    assert time.monotonic() - start < 10
+    # The guard filed an empty answer, so the submission is resolved as failed.
+    assert (tmp_path / "03_cts.sbatch").read_text() == ""
+    assert not (tmp_path / "03_cts.sbatch.tmp").exists()
 
 
 def test_submit_pnr_stage_argv(monkeypatch):

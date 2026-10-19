@@ -40,6 +40,7 @@ from .argv import (
 from .base import (
     BUILD_PHASE_VERILATE,
     CANCEL_TIMEOUT_S,
+    SUBMIT_TIMEOUT_S,
     BuildJobSpec,
     CoverageJobSpec,
     DispatchBackend,
@@ -54,7 +55,7 @@ from .progress import DispatchProgress, group_job_ids
 
 logger = logging.getLogger(__name__)
 
-#: Runs a P&R stage job's `sbatch` in a session of its own, so the terminal's Ctrl-C never kills it halfway, and leaves its answer in `$1` (stderr in `$1.err`). When the head has given the submission up, which it marks by creating `$2`, the script cancels the job sbatch accepted. The head marks before it looks for the answer, and the script writes the answer before it looks for the mark, so one of them always sees the other.
+#: Runs a P&R stage job's `sbatch` in a session of its own, so the terminal's Ctrl-C never kills it halfway, and leaves its answer in `$1` (stderr in `$1.err`); until then `$1.tmp` holds it. When the head has given the submission up, which it marks by creating `$2`, the script cancels the job sbatch accepted. The head marks before it looks for the answer, and the script writes the answer before it looks for the mark, so one of them always sees the other.
 _GUARDED_SBATCH = r"""
 answer=$1 marker=$2 cluster=$3
 shift 3
@@ -76,6 +77,12 @@ exit $rc
 
 #: How often a waiting P&R submission checks whether it has been given up.
 _SUBMIT_POLL_S = 0.2
+
+#: How long after `SUBMIT_TIMEOUT_S` a P&R stage's `sbatch` that outlives SIGTERM is killed.
+_SUBMIT_KILL_S = 10
+
+#: The exit code of `timeout` when it stopped the command.
+_TIMED_OUT = 124
 
 
 def _runnable_job_argv(spec: RunnableJobSpec) -> list[str]:
@@ -1128,9 +1135,13 @@ class SlurmDispatchBackend(DispatchBackend):
             cmd, spec=spec, abandon=abandon
         )
         if returncode != 0:
+            detail = stderr.strip()
+            if returncode == _TIMED_OUT:
+                detail = f"sbatch did not answer within {SUBMIT_TIMEOUT_S:g}s" + (
+                    f"; {detail}" if detail else ""
+                )
             raise FatalRtlBuddyError(
-                f"sbatch failed for {spec.display_name()} (rc={returncode}): "
-                f"{stderr.strip()}"
+                f"sbatch failed for {spec.display_name()} (rc={returncode}): {detail}"
             )
         job_id, cluster = self._accepted_on(stdout)
         if not job_id:
@@ -1158,7 +1169,9 @@ class SlurmDispatchBackend(DispatchBackend):
     ) -> tuple[int, str, str]:
         """Run ``cmd`` (an sbatch argv) through ``_GUARDED_SBATCH`` and return its exit code, stdout and stderr.
 
-        The answer goes to ``spec.submission_path``, or a temporary directory. While
+        The answer goes to ``spec.submission_path``, or a temporary directory. sbatch
+        runs under ``timeout``, so the script files an answer, empty when sbatch is
+        stopped, within :data:`SUBMIT_TIMEOUT_S` plus ``_SUBMIT_KILL_S``. While
         sbatch runs, ``abandon`` is polled; once it returns true, or an exception
         reaches this call, the submission is marked given up: a job sbatch already
         accepted is cancelled here and one it accepts later by the script, and
@@ -1184,6 +1197,10 @@ class SlurmDispatchBackend(DispatchBackend):
             str(answer),
             str(marker),
             self.cluster or "",
+            "timeout",
+            "-k",
+            f"{_SUBMIT_KILL_S:g}",
+            f"{SUBMIT_TIMEOUT_S:g}",
             *cmd,
         ]
         try:

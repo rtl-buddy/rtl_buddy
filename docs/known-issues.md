@@ -254,7 +254,7 @@ Compare a staged run with a one-session run at the same `threads:` before relyin
 
 ## An unconfirmed dispatched P&R run blocks later runs
 
-A later `rb pnr` of a configuration refuses to start while an earlier [dispatched](concepts/pnr.md#dispatch-the-stages-to-slurm) run's stage jobs may still be queued and it cannot confirm they have left: while `squeue` does not answer, and on a host without `squeue` while that run's `dispatch/` record changed within the total `time` its jobs asked for. On such a host a record older than that only warns, though a job can wait in the queue for any time before it starts. Run `rb pnr` where `squeue` answers, or, once the jobs have ended, remove the `checkpoints/<run id>/dispatch/` directory the refusal names.
+A later `rb pnr` of a configuration refuses to start while an earlier [dispatched](concepts/pnr.md#dispatch-the-stages-to-slurm) run's stage jobs may still be queued and it cannot confirm they have left: while `squeue` does not answer, on a host without `squeue` while that run's `dispatch/` record changed within the total `time` its jobs asked for, and for up to 11 minutes while a submission of that run has no answer from `sbatch`. On a host without `squeue` a record older than that only warns, though a job can wait in the queue for any time before it starts. Run `rb pnr` where `squeue` answers, or, once the jobs have ended or the submission is known to have died, remove the `checkpoints/<run id>/dispatch/` directory the refusal names.
 
 ## `rb phys module` reports no power for an RTL module
 

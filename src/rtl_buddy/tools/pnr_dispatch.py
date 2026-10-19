@@ -6,6 +6,8 @@ Files under the run directory's `dispatch/`:
 
     jobs.json                     # each stage's job, written as the scheduler accepts it, and whether all have left the queue
     NN_<stage>.sbatch             # the scheduler's answer to the stage's submission
+    NN_<stage>.sbatch.tmp         # the answer while the scheduler has not given it
+    NN_<stage>.sbatch.cancel      # the head gave the submission up
     NN_<stage>.slurm.log          # the job's scheduler output
     NN_<stage>.rtl_buddy.log      # the job's rtl_buddy log
     NN_<stage>.result.json        # how the stage ended, written by the job
@@ -22,7 +24,7 @@ import socket
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.metadata import version
 from pathlib import Path
 
@@ -30,6 +32,7 @@ from ..config.dispatch import time_to_seconds
 from ..config.openroad_threads import detect_allocation, plan_threads
 from ..dispatch.base import (
     CANCEL_TIMEOUT_S,
+    SUBMIT_TIMEOUT_S,
     JobHandle,
     SubmissionAbandoned,
     telemetry_key,
@@ -624,11 +627,7 @@ def settle_cancelled_chain(
     recorded = _recorded_jobs(run_dir) or {}
     unrecorded = set(recorded) - {h.job_id for h in chain.handles}
     # A submission given up before sbatch answered may still have its job accepted.
-    unanswered = [
-        marker
-        for marker in Path(jobs_dir(run_dir)).glob("*.sbatch.cancel")
-        if not Path(str(marker).removesuffix(".cancel")).exists()
-    ]
+    unanswered = _unresolved_submissions(run_dir, time.time())
     try:
         record_jobs(
             run_dir, chain, drained=not live and not unrecorded and not unanswered
@@ -743,17 +742,51 @@ def _recorded_jobs(run_dir: str) -> dict | None:
             jobs[str(job["job_id"])] = (job.get("cluster"), job.get("stage"))
     answers = Path(jobs_dir(run_dir))
     for answer in sorted([*answers.glob("*.sbatch"), *answers.glob("*.sbatch.tmp")]):
-        try:
-            line = answer.read_text(errors="replace").strip().splitlines()
-        except OSError:
-            continue
-        job_id, _, cluster = (line[0] if line else "").partition(";")
-        if job_id.strip().isdigit():
+        accepted = _answered_job(answer)
+        if accepted is not None:
+            job_id, cluster = accepted
             jobs.setdefault(
-                job_id.strip(),
-                (cluster.strip() or None, answer.name.split(".")[0].partition("_")[2]),
+                job_id, (cluster, answer.name.split(".")[0].partition("_")[2])
             )
     return jobs
+
+
+def _answered_job(answer: Path) -> tuple[str, str | None] | None:
+    """The job id and cluster a submission's answer file names, or None."""
+    try:
+        lines = answer.read_text(errors="replace").strip().splitlines()
+    except OSError:
+        return None
+    job_id, _, cluster = (lines[0] if lines else "").partition(";")
+    if not job_id.strip().isdigit():
+        return None
+    return job_id.strip(), cluster.strip() or None
+
+
+#: How long a stage job submission can go without an answer before a later `rb pnr` takes it to have failed: the submission's own limit (`SUBMIT_TIMEOUT_S`), plus a margin for stopping `sbatch` and for the clocks of other hosts.
+_UNRESOLVED_AFTER_S = SUBMIT_TIMEOUT_S + 60.0
+
+
+def _unresolved_submissions(run_dir: str, now: float) -> list[tuple[str, float]]:
+    """The stage job submissions of a run directory with neither an answer nor a job id yet, as `(file, seconds since it last changed)`.
+
+    A submission is unresolved while its `NN_<stage>.sbatch.tmp` (`sbatch` still running) or `NN_<stage>.sbatch.cancel` (the head gave it up) has no `NN_<stage>.sbatch` beside it, and the `.tmp` names no job. The file named is the `.tmp` when there is one.
+    """
+    directory = Path(jobs_dir(run_dir))
+    by_answer: dict[Path, list[Path]] = {}
+    for path in [*directory.glob("*.sbatch.tmp"), *directory.glob("*.sbatch.cancel")]:
+        by_answer.setdefault(path.with_suffix(""), []).append(path)
+    unresolved = []
+    for answer, paths in sorted(by_answer.items()):
+        tmp = answer.with_name(f"{answer.name}.tmp")
+        if answer.exists() or _answered_job(tmp) is not None:
+            continue
+        try:
+            changed = max(p.stat().st_mtime for p in paths)
+        except OSError:
+            continue
+        unresolved.append((str(tmp if tmp in paths else paths[0]), now - changed))
+    return unresolved
 
 
 def _mark_drained(run_dir: str) -> None:
@@ -783,11 +816,22 @@ class Orphans:
     error: str | None = None
     #: Set when this host has no client for the scheduler.
     no_client: bool = False
+    #: Submissions of the runs that have no answer yet (`_unresolved_submissions`), so a job they submit is not known.
+    unresolved: list[str] = field(default_factory=list)
 
     def desc(self) -> str:
         runs = ", ".join(os.path.basename(d) for d in self.run_dirs)
         ids = " ".join(self.job_ids)
         dirs = " ".join(jobs_dir(d) for d in self.run_dirs)
+        if self.unresolved:
+            return failure_desc(
+                f"stage job submission(s) {' '.join(self.unresolved)} of earlier "
+                f"dispatched run(s) {runs} have no answer from sbatch yet, and a job "
+                "sbatch accepts would write into this run's outputs; run rb pnr "
+                "again once sbatch has answered (a submission without an answer for "
+                f"{_UNRESOLVED_AFTER_S:g}s is taken to have failed), or once the "
+                f"submission is known to have died remove {dirs} to run without it"
+            )
         if self.no_client:
             return failure_desc(
                 f"stage job(s) {ids} of earlier dispatched run(s) {runs} may still "
@@ -811,9 +855,12 @@ class Orphans:
 def live_orphans(artefact_dir: str, backend_factory) -> Orphans | None:
     """The stage jobs of earlier dispatched runs in `artefact_dir`'s checkpoints still in the queue, or None.
 
-    Each run directory whose `dispatch/jobs.json` is not marked drained is looked up, among this user's jobs; one whose jobs have all left the queue is marked drained, so it is not looked up again. `backend_factory()` returns the backend to ask; it is called only when there is something to look up. A backend it cannot make, or a queue that cannot be read, leaves the jobs counted as queued. When it raises `NoSchedulerClient`, a run directory whose jobs could have run their whole chain since it last changed is passed with a warning (`_unchecked`).
+    Each run directory whose `dispatch/jobs.json` is not marked drained is looked up, among this user's jobs; one whose jobs have all left the queue is marked drained, so it is not looked up again. A submission of such a run that `sbatch` has not answered (`_unresolved_submissions`) counts as a queued job until it is older than `_UNRESOLVED_AFTER_S`; after that it is taken to have failed, with a warning (`pnr.stage_submission_presumed_failed`). `backend_factory()` returns the backend to ask; it is called only when there is something to look up. A backend it cannot make, or a queue that cannot be read, leaves the jobs counted as queued. When it raises `NoSchedulerClient`, a run directory whose jobs could have run their whole chain since it last changed is passed with a warning (`_unchecked`).
     """
     found: dict[str, dict] = {}
+    pending: dict[str, list[tuple[str, float]]] = {}
+    lapsed: dict[str, list[tuple[str, float]]] = {}
+    now = time.time()
     for jobs in sorted(
         Path(artefact_dir, pnr_checkpoints.CHECKPOINTS_DIRNAME).glob(
             f"*/{DISPATCH_DIRNAME}"
@@ -822,9 +869,31 @@ def live_orphans(artefact_dir: str, backend_factory) -> Orphans | None:
         if jobs.parent.is_symlink():
             continue
         run_dir = str(jobs.parent)
+        # Before the answers are read, so a submission answered in between is found by them.
+        unresolved = _unresolved_submissions(run_dir, now)
         recorded = _recorded_jobs(run_dir)
+        if recorded is None:
+            continue
+        for path, age in unresolved:
+            group = pending if age < _UNRESOLVED_AFTER_S else lapsed
+            group.setdefault(run_dir, []).append((path, age))
         if recorded:
             found[run_dir] = recorded
+    if pending:
+        return _unanswered(artefact_dir, pending)
+    for run_dir, submissions in lapsed.items():
+        for path, age in submissions:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.stage_submission_presumed_failed",
+                run_dir=run_dir,
+                file=path,
+                age_s=round(age),
+                after_s=_UNRESOLVED_AFTER_S,
+            )
+        if run_dir not in found:
+            _mark_drained(run_dir)
     if not found:
         return None
     handles = {
@@ -862,6 +931,23 @@ def live_orphans(artefact_dir: str, backend_factory) -> Orphans | None:
     if not runs:
         return None
     return _orphans(artefact_dir, runs, queued, error=error)
+
+
+def _unanswered(artefact_dir: str, pending: dict) -> Orphans:
+    """The refusal for submissions of earlier runs that have no answer yet, by run directory."""
+    runs = list(pending)
+    files = [path for submissions in pending.values() for path, _age in submissions]
+    log_event(
+        logger,
+        logging.ERROR,
+        "pnr.stage_submission_unanswered",
+        artefact_dir=artefact_dir,
+        run_dirs=runs,
+        files=files,
+        after_s=_UNRESOLVED_AFTER_S,
+        clear=[jobs_dir(d) for d in runs],
+    )
+    return Orphans(run_dirs=runs, job_ids=[], command="", unresolved=files)
 
 
 def _orphans(artefact_dir, runs, queued, *, error=None, no_client=False) -> Orphans:
