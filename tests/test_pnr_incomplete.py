@@ -33,13 +33,13 @@ _MODES = {
 }
 
 
-def _ending_early(tmp_path, monkeypatch, hook, ending, mode):
-    """A backend whose `hook` file ends the session with `ending`."""
+def _ending_early(tmp_path, monkeypatch, hook, ending, mode, before=""):
+    """A backend whose `hook` file prints `before`, then ends the session with `ending`."""
     field_name, _step = _HOOKS[hook]
     stages, checkpoints = _MODES[mode]
     script = tmp_path / "pdk" / f"{hook}.tcl"
     script.parent.mkdir(exist_ok=True)
-    script.write_text(_ENDINGS[ending])
+    script.write_text(before + _ENDINGS[ending])
     kw = {"stages": stages}
     if not stages:
         kw["checkpoints"] = (
@@ -77,6 +77,32 @@ def test_a_hook_that_ends_the_session_fails_the_run(
         assert desc.startswith("stage 01_floorplan: ")
     assert not list(artefacts.glob("*.routed.*"))
     assert "routed" not in res.results
+
+
+#: Lines a flow prints before it ends early: a design check each would fail on its own.
+_BEFORE = {
+    "block-power-error": (
+        'puts "RB-BLOCK-POWER-ERROR: u_blk/VDDB is not on a parent VDD strap"\n'
+    ),
+    "dont-use-hit": 'puts "RB-DONT-USE-VIOLATION: u1 AND2_X1 AND2_X1"\n',
+}
+
+
+@pytest.mark.parametrize("mode", _MODES)
+@pytest.mark.parametrize("before", _BEFORE)
+def test_a_design_failure_does_not_hide_that_the_flow_ended_early(
+    tmp_path, monkeypatch, before, mode
+):
+    backend, _ = _ending_early(
+        tmp_path, monkeypatch, "pin-constraints", "exit", mode, before=_BEFORE[before]
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL", res.results
+    assert res.results["fail_stage"] == "incomplete"
+    assert "the flow did not finish" in res.results["desc"]
+    assert xfail_refusal(res.results) == "incomplete"
 
 
 def test_the_message_names_the_last_command_when_progress_is_recorded(
@@ -134,6 +160,49 @@ def test_a_flow_that_ends_before_its_last_stage_marker_fails(
     assert desc.startswith("stage 07_finish: ") == stages
 
 
+def test_a_done_marker_printed_early_does_not_end_the_flow(tmp_path, monkeypatch):
+    done_early = tmp_path / "pdk" / "platform.tcl"
+    done_early.parent.mkdir()
+    done_early.write_text(f'puts "{pnr_stages.FLOW_DONE_MARKER}"\n')
+    pdn = tmp_path / "pdk" / "pdn.tcl"
+    pdn.write_text("exit 0\n")
+    backend, _ = _backend(
+        tmp_path,
+        monkeypatch,
+        checkpoints=None,
+        pdk_fields={"platform_tcl": "pdk/platform.tcl", "pdn_config": "pdk/pdn.tcl"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL", res.results
+    assert res.results["fail_stage"] == "incomplete"
+    assert res.results["desc"] == (
+        "the flow did not finish: OpenROAD exited with code 0 before the end of the "
+        "flow ('>>> DONE' is not the last step in the log); "
+        "the last step in the log is 'Power distribution network'"
+    )
+
+
+def test_a_resumed_finish_that_printed_done_early_fails(tmp_path, monkeypatch):
+    first, _ = _backend(tmp_path, monkeypatch, stages=True, stop_after="detailed_route")
+    assert first.run().results["result"] == "PASS"
+
+    backend, _ = _backend(
+        tmp_path,
+        monkeypatch,
+        stages=True,
+        resume="latest",
+        resume_from="finish",
+        env={"RB_STUB_DONE_EARLY": "filler_placement", "RB_STUB_EXIT": "write_db"},
+    )
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "incomplete"
+    assert res.results["desc"].startswith("stage 07_finish: ")
+    assert "'>>> DONE' is not the last step in the log" in res.results["desc"]
+
+
 def test_a_resumed_session_that_ends_early_fails(tmp_path, monkeypatch):
     first, _ = _backend(tmp_path, monkeypatch, stages=True, stop_after="global_route")
     assert first.run().results["result"] == "PASS"
@@ -186,9 +255,21 @@ def test_a_stopped_run_that_ends_early_names_the_last_step(
     res = backend.run()
 
     assert res.results["fail_stage"] == "incomplete"
-    desc = res.results["desc"]
-    assert "before --stop-after cts finished" in desc or "stage 03_cts" in desc
-    assert "the last step in the log is 'Post-CTS timing repair'" in desc
+    last = (
+        "the last step in the log is 'Post-CTS timing repair' "
+        "(last command: repair_timing, running)"
+    )
+    expected = {
+        False: (
+            "the flow did not finish: OpenROAD exited with code 0 before "
+            f"--stop-after cts finished ('>>> STOPPED after cts' is not in the log); {last}"
+        ),
+        True: (
+            "stage 03_cts: the flow did not finish: OpenROAD exited with code 0 before "
+            f"the end of the stage ('>>> End of stage 03_cts' is not in the log); {last}"
+        ),
+    }
+    assert res.results["desc"] == expected[stages]
 
 
 @pytest.mark.parametrize("stop_after", [None, "cts"])

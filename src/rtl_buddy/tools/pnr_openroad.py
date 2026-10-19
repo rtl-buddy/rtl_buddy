@@ -955,6 +955,13 @@ def _last_logged_step(log_text: str) -> str | None:
     return steps[-1].strip() if steps else None
 
 
+def _flow_done(log_text: str) -> bool:
+    """Whether `log_text` ends its flow: `>>> DONE` is a line of it and the last step it announces."""
+    if _FLOW_DONE_MARKER not in log_text.splitlines():
+        return False
+    return _last_logged_step(log_text) == _FLOW_DONE_MARKER.removeprefix(">>> ")
+
+
 def _read_checkpoint_tcl(stage: str) -> str:
     """Return the prelude lines that open `stage`'s predecessor checkpoint from `$RB_PRED_DIR`: its database, its SDC and the flow globals saved with it."""
     name = _checkpoint_name(pnr_stages.predecessor(stage))
@@ -3098,12 +3105,17 @@ class OpenRoadPnr:
         reached = (
             f"the last step in the log is '{step}'" if step else "no step is logged"
         )
+        missing = (
+            f"'{marker}' is not in the log"
+            if marker not in session_log.splitlines()
+            else f"'{marker}' is not the last step in the log"
+        )
         command = pnr_checkpoints.last_step(self._session_events())
         if command:
             reached += f" (last command: {command['step']}, {command['status']})"
         return (
             f"the flow did not finish: OpenROAD exited with code 0 before {until} "
-            f"('{marker}' is not in the log); {reached}"
+            f"({missing}); {reached}"
         )
 
     def _run_chain(self, env) -> tuple[int, str, str | None]:
@@ -3175,7 +3187,7 @@ class OpenRoadPnr:
                     elif checkpoint is None:
                         problem = f"stage {name}: its checkpoint was not written"
                         fail_stage = CHECKPOINT_FAIL_STAGE
-                elif returncode == 0 and _FLOW_DONE_MARKER not in lines:
+                elif returncode == 0 and not _flow_done(text):
                     problem = f"stage {name}: " + self._incomplete_desc(
                         "the end of the flow", _FLOW_DONE_MARKER, text
                     )
@@ -3200,18 +3212,24 @@ class OpenRoadPnr:
         return returncode, stderr, None
 
     def _warn_hook_commands(self) -> None:
-        """Warn about each hook of this staged run that changed global Tcl commands, which later stage sessions do not have."""
+        """Log each hook of this staged run that changed global Tcl commands: a warning for commands that existed before it, which later stage sessions have in their original form, and info for new ones, whose later use fails as an unknown command."""
         for event in pnr_checkpoints.read_progress(self._ckpt_run_dir):
-            if event.get("event") == "hook_commands":
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "pnr.hook_commands_not_kept",
-                    pnr=self.pnr_cfg.get_name(),
-                    point=event.get("point"),
-                    path=event.get("path"),
-                    commands=event.get("commands"),
-                )
+            if event.get("event") != "hook_commands":
+                continue
+            for key, level, code in (
+                ("changed", logging.WARNING, "pnr.hook_commands_not_kept"),
+                ("added", logging.INFO, "pnr.hook_commands_added"),
+            ):
+                if event.get(key):
+                    log_event(
+                        logger,
+                        level,
+                        code,
+                        pnr=self.pnr_cfg.get_name(),
+                        point=event.get("point"),
+                        path=event.get("path"),
+                        commands=event.get(key),
+                    )
 
     def _checkpoint_error(self, stage: str) -> str | None:
         """The error of this run's failed attempt to write `stage`'s checkpoint, or None."""
@@ -3266,17 +3284,48 @@ class OpenRoadPnr:
         totals = _GR_TOTAL_RE.findall(log_text)
         return int(totals[-1]) if totals else None
 
-    def _stopped_result(self, platform, log_text: str) -> PnrResults:
-        """Return the result of a run `--stop-after` ended: PASS with the stage report's numbers, or FAIL when the run ended without its stop marker."""
-        stage = self.stop_after
-        marker = f"{STOPPED_MARKER}{stage}"
-        if marker not in log_text.splitlines():
-            return self._fail_after_openroad(
-                self._incomplete_desc(
-                    f"--stop-after {stage} finished", marker, log_text
-                ),
-                fail_stage=INCOMPLETE_FAIL_STAGE,
+    def _unfinished_flow(
+        self, returncode: int, log_text: str, chain_problem: str | None
+    ) -> PnrFailResults | None:
+        """Return the FAIL of a run whose OpenROAD exited 0 without ending its flow, or None.
+
+        A staged chain reports its own session's problem. Otherwise the run must end on its marker: `>>> DONE` as the last step the log announces, or `>>> STOPPED after <stage>` under `--stop-after`. The failure carries `fail_stage: incomplete`, so no `xfail:` excuses it, and it comes before every check of the design the run built.
+        """
+        if returncode != 0:
+            return None
+        fail_stage = INCOMPLETE_FAIL_STAGE
+        if chain_problem is not None:
+            desc = chain_problem
+            fail_stage = self._chain_fail_stage
+        elif self._failed_stage is not None:
+            return None
+        elif self.stop_after is not None:
+            marker = f"{STOPPED_MARKER}{self.stop_after}"
+            if marker in log_text.splitlines():
+                return None
+            desc = self._incomplete_desc(
+                f"--stop-after {self.stop_after} finished", marker, log_text
             )
+        elif not self._staged and not _flow_done(log_text):
+            desc = self._incomplete_desc(
+                "the end of the flow", _FLOW_DONE_MARKER, log_text
+            )
+        else:
+            return None
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.failed",
+            pnr=self.pnr_cfg.get_name(),
+            returncode=returncode,
+            stage=self._failed_stage,
+            log=self._log_path(),
+        )
+        return self._fail_after_openroad(desc, fail_stage=fail_stage)
+
+    def _stopped_result(self, platform, log_text: str) -> PnrResults:
+        """Return the PASS of a run `--stop-after` ended, with the numbers of its stage report."""
+        stage = self.stop_after
         report = log_text[log_text.rfind(f"{_STAGE_REPORT_MARKER}{stage}") :]
         ps_per_unit = self._ps_per_unit
 
@@ -3743,6 +3792,10 @@ class OpenRoadPnr:
         except OSError:
             log_text = ""
 
+        unfinished = self._unfinished_flow(returncode, log_text, chain_problem)
+        if unfinished is not None:
+            return unfinished
+
         # Before the exit-code check: the violating instances are the diagnostic.
         self._warn_unmatched_dont_use(log_text, platform.get_dont_use_cells())
         dont_use_hits = self._dont_use_violations(log_text)
@@ -3838,39 +3891,6 @@ class OpenRoadPnr:
                 if stop_unwritten
                 else self._chain_fail_stage,
             )
-        if chain_problem is not None:
-            log_event(
-                logger,
-                logging.WARNING,
-                "pnr.failed",
-                pnr=self.pnr_cfg.get_name(),
-                returncode=returncode,
-                stage=self._failed_stage,
-                log=log_path,
-            )
-            return self._fail_after_openroad(
-                chain_problem, fail_stage=self._chain_fail_stage
-            )
-
-        if (
-            not self._staged
-            and self.stop_after is None
-            and _FLOW_DONE_MARKER not in log_text.splitlines()
-        ):
-            desc = self._incomplete_desc(
-                "the end of the flow", _FLOW_DONE_MARKER, log_text
-            )
-            log_event(
-                logger,
-                logging.WARNING,
-                "pnr.failed",
-                pnr=self.pnr_cfg.get_name(),
-                returncode=returncode,
-                stage=None,
-                log=log_path,
-            )
-            return self._fail_after_openroad(desc, fail_stage=INCOMPLETE_FAIL_STAGE)
-
         error_lines = [ln for ln in log_text.splitlines() if ln.startswith("[ERROR ")]
         if error_lines:
             return self._fail_after_openroad(

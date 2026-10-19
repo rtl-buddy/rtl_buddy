@@ -600,7 +600,7 @@ def _hook(tmp_path, point, text) -> tuple[str]:
 def test_a_staged_run_warns_about_commands_a_hook_leaves_in_its_session(
     tmp_path, monkeypatch, caplog
 ):
-    """A hook other than `session` that defines or renames a global command warns; later stage sessions do not have it."""
+    """A hook other than `session` that renames or redefines a global command warns, as later stage sessions have the original; a command it only adds is logged at info."""
     hooks = {
         "session": _hook(tmp_path, "session", "proc rb_test_session {} {}\n"),
         "after-cts": _hook(
@@ -620,29 +620,31 @@ def test_a_staged_run_warns_about_commands_a_hook_leaves_in_its_session(
     cfg = replace(_pnr_cfg(tmp_path, stages=True), hooks=hooks)
     backend, artefacts = _staged(tmp_path, monkeypatch, pnr_cfg=cfg)
 
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("INFO"):
         res = backend.run()
 
     assert res.results["result"] == "PASS", res.results
-    warned = [
-        r.rtl_fields
-        for r in caplog.records
-        if getattr(r, "rtl_event", None) == "pnr.hook_commands_not_kept"
+
+    def _logged(event):
+        return [
+            (r.levelname, r.rtl_fields)
+            for r in caplog.records
+            if getattr(r, "rtl_event", None) == event
+        ]
+
+    after_cts = {"pnr": "demo_pnr", "point": "after-cts", "path": hooks["after-cts"][0]}
+    assert _logged("pnr.hook_commands_not_kept") == [
+        ("WARNING", {**after_cts, "commands": ["check_placement"]})
     ]
-    assert warned == [
-        {
-            "pnr": "demo_pnr",
-            "point": "after-cts",
-            "path": hooks["after-cts"][0],
-            "commands": ["check_placement", "rb_test_check", "rb_test_helper"],
-        }
+    assert _logged("pnr.hook_commands_added") == [
+        ("INFO", {**after_cts, "commands": ["rb_test_check", "rb_test_helper"]})
     ]
     message = next(
         r.getMessage()
         for r in caplog.records
         if getattr(r, "rtl_event", None) == "pnr.hook_commands_not_kept"
     )
-    assert "later stage sessions do not have" in message
+    assert "check_placement" in message and "original form" in message
     assert "session hook" in message
 
 
