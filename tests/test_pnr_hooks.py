@@ -466,6 +466,28 @@ def test_a_top_level_break_or_continue_is_a_named_error(tmp_path, command):
     ]
 
 
+def test_exit_in_a_hook_is_an_error_and_exit_is_restored(tmp_path):
+    hook = _write(tmp_path / "quit.tcl", "exit 0\n")
+    nested = _write(tmp_path / "nested.tcl", f"rb::hook::run after-cts {_q(hook)}\n")
+    done = _tcl_run(
+        tmp_path,
+        _HOOKS_TCL + f"set code [catch {{rb::hook::run after-cts {_q(hook)}}} msg]\n"
+        'puts "CODE $code"\nputs "MSG $msg"\n'
+        + f"set code [catch {{rb::hook::run session {_q(nested)}}} msg]\n"
+        'puts "NESTED $code"\n'
+        'puts "RESTORED [llength [info commands ::rb::hook::exit]]"\n'
+        "exit 3\n",
+    )
+    assert done.returncode == 3, done.stderr
+    assert done.stdout.splitlines() == [
+        "CODE 1",
+        f"MSG Hook after-cts ({hook}): exit 0: a hook must return, not exit, "
+        "so the flow can go on",
+        "NESTED 1",
+        "RESTORED 0",
+    ]
+
+
 def test_an_empty_error_still_leads_errorinfo_with_the_prefix(tmp_path):
     hook = _write(tmp_path / "empty.tcl", 'error ""\n')
     done = _tcl_run(

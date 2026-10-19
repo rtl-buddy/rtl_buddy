@@ -29,7 +29,20 @@ proc rb::hook::run {point path} {
         set anchors $::rb::ckpt::anchors
         set ::rb::ckpt::anchors {}
     }
+    # `exit` in a hook would end OpenROAD with the flow unfinished and a zero
+    # exit code; while hooks run it raises an error instead.
+    set guard [expr {![llength [info commands ::rb::hook::exit]]}]
+    if {$guard} {
+        rename ::exit ::rb::hook::exit
+        proc ::exit {{status 0}} {
+            error "exit $status: a hook must return, not exit, so the flow can go on"
+        }
+    }
     set code [catch {uplevel #0 [list source $path]} message options]
+    if {$guard} {
+        rename ::exit {}
+        rename ::rb::hook::exit ::exit
+    }
     if {[info exists ::rb::ckpt::anchors]} {
         set ::rb::ckpt::anchors $anchors
     }
