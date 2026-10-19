@@ -4,6 +4,7 @@ import signal
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import IO, Any, Callable
 
@@ -19,6 +20,32 @@ class ManagedProcessResult:
 
 
 DEFAULT_KILL_TIMEOUT = 5
+
+
+#: The signals that stop rb.
+STOP_SIGNALS = tuple(
+    s
+    for s in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGHUP", None))
+    if s is not None
+)
+
+
+@contextmanager
+def signals_blocked(signals=STOP_SIGNALS):
+    """Block ``signals`` in the main thread while the block runs; elsewhere, nothing.
+
+    A child process started in the block inherits the mask, so the terminal's Ctrl-C does not reach it.
+    """
+    if threading.current_thread() is not threading.main_thread() or not hasattr(
+        signal, "pthread_sigmask"
+    ):
+        yield
+        return
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, set(signals))
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
 def signal_process_group(proc: subprocess.Popen, sig: int) -> None:
@@ -67,8 +94,10 @@ def terminate_process_group(
 # thread, for the duration of the call. Lets the main thread terminate tool
 # processes that worker threads launched in their own sessions. Keyed by a
 # monotonic token, not the pid, so a recycled pid cannot evict another entry.
+# Re-entrant: a signal handler that sweeps the registry runs in the main thread,
+# which may hold the lock while it registers a process.
 _live_processes: dict[int, subprocess.Popen] = {}
-_live_processes_lock = threading.Lock()
+_live_processes_lock = threading.RLock()
 _live_process_tokens = itertools.count()
 
 

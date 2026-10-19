@@ -19,10 +19,8 @@ import os
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import tempfile
-import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -30,6 +28,7 @@ from typing import NamedTuple
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from ..process_utils import signals_blocked
 from ..tool_manifest import require as require_tool
 from .argv import (
     build_job_argv,
@@ -40,6 +39,7 @@ from .argv import (
 )
 from .base import (
     BUILD_PHASE_VERILATE,
+    CANCEL_TIMEOUT_S,
     BuildJobSpec,
     CoverageJobSpec,
     DispatchBackend,
@@ -76,22 +76,6 @@ exit $rc
 
 #: How often a waiting P&R submission checks whether it has been given up.
 _SUBMIT_POLL_S = 0.2
-
-_HELD_SIGNALS = {signal.SIGINT, signal.SIGTERM, signal.SIGHUP}
-
-
-def _hold_signals():
-    """Block SIGINT, SIGTERM and SIGHUP in the main thread; return the mask to restore, or None."""
-    if threading.current_thread() is not threading.main_thread() or not hasattr(
-        signal, "pthread_sigmask"
-    ):
-        return None
-    return signal.pthread_sigmask(signal.SIG_BLOCK, _HELD_SIGNALS)
-
-
-def _release_signals(previous) -> None:
-    if previous is not None:
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
 def _runnable_job_argv(spec: RunnableJobSpec) -> list[str]:
@@ -640,6 +624,8 @@ class SlurmDispatchBackend(DispatchBackend):
         # Clusters whose poll already failed: the first failure warns, the rest log at
         # DEBUG.
         self._wait_poll_failed: set = set()
+        #: Why the last queue poll that could not be read failed.
+        self.last_poll_error: str | None = None
         self.job_tag = resolve_job_tag(os.environ.get(JOB_TAG_ENV))
 
     def _resolve_accounting_frequency(self) -> float | None:
@@ -1233,40 +1219,41 @@ class SlurmDispatchBackend(DispatchBackend):
         self, spec: PnrStageJobSpec, answer: Path, marker: Path
     ) -> None:
         """Mark a submission given up and cancel the job sbatch already accepted, if any; `_GUARDED_SBATCH` cancels one it accepts later."""
-        held = _hold_signals()
-        try:
-            marker.touch()
-            job_id, cluster = (
-                self._accepted_on(answer.read_text(errors="replace"))
-                if answer.exists()
-                else ("", None)
-            )
-            if job_id:
-                self.cancel_all([JobHandle(job_id=job_id, spec=spec, cluster=cluster)])
-            log_event(
-                logger,
-                logging.WARNING,
-                "dispatch.pnr_stage_submission_abandoned",
-                backend=self.name,
-                pnr=spec.run_name,
-                stage=spec.stage,
-                job_id=job_id or None,
-                cluster=cluster,
-                answer=str(answer),
-            )
-        except OSError as e:
-            log_event(
-                logger,
-                logging.WARNING,
-                "dispatch.pnr_stage_submission_abandoned",
-                backend=self.name,
-                pnr=spec.run_name,
-                stage=spec.stage,
-                answer=str(answer),
-                error=str(e),
-            )
-        finally:
-            _release_signals(held)
+        with signals_blocked():
+            try:
+                marker.touch()
+                job_id, cluster = (
+                    self._accepted_on(answer.read_text(errors="replace"))
+                    if answer.exists()
+                    else ("", None)
+                )
+                cancelled = bool(job_id) and self.cancel_all(
+                    [JobHandle(job_id=job_id, spec=spec, cluster=cluster)],
+                    timeout_s=CANCEL_TIMEOUT_S,
+                )
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.pnr_stage_submission_abandoned",
+                    backend=self.name,
+                    pnr=spec.run_name,
+                    stage=spec.stage,
+                    job_id=job_id or None,
+                    cluster=cluster,
+                    cancelled=cancelled,
+                    answer=str(answer),
+                )
+            except OSError as e:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.pnr_stage_submission_abandoned",
+                    backend=self.name,
+                    pnr=spec.run_name,
+                    stage=spec.stage,
+                    answer=str(answer),
+                    error=str(e),
+                )
 
     def _cluster_selection(self) -> str | None:
         """Cluster selection as written, or ``None`` for the local cluster.
@@ -1636,22 +1623,28 @@ class SlurmDispatchBackend(DispatchBackend):
         return {cluster: list(ids) for cluster, ids in grouped.items()}
 
     def _scancel(
-        self, ids_by_cluster: dict[str | None, list[str]], *, cwd
+        self, ids_by_cluster: dict[str | None, list[str]], *, cwd, timeout_s=None
     ) -> list[tuple[str | None, list[str], subprocess.CompletedProcess]]:
         """One ``scancel`` per cluster; returns the results for the caller to report.
 
-        Ids accepted on another cluster need the matching ``-M``.
+        Ids accepted on another cluster need the matching ``-M``. ``timeout_s`` bounds
+        each ``scancel``; one that times out or cannot be run has a non-zero
+        ``returncode`` and the reason in ``stderr``.
         """
         results = []
         for cluster, ids in ids_by_cluster.items():
             argv = ["scancel", *(["-M", cluster] if cluster else []), *ids]
-            results.append(
-                (
-                    cluster,
-                    ids,
-                    subprocess.run(argv, capture_output=True, text=True, cwd=cwd),
+            try:
+                proc = subprocess.run(
+                    argv, capture_output=True, text=True, cwd=cwd, timeout=timeout_s
                 )
-            )
+            except subprocess.TimeoutExpired:
+                proc = subprocess.CompletedProcess(
+                    argv, -1, "", f"scancel did not answer within {timeout_s:g}s"
+                )
+            except OSError as e:
+                proc = subprocess.CompletedProcess(argv, -1, "", str(e))
+            results.append((cluster, ids, proc))
         return results
 
     def _reap_never_satisfied(self, lines, *, cwd, cluster=None) -> list[dict]:
@@ -1738,20 +1731,21 @@ class SlurmDispatchBackend(DispatchBackend):
                     longest = (record["name"] or record["id"], elapsed)
         return outstanding, longest
 
-    def _wait_argv(self, base_ids, *, cluster, states) -> list[str]:
-        """One drain poll's argv. ``states`` of ``None`` omits the filter."""
+    def _wait_argv(self, base_ids, *, cluster, states, user=None) -> list[str]:
+        """One drain poll's argv. ``states`` of ``None`` omits the filter; ``user`` limits it to that user's jobs."""
         return [
             "squeue",
             "--noheader",
             f"--format={_SQUEUE_FORMAT}",
             *([] if states is None else [f"--states={states}"]),
             *(["-M", cluster] if cluster else []),
+            *([] if user is None else [f"--user={user}"]),
             "--jobs",
             ",".join(base_ids),
         ]
 
     def _poll_queue(
-        self, base_ids, *, cluster, cwd, timeout_s=None
+        self, base_ids, *, cluster, cwd, timeout_s=None, user=None
     ) -> tuple[list[str], str]:
         """One cluster's live jobs: ``(squeue lines, status)``.
 
@@ -1761,14 +1755,18 @@ class SlurmDispatchBackend(DispatchBackend):
         rejected state name is recovered from, see :func:`_rejected_states`.
 
         ``timeout_s`` bounds each ``squeue`` call. ``None`` waits as long as the
-        controller takes; a timeout returns ``"unknown"``.
+        controller takes; a timeout returns ``"unknown"``. ``user`` limits the poll to
+        that user's jobs. Why the last ``"unknown"`` poll failed is kept in
+        ``last_poll_error``.
         """
         # Each rejection drops one name, so the loop is bounded by the list length.
         for _ in range(len(_LIVE_STATES) + 1):
             states = self._wait_states_for(cluster)
             try:
                 proc = subprocess.run(
-                    self._wait_argv(base_ids, cluster=cluster, states=states),
+                    self._wait_argv(
+                        base_ids, cluster=cluster, states=states, user=user
+                    ),
                     capture_output=True,
                     text=True,
                     cwd=cwd,
@@ -1776,6 +1774,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 )
             except subprocess.TimeoutExpired:
                 # Wedged controller: report no answer, never a drain.
+                self.last_poll_error = f"squeue did not answer within {timeout_s:g}s"
                 log_event(
                     logger,
                     logging.DEBUG,
@@ -1800,6 +1799,9 @@ class SlurmDispatchBackend(DispatchBackend):
         # about the jobs.
         level = logging.DEBUG if cluster in self._wait_poll_failed else logging.WARNING
         self._wait_poll_failed.add(cluster)
+        self.last_poll_error = (proc.stderr or "").strip()[
+            :200
+        ] or f"squeue exited {proc.returncode}"
         log_event(
             logger,
             level,
@@ -1807,8 +1809,7 @@ class SlurmDispatchBackend(DispatchBackend):
             backend=self.name,
             cluster=cluster,
             jobs=len(base_ids),
-            error=(proc.stderr or "").strip()[:200]
-            or f"squeue exited {proc.returncode}",
+            error=self.last_poll_error,
         )
         return [], "unknown"
 
@@ -1954,18 +1955,27 @@ class SlurmDispatchBackend(DispatchBackend):
         return live
 
     def queue_states(
-        self, handles: Sequence[JobHandle | None]
+        self,
+        handles: Sequence[JobHandle | None],
+        *,
+        timeout_s: float | None = None,
+        mine: bool = False,
     ) -> dict[str, str] | None:
         """One poll of these jobs, as ``wait_all`` makes it: ``{telemetry key: "pending"
         or "running"}`` for each job still queued, or ``None`` when a cluster's poll
-        failed. Jobs pending on a dependency that can never be met are cancelled.
+        failed (``last_poll_error`` says why). Jobs pending on a dependency that can
+        never be met are cancelled. ``timeout_s`` bounds each ``squeue``; ``mine``
+        counts only this user's jobs, for ids read back from files.
         """
         if not any(h is not None for h in handles):
             return {}
         cwd = self._cwd_of(handles)
+        user = str(os.getuid()) if mine and hasattr(os, "getuid") else None
         states: dict[str, str] = {}
         for cluster, base_ids in self._base_ids_by_cluster(handles).items():
-            lines, status = self._poll_queue(base_ids, cluster=cluster, cwd=cwd)
+            lines, status = self._poll_queue(
+                base_ids, cluster=cluster, cwd=cwd, timeout_s=timeout_s, user=user
+            )
             if status == "drained":
                 continue
             if status == "unknown":
@@ -1975,31 +1985,56 @@ class SlurmDispatchBackend(DispatchBackend):
             states.update(cluster_states)
         return states
 
-    def cancel_all(self, handles: Sequence[JobHandle | None]) -> bool:
+    def cancel_all(
+        self, handles: Sequence[JobHandle | None], *, timeout_s: float | None = None
+    ) -> bool:
         """``scancel`` these jobs; return whether every ``scancel`` exited 0.
 
         ``scancel`` exits 0 for a job that has already ended, so ``False`` means the
-        controller refused or could not be reached.
+        controller refused or could not be reached. ``timeout_s`` bounds each
+        ``scancel``; one that times out counts as refused.
         """
         if not handles:
             return True
         # Base ids: cancelling an array id cancels every element. One command per
         # cluster, since an id means something only on the cluster that issued it.
         by_cluster = self._base_ids_by_cluster(handles)
-        results = self._scancel(by_cluster, cwd=self._cwd_of(handles))
-        log_event(
-            logger,
-            logging.WARNING,
-            "dispatch.cancelled",
-            backend=self.name,
-            jobs=len(handles),
-            # Absent on a single-cluster site.
-            clusters=sorted(c for c in by_cluster if c) or None,
-            # Leaves the ids on the console; they are the only route to squeue/sacct
-            # afterwards.
-            job_ids=group_job_ids(h.job_id for h in handles if h is not None),
+        results = self._scancel(
+            by_cluster, cwd=self._cwd_of(handles), timeout_s=timeout_s
         )
-        return all(proc.returncode == 0 for _, _, proc in results)
+        refused = {cluster for cluster, _ids, proc in results if proc.returncode != 0}
+        for cluster, ids, proc in results:
+            if cluster in refused:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.cancel_failed",
+                    backend=self.name,
+                    jobs=ids,
+                    cluster=cluster,
+                    returncode=proc.returncode,
+                    error=(proc.stderr or "").strip()[:200],
+                )
+        taken = [
+            h
+            for h in handles
+            if h is not None and getattr(h, "cluster", None) not in refused
+        ]
+        if taken:
+            log_event(
+                logger,
+                logging.WARNING,
+                "dispatch.cancelled",
+                backend=self.name,
+                jobs=len(taken),
+                # Absent on a single-cluster site.
+                clusters=sorted(c for c in by_cluster if c and c not in refused)
+                or None,
+                # Leaves the ids on the console; they are the only route to
+                # squeue/sacct afterwards.
+                job_ids=group_job_ids(h.job_id for h in taken),
+            )
+        return not refused
 
     def build_outcome(self, handle: JobHandle) -> str | None:
         """The build job's scheduler state, or ``None`` without accounting.

@@ -2132,31 +2132,47 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"P&R stage job refused stage {fields.get('stage')} of "
                 f"{fields.get('run_dir')}: {fields.get('reason')}"
             )
-        case "pnr.stage_job_threads_unset":
+        case "pnr.stage_job_script_unchanged":
             return (
-                f"P&R stage job could not set {fields.get('threads')} thread(s) in "
-                f"the script of stage {fields.get('stage')} "
-                f"({fields.get('error')}); it runs at the head's count"
+                f"P&R stage job could not write its copy of {fields.get('script')} "
+                f"({fields.get('error')}); it runs the script as the head wrote it"
             )
         case "pnr.stage_jobs_survived_cancel":
             ids = " ".join(map(str, fields.get("job_ids") or []))
+            how = (
+                "after rb cancelled them"
+                if fields.get("cancelled")
+                else "and Slurm did not take rb's cancel"
+            )
             return (
                 f'P&R "{fields.get("pnr")}": stage job(s) {ids} are still queued '
-                "after rb cancelled them; the next rb pnr of this configuration "
-                f"waits for them; cancel them with `{fields.get('command')}`"
+                f"{how}; the next rb pnr of this configuration waits for them; "
+                f"cancel them with `{fields.get('command')}`"
             )
         case "pnr.stage_jobs_orphaned":
             ids = " ".join(map(str, fields.get("job_ids") or []))
+            clear = " ".join(map(str, fields.get("clear") or []))
             if fields.get("error"):
                 return (
                     f"P&R: cannot tell whether stage job(s) {ids} of an earlier "
                     f"dispatched run in {fields.get('artefact_dir')} are still "
-                    f"queued ({fields.get('error')}); not starting"
+                    f"queued ({fields.get('error')}); not starting; once they have "
+                    f"ended, remove {clear} to run without them"
                 )
             return (
                 f"P&R: stage job(s) {ids} of an earlier dispatched run in "
                 f"{fields.get('artefact_dir')} are still queued or running; not "
                 f"starting; cancel them with `{fields.get('command')}`"
+            )
+        case "pnr.stage_jobs_unchecked":
+            ids = " ".join(map(str, fields.get("job_ids") or []))
+            return (
+                f"P&R: stage job(s) {ids} of the earlier dispatched run "
+                f"{fields.get('run_dir')} are not looked up: {fields.get('reason')}; "
+                f"its record last changed {_format_elapsed(fields.get('quiet_s'))} "
+                f"ago, more than the {_format_elapsed(fields.get('chain_s'))} its "
+                "jobs asked for, so they are taken to have ended; remove "
+                f"{fields.get('clear')} to stop this warning"
             )
         case "pnr.dispatch_resources_default":
             return (
@@ -2167,10 +2183,20 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "dispatch.pnr_stage_submission_abandoned":
             job = fields.get("job_id")
+            if not job:
+                done = ""
+            elif fields.get("cancelled"):
+                done = f"; cancelled job {job}, which it had accepted"
+            else:
+                cluster = fields.get("cluster")
+                done = (
+                    f"; it had accepted job {job}, and scancel did not take the "
+                    f"cancel: run `scancel {f'-M {cluster} ' if cluster else ''}{job}`"
+                )
             return (
                 f"dispatch: gave up submitting stage {fields.get('stage')} of P&R "
                 f'"{fields.get("pnr")}"'
-                + (f"; cancelled job {job}, which it had accepted" if job else "")
+                + done
                 + (f" ({fields.get('error')})" if fields.get("error") else "")
             )
         case "pnr.stopped":

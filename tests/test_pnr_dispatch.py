@@ -139,6 +139,9 @@ class _FakeSlurm:
         self.guards: list[_GuardedSbatch] = []
         self.lost = lost or {}
         self.state_of = state_of or {}
+        #: `(command, timeout)` of each scheduler command.
+        self.calls: list[tuple[str, float | None]] = []
+        self.sacct_rc = 0
         self._next_id = 501
         monkeypatch.setattr(slurm_module, "require_tool", lambda name: None)
         # The harness patches the shared `subprocess.run` for OpenROAD, so Slurm's
@@ -163,6 +166,7 @@ class _FakeSlurm:
 
     def run(self, argv, capture_output=True, text=True, cwd=None, timeout=None):
         argv = list(argv)
+        self.calls.append((argv[0], timeout))
         handler = {
             "sbatch": self._sbatch,
             "squeue": self._squeue,
@@ -268,11 +272,15 @@ class _FakeSlurm:
 
     def _sacct(self, argv):
         self.sacct_calls += 1
+        if self.sacct_rc:
+            return _done(
+                self.sacct_rc, stderr="sacct: error: Problem talking to the database"
+            )
         ids = argv[argv.index("--jobs") + 1].split(",")
         lines = []
         for job_id in ids:
             job = self.jobs[job_id]
-            state = job["state"] or "CANCELLED"
+            state = job["state"] or "PENDING"
             lagging = job.get("accounting_lag", 0)
             if lagging:
                 # Accounting still has the job's last live state.
@@ -458,9 +466,18 @@ def test_threads_auto_takes_the_cpus_the_job_received(tmp_path, monkeypatch):
     manifest = json.loads((run_dir / "manifest.json").read_text())
     # The head planned for the CPUs it asked for; each job set what it received.
     assert manifest["dispatch"]["stages"]["cts"]["threads"] == 4
+    # Each job ran a copy of its stage script; the recorded one matches the manifest.
+    chain = {entry["stage"]: entry["script"] for entry in manifest["chain"]}
     for stage in PNR_STAGES:
-        script = (run_dir / f"{_NAMES[stage]}.tcl").read_text()
-        assert "set_thread_count 3\n" in script
+        recorded = run_dir / f"{_NAMES[stage]}.tcl"
+        assert "set_thread_count 4\n" in recorded.read_text()
+        fingerprint = pnr_openroad._file_fingerprint(str(recorded))
+        assert fingerprint["sha256"] == chain[stage]["sha256"]
+        assert fingerprint["size"] == chain[stage]["size"]
+        ran = (run_dir / "dispatch" / f"{_NAMES[stage]}.tcl").read_text()
+        assert ran == recorded.read_text().replace(
+            "set_thread_count 4\n", "set_thread_count 3\n"
+        )
     ended = [e for e in _events(run_dir) if e["event"] == "stage_end"]
     assert all(e["threads"] == 3 for e in ended)
     assert res.results["openroad_threads"] == {
@@ -766,10 +783,15 @@ def test_an_interrupt_closes_the_stage_its_job_was_running(tmp_path, monkeypatch
             backend.run()
 
     jobs = {_stage_of(j): j["id"] for j in slurm.submitted()}
-    # Only the jobs still queued are cancelled.
-    assert sorted(slurm.cancelled) == sorted(
-        jobs[s] for s in ("cts", "global_route", "detailed_route", "finish")
-    )
+    # The handler cancels every job it has not seen leave the queue, without asking
+    # the queue first; the jobs that ended keep their state.
+    assert sorted(slurm.cancelled) == sorted(jobs.values())
+    states = {stage: slurm.jobs[job_id]["state"] for stage, job_id in jobs.items()}
+    assert states == {
+        "floorplan": "COMPLETED",
+        "place": "COMPLETED",
+        **{s: "CANCELLED" for s in ("cts", "global_route", "detailed_route", "finish")},
+    }
     run_dir = _only_run(artefacts)
     events = _events(run_dir)
     ended = [e for e in events if e["event"] == "stage_end"]
@@ -875,10 +897,10 @@ def test_a_chain_counts_as_cancelled_only_once_the_scheduler_took_it():
     class _Backend:
         name = "slurm"
 
-        def queue_states(self, handles):
+        def queue_states(self, handles, **_):
             return None
 
-        def cancel_all(self, handles):
+        def cancel_all(self, handles, **_):
             calls.append([h.job_id for h in handles])
             return len(calls) > 1
 
@@ -1003,16 +1025,17 @@ def test_max_wait_bounds_a_stage_jobs_wait_in_the_queue(tmp_path, monkeypatch):
     assert sorted(slurm.cancelled) == sorted(j["id"] for j in slurm.submitted())
 
 
-def test_max_wait_runs_while_the_queue_cannot_be_read(tmp_path, monkeypatch):
-    slurm = _FakeSlurm(monkeypatch, max_wait=600.0)
-    monkeypatch.setattr(pnr_dispatch, "_clock", _Clock(100))
-    backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+def _queue_down(slurm, *, answers_after=None):
+    """Make squeue fail until `slurm.hold` is set, or until it was asked `answers_after` times; record the polls in `slurm.down_polls`."""
     real = slurm._squeue
+    slurm.down_polls = 0
 
     def _squeue(argv):
-        if slurm.hold:
+        if slurm.hold or (
+            answers_after is not None and slurm.down_polls >= answers_after
+        ):
             return real(argv)
-        slurm.polls += 1
+        slurm.down_polls += 1
         return _done(1, stderr="squeue: error: Unable to contact slurm controller")
 
     slurm._squeue = _squeue
@@ -1025,10 +1048,83 @@ def test_max_wait_runs_while_the_queue_cannot_be_read(tmp_path, monkeypatch):
 
     slurm._scancel = _scancel
 
+
+def test_max_wait_runs_while_the_queue_cannot_be_read(tmp_path, monkeypatch):
+    # Accounting says the job is still pending.
+    slurm = _FakeSlurm(monkeypatch, max_wait=600.0)
+    monkeypatch.setattr(pnr_dispatch, "_clock", _Clock(100))
+    backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+    _queue_down(slurm)
+
     res = backend.run()
 
     assert res.results["fail_stage"] == "dispatch"
-    assert "longer than cfg-dispatch.max-wait (600s)" in res.results["desc"]
+    first = slurm.submitted()[0]["id"]
+    assert re.fullmatch(
+        rf"dispatch: stage 01_floorplan: Slurm job {first} waited \d+s in the "
+        r"queue without starting, longer than cfg-dispatch.max-wait \(600s\); "
+        rf"`squeue -j {first}` gives the reason it is held",
+        res.results["desc"],
+    )
+    assert slurm.sacct_calls >= 1
+    assert sorted(slurm.cancelled) == sorted(j["id"] for j in slurm.submitted())
+
+
+def test_max_wait_keeps_a_job_accounting_saw_start(tmp_path, monkeypatch):
+    # Seen pending once, the first job starts while squeue cannot be read for far
+    # longer than max-wait; accounting says it runs.
+    slurm = _FakeSlurm(monkeypatch, max_wait=600.0)
+    monkeypatch.setattr(pnr_dispatch, "_clock", _Clock(10))
+    backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+    real = slurm._squeue
+    asked = []
+
+    def _squeue(argv):
+        asked.append(argv)
+        first = slurm.jobs[min(slurm.jobs)]
+        if len(asked) == 1:
+            slurm.hold = True
+            return real(argv)
+        if len(asked) < 300:
+            first["state"] = "RUNNING"
+            return _done(1, stderr="squeue: error: Unable to contact slurm controller")
+        # The controller answers again and the chain runs.
+        first["state"], slurm.hold = None, False
+        return real(argv)
+
+    slurm._squeue = _squeue
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert slurm.sacct_calls >= 1
+    assert slurm.cancelled == []
+
+
+def test_max_wait_without_queue_or_accounting_waits_out_the_jobs_time(
+    tmp_path, monkeypatch
+):
+    slurm = _FakeSlurm(monkeypatch, max_wait=600.0)
+    slurm.sacct_rc = 1
+    monkeypatch.setattr(pnr_dispatch, "_clock", _Clock(10))
+    backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+    _queue_down(slurm)
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "dispatch"
+    first = slurm.submitted()[0]["id"]
+    found = re.fullmatch(
+        rf"dispatch: stage 01_floorplan: Slurm job {first} could not be seen to "
+        r"start; the queue has not answered for (\d+)s, accounting has no state "
+        r"for the job, and it has been queued longer than cfg-dispatch.max-wait "
+        r"\(600s\) plus its time \(00:30:00\)",
+        res.results["desc"],
+    )
+    assert found, res.results["desc"]
+    # Not given up at max-wait (600s), only once the job's 30 minutes could have
+    # run too.
+    assert int(found.group(1)) > 2000
     assert sorted(slurm.cancelled) == sorted(j["id"] for j in slurm.submitted())
 
 
@@ -1073,10 +1169,10 @@ def test_a_chain_cancelled_during_a_submission_cancels_the_accepted_job():
                 chain.cancel()
             return handle
 
-        def queue_states(self, handles):
+        def queue_states(self, handles, **_):
             return None
 
-        def cancel_all(self, handles):
+        def cancel_all(self, handles, **_):
             cancelled.append([h.job_id for h in handles])
 
     chain = pnr_dispatch.StageChain(_Backend())

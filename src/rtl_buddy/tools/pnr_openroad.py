@@ -1085,7 +1085,7 @@ def run_stage(
     The stage fails when the session exits non-zero, exits 0 before its end-of-stage line (`fail_stage: incomplete`) or without its checkpoint (`fail_stage: checkpoint`), or logs an `[ERROR` line.
     """
     name = _checkpoint_name(stage)
-    script_path = os.path.join(run_dir, f"{name}.tcl")
+    script_path = pnr_dispatch.session_script(os.path.join(run_dir, f"{name}.tcl"))
     cmd = [openroad, "-no_init", "-exit", script_path]
     log_event(
         logger,
@@ -3338,7 +3338,7 @@ class OpenRoadPnr:
     def _dispatch_chain(self) -> tuple[int | None, str, str | None]:
         """Run a staged run's stages as one chained job each and return what `_run_chain` returns.
 
-        Every stage script is already written, so the jobs run the configuration as it was at submission. The head blocks until the chain has left the queue. When rb gives the jobs up (an interrupt, `max-wait`, a failed submission or wait), they are cancelled and the run is finished here (`_dispatch_results`); an interrupt is then raised again.
+        Every stage script is already written, so the jobs run the configuration as it was at submission. The head blocks until the chain has left the queue, then reads how it ended with signals deferred. When rb gives the jobs up (an interrupt, `max-wait`, a failed submission or wait, or any other exception before the chain's end is read), they are cancelled and the run is finished here (`_dispatch_results`); an exception other than a dispatch failure is then raised again.
         """
         run_dir = self._ckpt_run_dir
         log_path = self._log_path()
@@ -3369,7 +3369,11 @@ class OpenRoadPnr:
                     )
                     pnr_dispatch.record_jobs(run_dir, chain)
                 chain.wait()
-        except (FatalRtlBuddyError, KeyboardInterrupt, SystemExit) as e:
+            # A signal here is raised once the chain's end is read, and then finishes the run below.
+            with pnr_dispatch.signals_deferred(block=False):
+                pnr_dispatch.record_jobs(run_dir, chain, drained=True)
+                outcome = pnr_dispatch.chain_outcome(run_dir, chain, log_path=log_path)
+        except BaseException as e:
             # A repeated signal ends the wait for the cancelled jobs early, and is raised once the run is finished.
             with pnr_dispatch.signals_deferred(block=False):
                 self._dispatch_failure = pnr_dispatch.settle_cancelled_chain(
@@ -3383,8 +3387,6 @@ class OpenRoadPnr:
             if not isinstance(e, FatalRtlBuddyError):
                 raise
             return None, "", None
-        pnr_dispatch.record_jobs(run_dir, chain, drained=True)
-        outcome = pnr_dispatch.chain_outcome(run_dir, chain, log_path=log_path)
         if outcome.failed_stage is not None:
             self._failed_stage = _checkpoint_name(outcome.failed_stage)
             self._chain_fail_stage = outcome.fail_stage
@@ -3408,9 +3410,13 @@ class OpenRoadPnr:
         )
 
     def _queue_backend(self):
-        """The backend that looks up an earlier dispatched run's jobs: this run's, or Slurm's."""
+        """The backend that looks up an earlier dispatched run's jobs: this run's, or Slurm's; `NoSchedulerClient` on a host without `squeue`."""
         if self._dispatch is not None:
             return self._dispatch
+        if shutil.which("squeue") is None:
+            raise pnr_dispatch.NoSchedulerClient(
+                "this host has no Slurm client to look them up (squeue not found)"
+            )
         from ..dispatch.slurm import SlurmDispatchBackend
 
         return SlurmDispatchBackend(self.root_cfg.get_dispatch_cfg())

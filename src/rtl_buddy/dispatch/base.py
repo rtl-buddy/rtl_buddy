@@ -196,6 +196,10 @@ class PnrStageJobSpec:
         return f"pnr:{self.run_name}:{self.stage}"
 
 
+#: How long rb waits for each scheduler command while it cancels jobs, so a wedged controller cannot hold an interrupt off for long.
+CANCEL_TIMEOUT_S = 10.0
+
+
 class SubmissionAbandoned(FatalRtlBuddyError):
     """A submission given up before the scheduler answered; any job it submits is cancelled."""
 
@@ -325,10 +329,15 @@ class DispatchBackend(ABC):
         )
 
     def queue_states(
-        self, handles: Sequence[JobHandle | None]
+        self,
+        handles: Sequence[JobHandle | None],
+        *,
+        timeout_s: float | None = None,
+        mine: bool = False,
     ) -> dict[str, str] | None:
         """The jobs of ``handles`` still queued, as ``{telemetry key: "pending" or
-        "running"}``, or ``None`` when the queue could not be read.
+        "running"}``, or ``None`` when the queue could not be read. ``timeout_s``
+        bounds each query; ``mine`` counts only this user's jobs.
         """
         raise NotImplementedError(f"the {self.name} backend has no queue to read")
 
@@ -364,7 +373,8 @@ class DispatchBackend(ABC):
 
         Tolerates ``None`` entries, such as the absent build handle of a
         zero-test suite. A scheduler-backed override returns whether the scheduler
-        took every request, so a caller can retry one it refused.
+        took every request, so a caller can retry one it refused, and takes a
+        ``timeout_s`` that bounds each request.
         """
 
     # The scheduler arguments this backend appends to every submission. Right-sizing
