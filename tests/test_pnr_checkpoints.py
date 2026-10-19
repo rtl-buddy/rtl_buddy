@@ -107,6 +107,8 @@ proc write_sdc {args} { rb_write [lindex $args end] "sdc" }
 proc write_verilog {path} { rb_write $path "module m(); endmodule" }
 proc write_guides {path} { rb_write $path "guides" }
 proc write_global_route_segments {path} { rb_write $path "segments" }
+proc write_abstract_lef {args} { rb_write [lindex $args end] "MACRO demo_top" }
+proc write_timing_model {args} { rb_write [lindex $args end] "library (demo_top) {}" }
 source [lindex $argv 0]
 """
 
@@ -355,19 +357,20 @@ def test_checkpoints_key_loads_from_yaml(tmp_path):
     assert suite.get_runs("one")[0].get_checkpoints() == ("global_route",)
 
 
-def _render(tmp_path, checkpoints):
+def _render(tmp_path, checkpoints, *, pnr_cfg=None, **platform):
+    """Write a one-session run's `pnr.tcl`; `platform` are `PnrPlatformConfigFile` keywords."""
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
     _write_synth_config(tmp_path)
     backend = OpenRoadPnr(
         name="demo/openroad",
-        pnr_cfg=_pnr_cfg(tmp_path, checkpoints),
+        pnr_cfg=pnr_cfg or _pnr_cfg(tmp_path, checkpoints),
         suite_dir=str(tmp_path),
         root_cfg=MagicMock(),
     )
     if checkpoints is not None:
         backend._ckpt_run_dir = str(tmp_path / "ck" / "run")
-    platform = _platform(_pdk(tmp_path))
+    platform = _platform(_pdk(tmp_path), **platform)
     return Path(backend._write_script(platform, backend.pnr_cfg.get_floorplan()))
 
 

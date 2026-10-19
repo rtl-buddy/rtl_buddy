@@ -20,6 +20,8 @@ from test_pnr_checkpoints import (
     STUB_RESOURCES,
     _backend,
     _events,
+    _pdk,
+    _platform,
     _pnr_cfg,
     _render,
     _runs,
@@ -163,11 +165,124 @@ def test_unbroken_render_is_unchanged_but_for_the_checkpoint_block(tmp_path):
     assert "{{" not in plain
 
 
+def _route_hooks(tmp_path) -> dict:
+    hooks = {}
+    for point in ("after-global-route", "before-detailed-route"):
+        path = tmp_path / "hooks" / f"{point}.tcl"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(f'puts "MARK {point}"\n')
+        hooks[point] = (str(path),)
+    return hooks
+
+
+_HOLD_REPAIR = 'puts ">>> Post-global-route hold repair"'
+
+
 def test_global_route_checkpoint_follows_hold_repair_and_precedes_hooks(tmp_path):
-    text = _render(tmp_path, CHECKPOINT_STAGES).read_text()
-    end = text.index("rb::ckpt::stage_end global_route\n")
-    assert text.index("global_route -congestion_iterations") < end
-    assert end < text.index('puts ">>> Detail route"')
+    cfg = replace(_pnr_cfg(tmp_path, CHECKPOINT_STAGES), hooks=_route_hooks(tmp_path))
+    text = _render(
+        tmp_path, CHECKPOINT_STAGES, pnr_cfg=cfg, global_route_hold_repair=True
+    ).read_text()
+    order = [
+        text.index("global_route -congestion_iterations"),
+        text.index("rb::hook::run after-global-route"),
+        text.index(_HOLD_REPAIR),
+        text.index("rb::ckpt::stage_end global_route\n"),
+        text.index("rb::hook::run before-detailed-route"),
+        text.index('puts ">>> Detail route"'),
+    ]
+    assert order == sorted(order)
+
+
+def test_a_staged_global_route_ends_after_its_hooks_and_hold_repair(
+    tmp_path, monkeypatch
+):
+    """The `before-detailed-route` hooks run in the detailed-route session, once its global route is read back."""
+    cfg = replace(
+        _pnr_cfg(tmp_path, stages=True),
+        hooks={"session": _session_hook(tmp_path), **_route_hooks(tmp_path)},
+    )
+    backend, artefacts = _staged(tmp_path, monkeypatch, pnr_cfg=cfg)
+    backend.root_cfg.get_pnr_platform_cfg.return_value = _platform(
+        _pdk(tmp_path), global_route_hold_repair=True
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    run_dir = _only_run(artefacts)
+    route = (run_dir / "04_global_route.tcl").read_text()
+    order = [
+        route.index("rb::hook::run after-global-route"),
+        route.index(_HOLD_REPAIR),
+        route.index("rb::ckpt::stage_end global_route\n"),
+    ]
+    assert order == sorted(order)
+    assert "before-detailed-route" not in route
+    detailed = (run_dir / "05_detailed_route.tcl").read_text()
+    assert detailed.index("read_global_route_segments") < detailed.index(
+        "rb::hook::run before-detailed-route"
+    )
+    assert (
+        "MARK before-detailed-route" in (run_dir / "05_detailed_route.log").read_text()
+    )
+    # The session hook runs once at the start of every session.
+    for stage in PNR_STAGES:
+        log = (run_dir / f"{_NAMES[stage]}.log").read_text()
+        assert log.count("MARK session") == 1, stage
+        script = (run_dir / f"{_NAMES[stage]}.tcl").read_text()
+        assert script.count("rb::hook::run session") == 1, stage
+
+
+def _session_hook(tmp_path) -> tuple[str]:
+    path = tmp_path / "hooks" / "session.tcl"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text('puts "MARK session"\n')
+    return (str(path),)
+
+
+def test_global_placement_only_state_lives_in_the_place_session(tmp_path, monkeypatch):
+    """Global-placement-only blockages and rotated-macro footprints exist only around `global_placement`; the cell halos the floorplan recorded reach the place session through its state file."""
+    from rtl_buddy.config.pnr import BlockageLifetime, BlockageType, PnrBlockage
+
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    (hooks / "pdn.tcl").write_text("dict set ::MACRO_CELL_HALOS u_x {3 4}\n")
+    (hooks / "gp.tcl").write_text('puts "HALOS $::MACRO_CELL_HALOS"\n')
+    base = _pnr_cfg(tmp_path, stages=True)
+    cfg = replace(
+        base,
+        floorplan=replace(
+            base.floorplan,
+            blockages=[
+                PnrBlockage(
+                    rect=(1.0, 1.0, 5.0, 5.0),
+                    type=BlockageType.SOFT,
+                    lifetime=BlockageLifetime.GLOBAL_PLACEMENT,
+                )
+            ],
+        ),
+        hooks={
+            "after-pdn": (str(hooks / "pdn.tcl"),),
+            "after-global-placement": (str(hooks / "gp.tcl"),),
+        },
+    )
+    backend, artefacts = _staged(tmp_path, monkeypatch, pnr_cfg=cfg)
+    monkeypatch.setattr(backend, "_has_tcl_command", lambda *_a: True)
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    run_dir = _only_run(artefacts)
+    scripts = {s: (run_dir / f"{_NAMES[s]}.tcl").read_text() for s in PNR_STAGES}
+    for text in (
+        ">>> Global-placement-only blockages",
+        "rb::rotated::block_footprints",
+        "odb::dbBlockage_destroy",
+    ):
+        assert [s for s in PNR_STAGES if text in scripts[s]] == ["place"], text
+    assert "MACRO_CELL_HALOS" in (run_dir / "01_floorplan.state.tcl").read_text()
+    assert "HALOS u_x {3 4}" in (run_dir / "02_place.log").read_text()
 
 
 def test_stop_after_in_a_staged_run_ends_after_that_stage(tmp_path, monkeypatch):
@@ -422,6 +537,42 @@ def test_xfail_excuses_a_staged_verdict_but_not_a_broken_chain(
     apply_xfail(res)
 
     assert (res.results["result"] == "XFAIL") is excused, res.results["desc"]
+
+
+def test_a_staged_run_hardens_in_its_finish_session(tmp_path, monkeypatch):
+    from rtl_buddy.tools import pnr_openroad
+
+    cfg = replace(_pnr_cfg(tmp_path, stages=True), harden=True)
+    backend, artefacts = _staged(tmp_path, monkeypatch, pnr_cfg=cfg)
+    openroad = pnr_openroad.subprocess.run
+
+    def _run(cmd, **kwargs):
+        if os.path.basename(str(cmd[0])) != "klayout":
+            return openroad(cmd, **kwargs)
+        (artefacts / "demo_top.gds").write_bytes(b"\x00\x06\x00\x02\x00\x07block")
+        (artefacts / "def2stream.report.json").write_text(
+            json.dumps({"schema": 1, "design": "demo_top", "complete": True})
+        )
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _run)
+    monkeypatch.setattr(pnr_openroad, "_resolve_klayout_exe", lambda: "/opt/klayout")
+    for path in ("lef/tech.lef", "lef/cells.lef", "klayout/tech.lyt", "gds/cells.gds"):
+        (tmp_path / "pdk" / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "pdk" / path).write_text("x\n")
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["abstract_dir"] == str(artefacts / "abstract")
+    assert (artefacts / "abstract" / "demo_top.lef").is_file()
+    run_dir = _only_run(artefacts)
+    hardened = [
+        s
+        for s in PNR_STAGES
+        if "write_abstract_lef" in (run_dir / f"{_NAMES[s]}.tcl").read_text()
+    ]
+    assert hardened == ["finish"]
 
 
 def _stopped_at_global_route(tmp_path, monkeypatch) -> Path:
