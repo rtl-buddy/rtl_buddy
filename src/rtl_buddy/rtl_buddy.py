@@ -240,6 +240,7 @@ from .tools.hier_rtl_buddy_view import (
     RtlBuddyViewQuery,
     probe_view_version,
 )
+from .tools import pnr_stages
 from .tools.pnr_openroad import DEFAULT_PNG_HEIGHT, DEFAULT_PNG_WIDTH
 from .tools.spec_trace import (
     all_spec_blocks,
@@ -10948,6 +10949,10 @@ class RtlBuddy:
             "gds_allowed_empty_cells",
             "export_provenance",
             "openroad_threads",
+            "routed",
+            "stopped_after",
+            "global_route_overflow",
+            "resumed_from",
             "checkpoint_dir",
             "checkpoint_stages",
             "last_step",
@@ -11323,6 +11328,46 @@ class RtlBuddy:
                 ),
             ),
         ] = False,
+        stop_after: Annotated[
+            str,
+            typer.Option(
+                "--stop-after",
+                metavar="STAGE",
+                help=(
+                    "end the run after STAGE (floorplan, place, cts, "
+                    "global_route, detailed_route): write its checkpoint and a "
+                    "stage report; the result is a PASS with routed: false, "
+                    "and no routed outputs or abstract. Needs a single named run"
+                ),
+                show_default="run to the end",
+            ),
+        ] = None,
+        resume: Annotated[
+            str,
+            typer.Option(
+                "--resume",
+                metavar="RUN",
+                help=(
+                    "resume a staged run (stages: true) in a new checkpoint run "
+                    "directory: a run id under the run's checkpoints/, a "
+                    "checkpoint run directory, or latest. Needs --from and a "
+                    "single named run; refused when anything the stages before "
+                    "--from read has changed"
+                ),
+            ),
+        ] = None,
+        resume_from: Annotated[
+            str,
+            typer.Option(
+                "--from",
+                metavar="STAGE",
+                help=(
+                    "the first stage a --resume runs (place, cts, global_route, "
+                    "detailed_route, finish); it starts from the resumed run's "
+                    "checkpoint of the stage before"
+                ),
+            ),
+        ] = None,
     ):
         """run place-and-route"""
         ctx = self._enter_command_context(
@@ -11359,6 +11404,13 @@ class RtlBuddy:
             accept_stale=accept_stale,
             run_synth=run_synth,
             jobs=jobs,
+            stop_after=stop_after,
+            resume=(
+                str(self._abs_invocation_path(resume))
+                if resume is not None and (os.sep in resume or resume.startswith("."))
+                else resume
+            ),
+            resume_from=resume_from,
         )
         exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
         if self.machine:
@@ -11385,8 +11437,19 @@ class RtlBuddy:
         accept_stale: bool = False,
         run_synth: bool = False,
         jobs: int = 1,
+        stop_after: str | None = None,
+        resume: str | None = None,
+        resume_from: str | None = None,
     ):
         suite_path = suite_cfg.get_path()
+        if stop_after is not None or resume is not None or resume_from is not None:
+            if pnr_name is None:
+                raise FatalRtlBuddyError(
+                    "--stop-after, --resume and --from need a single named pnr run"
+                )
+            problem = pnr_stages.option_error(stop_after, resume, resume_from)
+            if problem is not None:
+                raise FatalRtlBuddyError(problem)
 
         def _selected(run):
             level = run.get_reglvl(run.get_tool_name())
@@ -11443,6 +11506,9 @@ class RtlBuddy:
                 emit_png=emit_png,
                 gds_mode=gds_mode,
                 accept_stale=accept_stale,
+                stop_after=stop_after,
+                resume=resume,
+                resume_from=resume_from,
             )
 
         def _error(planned, exc):
@@ -11480,6 +11546,9 @@ class RtlBuddy:
         emit_png,
         gds_mode,
         accept_stale,
+        stop_after=None,
+        resume=None,
+        resume_from=None,
     ) -> dict:
         """One planned run of `_do_pnr_suite`: blocked, skipped, or run.
 
@@ -11560,6 +11629,9 @@ class RtlBuddy:
             emit_png=emit_png,
             gds_mode=gds_mode,
             accept_stale=accept_stale,
+            stop_after=stop_after,
+            resume=resume,
+            resume_from=resume_from,
         )
         res = runner.run()
         if run.is_xfail():

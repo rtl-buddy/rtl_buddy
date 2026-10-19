@@ -48,7 +48,8 @@ DESIGN = "demo_top"
 # Stub OpenROAD: every command the flow calls, as a Tcl proc or through `unknown`.
 # Writers put a recognisable file at the given path (a DEF with its DESIGN statement).
 # `RB_STUB_FAIL=<cmd>` raises an OpenROAD-style error in that command;
-# `RB_STUB_KILL=<cmd>` SIGKILLs the interpreter on entry.
+# `RB_STUB_KILL=<cmd>` SIGKILLs the interpreter on entry;
+# `RB_STUB_EXIT=<cmd>` exits 0 on entry, as a flow that ends early by accident.
 _HARNESS = r"""
 # `clock format` loads msgcat through the auto-loader, which the catch-all
 # `unknown` below would swallow; load it first.
@@ -62,6 +63,9 @@ proc rb_stub {name args} {
         puts "stub: killing in $name"
         flush stdout
         exec kill -9 [pid]
+    }
+    if {[info exists env(RB_STUB_EXIT)] && $env(RB_STUB_EXIT) eq $name} {
+        exit 0
     }
     if {[info exists env(RB_STUB_FAIL)] && $env(RB_STUB_FAIL) eq $name} {
         puts "\[ERROR STUB-0001\] $name failed: \"quoted\"\nsecond line"
@@ -83,7 +87,7 @@ proc rb_write {path text} {
 }
 proc write_def {path} { global DESIGN; rb_write $path "DESIGN $DESIGN ;\nEND DESIGN" }
 proc write_db {path} { rb_write $path "odb" }
-proc write_sdc {path} { rb_write $path "sdc" }
+proc write_sdc {args} { rb_write [lindex $args end] "sdc" }
 proc write_verilog {path} { rb_write $path "module m(); endmodule" }
 proc write_guides {path} { rb_write $path "guides" }
 proc write_global_route_segments {path} { rb_write $path "segments" }
@@ -180,7 +184,7 @@ def _write_synth_config(tmp_path):
     )
 
 
-def _pnr_cfg(tmp_path, checkpoints=CHECKPOINT_STAGES):
+def _pnr_cfg(tmp_path, checkpoints=CHECKPOINT_STAGES, *, stages=False):
     sdc = tmp_path / "constraints.sdc"
     sdc.write_text("create_clock -period 1 [get_ports clk]\n")
     return PnrConfig(
@@ -194,12 +198,29 @@ def _pnr_cfg(tmp_path, checkpoints=CHECKPOINT_STAGES):
         floorplan=PnrFloorplan(utilization=0.55, aspect=1.0, core_margin=2.0),
         _reglvl=0,
         tool_overrides=None,
-        checkpoints=checkpoints,
+        checkpoints=CHECKPOINT_STAGES if stages else checkpoints,
+        stages=stages,
     )
 
 
-def _backend(tmp_path, monkeypatch, *, checkpoints=CHECKPOINT_STAGES, env=None):
-    """An `OpenRoadPnr` whose OpenROAD is the stub harness under Tcl."""
+#: What the stub sessions of a staged run report as their resources.
+STUB_RESOURCES = {"wall_s": 1.5, "cpu_s": 2.25, "peak_rss_kb": 4096}
+
+
+def _backend(
+    tmp_path,
+    monkeypatch,
+    *,
+    checkpoints=CHECKPOINT_STAGES,
+    env=None,
+    stages=False,
+    pnr_cfg=None,
+    **options,
+):
+    """An `OpenRoadPnr` whose OpenROAD is the stub harness under Tcl.
+
+    `options` are `OpenRoadPnr` keywords (`stop_after`, `resume`, `resume_from`).
+    """
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -211,9 +232,10 @@ def _backend(tmp_path, monkeypatch, *, checkpoints=CHECKPOINT_STAGES, env=None):
     root_cfg.get_pnr_platform_cfg.return_value = _platform(pdk)
     backend = OpenRoadPnr(
         name="demo/openroad",
-        pnr_cfg=_pnr_cfg(tmp_path, checkpoints),
+        pnr_cfg=pnr_cfg or _pnr_cfg(tmp_path, checkpoints, stages=stages),
         suite_dir=str(tmp_path),
         root_cfg=root_cfg,
+        **options,
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: "26Q2-stub")
     harness = tmp_path / "harness.tcl"
@@ -231,7 +253,16 @@ def _backend(tmp_path, monkeypatch, *, checkpoints=CHECKPOINT_STAGES, env=None):
         )
         return subprocess.CompletedProcess(cmd, done.returncode, None, done.stderr)
 
+    def _session(cmd, *, stdout, env):
+        done = _run(cmd, stdout=stdout)
+        return (
+            done.returncode,
+            done.stderr,
+            {**STUB_RESOURCES, "measured_by": "process"},
+        )
+
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _run)
+    monkeypatch.setattr(pnr_openroad, "_run_session", _session)
     return backend, Path(backend.artefact_dir)
 
 
@@ -334,9 +365,11 @@ def test_flow_without_checkpoints_renders_the_template_unchanged(tmp_path):
 def test_flow_with_checkpoints_arms_only_the_requested_stages(tmp_path):
     text = _render(tmp_path, ("cts", "global_route")).read_text()
     arm = next(line for line in text.splitlines() if line.startswith("rb::ckpt::arm"))
-    assert "{cts {03 global_route enter}}" in arm
-    assert "{global_route {04 global_route leave}}" in arm
-    assert "{floorplan " not in arm
+    assert "wanted {cts global_route}" in arm
+    # Every stage boundary is armed, so each stage's resources are recorded.
+    assert "cts {global_route enter}" in arm
+    assert "detailed_route {detailed_route leave}" in arm
+    assert "account 1" in arm
     assert '"' + str(tmp_path / "ck" / "run" / "progress.jsonl") + '"' in arm
     # Armed before the first flow command, so every step is traced.
     assert text.index("rb::ckpt::arm") < text.index("read_liberty $LIBERTY")
@@ -363,7 +396,8 @@ def test_successful_run_writes_every_checkpoint_and_a_complete_manifest(
             *(f"02_place.{e}" for e in ("odb", "def", "sdc")),
             *(f"03_cts.{e}" for e in ("odb", "def", "sdc")),
             *(
-                f"04_global_route.{e}"
+                f"{name}.{e}"
+                for name in ("04_global_route", "05_detailed_route")
                 for e in ("odb", "def", "sdc", "guide", "segments")
             ),
         ]
@@ -407,7 +441,12 @@ def test_successful_run_writes_every_checkpoint_and_a_complete_manifest(
         order.index(("step_end", "global_route"))
         < order.index(("checkpoint", "global_route"))
         < order.index(("step_begin", "detailed_route"))
+        < order.index(("step_end", "detailed_route"))
+        < order.index(("checkpoint", "detailed_route"))
+        < order.index(("step_begin", "filler_placement"))
     )
+    dr = manifest["checkpoints"]["detailed_route"]
+    assert dr["final"] is False and dr["detail_routed"] is True
 
 
 def test_failure_before_detailed_routing_leaves_labelled_pre_route_checkpoints(
@@ -423,7 +462,7 @@ def test_failure_before_detailed_routing_leaves_labelled_pre_route_checkpoints(
     res = backend.run()
 
     assert res.results["result"] == "FAIL"
-    assert res.results["checkpoint_stages"] == list(CHECKPOINT_STAGES)
+    assert res.results["checkpoint_stages"] == list(CHECKPOINT_STAGES[:-1])
     assert res.results["last_step"]["step"] == "detailed_route"
     assert res.results["last_step"]["status"] == "error"
     for name in _ROUTED:
