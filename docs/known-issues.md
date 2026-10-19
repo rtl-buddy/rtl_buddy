@@ -262,11 +262,17 @@ Each [`post-route-repair`](concepts/pnr.md#repair-on-the-detailed-route) round t
 - A changed net left without a global route makes detailed route fail with `DRT-1010`; the incremental routes above give every changed or moved cell's nets one.
 - A fresh session has no global route in memory. Without one, `repair_timing` rebuffering can crash OpenROAD (signal 11 in `GlobalRouter::getPinGridPositions`), so an `eco` round restores it from the database's route guides with `estimate_parasitics -global_routing` before it reads the SPEF.
 
-With `reroute: full` a round also removes the detailed route and routes the whole design globally before it repairs, and its detailed route routes every net again, so it costs about a global and a detailed route of the design. With `reroute: eco` its detailed route starts from the routed design and reroutes the nets the repair changed; on the project template's sky130hd blocks it starts with about half the violations and finishes in about half the time.
+With `reroute: full` a round also removes the detailed route and routes the whole design globally before it repairs, and its detailed route routes every net again, so it costs about a global and a detailed route of the design. With `reroute: eco` its detailed route starts from the routed design and reroutes the nets the repair changed; on the project template's sky130hd blocks a first round's detailed route starts with a quarter to a third of a `full` round's violations and finishes in under half the time.
 
-## An eco post-route repair round fails with `RSZ-0074` on ASAP7
+## An eco post-route repair round can fail with `RSZ-0074`
 
-With [`reroute: eco`](concepts/pnr.md#repair-on-the-detailed-route), the default, a post-route repair round keeps the detailed route, and `repair_timing` rebuffers from the global routes OpenROAD rebuilds from the routed database in the round's fresh session. On ASAP7 those routes miss pins, and the repair fails with `RSZ-0074`, also with the placement estimate read first, `-grid_origin` on the incremental routes, the route guides written and read back, or `set_wire_rc` toggled around it. The failure names the fix: set `post-route-repair.reroute: full` on an ASAP7 platform or run. A `full` round removes the detailed route and routes globally before it repairs, so the repair has a global route for every net. On sky130hd `eco` repairs as intended.
+With [`reroute: eco`](concepts/pnr.md#repair-on-the-detailed-route), the default, a post-route repair round keeps the detailed route, and the repairs build buffer trees from the global routes OpenROAD rebuilds from the routed database's route guides. Those routes can miss pins, and the repair then fails:
+
+```text
+[ERROR RSZ-0074] Failed to build tree from global routes for pin 'u_alu/_621_/Y' and net 'u_alu/_330_' at grid (3135, 5985): found route to 1 pins, expected 3
+```
+
+On the project template this happens on ASAP7 in the first round's `repair_timing`, and on sky130hd in the first round's `repair_design` when the block sets `repair-design`. sky130hd blocks that repair only timing pass. Estimating placement parasitics instead of the global route before the SPEF does not help: the resizer still builds its trees from the global routes on a routed database, fails `RSZ-0074` on ASAP7 and on a sky130hd block with `repair-design`, and crashes in a later round of a setup-only sky130hd block. Neither do `-grid_origin` on the incremental routes, route guides written and read back, nor `set_wire_rc` around the repairs. The failure names the fix: set `post-route-repair.reroute: full`. A `full` round removes the detailed route and routes globally before it repairs, so the repair has a global route for every net.
 
 ## Post-route repair keeps the last repaired round
 

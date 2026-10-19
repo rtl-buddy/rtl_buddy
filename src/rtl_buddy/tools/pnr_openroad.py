@@ -2252,7 +2252,7 @@ class OpenRoadPnr:
     def _post_route_repair_script(self, round_: int, run_dir: str) -> str:
         """Round `round_`'s repair session, bound to `run_dir`: repair on the round's SPEF, legalize inside an incremental global route, run the `before-detailed-route` hooks, route in detail and write the stage's checkpoint.
 
-        The rounds work on the unfilled database; `finish` fills after the last. A repair in the session that routed fails detailed routing (DRT-0218), so each round is a fresh session that reads the routed database. With `reroute: eco` the session keeps the detailed route, restores the global route from the database's guides with `estimate_parasitics -global_routing` and reads the SPEF over it, so the repair times every net it does not change on its extracted parasitics and the nets it changes on the global route, and the detailed route reroutes only the nets the repair changed. Without the estimate a later eco round's rebuffering crashes in `GlobalRouter::getPinGridPositions` (signal 11). With `reroute: full` it removes the detailed route and routes globally first, then reads the SPEF: on some PDKs (ASAP7) a repair on a detailed-routed database builds buffer trees from global routes that miss pins (RSZ-0074); its detailed route routes every net again. The repairs run before `global_route -start_incremental`, in ORFS order: `repair_timing` opens its own incremental route, and a second one open around it delivers each netlist change to the router twice (GRT-0229 on a later rip-up).
+        The rounds work on the unfilled database; `finish` fills after the last. A repair in the session that routed fails detailed routing (DRT-0218), so each round is a fresh session that reads the routed database. With `reroute: eco` the session keeps the detailed route, restores the global route from the database's guides with `estimate_parasitics -global_routing` and reads the SPEF over it, so the repair times every net it does not change on its extracted parasitics and the nets it changes on the global route, and the detailed route reroutes only the nets the repair changed. Without the estimate a later eco round's rebuffering crashes in `GlobalRouter::getPinGridPositions` (signal 11). With `reroute: full` it removes the detailed route and routes globally first, then reads the SPEF: the global routes rebuilt from a detailed-routed database's guides can miss pins, and a repair that builds buffer trees from them fails (RSZ-0074, seen on ASAP7 and with `repair_design`); its detailed route routes every net again. The repairs run before `global_route -start_incremental`, in ORFS order: `repair_timing` opens its own incremental route, and a second one open around it delivers each netlist change to the router twice (GRT-0229 on a later rip-up).
         """
         repair = self._post_route
         setup, hold = repair.margins(round_)
@@ -2305,7 +2305,7 @@ class OpenRoadPnr:
     def _eco_hint(self, log_text: str) -> str:
         """What to change when an `eco` post-route repair round failed RSZ-0074, else "".
 
-        On some PDKs (ASAP7) the global routes a fresh session rebuilds from a detailed-routed database miss pins, and `repair_timing` cannot build buffer trees from them.
+        The global routes a fresh session rebuilds from a detailed-routed database's guides can miss pins, and the repairs cannot build buffer trees from them (seen on ASAP7 and with `repair_design`).
         """
         repair = self._post_route
         if (
