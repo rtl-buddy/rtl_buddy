@@ -134,6 +134,9 @@ _HANDLED_SIGNALS = STOP_SIGNALS
 _DRAIN_WAIT_S = 30.0
 _DRAIN_POLL_S = 2.0
 
+#: The longest a queue poll of the chain's wait may take; one that takes longer counts as the queue not answering.
+_WAIT_POLL_TIMEOUT_S = 30.0
+
 
 #: The clock the chain's queue deadlines and progress lines read.
 _clock = time.monotonic
@@ -290,7 +293,7 @@ class StageChain:
     def wait(self) -> None:
         """Block until every job of the chain has left the queue.
 
-        `cfg-dispatch.max-wait` bounds how long each job waits in the queue before it starts: the first job from its submission, a later one from when the job before it left the queue. A job that waits longer raises `QueueWaitExceeded`. How long a job runs is bounded by its own `time`, so a job is not given up while it may be running: past `max-wait` with the queue not answering, accounting says whether the job started, and without its answer either the job is given up only once it is past `max-wait` plus its `time`. A cancel or an interrupt raises `ChainCancelled`.
+        `cfg-dispatch.max-wait` bounds how long each job waits in the queue before it starts: the first job from its submission, a later one from when the job before it left the queue. A job that waits longer raises `QueueWaitExceeded`. How long a job runs is bounded by its own `time`, so a job is not given up while it may be running: past `max-wait` with the queue not answering, accounting says whether the job started, and without its answer either the job is given up only once it is past `max-wait` plus its `time`. Each poll gets at most `_WAIT_POLL_TIMEOUT_S`; one that runs out counts as the queue not answering. A cancel or an interrupt raises `ChainCancelled`.
         """
         max_wait = getattr(self.backend, "max_wait", None)
         interval = getattr(self.backend, "poll_interval", 5.0)
@@ -305,7 +308,9 @@ class StageChain:
         while True:
             if self.cancel_requested:
                 raise ChainCancelled(self._cancelled_desc())
-            states = self.backend.queue_states(self.handles)
+            states = self.backend.queue_states(
+                self.handles, timeout_s=_WAIT_POLL_TIMEOUT_S
+            )
             now = _clock()
             if states is not None:
                 answered = now

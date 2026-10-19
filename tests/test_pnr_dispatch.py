@@ -1154,6 +1154,52 @@ def test_max_wait_does_not_bound_a_running_stage_job(tmp_path, monkeypatch):
     assert slurm.cancelled == []
 
 
+def test_a_queue_poll_that_hangs_counts_as_the_queue_not_answering(
+    tmp_path, monkeypatch
+):
+    slurm = _FakeSlurm(monkeypatch, max_wait=600.0)
+    monkeypatch.setattr(pnr_dispatch, "_clock", _Clock(100))
+    backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+    real = slurm._squeue
+    bounds = []
+
+    def _hung(argv):
+        if slurm.hold:
+            return real(argv)
+        (_, timeout) = slurm.calls[-1]
+        bounds.append(timeout)
+        if timeout is None:
+            pytest.fail("a poll of the wait has no timeout, so a hung squeue holds it")
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    slurm._squeue = _hung
+    real_cancel = slurm._scancel
+
+    def _scancel(argv):
+        slurm.hold = True
+        return real_cancel(argv)
+
+    slurm._scancel = _scancel
+
+    res = backend.run()
+
+    # Every poll gave up at its timeout, so max-wait still ran out.
+    assert res.results["fail_stage"] == "dispatch"
+    first = slurm.submitted()[0]["id"]
+    assert re.fullmatch(
+        rf"dispatch: stage 01_floorplan: Slurm job {first} waited \d+s in the "
+        r"queue without starting, longer than cfg-dispatch.max-wait \(600s\); "
+        rf"`squeue -j {first}` gives the reason it is held",
+        res.results["desc"],
+    )
+    # The wait's polls, then the cancel's.
+    assert len(bounds) > 1
+    assert bounds == [pnr_dispatch._WAIT_POLL_TIMEOUT_S] * (len(bounds) - 1) + [
+        CANCEL_TIMEOUT_S
+    ]
+    assert sorted(slurm.cancelled) == sorted(j["id"] for j in slurm.submitted())
+
+
 def test_a_dispatch_failure_is_prefixed_once():
     assert pnr_dispatch.failure_desc("sbatch failed") == "dispatch: sbatch failed"
     assert (
@@ -1452,7 +1498,10 @@ def test_cancelling_bounds_each_scheduler_command(tmp_path, monkeypatch):
     first_cancel = commands.index(("scancel", CANCEL_TIMEOUT_S))
     # The handler cancels without asking the queue first: the command before is the
     # wait's own poll. Every later command is bounded too.
-    assert commands[first_cancel - 1] == ("squeue", None)
+    assert commands[first_cancel - 1] == (
+        "squeue",
+        pnr_dispatch._WAIT_POLL_TIMEOUT_S,
+    )
     assert [t for c, t in commands[first_cancel:] if c in ("squeue", "scancel")]
     assert all(
         t is not None for c, t in commands[first_cancel:] if c in ("squeue", "scancel")
