@@ -4,7 +4,7 @@ import math
 import os
 import pprint
 import re
-from dataclasses import dataclass, field as dc_field, replace
+from dataclasses import dataclass, field as dc_field, make_dataclass, replace
 from enum import StrEnum
 from typing import Any, Literal, NoReturn
 
@@ -17,6 +17,12 @@ from ..errors import FatalRtlBuddyError
 from ..runner.xfail import compile_xfail_match
 from ..logging_utils import log_event
 from .blocks import BlockRef, BlockRefFile, load_block_refs
+from .dispatch import (
+    DispatchResourcesFile,
+    JobResources,
+    apply_resource_layers,
+    validate_resources_block,
+)
 from .openroad_threads import validate_threads
 from .pdk import PLACEMENT_SPEC, PlacementFile, validate_placement
 from .pnr_repair import (
@@ -695,6 +701,90 @@ def _normalise_checkpoints(run: str, value) -> tuple[str, ...] | None:
     return tuple(s for s in CHECKPOINT_STAGES if s in names)
 
 
+@serde
+class PnrStageResourcesFile:
+    """One stage job's reservation, `resources.stages.<stage>`: the `cfg-dispatch.resources` fields without `modes`, as a P&R stage has no builder mode."""
+
+    cpus: int | None = None
+    mem: str | int | None = None
+    time: str | int | None = None
+
+
+@serde
+class PnrResourcesFile:
+    """A run's `resources:`: the reservation of each stage job under `--dispatch slurm`, with per-stage overrides under `stages`."""
+
+    cpus: int | None = None
+    mem: str | int | None = None
+    time: str | int | None = None
+    # Stage name -> a `PnrStageResourcesFile` block; typed loosely so `initialise` names a bad entry.
+    stages: dict | None = None
+
+
+@dataclass(frozen=True)
+class PnrResources:
+    """A run's validated `resources:` block: the run-wide reservation and each stage's override."""
+
+    base: DispatchResourcesFile | None = None
+    stages: dict[str, DispatchResourcesFile] = dc_field(default_factory=dict)
+
+
+def _validated_block(block, where: str) -> DispatchResourcesFile:
+    """One reservation block through the dispatch validators, with `cpus` a positive integer; errors name `where`."""
+    try:
+        valid = validate_resources_block(block, where=where)
+    except FatalRtlBuddyError as e:
+        if str(e).startswith(where):
+            raise
+        raise FatalRtlBuddyError(f"{where[:-1]}: {e}") from None
+    cpus = valid.cpus
+    if cpus is not None and (
+        not isinstance(cpus, int) or isinstance(cpus, bool) or cpus < 1
+    ):
+        raise FatalRtlBuddyError(
+            f"{where}cpus must be a positive integer, got {cpus!r}"
+        )
+    return valid
+
+
+def _load_resources(run: str, entry: PnrResourcesFile | None) -> PnrResources | None:
+    """Validate a run's `resources:` block at load time."""
+    if entry is None:
+        return None
+    where = f"pnr run '{run}': resources."
+    base = _validated_block(entry, where)
+    if entry.stages is not None and not isinstance(entry.stages, dict):
+        raise FatalRtlBuddyError(
+            f"{where}stages must map stage names ({', '.join(PNR_STAGES)}) to "
+            f"cpus/mem/time blocks, got {entry.stages!r}"
+        )
+    stages = {}
+    for stage, raw in (entry.stages or {}).items():
+        here = f"{where}stages.{stage}."
+        if stage not in PNR_STAGES:
+            raise FatalRtlBuddyError(
+                f"{here[:-1]}: unknown stage (expected any of {', '.join(PNR_STAGES)})"
+            )
+        if not isinstance(raw, dict):
+            raise FatalRtlBuddyError(
+                f"{here[:-1]} must be a block of cpus, mem and time, got {raw!r}"
+            )
+        stages[stage] = _validated_block(
+            config_from_data(PnrStageResourcesFile, raw), here
+        )
+    has_base = any(v is not None for v in (base.cpus, base.mem, base.time))
+    return PnrResources(base=base if has_base else None, stages=stages)
+
+
+#: The key check's view of `resources.stages`: one key per stage, each a reservation block.
+_STAGE_RESOURCES_SPEC = KeySpec(
+    make_dataclass(
+        "PnrStageResourcesKeys", [(stage, Any, None) for stage in PNR_STAGES]
+    ),
+    {stage: KeySpec(PnrStageResourcesFile) for stage in PNR_STAGES},
+)
+
+
 #: Flow points `hooks:` can name, in flow order.
 HOOK_POINTS = (
     "session",
@@ -1135,6 +1225,8 @@ class PnrConfigFile:
     tool_overrides: dict | None = None
     # OpenROAD threads: a positive integer or `auto`; unset means single-threaded.
     threads: int | str | None = None
+    # Each stage job's reservation under `--dispatch slurm`, over `cfg-dispatch.resources` field by field.
+    resources: PnrResourcesFile | None = None
     # `detailed_route -verbose` level; unset means 1. Typed loosely so `initialise` names a bad value.
     detailed_route_verbose: int | float | str | None = field(
         rename="detailed-route-verbose", default=None
@@ -1173,6 +1265,7 @@ class PnrConfigFile:
                 f"(expected one of {', '.join(m.value for m in GdsMode)})"
             ) from None
         threads = validate_threads(self.threads, where=f"pnr run '{self.name}'")
+        resources = _load_resources(self.name, self.resources)
         detailed_route_verbose = _validate_detailed_route_verbose(
             self.name, self.detailed_route_verbose
         )
@@ -1360,6 +1453,7 @@ class PnrConfigFile:
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             threads=threads,
+            resources=resources,
             detailed_route_verbose=detailed_route_verbose,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
@@ -1391,6 +1485,7 @@ PNR_RUN_SPEC = KeySpec(
         "global-route-repair": GLOBAL_ROUTE_REPAIR_SPEC,
         "post-route-repair": POST_ROUTE_REPAIR_SPEC,
         "blocks": KeySpec(BlockRefFile, many=True),
+        "resources": KeySpec(PnrResourcesFile, {"stages": _STAGE_RESOURCES_SPEC}),
     },
 )
 
@@ -1417,6 +1512,8 @@ class PnrConfig:
     gds_mode: GdsMode = GdsMode.PREVIEW
     gds_allow_empty: list[str] = dc_field(default_factory=list)
     threads: int | str | None = None
+    # The validated `resources:` block; None when unset.
+    resources: PnrResources | None = None
     detailed_route_verbose: int = DEFAULT_DETAILED_ROUTE_VERBOSE
     checkpoints: tuple[str, ...] | None = None
     stages: bool = False
@@ -1499,6 +1596,24 @@ class PnrConfig:
     def get_threads(self) -> int | str | None:
         """Validated `threads:`: a positive int, `auto`, or None."""
         return self.threads
+
+    def get_resources(self) -> PnrResources | None:
+        """The run's validated `resources:` block, or None."""
+        return self.resources
+
+    def stage_resources(self, dispatch_cfg, stage: str) -> JobResources:
+        """The reservation of `stage`'s job: built-in defaults, then `cfg-dispatch.resources`, the run's `resources:` and its `resources.stages.<stage>`, field by field.
+
+        `modes:` blocks do not apply; a P&R stage has no builder mode.
+        """
+        own = self.resources or PnrResources()
+        return apply_resource_layers(
+            [
+                dispatch_cfg.resources if dispatch_cfg is not None else None,
+                own.base,
+                own.stages.get(stage),
+            ]
+        )
 
     def get_detailed_route_verbose(self) -> int:
         """Validated `detailed-route-verbose:`, the `detailed_route -verbose` level."""

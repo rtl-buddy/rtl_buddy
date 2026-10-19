@@ -16,6 +16,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+from ..config.dispatch import JobResources
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
 from ..config.pdk import RotatedMacroFootprint
 from ..config.pnr import (
@@ -39,6 +40,7 @@ from ..config.pnr_repair import (
     Reroute,
     UNSET,
 )
+from ..dispatch.base import PnrStageJobSpec
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
 from ..pnr.klayout.def2stream import REPORT_SCHEMA
@@ -54,6 +56,7 @@ from . import (
     block_params,
     pnr_abstract,
     pnr_checkpoints,
+    pnr_dispatch,
     pnr_placement_check,
     pnr_stages,
 )
@@ -1088,6 +1091,12 @@ def _read_global_route_tcl(stage: str) -> str:
 _FANOUT_CHECK_TCL = "catch {sta::max_fanout_min_slack}\n"
 
 
+def _threads_block(plan: ThreadPlan) -> str:
+    """The flow's thread-count block for `plan`, or "" when it sets none."""
+    tcl = plan.tcl()
+    return f'\nputs ">>> Threads"\n{tcl}\n' if tcl else ""
+
+
 def _maxrss_kb(maxrss: int) -> int:
     """`ru_maxrss` in kB; macOS reports bytes."""
     return maxrss // 1024 if sys.platform == "darwin" else maxrss
@@ -1326,6 +1335,143 @@ def run_post_route_repair(run_dir: str, session, *, run_name: str) -> PostRouteO
     return _outcome(0, "", None)
 
 
+@dataclass
+class StageOutcome:
+    """How one stage of a staged run ended: its last session's exit code and stderr, and why the stage failed when that session exited 0."""
+
+    returncode: int
+    stderr: str
+    problem: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.returncode == 0 and self.problem is None
+
+
+def stage_checkpoint(run_dir: str, stage: str) -> dict | None:
+    """Fingerprints of the checkpoint files a staged session wrote for `stage`, or None if it wrote none."""
+    names = pnr_checkpoints.written_checkpoint(run_dir, stage)
+    if not names:
+        return None
+    return {
+        kind: _file_fingerprint(os.path.join(run_dir, str(name)))
+        for kind, name in names.items()
+    }
+
+
+def _stage_session(
+    script: str,
+    label: str,
+    *,
+    openroad: str,
+    log,
+    log_path: str,
+    env: dict,
+    run_name: str,
+) -> tuple[int, str, dict, bytes]:
+    """Run OpenROAD on `script`, appending its output to `log` (the open `log_path`); return its exit code, stderr, resources and its part of the log."""
+    cmd = [openroad, "-no_init", "-exit", script]
+    log_event(
+        logger,
+        logging.DEBUG,
+        "pnr.run_cmd",
+        pnr=run_name,
+        cmd=" ".join(cmd),
+        log=log_path,
+    )
+    log.flush()
+    start = os.path.getsize(log_path)
+    try:
+        with task_status(f"pnr {run_name} [openroad {label}]"):
+            returncode, stderr, resources = _run_session(cmd, stdout=log, env=env)
+    except OSError as e:
+        returncode, stderr = 127, f"cannot run {openroad}: {e}"
+        resources = {
+            "wall_s": 0.0,
+            "cpu_s": 0.0,
+            "peak_rss_kb": 0,
+            "measured_by": "process",
+        }
+    stderr = (stderr or "").strip()
+    if stderr:
+        log.write((stderr + "\n").encode())
+    log.flush()
+    with open(log_path, "rb") as f:
+        f.seek(start)
+        section = f.read()
+    return returncode, stderr, resources, section
+
+
+def run_stage(
+    run_dir: str,
+    stage: str,
+    *,
+    openroad: str,
+    log,
+    log_path: str,
+    env: dict,
+    run_name: str,
+    fields: dict | None = None,
+) -> StageOutcome:
+    """Run stage `stage` of the staged run in `run_dir` and return how it ended.
+
+    A local staged run calls this for each stage in turn, and a dispatched run's job (`rb _pnr-stage-job`) calls it for its one stage, so a stage behaves the same either way. Everything the stage needs is in `run_dir`, which the head wrote before the first stage ran. The session's output is appended to `log` (the open `log_path`, the run's `pnr.log`) as it runs and copied to `NN_<stage>.log` when it exits. `post_route_repair` runs its rounds' sessions (see `run_post_route_repair`), measured and logged as one. `stage_begin` records where the stage's part of `pnr.log` starts; `stage_end` records the exit, the wall time, CPU time and peak RSS measured here and, for a clean exit, the checkpoint's fingerprints. `fields` are added to both events.
+    """
+    name = _checkpoint_name(stage)
+    log.flush()
+    pnr_checkpoints.stage_begin(
+        run_dir, stage, log_offset=os.path.getsize(log_path), **(fields or {})
+    )
+
+    def _session(script: str, label: str):
+        return _stage_session(
+            script,
+            label,
+            openroad=openroad,
+            log=log,
+            log_path=log_path,
+            env=env,
+            run_name=run_name,
+        )
+
+    problem = None
+    if stage == POST_ROUTE_REPAIR_STAGE:
+        post = run_post_route_repair(
+            run_dir,
+            lambda script, label: _session(script, f"{name} {label}"),
+            run_name=run_name,
+        )
+        returncode, stderr, problem = post.returncode, post.stderr, post.problem
+        resources, section = post.resources, post.log
+    else:
+        returncode, stderr, resources, section = _session(
+            os.path.join(run_dir, f"{name}.tcl"), name
+        )
+        if (
+            returncode == 0
+            and stage != "finish"
+            and f"{_STAGE_DONE_MARKER}{name}\n".encode() not in section
+        ):
+            problem = f"stage {name}: OpenROAD exited before the end of the stage"
+    Path(run_dir, f"{name}.log").write_bytes(section)
+    checkpoint = None
+    if returncode == 0 and problem is None and stage != "finish":
+        checkpoint = stage_checkpoint(run_dir, stage)
+        if checkpoint is None:
+            problem = f"stage {name}: its checkpoint was not written"
+    ok = returncode == 0 and problem is None
+    pnr_checkpoints.stage_end(
+        run_dir,
+        stage,
+        returncode=returncode,
+        resources=resources,
+        status="ok" if ok else "error",
+        checkpoint=checkpoint if ok else None,
+        **(fields or {}),
+    )
+    return StageOutcome(returncode=returncode, stderr=stderr, problem=problem)
+
+
 class OpenRoadPnr:
     """OpenROAD P&R backend.
 
@@ -1350,8 +1496,10 @@ class OpenRoadPnr:
         stop_after: str | None = None,
         resume: str | None = None,
         resume_from: str | None = None,
+        dispatch=None,
     ):
         self.name = name
+        self.suite_dir = suite_dir
         self.accept_stale = accept_stale
         self._mode = pnr_cfg.get_mode()
         # `--stop-after` as given; a probe without one stops after global route.
@@ -1365,8 +1513,17 @@ class OpenRoadPnr:
         # `--resume` and `--from`: the run to resume (a run id or directory) and the first stage to run.
         self.resume = resume
         self.resume_from = resume_from
-        # A resumed run is staged whatever its config says.
-        self._staged = pnr_cfg.get_stages() or resume is not None
+        # `--dispatch`: the backend that runs each stage as a job, or None to run here.
+        self._dispatch = dispatch
+        # Why submitting or waiting on the stage jobs failed; the scheduler's account of a failed stage job.
+        self._dispatch_failure: str | None = None
+        self._dispatch_reason: str | None = None
+        # A dispatched stage's thread plan, resolved against its job's CPUs.
+        self._stage_thread_plans: dict[str, ThreadPlan] = {}
+        # A resumed or dispatched run is staged whatever its config says.
+        self._staged = (
+            pnr_cfg.get_stages() or resume is not None or dispatch is not None
+        )
         self._resume_source: pnr_stages.ResumeSource | None = None
         # The staged session that failed, for the result description.
         self._failed_stage: str | None = None
@@ -1417,12 +1574,40 @@ class OpenRoadPnr:
         )
 
     def _threads(self) -> ThreadPlan:
-        """Return this run's OpenROAD thread plan, resolved once against the current allocation."""
+        """Return this run's OpenROAD thread plan, resolved once against the current allocation.
+
+        A dispatched run's is the plan of the last stage it runs, whose session's thread count `pnr.log` reports last.
+        """
         if self._thread_plan is None:
-            self._thread_plan = plan_threads(
-                self.pnr_cfg.get_threads(), flow="pnr", run=self.pnr_cfg.get_name()
-            )
+            if self._dispatch is not None:
+                self._thread_plan = self._stage_threads(self._run_stages()[-1])
+            else:
+                self._thread_plan = plan_threads(
+                    self.pnr_cfg.get_threads(),
+                    flow="pnr",
+                    run=self.pnr_cfg.get_name(),
+                )
         return self._thread_plan
+
+    def _stage_job_resources(self, stage: str) -> JobResources:
+        """The reservation of a dispatched stage's job."""
+        return self.pnr_cfg.stage_resources(self.root_cfg.get_dispatch_cfg(), stage)
+
+    def _stage_threads(self, stage: str) -> ThreadPlan:
+        """A dispatched stage's thread plan: `threads:` resolved against its job's CPUs, so `auto` takes that count."""
+        plan = self._stage_thread_plans.get(stage)
+        if plan is None:
+            plan = plan_threads(
+                self.pnr_cfg.get_threads(),
+                flow="pnr",
+                run=f"{self.pnr_cfg.get_name()} {stage}",
+                allocation=(
+                    self._stage_job_resources(stage).cpus,
+                    pnr_dispatch.JOB_CPUS_SOURCE,
+                ),
+            )
+            self._stage_thread_plans[stage] = plan
+        return plan
 
     def _threads_fields(self) -> dict:
         """Return the `openroad_threads` result field with OpenROAD's reported count.
@@ -1563,8 +1748,7 @@ class OpenRoadPnr:
         )
 
         # Must precede the first `read_liberty`.
-        threads_tcl = self._threads().tcl()
-        threads_block = f'\nputs ">>> Threads"\n{threads_tcl}\n' if threads_tcl else ""
+        threads_block = _threads_block(self._threads())
 
         blockages_block, macro_pack_directives = _floorplan_directives(fp)
         gp_blocks = _global_placement_blocks(
@@ -1789,8 +1973,8 @@ class OpenRoadPnr:
         return self._ckpt_run_dir
 
     def _session_substitutions(self, stage: str, session: str = "staged run") -> dict:
-        """The template substitutions of a session of `stage`: the flow's, with that session's checkpoint block."""
-        return {
+        """The template substitutions of a session of `stage`: the flow's, with that session's checkpoint block and, in a dispatched run, its stage job's threads."""
+        substitutions = {
             **self._substitutions,
             "checkpoint_block": pnr_checkpoints.render_staged_block(
                 stage,
@@ -1800,6 +1984,9 @@ class OpenRoadPnr:
                 session=session,
             ),
         }
+        if self._dispatch is not None:
+            substitutions["threads_block"] = _threads_block(self._stage_threads(stage))
+        return substitutions
 
     def _prelude(self, stage: str, read_tcl: str) -> list[str]:
         """The start of a session of `stage` after `floorplan`: the template head, `read_tcl` opening the database it starts from, and what a database does not keep.
@@ -3571,27 +3758,28 @@ class OpenRoadPnr:
             "resumed_from": self._resumed_from(),
             "chain": self._chain_records(),
             "inherited_checkpoints": source.checkpoints if source else None,
+            "dispatch": self._dispatch_record(),
         }
 
-    def _stage_checkpoint(self, stage: str) -> dict | None:
-        """Fingerprints of the checkpoint files a staged session wrote for `stage`, or None if it wrote none."""
-        names = pnr_checkpoints.written_checkpoint(self._ckpt_run_dir, stage)
-        if not names:
+    def _dispatch_record(self) -> dict | None:
+        """The manifest's `dispatch` entry: the backend, and each stage job's reservation and OpenROAD threads."""
+        if self._dispatch is None:
             return None
-        return {
-            kind: _file_fingerprint(os.path.join(self._ckpt_run_dir, str(name)))
-            for kind, name in names.items()
-        }
+        stages = {}
+        for stage in self._run_stages():
+            resources = self._stage_job_resources(stage)
+            plan = self._stage_threads(stage)
+            stages[stage] = {
+                "cpus": resources.cpus,
+                "mem": resources.mem,
+                "time": resources.time,
+                "threads": plan.count if plan.emit else None,
+            }
+        return {"backend": self._dispatch.name, "stages": stages}
 
-    def _run_chain(self, env) -> tuple[int, str, str | None]:
-        """Run the sessions of `_session_stages` in order and return the last one's exit code and stderr, and why the chain stopped if a session exited 0 without ending its stage.
-
-        Each session's output is appended to `pnr.log` as it runs and copied to its own log when it exits. A staged run's `pnr.log` starts afresh, with the logs of the stages a resume inherits; a one-session run's continues after its first session. rb records each stage's wall time, CPU time and peak RSS, and the checkpoint it wrote, in `progress.jsonl`.
-        """
-        log_path = self._log_path()
-        returncode, stderr = 0, ""
-        if self._staged:
-            Path(log_path).write_bytes(b"")
+    def _start_chain_log(self, log_path: str) -> None:
+        """Start a staged run's `pnr.log`: empty, or for a resumed run the logs of the stages it inherits."""
+        Path(log_path).write_bytes(b"")
         with open(log_path, "ab") as log:
             for entry in self._resume_source.chain if self._resume_source else []:
                 path = (entry.get("log") or {}).get("path")
@@ -3602,106 +3790,71 @@ class OpenRoadPnr:
                         f">>> rb: log of inherited stage {entry.get('stage')} "
                         f"not readable: {path}\n".encode()
                     )
+
+    def _run_chain(self, env) -> tuple[int, str, str | None]:
+        """Run the stages of `_session_stages` in order (`run_stage`) and return the last session's exit code and stderr, and why the chain stopped if a session exited 0 without ending its stage.
+
+        A staged run's `pnr.log` starts afresh (see `_start_chain_log`); a one-session run's continues after its first session.
+        """
+        log_path = self._log_path()
+        returncode, stderr = 0, ""
+        if self._staged:
+            self._start_chain_log(log_path)
+        with open(log_path, "ab") as log:
             for stage in self._session_stages():
-                if stage == POST_ROUTE_REPAIR_STAGE:
-                    returncode, stderr, problem = self._run_post_route_repair(env, log)
-                else:
-                    returncode, stderr, problem = self._run_stage_session(
-                        stage, env, log
-                    )
-                if returncode != 0 or problem is not None:
-                    return returncode, stderr, problem
+                outcome = run_stage(
+                    self._ckpt_run_dir,
+                    stage,
+                    openroad=self.openroad_executable,
+                    log=log,
+                    log_path=log_path,
+                    env=env,
+                    run_name=self.pnr_cfg.get_name(),
+                )
+                returncode, stderr = outcome.returncode, outcome.stderr
+                if not outcome.ok:
+                    self._failed_stage = _checkpoint_name(stage)
+                    return returncode, stderr, outcome.problem
         return returncode, stderr, None
 
-    def _session(
-        self, script: str, label: str, env, log
-    ) -> tuple[int, str, dict, bytes]:
-        """Run one OpenROAD session on `script`, appending its output to `pnr.log`; return its exit code, stderr, resources and its part of the log."""
+    def _dispatch_chain(self) -> tuple[int | None, str, str | None]:
+        """Run a staged run's stages as one chained job each and return what `_run_chain` returns.
+
+        Every stage script is already written, so the jobs run the configuration as it was at submission. The head blocks until the chain has left the queue; an exception, including an interrupt, cancels the jobs it submitted. A submission or wait that fails sets `_dispatch_failure`.
+        """
+        run_dir = self._ckpt_run_dir
         log_path = self._log_path()
-        cmd = [self.openroad_executable, "-no_init", "-exit", script]
-        log_event(
-            logger,
-            logging.DEBUG,
-            "pnr.run_cmd",
-            pnr=self.pnr_cfg.get_name(),
-            cmd=" ".join(cmd),
-            log=log_path,
-        )
-        log.flush()
-        start = os.path.getsize(log_path)
-        with task_status(f"pnr {self.pnr_cfg.get_name()} [openroad {label}]"):
-            returncode, stderr, resources = _run_session(cmd, stdout=log, env=env)
-        stderr = (stderr or "").strip()
-        if stderr:
-            log.write((stderr + "\n").encode())
-        log.flush()
-        with open(log_path, "rb") as f:
-            f.seek(start)
-            section = f.read()
-        return returncode, stderr, resources, section
-
-    def _run_stage_session(self, stage: str, env, log) -> tuple[int, str, str | None]:
-        """Run `stage`'s one session; return its exit code, stderr and, when it exited 0 without ending its stage, why."""
-        run_dir = self._ckpt_run_dir
-        name = _checkpoint_name(stage)
-        pnr_checkpoints.stage_begin(run_dir, stage)
-        returncode, stderr, resources, section = self._session(
-            os.path.join(run_dir, f"{name}.tcl"), name, env, log
-        )
-        Path(run_dir, f"{name}.log").write_bytes(section)
-        problem = None
-        checkpoint = None
-        if returncode == 0 and stage != "finish":
-            checkpoint = self._stage_checkpoint(stage)
-            if f"{_STAGE_DONE_MARKER}{name}\n".encode() not in section:
-                problem = f"stage {name}: OpenROAD exited before the end of the stage"
-            elif checkpoint is None:
-                problem = f"stage {name}: its checkpoint was not written"
-        ok = returncode == 0 and problem is None
-        pnr_checkpoints.stage_end(
-            run_dir,
-            stage,
-            returncode=returncode,
-            resources=resources,
-            status="ok" if ok else "error",
-            checkpoint=checkpoint if ok else None,
-        )
-        if not ok:
-            self._failed_stage = name
-        return returncode, stderr, problem
-
-    def _run_post_route_repair(self, env, log) -> tuple[int, str, str | None]:
-        """Run the post-route repair stage (see `run_post_route_repair`) and record it as one stage; return the last session's exit code and stderr, and why the stage failed if a session exited 0 without ending its step."""
-        stage = POST_ROUTE_REPAIR_STAGE
-        run_dir = self._ckpt_run_dir
-        name = _checkpoint_name(stage)
-        pnr_checkpoints.stage_begin(run_dir, stage)
-
-        def _session(path: str, label: str):
-            return self._session(path, f"{name} {label}", env, log)
-
-        outcome = run_post_route_repair(
-            run_dir, _session, run_name=self.pnr_cfg.get_name()
-        )
-        returncode, problem = outcome.returncode, outcome.problem
-        checkpoint = None
-        if returncode == 0 and problem is None:
-            checkpoint = self._stage_checkpoint(stage)
-            if checkpoint is None:
-                problem = f"stage {name}: its checkpoint was not written"
-        ok = returncode == 0 and problem is None
-        Path(run_dir, f"{name}.log").write_bytes(outcome.log)
-        pnr_checkpoints.stage_end(
-            run_dir,
-            stage,
-            returncode=returncode,
-            resources=outcome.resources,
-            status="ok" if ok else "error",
-            checkpoint=checkpoint if ok else None,
-        )
-        if not ok:
-            self._failed_stage = name
-        return returncode, outcome.stderr, problem
+        self._start_chain_log(log_path)
+        os.makedirs(pnr_dispatch.jobs_dir(run_dir), exist_ok=True)
+        openroad = shutil.which(self.openroad_executable) or self.openroad_executable
+        chain = pnr_dispatch.StageChain(self._dispatch)
+        try:
+            with chain:
+                for stage in self._run_stages():
+                    chain.submit(
+                        PnrStageJobSpec(
+                            suite_dir=self.suite_dir,
+                            run_name=self.pnr_cfg.get_name(),
+                            run_dir=run_dir,
+                            stage=stage,
+                            openroad=openroad,
+                            pnr_log=log_path,
+                            resources=self._stage_job_resources(stage),
+                            log_path=Path(
+                                pnr_dispatch.job_file(run_dir, stage, "slurm.log")
+                            ),
+                        )
+                    )
+                    pnr_dispatch.record_jobs(run_dir, chain)
+                chain.wait()
+        except FatalRtlBuddyError as e:
+            self._dispatch_failure = str(e)
+            return None, "", None
+        outcome = pnr_dispatch.chain_outcome(run_dir, chain, log_path=log_path)
+        if outcome.failed_stage is not None:
+            self._failed_stage = _checkpoint_name(outcome.failed_stage)
+            self._dispatch_reason = outcome.reason
+        return outcome.returncode, outcome.stderr, outcome.problem
 
     def _continue_in_sessions(self, env) -> tuple[int, str, str | None]:
         """Run the stages after detailed route of a one-session run with post-route repair, once its first session ended with the detailed route's checkpoint."""
@@ -4170,7 +4323,9 @@ class OpenRoadPnr:
         env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
         chain_problem = None
-        if self._staged:
+        if self._dispatch is not None:
+            returncode, stderr_text, chain_problem = self._dispatch_chain()
+        elif self._staged:
             returncode, stderr_text, chain_problem = self._run_chain(env)
         else:
             # No `-log`: OpenROAD block-buffers that file, so a long route showed nothing for minutes.
@@ -4215,6 +4370,11 @@ class OpenRoadPnr:
             if self._split and returncode == 0:
                 returncode, stderr_text, chain_problem = self._continue_in_sessions(env)
         self._openroad_returncode = returncode
+        if self._dispatch_failure is not None:
+            # Not a verdict on the design, so an `xfail:` does not excuse it.
+            return self._fail_after_openroad(
+                f"dispatch: {self._dispatch_failure}", fail_stage="error"
+            )
 
         try:
             log_text = Path(log_path).read_text()
@@ -4292,6 +4452,18 @@ class OpenRoadPnr:
             return self._fail_after_openroad(desc, fail_stage="pins_complete")
 
         stage_prefix = f"stage {self._failed_stage}: " if self._failed_stage else ""
+        # A local session reports a problem only when it exited 0; a dispatched stage job killed by the scheduler has a problem and no exit code.
+        if chain_problem is not None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.failed",
+                pnr=self.pnr_cfg.get_name(),
+                returncode=returncode,
+                stage=self._failed_stage,
+                log=log_path,
+            )
+            return self._fail_after_openroad(chain_problem)
         if returncode != 0:
             log_event(
                 logger,
@@ -4306,18 +4478,9 @@ class OpenRoadPnr:
             desc = f"{stage_prefix}OpenROAD exited with code {returncode}"
             if first_line:
                 desc = f"{desc}: {first_line.strip()}"
+            if self._dispatch_reason:
+                desc = f"{desc} ({self._dispatch_reason})"
             return self._fail_after_openroad(desc)
-        if chain_problem is not None:
-            log_event(
-                logger,
-                logging.WARNING,
-                "pnr.failed",
-                pnr=self.pnr_cfg.get_name(),
-                returncode=returncode,
-                stage=self._failed_stage,
-                log=log_path,
-            )
-            return self._fail_after_openroad(chain_problem)
 
         error_lines = [ln for ln in log_text.splitlines() if ln.startswith("[ERROR ")]
         if error_lines:
