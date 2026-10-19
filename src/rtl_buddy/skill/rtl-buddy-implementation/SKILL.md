@@ -37,11 +37,12 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   `checkpoints/latest/progress.jsonl` shows the step a flow is in. A
   checkpoint is never routed or final: report it as its stage, as for a
   `--stop-after` `PASS` (`routed: false`). `--resume <run> --from <stage>`
-  retries later stages of a staged run; `--dispatch slurm` runs each stage as
-  a Slurm job sized by the run's `resources:`.
+  retries later stages of a staged run; `--dispatch slurm` runs each stage
+  as a Slurm job.
 - **Run hooks.** Extra steps go in `hooks:` of the `pnr.yaml` run: Tcl files
   sourced at fixed flow points (`session`, `after-cts`, `macro-placement`, ...),
-  never in an edited `pnr.tcl`. A failing hook names its point and file. See
+  never in an edited `pnr.tcl`. A failing hook names its point and file. Staged:
+  `pnr.hook_commands_not_kept` means use `session`. See
   `rb docs show concepts/pnr#run-tcl-hooks`.
 - **Route progress.** `pnr.log` is written live. Before calling a long route
   hung, check its detailed-route iterations and violation counts (`DRT-0195`,

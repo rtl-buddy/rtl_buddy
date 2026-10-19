@@ -122,16 +122,60 @@ def after(stage: str, other: str) -> bool:
 STAGE_DONE_MARKER = ">>> End of stage "
 
 
-def _identity_text(text: str) -> str:
-    """A stage script as far as its checkpoint depends on it: up to its end-of-stage line, with the run bindings blanked.
+#: The `threads:` block of a stage script; the thread count is not part of its identity.
+_THREADS_RE = re.compile(r'\nputs ">>> Threads"\nset_thread_count [^\n]*\n')
 
-    What follows that line, `exit` or a `--stop-after` report, does not change the checkpoint, so a stopped run's stage counts as the same stage.
+
+#: A line of the shared header at the top of every stage script: `set NAME value`.
+_HEADER_SET_RE = re.compile(r"^set (\w+)\s")
+
+
+def _reads(name: str, text: str) -> bool:
+    """Whether Tcl `text` reads global variable `name` as `$name`, `${name}`, `$::name` or `${::name}`."""
+    name = re.escape(name)
+    return re.search(rf"\$(?:\{{(?:::)?{name}\}}|(?:::)?{name}\b)", text) is not None
+
+
+def _header_and_rest(text: str) -> tuple[list[tuple[str, str]], str]:
+    """Split a stage script into its header's `set` lines, as `(name, line)`, and the text after the header.
+
+    The header is the leading run of `set NAME value` lines, comments and blank lines.
+    """
+    lines = text.splitlines(keepends=True)
+    header = []
+    end = len(lines)
+    for index, line in enumerate(lines):
+        match = _HEADER_SET_RE.match(line)
+        if match:
+            header.append((match.group(1), line))
+        elif line.strip() and not line.lstrip().startswith("#"):
+            end = index
+            break
+    return header, "".join(lines[end:])
+
+
+def _identity_text(text: str) -> str:
+    """A stage script as far as its checkpoint depends on it.
+
+    That is the script up to its end-of-stage line, with the run bindings blanked, the thread count left out, and of the shared header only the `set` lines whose variable the rest of the script reads (see `_reads`), directly or through another such line. What follows the end-of-stage line, `exit` or a `--stop-after` report, does not change the checkpoint, so a stopped run's stage counts as the same stage. A stage may run at another thread count than the stages before it.
     """
     done = text.find(f'puts "{STAGE_DONE_MARKER}')
     if done >= 0:
         end = text.find("\n", done)
         text = text[: end + 1] if end >= 0 else text
-    return pnr_checkpoints.RUN_BINDING_RE.sub(r"set RB_\1_DIR <run>", text)
+    text = _THREADS_RE.sub("", text, count=1)
+    text = pnr_checkpoints.RUN_BINDING_RE.sub(r"set RB_\1_DIR <run>", text)
+    header, rest = _header_and_rest(text)
+    values = dict(header)
+    read = {name for name in values if _reads(name, rest)}
+    pending = list(read)
+    while pending:
+        value = values[pending.pop()]
+        for name in values:
+            if name not in read and _reads(name, value):
+                read.add(name)
+                pending.append(name)
+    return "".join(line for name, line in header if name in read) + rest
 
 
 def script_identity(text: str) -> str:
@@ -148,7 +192,7 @@ def first_difference(old: str, new: str) -> str:
             return f"line {number}: was {a.strip()!r}, now {b.strip()!r}"
     if len(old_lines) != len(new_lines):
         return f"it was {len(old_lines)} lines, now {len(new_lines)}"
-    return "they differ only in whitespace at line ends"
+    return "no line differs as compared now, so another rtl_buddy version recorded it"
 
 
 #: The stage that reads each run hook point.
@@ -229,12 +273,15 @@ def _absolutise(value, root):
     return value
 
 
+def is_run_name(spec: str) -> bool:
+    """Whether a `--resume` value names a run under the run's checkpoints (`latest` or a run id) rather than a directory."""
+    return spec == pnr_checkpoints.LATEST_NAME or bool(
+        pnr_checkpoints._RUN_ID_RE.match(spec)
+    )
+
+
 def locate_run(artefact_dir: str, spec: str) -> str | None:
-    """Return the run directory `--resume` names: a directory, `latest`, or a run id under this run's checkpoints."""
-    if os.path.isdir(spec) and not os.path.isabs(spec):
-        return os.path.abspath(spec)
-    if os.path.isabs(spec):
-        return spec if os.path.isdir(spec) else None
+    """Return the run directory `--resume` names: `latest` or a run id under this run's checkpoints, else an absolute directory."""
     root = pnr_checkpoints.checkpoints_root(artefact_dir)
     if spec == pnr_checkpoints.LATEST_NAME:
         pointer = pnr_checkpoints.latest_pointer(artefact_dir)
@@ -243,9 +290,11 @@ def locate_run(artefact_dir: str, spec: str) -> str | None:
             if os.path.islink(pointer)
             else None
         )
-    if pnr_checkpoints._RUN_ID_RE.match(spec):
+    if is_run_name(spec):
         path = os.path.join(root, spec)
         return path if os.path.isdir(path) else None
+    if os.path.isabs(spec):
+        return spec if os.path.isdir(spec) else None
     return None
 
 

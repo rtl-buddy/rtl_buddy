@@ -243,6 +243,11 @@ def _refusal(run_dir: str, stage: str) -> str | None:
     return None
 
 
+def _artefact_dir(run_dir: str) -> str:
+    """The artefact directory of a checkpoint run directory (`<artefact dir>/checkpoints/<run id>`), where its sessions run."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(run_dir)))
+
+
 def run_stage_job(run_dir: str, stage: str, *, openroad: str, pnr_log: str) -> bool:
     """Run `stage` of the staged run in `run_dir` inside a dispatched job; return whether it ended cleanly.
 
@@ -275,6 +280,7 @@ def run_stage_job(run_dir: str, stage: str, *, openroad: str, pnr_log: str) -> b
             openroad=openroad,
             log=log,
             log_path=pnr_log,
+            cwd=_artefact_dir(run_dir),
             env=env,
             run_name=str(manifest.get("run") or os.path.basename(run_dir)),
             fields=fields,
@@ -287,6 +293,8 @@ def run_stage_job(run_dir: str, stage: str, *, openroad: str, pnr_log: str) -> b
         returncode=outcome.returncode,
         stderr=outcome.stderr[-_STDERR_KEEP:],
         problem=outcome.problem,
+        fail_stage=outcome.fail_stage,
+        errors=outcome.errors,
         **fields,
     )
     return outcome.ok
@@ -294,12 +302,13 @@ def run_stage_job(run_dir: str, stage: str, *, openroad: str, pnr_log: str) -> b
 
 @dataclass
 class ChainOutcome:
-    """How a dispatched chain ended, as `OpenRoadPnr` reads a local chain: the last session's exit code and stderr, and the failed stage with why."""
+    """How a dispatched chain ended, as `OpenRoadPnr` reads a local chain: the last session's exit code and stderr, and the failed stage with why and the `fail_stage` its failure carries."""
 
     returncode: int | None = 0
     stderr: str = ""
     problem: str | None = None
     failed_stage: str | None = None
+    fail_stage: str | None = None
     #: The scheduler's account of the failed stage's job, for the result description.
     reason: str | None = None
 
@@ -355,6 +364,7 @@ def chain_outcome(run_dir: str, chain: StageChain, *, log_path: str) -> ChainOut
         if result is not None and result.get("started"):
             outcome.returncode = result.get("returncode")
             outcome.stderr = result.get("stderr") or ""
+            outcome.fail_stage = result.get("fail_stage")
             problem = result.get("problem")
             outcome.problem = f"{problem} ({reason})" if problem else None
         elif result is not None:

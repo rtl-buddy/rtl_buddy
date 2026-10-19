@@ -11415,10 +11415,12 @@ class RtlBuddy:
                 metavar="RUN",
                 help=(
                     "resume a staged run (stages: true) in a new checkpoint run "
-                    "directory: a run id under the run's checkpoints/, a "
-                    "checkpoint run directory, or latest. Needs --from and a "
-                    "single named run; refused when anything the stages before "
-                    "--from read has changed"
+                    "directory: latest, a run id under the run's checkpoints/, "
+                    "or a checkpoint run directory. Needs --from and a single "
+                    "named run; refused when the scripts, input files or "
+                    "OpenROAD of the stages before --from have changed. Files "
+                    "that hooks, platform-tcl, a pdn-config or the SDC source "
+                    "themselves, and environment variables, are not checked"
                 ),
             ),
         ] = None,
@@ -11490,10 +11492,9 @@ class RtlBuddy:
                 jobs=jobs,
                 stop_after=stop_after,
                 resume=(
-                    str(self._abs_invocation_path(resume))
-                    if resume is not None
-                    and (os.sep in resume or resume.startswith("."))
-                    else resume
+                    resume
+                    if resume is None or pnr_stages.is_run_name(resume)
+                    else str(self._abs_invocation_path(resume))
                 ),
                 resume_from=resume_from,
                 dispatch=backend,
@@ -11744,7 +11745,8 @@ class RtlBuddy:
             dispatch=dispatch,
         )
         res = runner.run()
-        if run.is_xfail():
+        # A stopped run is no verdict on the routed design, so `xfail` does not apply.
+        if run.is_xfail() and stop_after is None:
             self._apply_xfail_logged(res, run, "pnr_suite.xfail")
         if synth_row is not None:
             res.results["synth"] = synth_row

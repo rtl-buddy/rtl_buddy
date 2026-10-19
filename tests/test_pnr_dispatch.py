@@ -247,6 +247,7 @@ def test_a_dispatched_run_submits_one_chained_job_per_stage(tmp_path, monkeypatc
     assert [e["slurm_job"] for e in ended] == [j["id"] for j in jobs]
     assert all(e["measured_by"] == "process" for e in ended)
     assert all(e["status"] == "ok" for e in ended)
+    assert all(e["threads"] == 1 for e in ended)
     for stage in PNR_STAGES:
         result = pnr_dispatch.read_result(str(run_dir), stage)
         assert result["ok"] is True and result["started"] is True
@@ -307,6 +308,9 @@ def test_stage_reservations_layer_field_by_field(tmp_path, monkeypatch):
         "threads": 16,
     }
     assert manifest["dispatch"]["stages"]["cts"]["threads"] == 4
+    ended = {e["stage"]: e for e in _events(run_dir) if e["event"] == "stage_end"}
+    assert ended["detailed_route"]["threads"] == 16
+    assert ended["cts"]["threads"] == 4
 
 
 def test_a_fixed_thread_count_is_the_same_in_every_stage(tmp_path, monkeypatch):
@@ -335,7 +339,19 @@ def _comparable(results: dict, root: Path) -> dict:
     return json.loads(text)
 
 
-@pytest.mark.parametrize("env", [None, {"RB_STUB_FAIL": "global_route"}])
+@pytest.mark.parametrize(
+    "env",
+    [
+        None,
+        {"RB_STUB_FAIL": "global_route"},
+        # Exits 0 before its end-of-stage line: `fail_stage: incomplete`.
+        {"RB_STUB_EXIT": "check_placement"},
+        # Its checkpoint cannot be written: `fail_stage: checkpoint`.
+        {"RB_STUB_FAIL": "write_db"},
+        # An `[ERROR` line in a session that exits 0.
+        {"RB_STUB_ERRLINE": "check_placement"},
+    ],
+)
 def test_the_result_is_the_same_as_the_run_staged_locally(tmp_path, monkeypatch, env):
     local_root, dispatched_root = tmp_path / "local", tmp_path / "dispatched"
     local_root.mkdir()

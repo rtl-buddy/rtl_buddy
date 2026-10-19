@@ -36,6 +36,7 @@ from ..dispatch.base import PnrStageJobSpec
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
 from ..pnr.klayout.def2stream import REPORT_SCHEMA
+from ..process_utils import run_managed_process
 from ..runner.pnr_results import PnrFailResults, PnrPassResults, PnrResults
 from . import openroad_corners
 from .artifact_paths import (
@@ -73,6 +74,8 @@ _ROTATED_MACROS_FILE = "rotated_macros.tcl"
 _BLOCK_POWER_FILE = "block_power.tcl"
 # Sources the run's `hooks:` files; see `_hook_procs_block`.
 _HOOKS_FILE = "hooks.tcl"
+# Wraps `rb::hook::run` in staged sessions to record the commands a hook changes.
+_HOOK_COMMANDS_FILE = "hook_commands.tcl"
 
 # Non-log files the flow writes under `$OUT_DIR`; `test_pnr.py` checks this covers every one.
 _FLOW_OUTPUT_NAMES = (
@@ -906,6 +909,10 @@ def _global_placement_blocks(
 #: Printed by a run that `--stop-after` ended, after its stage report; with the requested stage it tells a stopped run from one that ended early by accident.
 STOPPED_MARKER = ">>> STOPPED after "
 _STAGE_DONE_MARKER = pnr_stages.STAGE_DONE_MARKER
+#: `fail_stage` of a run whose OpenROAD session exited 0 before the end marker its flow prints.
+INCOMPLETE_FAIL_STAGE = "incomplete"
+#: `fail_stage` of a run that did not write a stage checkpoint it had to write.
+CHECKPOINT_FAIL_STAGE = "checkpoint"
 #: Heads a stopped run's stage report, which its result is parsed from.
 _STAGE_REPORT_MARKER = ">>> Stage report "
 
@@ -979,28 +986,29 @@ def _maxrss_kb(maxrss: int) -> int:
     return maxrss // 1024 if sys.platform == "darwin" else maxrss
 
 
-def _run_session(cmd: list[str], *, stdout, env) -> tuple[int, str, dict]:
-    """Run one OpenROAD session and return its exit code, stderr and the resources it used: wall time, CPU time (user + system) and peak RSS of the process."""
+def _run_session(cmd: list[str], *, stdout, env, cwd: str) -> tuple[int, str, dict]:
+    """Run one OpenROAD session in `cwd` and return its exit code, stderr and the resources it used: wall time, CPU time (user + system) and peak RSS of the process.
+
+    The session is a managed process, so terminating rb terminates it.
+    """
     begin = time.monotonic()
-    proc = subprocess.Popen(
-        cmd, stdout=stdout, stderr=subprocess.PIPE, text=True, env=env
+    result = run_managed_process(
+        cmd,
+        stdout=stdout,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        env=env,
+        rusage=True,
     )
-    try:
-        stderr = proc.stderr.read()
-        proc.stderr.close()
-        _pid, status, usage = os.wait4(proc.pid, 0)
-    except BaseException:
-        proc.kill()
-        proc.wait()
-        raise
-    proc.returncode = os.waitstatus_to_exitcode(status)
+    usage = result.rusage
     return (
-        proc.returncode,
-        stderr,
+        result.returncode,
+        result.stderr or "",
         {
             "wall_s": round(time.monotonic() - begin, 3),
-            "cpu_s": round(usage.ru_utime + usage.ru_stime, 2),
-            "peak_rss_kb": _maxrss_kb(usage.ru_maxrss),
+            "cpu_s": round(usage.ru_utime + usage.ru_stime, 2) if usage else None,
+            "peak_rss_kb": _maxrss_kb(usage.ru_maxrss) if usage else None,
             "measured_by": "process",
         },
     )
@@ -1008,15 +1016,17 @@ def _run_session(cmd: list[str], *, stdout, env) -> tuple[int, str, dict]:
 
 @dataclass
 class StageOutcome:
-    """How one stage of a staged run ended: its last session's exit code and stderr, and why the stage failed when that session exited 0."""
+    """How one stage of a staged run ended: its session's exit code and stderr, why the stage failed when the session exited 0, the `fail_stage` that failure carries, and whether its log has an `[ERROR` line."""
 
     returncode: int
     stderr: str
     problem: str | None = None
+    fail_stage: str | None = None
+    errors: bool = False
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0 and self.problem is None
+        return self.returncode == 0 and self.problem is None and not self.errors
 
 
 def stage_checkpoint(run_dir: str, stage: str) -> dict | None:
@@ -1030,6 +1040,32 @@ def stage_checkpoint(run_dir: str, stage: str) -> dict | None:
     }
 
 
+def checkpoint_error(run_dir: str | None, stage: str) -> str | None:
+    """The error of the failed attempt to write `stage`'s checkpoint in `run_dir`, or None."""
+    if run_dir is None:
+        return None
+    for event in pnr_checkpoints.read_progress(run_dir):
+        if (
+            event.get("event") == "checkpoint"
+            and event.get("stage") == stage
+            and event.get("status") == "error"
+        ):
+            return str(event.get("error"))
+    return None
+
+
+_SET_THREAD_COUNT_RE = re.compile(r"^set_thread_count (\d+)$", re.MULTILINE)
+
+
+def _session_threads(script: str, log_text: str) -> int:
+    """The threads a stage session ran on: the count OpenROAD reported, else the one its script set, else OpenROAD's default of one."""
+    match = _SET_THREAD_COUNT_RE.search(script)
+    if match is None:
+        return 1
+    reported = parse_reported_threads(log_text)
+    return reported if reported is not None else int(match.group(1))
+
+
 def run_stage(
     run_dir: str,
     stage: str,
@@ -1037,16 +1073,20 @@ def run_stage(
     openroad: str,
     log,
     log_path: str,
+    cwd: str,
     env: dict,
     run_name: str,
     fields: dict | None = None,
 ) -> StageOutcome:
     """Run stage `stage` of the staged run in `run_dir` and return how it ended.
 
-    A local staged run calls this for each stage in turn, and a dispatched run's job (`rb _pnr-stage-job`) calls it for its one stage, so a stage behaves the same either way. Everything the stage needs is in `run_dir`, which the head wrote before the first stage ran. The session's output is appended to `log` (the open `log_path`, the run's `pnr.log`) as it runs and copied to `NN_<stage>.log` when it exits. `stage_begin` records where the stage's part of `pnr.log` starts; `stage_end` records the exit, the wall time, CPU time and peak RSS measured here and, for a clean exit, the checkpoint's fingerprints. `fields` are added to both events.
+    A local staged run calls this for each stage in turn, and a dispatched run's job (`rb _pnr-stage-job`) calls it for its one stage, so a stage is run and checked the same way either way. Everything the stage needs is in `run_dir`, which the head wrote before the first stage ran. The session runs in `cwd`, the run's artefact directory. Its output is appended to `log` (the open `log_path`, the run's `pnr.log`) as it runs and copied to `NN_<stage>.log` when it exits. `stage_begin` records where the stage's part of `pnr.log` starts; `stage_end` records the exit, the wall time, CPU time, peak RSS and threads measured here and, for a clean stage, the checkpoint's fingerprints. `fields` are added to both events.
+
+    The stage fails when the session exits non-zero, exits 0 before its end-of-stage line (`fail_stage: incomplete`) or without its checkpoint (`fail_stage: checkpoint`), or logs an `[ERROR` line.
     """
     name = _checkpoint_name(stage)
-    cmd = [openroad, "-no_init", "-exit", os.path.join(run_dir, f"{name}.tcl")]
+    script_path = os.path.join(run_dir, f"{name}.tcl")
+    cmd = [openroad, "-no_init", "-exit", script_path]
     log_event(
         logger,
         logging.DEBUG,
@@ -1060,7 +1100,9 @@ def run_stage(
     pnr_checkpoints.stage_begin(run_dir, stage, log_offset=start, **(fields or {}))
     try:
         with task_status(f"pnr {run_name} [openroad {name}]"):
-            returncode, stderr, resources = _run_session(cmd, stdout=log, env=env)
+            returncode, stderr, resources = _run_session(
+                cmd, stdout=log, env=env, cwd=cwd
+            )
     except OSError as e:
         returncode, stderr = 127, f"cannot run {openroad}: {e}"
         resources = {
@@ -1077,25 +1119,44 @@ def run_stage(
         f.seek(start)
         section = f.read()
     Path(run_dir, f"{name}.log").write_bytes(section)
+    text = section.decode(errors="replace")
+    try:
+        script = Path(script_path).read_text()
+    except OSError:
+        script = ""
+    resources["threads"] = _session_threads(script, text)
     problem = None
+    fail_stage = None
     checkpoint = None
     if returncode == 0 and stage != "finish":
         checkpoint = stage_checkpoint(run_dir, stage)
         if f"{_STAGE_DONE_MARKER}{name}\n".encode() not in section:
             problem = f"stage {name}: OpenROAD exited before the end of the stage"
+            fail_stage = INCOMPLETE_FAIL_STAGE
         elif checkpoint is None:
             problem = f"stage {name}: its checkpoint was not written"
-    ok = returncode == 0 and problem is None
+            fail_stage = CHECKPOINT_FAIL_STAGE
+    elif returncode != 0 and checkpoint_error(run_dir, stage):
+        fail_stage = CHECKPOINT_FAIL_STAGE
+    # An `[ERROR` line fails the run, as in one session, once this stage ends.
+    errors = any(ln.startswith("[ERROR ") for ln in text.splitlines())
+    outcome = StageOutcome(
+        returncode=returncode,
+        stderr=stderr,
+        problem=problem,
+        fail_stage=fail_stage,
+        errors=errors,
+    )
     pnr_checkpoints.stage_end(
         run_dir,
         stage,
         returncode=returncode,
         resources=resources,
-        status="ok" if ok else "error",
-        checkpoint=checkpoint if ok else None,
+        status="ok" if outcome.ok else "error",
+        checkpoint=checkpoint if outcome.ok else None,
         **(fields or {}),
     )
-    return StageOutcome(returncode=returncode, stderr=stderr, problem=problem)
+    return outcome
 
 
 class OpenRoadPnr:
@@ -1144,8 +1205,9 @@ class OpenRoadPnr:
             pnr_cfg.get_stages() or resume is not None or dispatch is not None
         )
         self._resume_source: pnr_stages.ResumeSource | None = None
-        # The staged session that failed, for the result description.
+        # The staged session that failed, for the result description, and the `fail_stage` its failure carries.
         self._failed_stage: str | None = None
+        self._chain_fail_stage: str | None = None
         self.pnr_cfg = pnr_cfg
         self._configured_cfg = pnr_cfg
         self.root_cfg = root_cfg
@@ -1173,6 +1235,8 @@ class OpenRoadPnr:
         self._ps_per_unit: float | None = None
         # The netlist the script reads, when not the synth netlist itself; set by `_prepare_netlist`.
         self._openroad_netlist: str | None = None
+        # The fingerprint that netlist will have, while a resume is checked before writing it.
+        self._planned_netlist: dict | None = None
 
     def _script_path(self) -> str:
         return os.path.join(self.artefact_dir, _SCRIPT_NAME)
@@ -1546,29 +1610,35 @@ class OpenRoadPnr:
         last = stages.index(self.stop_after) if self.stop_after else len(stages) - 1
         return stages[first : last + 1]
 
-    def _pred_dir(self, stage: str) -> str | None:
+    def _pred_dir(self, stage: str, run_dir: str) -> str | None:
         """The directory a staged session reads its predecessor's checkpoint from."""
         if stage == "floorplan":
             return None
         source = self._resume_source
         if source is not None and stage == source.from_stage:
             return source.pred_dir
-        return self._ckpt_run_dir
+        return run_dir
 
-    def _stage_script(self, stage: str) -> str:
+    def _stage_script(self, stage: str, run_dir: str | None = None) -> str:
         """Return one staged session's script: rb's prelude, then the stage's part of the flow, then its checkpoint.
 
-        The prelude repeats what the first session set up but a database does not keep: header variables, threads, `platform-tcl`, Liberty and LEF, then the predecessor's database, SDC and saved globals, max fanout, layer RC, don't-use cells and `session` hooks; the flow's design variables; the detailed-placement options; propagated clocks after CTS; the routing layers after global routing; for detailed routing, the global route's segments; and, for `finish`, a fanout check. Every session takes its guides from its database, and `finish` its global route too.
+        The prelude repeats what the first session set up but a database does not keep: header variables, threads, `platform-tcl`, Liberty and LEF, then the predecessor's database, SDC and saved globals, max fanout, layer RC, don't-use cells and `session` hooks; the flow's design variables; the detailed-placement options; propagated clocks after CTS; the routing layers after global routing; for detailed routing, the global route's segments; and, for `finish`, a fanout check. Every session takes its guides from its database, and `finish` its global route too. `run_dir` is the run directory the script binds, this run's by default.
         """
+        if run_dir is None:
+            run_dir = self._ckpt_run_dir
         flow = self._flow
         substitutions = {
             **self._substitutions,
             "checkpoint_block": pnr_checkpoints.render_staged_block(
-                stage, self._ckpt_run_dir or "", self._pred_dir(stage)
+                stage, run_dir, self._pred_dir(stage, run_dir)
             ),
         }
         if self._dispatch is not None:
             substitutions["threads_block"] = _threads_block(self._stage_threads(stage))
+        if substitutions["hook_procs_block"] and stage != "finish":
+            substitutions["hook_procs_block"] += (
+                files(_TEMPLATE_PACKAGE).joinpath(_HOOK_COMMANDS_FILE).read_text()
+            )
         parts = [flow.head()]
         if stage == "floorplan":
             parts += [flow.piece("load"), flow.piece("session")]
@@ -2502,7 +2572,7 @@ class OpenRoadPnr:
     def _clear_stale_outputs(self, *, include_script: bool = False) -> None:
         """Remove the previous run's outputs; the first thing `run` does.
 
-        Every exit from `run` must leave them absent: the DRC count, `rb power` and the GDS/PNG checks all trust presence. Design-named outputs are matched by suffix so this needs no synth back-reference and strands nothing from a previous design. The stream-out report and any `rb pnr-export` record go too. `pnr.log` is truncated when OpenROAD launches.
+        Every exit from `run` must leave them absent: the DRC count, `rb power` and the GDS/PNG checks all trust presence. The one exception is a `--resume` run that ends before it is accepted, which leaves the previous run's outputs and `latest` as they were. Design-named outputs are matched by suffix so this needs no synth back-reference and strands nothing from a previous design. The stream-out report and any `rb pnr-export` record go too. `pnr.log` is truncated when OpenROAD launches.
 
         `include_script` also clears `pnr.tcl`, the stream-out input manifest and `congestion.rpt` so a rerun that dies before `_write_script` leaves no stale script. Only `run` sets it; `_fail_after_openroad` keeps them because they are what the tools read and why a route failed.
         """
@@ -2694,7 +2764,7 @@ class OpenRoadPnr:
     def _checkpoint_inputs(self, platform, script_path: str | None) -> dict:
         """Return fingerprints of the files the generated script reads, for the checkpoint manifest.
 
-        `netlist` is the file OpenROAD reads; when that is the `blocks:`-stripped copy, `synth_netlist` records the synth netlist it was made from. `script` is left out without `script_path`.
+        Files those files source themselves are not followed. `netlist` is the file OpenROAD reads; when that is the `blocks:`-stripped copy, `synth_netlist` records the synth netlist it was made from. `script` is left out without `script_path`.
         """
         pdk = platform.get_pdk()
         stripped = (
@@ -2708,10 +2778,15 @@ class OpenRoadPnr:
             ),
             **stripped,
             "sdc": _file_fingerprint(self.pnr_cfg.get_constraints()),
+            # Every corner's, each corner in `corners:` order.
             "liberty": [
                 _file_fingerprint(p)
                 for p in [
-                    *platform.get_sta_lib_paths(),
+                    *(
+                        lib
+                        for libs in platform.get_sta_corner_lib_paths().values()
+                        for lib in libs
+                    ),
                     *self.pnr_cfg.get_lib_paths(),
                 ]
             ],
@@ -2844,23 +2919,28 @@ class OpenRoadPnr:
         )
         return None
 
-    def _prepare_netlist(self) -> PnrFailResults | None:
+    def _prepare_netlist(self, *, write: bool = True) -> PnrFailResults | None:
         """Point the script at a copy of the synth netlist with the `blocks:` instances' parameter overrides stripped.
 
         OpenROAD's reader rejects the `#(...)` Yosys leaves on a parameterised block's instances. Since `rb synth` with `blocks:` already strips them, this matters for a netlist from a synthesis without `blocks:`. Returns a FAIL when an override differs from the block's synthesis `params:` or between instances; see :mod:`.block_params`.
+
+        Without `write` the copy is only planned: nothing is written or removed, and `_planned_netlist` holds the fingerprint the copy will have.
         """
         self._openroad_netlist = None
+        self._planned_netlist = None
         if not self._blocks:
             return None
         source = self._resolve_netlist_path()
         if not os.path.isfile(source):
             return None
+        destination = os.path.join(self.artefact_dir, _BLOCK_NETLIST_NAME)
         try:
-            path, instances = block_params.clean_netlist(
-                source,
-                os.path.join(self.artefact_dir, _BLOCK_NETLIST_NAME),
-                self._blocks,
-            )
+            if write:
+                path, instances = block_params.clean_netlist(
+                    source, destination, self._blocks
+                )
+            else:
+                path, instances = self._plan_netlist(source, destination)
         except (block_params.BlockParamError, OSError) as e:
             mismatch = isinstance(e, block_params.BlockParamError)
             desc = (
@@ -2883,6 +2963,7 @@ class OpenRoadPnr:
             )
         if instances:
             self._openroad_netlist = path
+        if instances and write:
             log_event(
                 logger,
                 logging.INFO,
@@ -2892,6 +2973,21 @@ class OpenRoadPnr:
                 netlist=path,
             )
         return None
+
+    def _plan_netlist(self, source: str, destination: str):
+        """`block_params.clean_netlist` without writing: the path OpenROAD will read and the rewritten instances; sets `_planned_netlist` when a copy is needed."""
+        with open(source) as f:
+            text = f.read()
+        cleaned, instances = block_params.clean_text(text, self._blocks, source)
+        if cleaned == text:
+            return source, []
+        data = cleaned.encode()
+        self._planned_netlist = {
+            "path": destination,
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+        return destination, instances
 
     def _blocks_fields(self) -> dict:
         """Return the `blocks` result field listing the abstracts this run consumed."""
@@ -3092,25 +3188,48 @@ class OpenRoadPnr:
     def _check_resume(
         self, platform, version: str | None, run_dir: str | None
     ) -> str | None:
-        """Check the run `--resume` names and keep what this run inherits from it; return why it is refused, or None."""
+        """Check the run `--resume` names and keep what this run inherits from it; return why it is refused, or None.
+
+        Runs before this run clears or writes anything: the stage scripts are rendered for a placeholder run directory, which script identity ignores, and a `blocks:` netlist is compared as `_prepare_netlist` would write it.
+        """
         if run_dir is None:
             return (
                 f"no checkpoint run {self.resume!r}: name a run directory, a run id "
                 f"under {pnr_checkpoints.checkpoints_root(self.artefact_dir)}, or latest"
             )
         inherited = PNR_STAGES[: PNR_STAGES.index(self.resume_from)]
+        inputs = self._checkpoint_inputs(platform, None)
+        if self._planned_netlist is not None:
+            inputs["netlist"] = self._planned_netlist
         checked = pnr_stages.check_resume(
             run_dir,
             self.resume_from,
             openroad_version=version,
-            scripts={stage: self._stage_script(stage) for stage in inherited},
-            inputs=self._checkpoint_inputs(platform, None),
+            scripts={
+                stage: self._stage_script(stage, run_dir="<run>") for stage in inherited
+            },
+            inputs=inputs,
             fingerprint=_file_fingerprint,
         )
         if isinstance(checked, str):
             return checked
         self._resume_source = checked
         return None
+
+    def _restore_inherited_reports(self) -> None:
+        """Put back the reports an inherited stage's checkpoint keeps (`pnr_checkpoints.STAGE_REPORTS`), so a run resumed after detailed routing reports that route's DRC count."""
+        for stage, kinds in pnr_checkpoints.STAGE_REPORTS.items():
+            entry = self._resume_source.checkpoints.get(stage)
+            if entry is None:
+                continue
+            files = entry.get("files") or {}
+            for kind, name in kinds.items():
+                kept = (files.get(kind) or {}).get("path")
+                target = os.path.join(self.artefact_dir, name)
+                if kept and os.path.isfile(kept):
+                    shutil.copyfile(kept, target)
+                elif os.path.lexists(target):
+                    os.unlink(target)
 
     def _resumed_from(self) -> dict | None:
         source = self._resume_source
@@ -3168,7 +3287,10 @@ class OpenRoadPnr:
                     )
 
     def _run_chain(self, env) -> tuple[int, str, str | None]:
-        """Run a staged run's stages in order (`run_stage`) and return the last session's exit code and stderr, and why the chain stopped if a session exited 0 without ending its stage."""
+        """Run a staged run's stages in order (`run_stage`) and return the last session's exit code and stderr, and why the chain stopped if a session exited 0 without ending its stage.
+
+        The chain stops at the first stage that fails, including one whose log has an `[ERROR` line; `_failed_stage` and `_chain_fail_stage` then name it and its `fail_stage`.
+        """
         log_path = self._log_path()
         returncode, stderr = 0, ""
         self._start_chain_log(log_path)
@@ -3180,12 +3302,14 @@ class OpenRoadPnr:
                     openroad=self.openroad_executable,
                     log=log,
                     log_path=log_path,
+                    cwd=self.artefact_dir,
                     env=env,
                     run_name=self.pnr_cfg.get_name(),
                 )
                 returncode, stderr = outcome.returncode, outcome.stderr
                 if not outcome.ok:
                     self._failed_stage = _checkpoint_name(stage)
+                    self._chain_fail_stage = outcome.fail_stage
                     return returncode, stderr, outcome.problem
         return returncode, stderr, None
 
@@ -3225,8 +3349,55 @@ class OpenRoadPnr:
         outcome = pnr_dispatch.chain_outcome(run_dir, chain, log_path=log_path)
         if outcome.failed_stage is not None:
             self._failed_stage = _checkpoint_name(outcome.failed_stage)
+            self._chain_fail_stage = outcome.fail_stage
             self._dispatch_reason = outcome.reason
         return outcome.returncode, outcome.stderr, outcome.problem
+
+    def _warn_hook_commands(self) -> None:
+        """Warn about each hook of this staged run that changed global Tcl commands, which later stage sessions do not have."""
+        for event in pnr_checkpoints.read_progress(self._ckpt_run_dir):
+            if event.get("event") == "hook_commands":
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "pnr.hook_commands_not_kept",
+                    pnr=self.pnr_cfg.get_name(),
+                    point=event.get("point"),
+                    path=event.get("path"),
+                    commands=event.get("commands"),
+                )
+
+    def _unwritten_checkpoint(self, log_text: str) -> str | None:
+        """Why a one-session run that reached its end left a requested checkpoint unwritten, or None.
+
+        Such a stage ends where its anchor command runs (`STAGE_ANCHORS`); a hook that wraps that command with `rename` hides it from the tracer.
+        """
+        if self._staged or self._ckpt_run_dir is None:
+            return None
+        end = (
+            ">>> DONE"
+            if self.stop_after is None
+            else f"{STOPPED_MARKER}{self.stop_after}"
+        )
+        if end not in log_text.splitlines():
+            return None
+        tried = {
+            e.get("stage")
+            for e in pnr_checkpoints.read_progress(self._ckpt_run_dir)
+            if e.get("event") == "checkpoint_begin"
+        }
+        for stage in self._ckpt_stages():
+            anchor = pnr_checkpoints.STAGE_ANCHORS.get(stage)
+            if stage in tried or anchor is None or stage == self.stop_after:
+                continue
+            command, edge = anchor
+            return (
+                f"checkpoint {_checkpoint_name(stage)} was not written: the {stage} "
+                f"stage ends on {'entering' if edge == 'enter' else 'leaving'} "
+                f"{command}, which the run never did under that name; wrapping "
+                f"{command} with rename is not supported in a one-session run"
+            )
+        return None
 
     def _parse_gr_overflow(self, log_text: str) -> int | None:
         """The total overflow in global routing's last usage table, or None without one."""
@@ -3240,7 +3411,8 @@ class OpenRoadPnr:
         if marker not in log_text.splitlines():
             return self._fail_after_openroad(
                 f"OpenROAD exited before --stop-after {stage} finished "
-                f"(no '{marker}' line in pnr.log)"
+                f"(no '{marker}' line in pnr.log)",
+                fail_stage=INCOMPLETE_FAIL_STAGE,
             )
         report = log_text[log_text.rfind(f"{_STAGE_REPORT_MARKER}{stage}") :]
         ps_per_unit = self._ps_per_unit
@@ -3299,14 +3471,16 @@ class OpenRoadPnr:
         )
 
         option_error = self._stage_option_error()
-        # Before the clear below removes `latest`.
+        # Before the clear removes `latest`.
         resume_dir = (
             pnr_stages.locate_run(self.artefact_dir, self.resume)
             if self.resume is not None and option_error is None
             else None
         )
 
-        self._clear_stale_outputs(include_script=True)
+        # A resume clears only once it is accepted, so a refused one leaves the previous run as it was.
+        if self.resume is None:
+            self._clear_stale_outputs(include_script=True)
 
         if option_error is not None:
             return PnrFailResults(
@@ -3502,7 +3676,7 @@ class OpenRoadPnr:
         blocks_failure = self._resolve_blocks(platform)
         if blocks_failure is not None:
             return blocks_failure
-        netlist_failure = self._prepare_netlist()
+        netlist_failure = self._prepare_netlist(write=self.resume is None)
         if netlist_failure is not None:
             return netlist_failure
 
@@ -3532,6 +3706,45 @@ class OpenRoadPnr:
 
         # Before the script, so a clamped thread count is reported before OpenROAD starts.
         self._threads()
+        if self.resume is not None:
+            refused = None
+            try:
+                # The stages before `--from` are regenerated and checked before anything is cleared or written.
+                self._prepare_flow(platform, self.pnr_cfg.get_floorplan())
+                refused = self._check_resume(platform, version, resume_dir)
+            except Exception as e:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr.template_failed",
+                    pnr=self.pnr_cfg.get_name(),
+                    error=str(e),
+                )
+                return PnrFailResults(
+                    name=self.name + "/results",
+                    desc=f"template error: {e}",
+                    fail_stage="setup",
+                )
+            if refused:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr.resume_refused",
+                    pnr=self.pnr_cfg.get_name(),
+                    resume=self.resume,
+                    from_stage=self.resume_from,
+                    reason=refused,
+                )
+                return PnrFailResults(
+                    name=self.name + "/results",
+                    desc=f"resume refused: {refused}",
+                    fail_stage="resume",
+                )
+            self._clear_stale_outputs(include_script=True)
+            self._restore_inherited_reports()
+            netlist_failure = self._prepare_netlist()
+            if netlist_failure is not None:
+                return netlist_failure
         if (
             self.pnr_cfg.get_checkpoints() is not None
             or self._staged
@@ -3552,15 +3765,11 @@ class OpenRoadPnr:
                     desc=f"checkpoint setup failed: {e}",
                     fail_stage="setup",
                 )
-        refused = None
         try:
             if self.resume is None:
                 script_path = self._write_script(platform, self.pnr_cfg.get_floorplan())
             else:
-                # The stages before `--from` are regenerated and checked before any script is written.
-                self._prepare_flow(platform, self.pnr_cfg.get_floorplan())
-                refused = self._check_resume(platform, version, resume_dir)
-                script_path = None if refused else self._emit_scripts()
+                script_path = self._emit_scripts()
         except Exception as e:
             if self._ckpt_run_dir is not None:
                 shutil.rmtree(self._ckpt_run_dir, ignore_errors=True)
@@ -3576,23 +3785,6 @@ class OpenRoadPnr:
                 name=self.name + "/results",
                 desc=f"template error: {e}",
                 fail_stage="setup",
-            )
-        if refused:
-            shutil.rmtree(self._ckpt_run_dir, ignore_errors=True)
-            self._ckpt_run_dir = None
-            log_event(
-                logger,
-                logging.ERROR,
-                "pnr.resume_refused",
-                pnr=self.pnr_cfg.get_name(),
-                resume=self.resume,
-                from_stage=self.resume_from,
-                reason=refused,
-            )
-            return PnrFailResults(
-                name=self.name + "/results",
-                desc=f"resume refused: {refused}",
-                fail_stage="resume",
             )
 
         if self._ckpt_run_dir is not None:
@@ -3646,8 +3838,10 @@ class OpenRoadPnr:
         chain_problem = None
         if self._dispatch is not None:
             returncode, stderr_text, chain_problem = self._dispatch_chain()
+            self._warn_hook_commands()
         elif self._staged:
             returncode, stderr_text, chain_problem = self._run_chain(env)
+            self._warn_hook_commands()
         else:
             # No `-log`: OpenROAD block-buffers that file, so a long route showed nothing for minutes.
             # Its stdout is flushed per message, so it goes to the log directly instead.
@@ -3670,18 +3864,12 @@ class OpenRoadPnr:
                 task_status(f"pnr {self.pnr_cfg.get_name()} [openroad]"),
                 open(log_path, "w") as log_file,
             ):
-                result = subprocess.run(
-                    cmd,
-                    stdout=log_file,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=False,
-                    env=env,
+                returncode, stderr_text, _ = _run_session(
+                    cmd, stdout=log_file, env=env, cwd=self.artefact_dir
                 )
-            returncode = result.returncode
 
             # Tcl errors go to stderr; append them so the diagnostic survives.
-            stderr_text = (result.stderr or "").strip()
+            stderr_text = stderr_text.strip()
             if stderr_text:
                 try:
                     with open(log_path, "a") as log_file:
@@ -3782,7 +3970,9 @@ class OpenRoadPnr:
                 stage=self._failed_stage,
                 log=log_path,
             )
-            return self._fail_after_openroad(chain_problem)
+            return self._fail_after_openroad(
+                chain_problem, fail_stage=self._chain_fail_stage
+            )
         if returncode != 0:
             log_event(
                 logger,
@@ -3799,12 +3989,28 @@ class OpenRoadPnr:
                 desc = f"{desc}: {first_line.strip()}"
             if self._dispatch_reason:
                 desc = f"{desc} ({self._dispatch_reason})"
-            return self._fail_after_openroad(desc)
+            if not self._staged and self.stop_after is not None:
+                stop_unwritten = checkpoint_error(self._ckpt_run_dir, self.stop_after)
+            else:
+                stop_unwritten = None
+            return self._fail_after_openroad(
+                desc,
+                fail_stage=CHECKPOINT_FAIL_STAGE
+                if stop_unwritten
+                else self._chain_fail_stage,
+            )
 
         error_lines = [ln for ln in log_text.splitlines() if ln.startswith("[ERROR ")]
         if error_lines:
+            desc = f"{stage_prefix}{len(error_lines)} ERROR(s) in OpenROAD log"
+            if self._dispatch_reason:
+                desc = f"{desc} ({self._dispatch_reason})"
+            return self._fail_after_openroad(desc)
+
+        unwritten = self._unwritten_checkpoint(log_text)
+        if unwritten is not None:
             return self._fail_after_openroad(
-                f"{len(error_lines)} ERROR(s) in OpenROAD log"
+                unwritten, fail_stage=CHECKPOINT_FAIL_STAGE
             )
 
         if self.stop_after is not None:
