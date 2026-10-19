@@ -3158,18 +3158,24 @@ class OpenRoadPnr:
         return returncode, stderr, None
 
     def _warn_hook_commands(self) -> None:
-        """Warn about each hook of this staged run that changed global Tcl commands, which later stage sessions do not have."""
+        """Log each hook of this staged run that changed global Tcl commands: a warning for commands that existed before it, which later stage sessions have in their original form, and info for new ones, whose later use fails as an unknown command."""
         for event in pnr_checkpoints.read_progress(self._ckpt_run_dir):
-            if event.get("event") == "hook_commands":
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "pnr.hook_commands_not_kept",
-                    pnr=self.pnr_cfg.get_name(),
-                    point=event.get("point"),
-                    path=event.get("path"),
-                    commands=event.get("commands"),
-                )
+            if event.get("event") != "hook_commands":
+                continue
+            for key, level, code in (
+                ("changed", logging.WARNING, "pnr.hook_commands_not_kept"),
+                ("added", logging.INFO, "pnr.hook_commands_added"),
+            ):
+                if event.get(key):
+                    log_event(
+                        logger,
+                        level,
+                        code,
+                        pnr=self.pnr_cfg.get_name(),
+                        point=event.get("point"),
+                        path=event.get("path"),
+                        commands=event.get(key),
+                    )
 
     def _checkpoint_error(self, stage: str) -> str | None:
         """The error of this run's failed attempt to write `stage`'s checkpoint, or None."""
