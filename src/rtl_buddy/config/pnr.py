@@ -19,6 +19,15 @@ from ..logging_utils import log_event
 from .blocks import BlockRef, BlockRefFile, load_block_refs
 from .openroad_threads import validate_threads
 from .pdk import PLACEMENT_SPEC, PlacementFile, validate_placement
+from .pnr_repair import (
+    GLOBAL_ROUTE_REPAIR_SPEC,
+    POST_ROUTE_REPAIR_SPEC,
+    UNSET,
+    PnrMode,
+    read_global_route_repair,
+    read_mode,
+    read_post_route_repair,
+)
 from .synth import SynthSuiteConfig
 from .toolpath import resolve_tool_path
 from .unknown_keys import KeySpec, find_unknown_entry_keys, reject_unknown_keys
@@ -648,15 +657,19 @@ def with_planner_files(run: str, fp: PnrFloorplan) -> PnrFloorplan:
     return replace(fp, macros=macros, pins=pins)
 
 
-#: The flow's stages in order. A staged run (`stages: true`) runs each in its own OpenROAD session; `--stop-after`, `--resume` and `--from` name them.
+#: The flow's stages in order. A staged run (`stages: true`) runs each in its own OpenROAD session; `--stop-after`, `--resume` and `--from` name them. `post_route_repair` runs only when `post-route-repair` is set.
 PNR_STAGES = (
     "floorplan",
     "place",
     "cts",
     "global_route",
     "detailed_route",
+    "post_route_repair",
     "finish",
 )
+
+#: The stage a run has only when `post-route-repair` is set.
+POST_ROUTE_REPAIR_STAGE = "post_route_repair"
 
 #: Stages `checkpoints:` can name, in flow order: every stage but `finish`. Each is written when its stage finishes.
 CHECKPOINT_STAGES = PNR_STAGES[:-1]
@@ -1113,6 +1126,11 @@ class PnrConfigFile:
     blocks: list[BlockRefFile] = field(default_factory=list)
     # Overrides the platform's `placement:` keys field by field.
     placement: PlacementFile | None = None
+    # Override the platform's repair blocks field by field; `null` turns one off. Read by `pnr_repair`.
+    global_route_repair: Any = field(rename="global-route-repair", default=UNSET)
+    post_route_repair: Any = field(rename="post-route-repair", default=UNSET)
+    # `closure` (default) or `probe`: no timing repair, stop after global route.
+    mode: str | None = None
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
     # OpenROAD threads: a positive integer or `auto`; unset means single-threaded.
@@ -1216,6 +1234,13 @@ class PnrConfigFile:
             if self.placement is not None
             else None
         )
+        global_route_repair = read_global_route_repair(
+            f"pnr run '{self.name}'", self.global_route_repair
+        )
+        post_route_repair = read_post_route_repair(
+            f"pnr run '{self.name}'", self.post_route_repair
+        )
+        mode = read_mode(f"pnr run '{self.name}'", self.mode)
         shape = _load_floorplan_shape(self.name, self.floorplan)
         if self.pdn_config is not None and not self.pdn_config:
             raise FatalRtlBuddyError(
@@ -1314,6 +1339,9 @@ class PnrConfigFile:
                 pins_complete=self.floorplan.pins_complete,
             ),
             placement=placement,
+            global_route_repair=global_route_repair,
+            post_route_repair=post_route_repair,
+            mode=mode,
             lef_paths=lef_paths,
             lib_paths=lib_paths,
             gds_paths=gds_paths,
@@ -1360,6 +1388,8 @@ PNR_RUN_SPEC = KeySpec(
         ),
         "abstract": KeySpec(PnrAbstractFile),
         "placement": PLACEMENT_SPEC,
+        "global-route-repair": GLOBAL_ROUTE_REPAIR_SPEC,
+        "post-route-repair": POST_ROUTE_REPAIR_SPEC,
         "blocks": KeySpec(BlockRefFile, many=True),
     },
 )
@@ -1400,6 +1430,10 @@ class PnrConfig:
     blocks: list[BlockRef] = dc_field(default_factory=list)
     # The run's validated `placement:` block, applied over the platform's; None when unset.
     placement: PlacementFile | None = None
+    # The run's repair layers (see `pnr_repair`), applied over the platform's: `UNSET` when absent, `None` when off.
+    global_route_repair: Any = UNSET
+    post_route_repair: Any = UNSET
+    mode: PnrMode = PnrMode.CLOSURE
     xfail: bool = False
     xfail_strict: bool = False
     xfail_match: str | None = None
@@ -1504,6 +1538,10 @@ class PnrConfig:
     def get_blocks(self) -> list[BlockRef]:
         """The hardened blocks this run instances."""
         return list(self.blocks)
+
+    def get_mode(self) -> PnrMode:
+        """`closure`, or `probe`: no timing repair after CTS or global route, and the run stops after global route."""
+        return self.mode
 
     def get_placement(self) -> PlacementFile | None:
         """The run's `placement:` overrides, or None; apply them with `PnrPlatformConfig.with_run_placement`."""

@@ -2071,9 +2071,45 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"--from {fields.get('from_stage')} refused: {fields.get('reason')}"
             )
         case "pnr.stopped":
+            why = "mode: probe" if fields.get("mode") == "probe" else "--stop-after"
             return (
                 f'P&R "{fields.get("pnr")}" stopped after {fields.get("stage")} '
-                f"(--stop-after, not routed); checkpoint {fields.get('checkpoint')}"
+                f"({why}, not routed); checkpoint {fields.get('checkpoint')}"
+            )
+        case "pnr.post_route_round":
+
+            def _ns(ps):
+                return "n/a" if ps is None else f"{ps / 1000:.3f} ns"
+
+            timing = (
+                f"setup WNS {_ns(fields.get('wns_setup_ps'))} "
+                f"TNS {_ns(fields.get('tns_ps'))}, "
+                f"hold WNS {_ns(fields.get('wns_hold_ps'))} "
+                f"TNS {_ns(fields.get('tns_hold_ps'))}"
+            )
+            if fields.get("repair"):
+                margins = ", ".join(
+                    f"{kind} margin {fields.get(f'{kind}_margin_ns'):g} ns"
+                    for kind in ("setup", "hold")
+                    if fields.get(f"{kind}_margin_ns") is not None
+                )
+                then = f"repairing ({margins or 'repair_design only'})"
+            else:
+                then = "no repair"
+            return (
+                f'P&R "{fields.get("pnr")}" post-route repair round '
+                f"{fields.get('round')}/{fields.get('rounds')}: {timing}; {then}"
+            )
+        case "pnr.post_route_repair_done":
+            return (
+                f'P&R "{fields.get("pnr")}" post-route repair: '
+                f"{fields.get('repaired_rounds')} of {fields.get('rounds')} round(s) "
+                f"repaired; stopped: {fields.get('reason')}"
+            )
+        case "pnr.post_route_repair_without_rcx":
+            return (
+                f'P&R "{fields.get("pnr")}": post-route-repair needs rcx-rules on '
+                f"PDK '{fields.get('pdk')}'; OpenROAD was not started"
             )
         case "pnr.checkpoint_manifest_failed":
             return (

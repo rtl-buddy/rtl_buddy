@@ -20,7 +20,7 @@ from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_t
 from ..config.pdk import RotatedMacroFootprint
 from ..config.pnr import (
     CHECKPOINT_STAGES,
-    PNR_STAGES,
+    POST_ROUTE_REPAIR_STAGE,
     ROTATED_ORIENTATIONS,
     BlockageType,
     GdsMode,
@@ -30,6 +30,14 @@ from ..config.pnr import (
     PnrConfig,
     PnrFloorplan,
     with_planner_files,
+)
+from ..config.pnr_repair import (
+    GlobalRouteRepair,
+    PnrMode,
+    PostRouteRepair,
+    RepairDesign,
+    Reroute,
+    UNSET,
 )
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
@@ -50,7 +58,11 @@ from . import (
     pnr_stages,
 )
 from .synth_yosys import probe_block_parameters
-from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps
+from .liberty_units import (
+    LibertyTimeUnitError,
+    format_time_unit,
+    liberty_time_unit_ps,
+)
 
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
@@ -282,21 +294,113 @@ def _buffer_ports_tcl(enabled: bool, buffer_cell: str | None) -> str:
     return f'\nputs ">>> Port buffers"\nbuffer_ports -inputs -outputs{cell}\n'
 
 
-def _global_route_hold_repair_tcl(platform, dpl_options: str = "") -> str:
-    """Return the post-global-route hold repair, as ORFS runs it, or `""` when the platform leaves it off.
+#: The flow's global route; a `reroute: full` global-route repair runs it again.
+_GLOBAL_ROUTE_CMD = (
+    "global_route -congestion_iterations 20 "
+    "-congestion_report_file $CONGESTION_RPT -verbose\n"
+)
+#: Closes an incremental global route around a repair; it logs the usage table again.
+_END_INCREMENTAL_CMD = (
+    "global_route -end_incremental -congestion_report_file $CONGESTION_RPT -verbose\n"
+)
 
-    The global-route estimate includes the wires that post-CTS repair (on placement parasitics) could not see. The resizer reroutes the nets it changes; the cells it adds are legalized and their nets rerouted incrementally before detail route. The incremental route ends `-verbose`, so the log repeats the congestion table after the repair. `dpl_options` follows its `detailed_placement`, as it does the flow's others.
+
+def _fmt_number(value: float) -> str:
+    """A number as Tcl reads it, without float noise."""
+    return f"{value:.10g}"
+
+
+def _repair_steps_tcl(
+    title: str,
+    design: RepairDesign | None,
+    setup_ns: float | None,
+    hold_ns: float | None,
+    ps_per_unit: float | None,
+) -> str:
+    """Return `repair_design`, then setup and hold `repair_timing`, each after a log line naming it.
+
+    Margins are given in ns and passed in the Liberty time unit (`ps_per_unit` picoseconds), which is what `repair_timing` reads; the log line gives both. A zero margin is the tool's default and passes no option.
     """
-    if not platform.get_global_route_hold_repair():
-        return ""
+    lines = []
+    if design is not None:
+        command = f"repair_design{design.options()}"
+        lines += [f'puts ">>> {title}: {command}"', command]
+    for kind, margin in (("setup", setup_ns), ("hold", hold_ns)):
+        if margin is None:
+            continue
+        if margin == 0:
+            command = f"repair_timing -{kind}"
+            lines += [f'puts ">>> {title}: {command} ({kind} margin 0 ns)"', command]
+            continue
+        if ps_per_unit is None:
+            raise RuntimeError("the Liberty time unit is unknown; cannot set a margin")
+        value = _fmt_number(margin * 1000.0 / ps_per_unit)
+        command = f"repair_timing -{kind} -{kind}_margin {value}"
+        lines += [
+            f'puts ">>> {title}: {command} ({kind} margin {_fmt_number(margin)} ns '
+            f'in Liberty time unit {format_time_unit(ps_per_unit)})"',
+            command,
+        ]
+    return "".join(f"{line}\n" for line in lines)
+
+
+def _post_cts_repair_tcl(platform, mode: PnrMode) -> str:
+    """Return the post-CTS timing repair on placement parasitics: setup when `post-cts-setup-repair` is set, then hold. A probe skips it.
+
+    The block carries its own leading newline, as the template once held the text itself.
+    """
+    if mode is PnrMode.PROBE:
+        return '\nputs ">>> Post-CTS timing repair: skipped (mode: probe)"\n'
+    setup = "repair_timing -setup\n" if platform.get_post_cts_setup_repair() else ""
     return (
-        'puts ">>> Post-global-route hold repair"\n'
+        '\nputs ">>> Post-CTS timing repair"\n'
+        "estimate_parasitics -placement\n"
+        f"{setup}repair_timing -hold\n"
+    )
+
+
+def _global_route_repair_tcl(
+    repair: GlobalRouteRepair | None,
+    mode: PnrMode,
+    ps_per_unit: float | None,
+    dpl_options: str = "",
+) -> str:
+    """Return the repair on global-route parasitics, as ORFS runs it, or `""` when the platform and run leave it off. A probe skips it.
+
+    The global-route estimate includes the wires that post-CTS repair (on placement parasitics) could not see. The resizer reroutes the nets it changes; the cells it adds are legalized, then `reroute: incremental` reroutes their nets incrementally and `full` runs the flow's global route again. The closing route is `-verbose`, so the log repeats the congestion table after the repair. `dpl_options` follows its `detailed_placement`, as it does the flow's others.
+    """
+    if repair is None:
+        return ""
+    if mode is PnrMode.PROBE:
+        return 'puts ">>> Global-route repair: skipped (mode: probe)"\n'
+    title = "Global-route repair"
+    steps = _repair_steps_tcl(
+        title,
+        repair.repair_design,
+        repair.setup_margin,
+        repair.hold_margin,
+        ps_per_unit,
+    )
+    head = (
+        f'puts ">>> {title} (reroute {repair.reroute.value})"\n'
         "estimate_parasitics -global_routing\n"
-        "repair_timing -hold\n"
-        "global_route -start_incremental\n"
-        f"detailed_placement{dpl_options}\n"
-        "global_route -end_incremental -congestion_report_file $CONGESTION_RPT -verbose\n"
-        "check_placement -verbose\n"
+    )
+    if repair.reroute is Reroute.FULL:
+        return (
+            head
+            + steps
+            + f"detailed_placement{dpl_options}\n"
+            + "check_placement -verbose\n"
+            + f'puts ">>> {title}: global route"\n'
+            + _GLOBAL_ROUTE_CMD
+        )
+    return (
+        head
+        + steps
+        + "global_route -start_incremental\n"
+        + f"detailed_placement{dpl_options}\n"
+        + _END_INCREMENTAL_CMD
+        + "check_placement -verbose\n"
     )
 
 
@@ -905,14 +1009,33 @@ STOPPED_MARKER = ">>> STOPPED after "
 _STAGE_DONE_MARKER = pnr_stages.STAGE_DONE_MARKER
 #: Heads a stopped run's stage report, which its result is parsed from.
 _STAGE_REPORT_MARKER = ">>> Stage report "
+#: Heads a post-route repair round's timing, which rb reads to decide whether the round repairs.
+_ROUND_TIMING_MARKER = ">>> Post-route repair timing, round "
+#: Ends each post-route repair session, followed by `<round> extraction` or `<round> repair`.
+_ROUND_DONE_MARKER = ">>> End of post-route repair round "
+#: The files of a stage checkpoint without a global route, as `checkpoints.tcl` names them.
+_CHECKPOINT_SUFFIXES = (
+    ("odb", ".odb"),
+    ("def", ".def"),
+    ("sdc", ".sdc"),
+    ("state", ".state.tcl"),
+)
+#: The flow's detailed route, which each post-route repair round runs again.
+_DETAILED_ROUTE_CMD = (
+    "detailed_route \\\n"
+    "    -output_drc  $OUT_DIR/route.drc.rpt \\\n"
+    "    -output_maze $OUT_DIR/route.maze.log \\\n"
+    "    -verbose {{ detailed_route_verbose }}\n"
+)
 
-#: The parasitics a stopped run's stage report times on: none before placement, the placement estimate until global routing, then the global-route estimate.
+#: The parasitics a stopped run's stage report times on: none before placement, the placement estimate until global routing, then the global-route estimate. After post-route repair the report session extracts them instead (see `_post_route_report_script`).
 _STAGE_PARASITICS = {
     "floorplan": "",
     "place": "estimate_parasitics -placement\n",
     "cts": "estimate_parasitics -placement\n",
     "global_route": "estimate_parasitics -global_routing\n",
     "detailed_route": "estimate_parasitics -global_routing\n",
+    "post_route_repair": "",
 }
 
 
@@ -938,23 +1061,23 @@ def _checkpoint_name(stage: str) -> str:
     return f"{pnr_checkpoints.STAGE_INDEX[stage]}_{stage}"
 
 
-def _read_checkpoint_tcl(stage: str) -> str:
-    """Return the prelude lines that open `stage`'s predecessor checkpoint from `$RB_PRED_DIR`: its database, its SDC and the flow globals saved with it."""
-    name = _checkpoint_name(pnr_stages.predecessor(stage))
+def _read_checkpoint_tcl(stage: str, where: str = "RB_PRED_DIR") -> str:
+    """Return the prelude lines that open `stage`'s checkpoint from the directory in `$<where>`: its database, its SDC and the flow globals saved with it."""
+    name = _checkpoint_name(stage)
     return (
         f'puts ">>> Reading checkpoint {name}"\n'
-        f"read_db [file join $RB_PRED_DIR {name}.odb]\n"
-        f"read_sdc [file join $RB_PRED_DIR {name}.sdc]\n"
-        f"source [file join $RB_PRED_DIR {name}.state.tcl]\n"
+        f"read_db [file join ${where} {name}.odb]\n"
+        f"read_sdc [file join ${where} {name}.sdc]\n"
+        f"source [file join ${where} {name}.state.tcl]\n"
     )
 
 
 def _read_global_route_tcl(stage: str) -> str:
-    """Return the prelude lines that restore the predecessor's global route for `estimate_parasitics -global_routing`: its segments.
+    """Return the prelude lines that restore `stage`'s global route for `estimate_parasitics -global_routing`: its segments.
 
     The detailed router reads the guides the database keeps; `read_guides` would rewrite them without their via layers, and the route would differ from a one-session run's.
     """
-    name = _checkpoint_name(pnr_stages.predecessor(stage))
+    name = _checkpoint_name(stage)
     return (
         f'puts ">>> Reading global route {name}"\n'
         f"read_global_route_segments [file join $RB_PRED_DIR {name}.segments]\n"
@@ -1024,8 +1147,15 @@ class OpenRoadPnr:
     ):
         self.name = name
         self.accept_stale = accept_stale
-        # `--stop-after`: the stage after whose checkpoint the run ends.
-        self.stop_after = stop_after
+        self._mode = pnr_cfg.get_mode()
+        # `--stop-after` as given; a probe without one stops after global route.
+        self._requested_stop_after = stop_after
+        # The stage after whose checkpoint the run ends.
+        self.stop_after = (
+            "global_route"
+            if stop_after is None and self._mode is PnrMode.PROBE
+            else stop_after
+        )
         # `--resume` and `--from`: the run to resume (a run id or directory) and the first stage to run.
         self.resume = resume
         self.resume_from = resume_from
@@ -1034,6 +1164,10 @@ class OpenRoadPnr:
         self._resume_source: pnr_stages.ResumeSource | None = None
         # The staged session that failed, for the result description.
         self._failed_stage: str | None = None
+        # Set from the resolved platform by `_configure_stages`: the run's stages, its post-route repair, and whether a one-session run continues in sessions after detailed route.
+        self._stages: tuple[str, ...] = pnr_stages.TEMPLATE_STAGES
+        self._post_route: PostRouteRepair | None = None
+        self._split = False
         self.pnr_cfg = pnr_cfg
         self._configured_cfg = pnr_cfg
         self.root_cfg = root_cfg
@@ -1130,8 +1264,22 @@ class OpenRoadPnr:
         self._prepare_flow(platform, fp)
         return self._emit_scripts()
 
+    def _configure_stages(self, platform) -> None:
+        """Set the run's stages from its post-route repair, which a probe never reaches, and whether a one-session run continues in separate sessions after detailed route."""
+        self._post_route = (
+            platform.get_post_route_repair() if self._mode is PnrMode.CLOSURE else None
+        )
+        self._stages = pnr_stages.run_stages(self._post_route is not None)
+        self._split = (
+            self._post_route is not None
+            and not self._staged
+            and self.stop_after in (None, POST_ROUTE_REPAIR_STAGE)
+        )
+
     def _prepare_flow(self, platform, fp) -> None:
         """Split the flow template and compute its substitutions."""
+        self._configure_stages(platform)
+        self._platform = platform
         pdk = platform.get_pdk()
         netlist = self._openroad_netlist or self._resolve_netlist_path()
         sdc = self.pnr_cfg.get_constraints()
@@ -1221,6 +1369,8 @@ class OpenRoadPnr:
         )
         # With `rcx-rules`, extract after fill and time the final reports on the SPEF; otherwise they use the global-route estimate.
         rcx_rules = pdk.get_rcx_rules()
+        self._rcx_rules = rcx_rules
+        self._corners = list(corner_libs)
         if rcx_rules:
             rcx_block = (
                 '\nputs ">>> Parasitic extraction (OpenRCX)"\n'
@@ -1342,12 +1492,13 @@ class OpenRoadPnr:
                 if self.pnr_cfg.get_harden()
                 else ""
             ),
-            "setup_repair": (
-                "repair_timing -setup\n" if platform.get_post_cts_setup_repair() else ""
-            ),
+            "post_cts_repair": _post_cts_repair_tcl(platform, self._mode),
             "layer_adjustment": _layer_adjustment_tcl(platform),
-            "global_route_hold_repair": _global_route_hold_repair_tcl(
-                platform, gp_blocks.dpl_options
+            "global_route_repair": _global_route_repair_tcl(
+                platform.get_global_route_repair(),
+                self._mode,
+                self._ps_per_unit,
+                gp_blocks.dpl_options,
             ),
             "gp_blockages_create": gp_blocks.create,
             "gp_blockages_destroy": gp_blocks.destroy,
@@ -1370,11 +1521,14 @@ class OpenRoadPnr:
             "fill_cells": fill_cells,
             "out_dir": self.artefact_dir,
             "extra_libs_lefs": extra_libs_lefs,
+            # A run that continues in sessions after detailed route stops there, with the state the next session reads.
             "checkpoint_block": (
                 pnr_checkpoints.render_tcl_block(
                     self._ckpt_run_dir,
                     self.pnr_cfg.get_checkpoints() or (),
-                    stop_after=self.stop_after,
+                    order=self._stages,
+                    stop_after="detailed_route" if self._split else self.stop_after,
+                    state=pnr_checkpoints.SESSION_STATE if self._split else (),
                 )
                 if self._ckpt_run_dir is not None and not self._staged
                 else ""
@@ -1402,10 +1556,22 @@ class OpenRoadPnr:
 
     def _run_stages(self) -> tuple[str, ...]:
         """The stages this run executes: from `--from` (or the start) through `--stop-after` (or `finish`)."""
-        stages = pnr_stages.PNR_STAGES
+        stages = self._stages
         first = stages.index(self.resume_from) if self.resume_from else 0
         last = stages.index(self.stop_after) if self.stop_after else len(stages) - 1
         return stages[first : last + 1]
+
+    def _session_stages(self) -> tuple[str, ...]:
+        """The stages rb runs as sessions of their own: every stage of a staged run, and the stages after detailed route of a one-session run with post-route repair."""
+        stages = self._run_stages()
+        if self._staged:
+            return stages
+        if self._split:
+            return stages[stages.index("detailed_route") + 1 :]
+        return ()
+
+    def _predecessor(self, stage: str) -> str | None:
+        return pnr_stages.predecessor(stage, self._stages)
 
     def _pred_dir(self, stage: str) -> str | None:
         """The directory a staged session reads its predecessor's checkpoint from."""
@@ -1416,37 +1582,56 @@ class OpenRoadPnr:
             return source.pred_dir
         return self._ckpt_run_dir
 
-    def _stage_script(self, stage: str) -> str:
-        """Return one staged session's script: rb's prelude, then the stage's part of the flow, then its checkpoint.
-
-        The prelude repeats what the first session set up but a database does not keep: header variables, threads, `platform-tcl`, Liberty and LEF, then the predecessor's database, SDC and saved globals, max fanout, layer RC, don't-use cells and `session` hooks; the flow's design variables; the detailed-placement options; propagated clocks after CTS; the routing layers after global routing; for detailed routing, the global route's segments; and, for `finish`, a fanout check. Every session takes its guides from its database, and `finish` its global route too.
-        """
-        flow = self._flow
-        substitutions = {
+    def _session_substitutions(self, stage: str, session: str = "staged run") -> dict:
+        """The template substitutions of a session of `stage`: the flow's, with that session's checkpoint block."""
+        return {
             **self._substitutions,
             "checkpoint_block": pnr_checkpoints.render_staged_block(
-                stage, self._ckpt_run_dir or "", self._pred_dir(stage)
+                stage,
+                self._ckpt_run_dir or "",
+                self._pred_dir(stage),
+                order=self._stages,
+                session=session,
             ),
         }
-        parts = [flow.head()]
+
+    def _prelude(self, stage: str, read_tcl: str) -> list[str]:
+        """The start of a session of `stage` after `floorplan`: the template head, `read_tcl` opening the database it starts from, and what a database does not keep.
+
+        That is the predecessor's database, SDC and saved globals, max fanout, layer RC, don't-use cells and `session` hooks; the flow's design variables; the detailed-placement options; propagated clocks after CTS; the routing layers after global routing; for detailed routing, the global route's segments; and, for `finish`, a fanout check.
+        """
+        flow = self._flow
+        parts = [
+            flow.head(),
+            read_tcl,
+            flow.piece("session"),
+            flow.piece("design"),
+        ]
+        if pnr_stages.after(stage, "place"):
+            parts.append(self._gp_blocks.session)
+        if pnr_stages.after(stage, "cts"):
+            parts.append(flow.piece("clocks"))
+        if pnr_stages.after(stage, "global_route"):
+            parts.append(flow.piece("layers"))
+        if stage == "detailed_route":
+            parts.append(_read_global_route_tcl(self._predecessor(stage)))
+        if stage == "finish":
+            parts.append(_FANOUT_CHECK_TCL)
+        return parts
+
+    def _stage_script(self, stage: str) -> str:
+        """Return one staged session's script: rb's prelude (see `_prelude`), then the stage's part of the flow, then its checkpoint. Every session takes its guides from its database, and `finish` its global route too.
+
+        For `post_route_repair` it is the record of the stage's sessions (see `_post_route_record`).
+        """
+        if stage == POST_ROUTE_REPAIR_STAGE:
+            return self._post_route_record()
+        flow = self._flow
+        substitutions = self._session_substitutions(stage)
         if stage == "floorplan":
-            parts += [flow.piece("load"), flow.piece("session")]
+            parts = [flow.head(), flow.piece("load"), flow.piece("session")]
         else:
-            parts += [
-                _read_checkpoint_tcl(stage),
-                flow.piece("session"),
-                flow.piece("design"),
-            ]
-            if pnr_stages.after(stage, "place"):
-                parts.append(self._gp_blocks.session)
-            if pnr_stages.after(stage, "cts"):
-                parts.append(flow.piece("clocks"))
-            if pnr_stages.after(stage, "global_route"):
-                parts.append(flow.piece("layers"))
-            if stage == "detailed_route":
-                parts.append(_read_global_route_tcl(stage))
-            if stage == "finish":
-                parts.append(_FANOUT_CHECK_TCL)
+            parts = self._prelude(stage, _read_checkpoint_tcl(self._predecessor(stage)))
         parts.append(flow.body(stage))
         if stage != "finish":
             parts.append(
@@ -1460,12 +1645,167 @@ class OpenRoadPnr:
             )
         return self._render("".join(parts), substitutions)
 
+    def _post_route_file(self, suffix: str) -> str:
+        """A file of the post-route repair stage in the checkpoint run directory, `06_post_route_repair<suffix>`."""
+        return f"{_checkpoint_name(POST_ROUTE_REPAIR_STAGE)}{suffix}"
+
+    def _post_route_source(self, round_: int) -> str:
+        """The prelude lines that open the database round `round_` starts from: the detailed route in the first round, the previous round's repair after it."""
+        if round_ == 1:
+            return _read_checkpoint_tcl(self._predecessor(POST_ROUTE_REPAIR_STAGE))
+        return _read_checkpoint_tcl(POST_ROUTE_REPAIR_STAGE, "RB_RUN_DIR")
+
+    def _extract_tcl(self, spef: str) -> str:
+        """OpenRCX extraction into `spef` in the run directory, read back once per corner: in-session extraction does not annotate timing, and one SPEF read shared by several corners keeps the first corner's reduced parasitics for all."""
+        path = f"[file join $RB_RUN_DIR {spef}]"
+        return (
+            "define_process_corner -ext_model_index 0 X\n"
+            f"extract_parasitics -ext_model_file {self._rcx_rules}\n"
+            f"write_spef {path}\n" + self._read_spef_tcl(path)
+        )
+
+    def _read_spef_tcl(self, path: str) -> str:
+        if self._corners:
+            return "".join(f"read_spef -corner {c} {path}\n" for c in self._corners)
+        return f"read_spef {path}\n"
+
+    def _post_route_extract_script(self, round_: int) -> str:
+        """Round `round_`'s extraction session: extract the latest routed database and time every corner on the result."""
+        title = f"Post-route repair round {round_}"
+        parts = self._prelude(POST_ROUTE_REPAIR_STAGE, self._post_route_source(round_))
+        parts += [
+            f'\nputs ">>> {title}: extraction"\n',
+            self._extract_tcl(self._post_route_file(f".r{round_}.spef")),
+            f'puts "{_ROUND_TIMING_MARKER}{round_}"\n',
+            "report_worst_slack -max\n",
+            "report_worst_slack -min\n",
+            "report_tns\n",
+            f"report_tns -min{self._substitutions['corner_reports']}\n",
+            f'puts "{_ROUND_DONE_MARKER}{round_} extraction"\n',
+            "exit 0\n",
+        ]
+        return self._render(
+            "".join(parts),
+            self._session_substitutions(
+                POST_ROUTE_REPAIR_STAGE, f"round {round_}: extraction"
+            ),
+        )
+
+    def _post_route_repair_script(self, round_: int) -> str:
+        """Round `round_`'s repair session: repair on the round's SPEF inside an incremental global route, legalize, route in detail and write the stage's checkpoint.
+
+        The rounds work on the unfilled database; `finish` fills after the last. A repair in the session that routed fails detailed routing (DRT-0218), and one outside an incremental global route leaves nets the router cannot reach (DRT-1010). `estimate_parasitics -placement` before `read_spef` gives the nets repair changes an estimate.
+        """
+        repair = self._post_route
+        setup, hold = repair.margins(round_)
+        title = f"Post-route repair round {round_}"
+        parts = self._prelude(POST_ROUTE_REPAIR_STAGE, self._post_route_source(round_))
+        parts += [
+            f'\nputs ">>> {title} of {repair.rounds}: repair on extracted parasitics"\n',
+            "remove_fillers\n",
+            "estimate_parasitics -placement\n",
+            self._read_spef_tcl(
+                f"[file join $RB_RUN_DIR {self._post_route_file(f'.r{round_}.spef')}]"
+            ),
+            "global_route -start_incremental\n",
+            _repair_steps_tcl(
+                title, repair.repair_design, setup, hold, self._ps_per_unit
+            ),
+            "detailed_placement{{ dpl_options }}\n",
+            _END_INCREMENTAL_CMD,
+            "check_placement -verbose\n",
+            f'puts ">>> {title}: detailed route"\n',
+            # So the round's DRC count is its own route's.
+            "file delete -force $OUT_DIR/route.drc.rpt\n",
+            _DETAILED_ROUTE_CMD,
+            f"\nrb::ckpt::stage_end {POST_ROUTE_REPAIR_STAGE}\n",
+            f'puts "{_ROUND_DONE_MARKER}{round_} repair"\n',
+            "exit 0\n",
+        ]
+        return self._render(
+            "".join(parts),
+            self._session_substitutions(
+                POST_ROUTE_REPAIR_STAGE, f"round {round_}: repair"
+            ),
+        )
+
+    def _post_route_report_script(self) -> str:
+        """The session a `--stop-after post_route_repair` run ends with: the stage report, timed on the extracted stage checkpoint."""
+        parts = self._prelude(
+            POST_ROUTE_REPAIR_STAGE,
+            _read_checkpoint_tcl(POST_ROUTE_REPAIR_STAGE, "RB_RUN_DIR"),
+        )
+        parts += [
+            "\n",
+            self._extract_tcl(self._post_route_file(".spef")),
+            _stage_report_tcl(
+                POST_ROUTE_REPAIR_STAGE, self._substitutions["corner_reports"]
+            ),
+        ]
+        return self._render(
+            "".join(parts),
+            self._session_substitutions(POST_ROUTE_REPAIR_STAGE, "stage report"),
+        )
+
+    def _post_route_scripts(self) -> list[tuple[str, str]]:
+        """Every session the post-route repair may run, as (file name, script) in order: each round's extraction, then its repair."""
+        scripts = []
+        for round_ in range(1, self._post_route.rounds + 1):
+            scripts += [
+                (
+                    self._post_route_file(f".r{round_}.extract.tcl"),
+                    self._post_route_extract_script(round_),
+                ),
+                (
+                    self._post_route_file(f".r{round_}.repair.tcl"),
+                    self._post_route_repair_script(round_),
+                ),
+            ]
+        return scripts
+
+    def _post_route_record(self) -> str:
+        """The post-route repair stage's record: every session it may run. Its identity is the stage's script identity for `--resume`."""
+        return (
+            "# rb pnr post-route repair: rb runs these sessions in order and stops "
+            "once timing is met.\n"
+            + "".join(
+                f"\n# ---- {name} ----\n{text}"
+                for name, text in self._post_route_scripts()
+            )
+        )
+
+    def _write_stage_scripts(self, stage: str) -> str:
+        """Write `stage`'s session scripts into the checkpoint run directory and return its text for the `pnr.tcl` record."""
+        name = f"{_checkpoint_name(stage)}.tcl"
+        text = self._stage_script(stage)
+        Path(self._ckpt_run_dir, name).write_text(text)
+        record = f"\n# ---- {name} ----\n{text}"
+        if stage == POST_ROUTE_REPAIR_STAGE:
+            for session, script in self._post_route_scripts():
+                Path(self._ckpt_run_dir, session).write_text(script)
+            if self.stop_after == POST_ROUTE_REPAIR_STAGE:
+                report = self._post_route_file(".report.tcl")
+                script = self._post_route_report_script()
+                Path(self._ckpt_run_dir, report).write_text(script)
+                record += f"\n# ---- {report} ----\n{script}"
+        return record
+
     def _emit_scripts(self) -> str:
-        """Write the scripts OpenROAD runs (see `_write_script`) and return the path of `pnr.tcl`."""
+        """Write the scripts OpenROAD runs (see `_write_script`) and return the path of `pnr.tcl`.
+
+        A one-session run with post-route repair runs `pnr.tcl` through detailed route, then the later stages' scripts from the checkpoint run directory.
+        """
         script_path = self._script_path()
         if not self._staged:
             stop = self.stop_after
-            if stop is None:
+            if self._split:
+                text = (
+                    self._flow.through("detailed_route", self._unbroken_marker)
+                    + "\nrb::ckpt::stage_end detailed_route stop\n"
+                    + f'puts "{_STAGE_DONE_MARKER}{_checkpoint_name("detailed_route")}"\n'
+                    + "exit 0\n"
+                )
+            elif stop is None:
                 text = self._flow.whole(self._unbroken_marker)
             else:
                 text = (
@@ -1474,6 +1814,8 @@ class OpenRoadPnr:
                     + _stage_report_tcl(stop, self._substitutions["corner_reports"])
                 )
             Path(script_path).write_text(self._render(text, self._substitutions))
+            for stage in self._session_stages():
+                self._write_stage_scripts(stage)
             return script_path
         record = [
             "# rb pnr staged run: each stage below ran as its own OpenROAD session.\n"
@@ -1488,18 +1830,15 @@ class OpenRoadPnr:
                 f"\n# ---- {os.path.basename(str(path))} (inherited) ----\n{text}"
             )
         for stage in self._run_stages():
-            name = f"{_checkpoint_name(stage)}.tcl"
-            text = self._stage_script(stage)
-            Path(self._ckpt_run_dir, name).write_text(text)
-            record.append(f"\n# ---- {name} ----\n{text}")
+            record.append(self._write_stage_scripts(stage))
         Path(script_path).write_text("".join(record))
         return script_path
 
     def _chain_records(self) -> list[dict]:
-        """The staged run's sessions in order for the manifest: script (with its identity) and log of each, inherited ones first."""
+        """The sessions rb runs, in order, for the manifest: script (with its identity) and log of each, inherited ones first."""
         records = list(self._resume_source.chain) if self._resume_source else []
         run_id = os.path.basename(self._ckpt_run_dir)
-        for stage in self._run_stages():
+        for stage in self._session_stages():
             name = _checkpoint_name(stage)
             script = os.path.join(self._ckpt_run_dir, f"{name}.tcl")
             fingerprint = _file_fingerprint(script) or {}
@@ -2936,7 +3275,9 @@ class OpenRoadPnr:
         return {"abstract_dir": published, "abstract_manifest": manifest}
 
     def _stage_option_error(self) -> str | None:
-        return pnr_stages.option_error(self.stop_after, self.resume, self.resume_from)
+        return pnr_stages.option_error(
+            self._requested_stop_after, self.resume, self.resume_from
+        )
 
     def _ckpt_stages(self) -> tuple[str, ...]:
         """The stages whose checkpoint this run writes."""
@@ -2946,6 +3287,9 @@ class OpenRoadPnr:
         wanted = set(self.pnr_cfg.get_checkpoints() or ())
         if self.stop_after is not None:
             wanted.add(self.stop_after)
+        if self._split:
+            wanted.update(self._session_stages())
+            wanted.add("detailed_route")
         return tuple(s for s in CHECKPOINT_STAGES if s in wanted and s in stages)
 
     def _check_resume(
@@ -2957,10 +3301,12 @@ class OpenRoadPnr:
                 f"no checkpoint run {self.resume!r}: name a run directory, a run id "
                 f"under {pnr_checkpoints.checkpoints_root(self.artefact_dir)}, or latest"
             )
-        inherited = PNR_STAGES[: PNR_STAGES.index(self.resume_from)]
+        inherited = self._stages[: self._stages.index(self.resume_from)]
         checked = pnr_stages.check_resume(
             run_dir,
             self.resume_from,
+            stages=self._stages,
+            mode=self._mode,
             openroad_version=version,
             scripts={stage: self._stage_script(stage) for stage in inherited},
             inputs=self._checkpoint_inputs(platform, None),
@@ -2979,13 +3325,17 @@ class OpenRoadPnr:
             "run_id": source.run_id,
             "path": source.run_dir,
             "from": source.from_stage,
-            "checkpoint": _checkpoint_name(pnr_stages.predecessor(source.from_stage)),
+            "checkpoint": _checkpoint_name(self._predecessor(source.from_stage)),
         }
 
     def _manifest_staging(self) -> dict:
         """The manifest's staged-run entries (see `pnr_checkpoints.begin_run`)."""
         if not self._staged:
-            return {"staged": False, "stop_after": self.stop_after}
+            return {
+                "staged": False,
+                "stop_after": self.stop_after,
+                **({"chain": self._chain_records()} if self._split else {}),
+            }
         source = self._resume_source
         return {
             "staged": True,
@@ -3006,14 +3356,14 @@ class OpenRoadPnr:
         }
 
     def _run_chain(self, env) -> tuple[int, str, str | None]:
-        """Run a staged run's sessions in order and return the last one's exit code and stderr, and why the chain stopped if a session exited 0 without ending its stage.
+        """Run the sessions of `_session_stages` in order and return the last one's exit code and stderr, and why the chain stopped if a session exited 0 without ending its stage.
 
-        Each session's output is appended to `pnr.log` as it runs and copied to its own `NN_<stage>.log` when it exits; a resumed run's `pnr.log` starts with the logs of the stages it inherits. rb records each session's wall time, CPU time and peak RSS, and the checkpoint it wrote, in `progress.jsonl`.
+        Each session's output is appended to `pnr.log` as it runs and copied to its own log when it exits. A staged run's `pnr.log` starts afresh, with the logs of the stages a resume inherits; a one-session run's continues after its first session. rb records each stage's wall time, CPU time and peak RSS, and the checkpoint it wrote, in `progress.jsonl`.
         """
-        run_dir = self._ckpt_run_dir
         log_path = self._log_path()
         returncode, stderr = 0, ""
-        Path(log_path).write_bytes(b"")
+        if self._staged:
+            Path(log_path).write_bytes(b"")
         with open(log_path, "ab") as log:
             for entry in self._resume_source.chain if self._resume_source else []:
                 path = (entry.get("log") or {}).get("path")
@@ -3024,60 +3374,278 @@ class OpenRoadPnr:
                         f">>> rb: log of inherited stage {entry.get('stage')} "
                         f"not readable: {path}\n".encode()
                     )
-            for stage in self._run_stages():
-                name = _checkpoint_name(stage)
-                cmd = [
-                    self.openroad_executable,
-                    "-no_init",
-                    "-exit",
-                    os.path.join(run_dir, f"{name}.tcl"),
-                ]
-                log_event(
-                    logger,
-                    logging.DEBUG,
-                    "pnr.run_cmd",
-                    pnr=self.pnr_cfg.get_name(),
-                    cmd=" ".join(cmd),
-                    log=log_path,
-                )
-                log.flush()
-                start = os.path.getsize(log_path)
-                pnr_checkpoints.stage_begin(run_dir, stage)
-                with task_status(f"pnr {self.pnr_cfg.get_name()} [openroad {name}]"):
-                    returncode, stderr, resources = _run_session(
-                        cmd, stdout=log, env=env
+            for stage in self._session_stages():
+                if stage == POST_ROUTE_REPAIR_STAGE:
+                    returncode, stderr, problem = self._run_post_route_repair(env, log)
+                else:
+                    returncode, stderr, problem = self._run_stage_session(
+                        stage, env, log
                     )
-                stderr = (stderr or "").strip()
-                if stderr:
-                    log.write((stderr + "\n").encode())
-                log.flush()
-                with open(log_path, "rb") as f:
-                    f.seek(start)
-                    section = f.read()
-                Path(run_dir, f"{name}.log").write_bytes(section)
-                problem = None
-                checkpoint = None
-                if returncode == 0 and stage != "finish":
-                    checkpoint = self._stage_checkpoint(stage)
-                    if f"{_STAGE_DONE_MARKER}{name}\n".encode() not in section:
-                        problem = (
-                            f"stage {name}: OpenROAD exited before the end of the stage"
-                        )
-                    elif checkpoint is None:
-                        problem = f"stage {name}: its checkpoint was not written"
-                ok = returncode == 0 and problem is None
-                pnr_checkpoints.stage_end(
-                    run_dir,
-                    stage,
-                    returncode=returncode,
-                    resources=resources,
-                    status="ok" if ok else "error",
-                    checkpoint=checkpoint if ok else None,
-                )
-                if not ok:
-                    self._failed_stage = name
+                if returncode != 0 or problem is not None:
                     return returncode, stderr, problem
         return returncode, stderr, None
+
+    def _session(
+        self, script: str, label: str, env, log
+    ) -> tuple[int, str, dict, bytes]:
+        """Run one OpenROAD session on `script`, appending its output to `pnr.log`; return its exit code, stderr, resources and its part of the log."""
+        log_path = self._log_path()
+        cmd = [self.openroad_executable, "-no_init", "-exit", script]
+        log_event(
+            logger,
+            logging.DEBUG,
+            "pnr.run_cmd",
+            pnr=self.pnr_cfg.get_name(),
+            cmd=" ".join(cmd),
+            log=log_path,
+        )
+        log.flush()
+        start = os.path.getsize(log_path)
+        with task_status(f"pnr {self.pnr_cfg.get_name()} [openroad {label}]"):
+            returncode, stderr, resources = _run_session(cmd, stdout=log, env=env)
+        stderr = (stderr or "").strip()
+        if stderr:
+            log.write((stderr + "\n").encode())
+        log.flush()
+        with open(log_path, "rb") as f:
+            f.seek(start)
+            section = f.read()
+        return returncode, stderr, resources, section
+
+    def _run_stage_session(self, stage: str, env, log) -> tuple[int, str, str | None]:
+        """Run `stage`'s one session; return its exit code, stderr and, when it exited 0 without ending its stage, why."""
+        run_dir = self._ckpt_run_dir
+        name = _checkpoint_name(stage)
+        pnr_checkpoints.stage_begin(run_dir, stage)
+        returncode, stderr, resources, section = self._session(
+            os.path.join(run_dir, f"{name}.tcl"), name, env, log
+        )
+        Path(run_dir, f"{name}.log").write_bytes(section)
+        problem = None
+        checkpoint = None
+        if returncode == 0 and stage != "finish":
+            checkpoint = self._stage_checkpoint(stage)
+            if f"{_STAGE_DONE_MARKER}{name}\n".encode() not in section:
+                problem = f"stage {name}: OpenROAD exited before the end of the stage"
+            elif checkpoint is None:
+                problem = f"stage {name}: its checkpoint was not written"
+        ok = returncode == 0 and problem is None
+        pnr_checkpoints.stage_end(
+            run_dir,
+            stage,
+            returncode=returncode,
+            resources=resources,
+            status="ok" if ok else "error",
+            checkpoint=checkpoint if ok else None,
+        )
+        if not ok:
+            self._failed_stage = name
+        return returncode, stderr, problem
+
+    def _run_post_route_repair(self, env, log) -> tuple[int, str, str | None]:
+        """Run the post-route repair rounds as sessions of their own; return the last session's exit code and stderr, and why the stage failed if a session exited 0 without ending its step.
+
+        Round k extracts the latest routed database and times every corner. The rounds stop when setup and hold worst slack are non-negative on every corner, when that timing cannot be read, or when a round's detailed route has DRC violations; otherwise round k repairs on its SPEF, routes and writes the stage's checkpoint, which the next round starts from. When no round repaired, the stage's checkpoint is the detailed route's. A session that fails, or exits without ending its step, fails the stage. The whole loop is one stage, so a stage job runs every round.
+        """
+        stage = POST_ROUTE_REPAIR_STAGE
+        run_dir = self._ckpt_run_dir
+        name = _checkpoint_name(stage)
+        repair = self._post_route
+        pnr_checkpoints.stage_begin(run_dir, stage)
+        sections: list[bytes] = []
+        used = {"wall_s": 0.0, "cpu_s": 0.0, "peak_rss_kb": 0}
+
+        def _run(file: str, label: str, done: str) -> tuple[int, str, str | None]:
+            returncode, stderr, resources, section = self._session(
+                os.path.join(run_dir, file), f"{name} {label}", env, log
+            )
+            sections.append(section)
+            Path(run_dir, file.removesuffix(".tcl") + ".log").write_bytes(section)
+            used["wall_s"] += resources.get("wall_s") or 0.0
+            used["cpu_s"] += resources.get("cpu_s") or 0.0
+            used["peak_rss_kb"] = max(
+                used["peak_rss_kb"], resources.get("peak_rss_kb") or 0
+            )
+            problem = None
+            if returncode == 0 and f"{done}\n".encode() not in section:
+                problem = f"stage {name}: OpenROAD exited before the end of {label}"
+            return returncode, stderr, problem
+
+        def _end(returncode: int, stderr: str, problem: str | None):
+            checkpoint = (
+                self._stage_checkpoint(stage)
+                if returncode == 0 and problem is None
+                else None
+            )
+            if returncode == 0 and problem is None and checkpoint is None:
+                problem = f"stage {name}: its checkpoint was not written"
+            ok = returncode == 0 and problem is None
+            Path(run_dir, f"{name}.log").write_bytes(b"".join(sections))
+            pnr_checkpoints.stage_end(
+                run_dir,
+                stage,
+                returncode=returncode,
+                resources={
+                    "wall_s": round(used["wall_s"], 3),
+                    "cpu_s": round(used["cpu_s"], 2),
+                    "peak_rss_kb": used["peak_rss_kb"],
+                    "measured_by": "process",
+                },
+                status="ok" if ok else "error",
+                checkpoint=checkpoint if ok else None,
+            )
+            if not ok:
+                self._failed_stage = name
+            return returncode, stderr, problem
+
+        repaired = 0
+        reason = f"{repair.rounds} round(s) repaired"
+        for round_ in range(1, repair.rounds + 1):
+            returncode, stderr, problem = _run(
+                self._post_route_file(f".r{round_}.extract.tcl"),
+                f"round {round_} extraction",
+                f"{_ROUND_DONE_MARKER}{round_} extraction",
+            )
+            if returncode != 0 or problem is not None:
+                return _end(returncode, stderr, problem)
+            timing = self._round_timing(sections[-1].decode(errors="replace"), round_)
+            setup, hold = repair.margins(round_)
+            met = self._timing_met(timing)
+            self._record_round(round_, timing, met, setup, hold)
+            if met is not False:
+                reason = (
+                    "timing met" if met else "timing was not reported, so it is unknown"
+                )
+                break
+            returncode, stderr, problem = _run(
+                self._post_route_file(f".r{round_}.repair.tcl"),
+                f"round {round_} repair",
+                f"{_ROUND_DONE_MARKER}{round_} repair",
+            )
+            if returncode != 0 or problem is not None:
+                return _end(returncode, stderr, problem)
+            repaired = round_
+            drcs = self._count_drcs()
+            if drcs:
+                reason = (
+                    f"round {round_}'s detailed route has {drcs} DRC report line(s)"
+                )
+                break
+        if repaired == 0:
+            self._carry_detailed_route_checkpoint()
+        log_event(
+            logger,
+            logging.INFO,
+            "pnr.post_route_repair_done",
+            pnr=self.pnr_cfg.get_name(),
+            repaired_rounds=repaired,
+            rounds=repair.rounds,
+            reason=reason,
+        )
+        pnr_checkpoints.record_event(
+            run_dir, "post_route_repair_done", repaired_rounds=repaired, reason=reason
+        )
+        if self.stop_after == stage:
+            returncode, stderr, problem = _run(
+                self._post_route_file(".report.tcl"),
+                "stage report",
+                f"{STOPPED_MARKER}{stage}",
+            )
+            return _end(returncode, stderr, problem)
+        return _end(0, "", None)
+
+    def _round_timing(self, text: str, round_: int) -> dict:
+        """Round `round_`'s worst slack and TNS, setup and hold, in ps, with each corner's on a multi-corner platform; a value the log lacks is None."""
+        text = text[text.rfind(f"{_ROUND_TIMING_MARKER}{round_}") :]
+        ps = self._ps_per_unit
+
+        def _ps(value):
+            return value * ps if value is not None else None
+
+        timing = {
+            "wns_setup_ps": _ps(self._parse_wns(text, "max")),
+            "wns_hold_ps": _ps(self._parse_wns(text, "min")),
+            "tns_ps": _ps(self._parse_tns(text)),
+            "tns_hold_ps": _ps(self._parse_tns(text, "min")),
+        }
+        if self._corners:
+            timing["corners"] = openroad_corners.parse_corner_timing(
+                text, self._corners, ps
+            )
+        return timing
+
+    @staticmethod
+    def _timing_met(timing: dict) -> bool | None:
+        """Whether setup and hold worst slack are non-negative on every corner (the worst over corners is reported); None when either is missing."""
+        setup, hold = timing["wns_setup_ps"], timing["wns_hold_ps"]
+        if setup is None or hold is None:
+            return None
+        return setup >= 0 and hold >= 0
+
+    def _record_round(
+        self,
+        round_: int,
+        timing: dict,
+        met: bool | None,
+        setup: float | None,
+        hold: float | None,
+    ) -> None:
+        """Log one round's timing and what the round does next, and record it in `progress.jsonl`."""
+        fields = {
+            "round": round_,
+            "rounds": self._post_route.rounds,
+            **timing,
+            "repair": met is False,
+            "setup_margin_ns": setup if met is False else None,
+            "hold_margin_ns": hold if met is False else None,
+        }
+        log_event(
+            logger,
+            logging.INFO,
+            "pnr.post_route_round",
+            pnr=self.pnr_cfg.get_name(),
+            **fields,
+        )
+        pnr_checkpoints.record_event(self._ckpt_run_dir, "post_route_round", **fields)
+
+    def _carry_detailed_route_checkpoint(self) -> None:
+        """Make the detailed route's checkpoint the post-route repair stage's, when no round repaired: hard links where the filesystem allows, else copies."""
+        source_stage = self._predecessor(POST_ROUTE_REPAIR_STAGE)
+        source_dir = self._pred_dir(POST_ROUTE_REPAIR_STAGE)
+        source = _checkpoint_name(source_stage)
+        target = _checkpoint_name(POST_ROUTE_REPAIR_STAGE)
+        files = {}
+        for kind, suffix in _CHECKPOINT_SUFFIXES:
+            src = os.path.join(source_dir, source + suffix)
+            if not os.path.isfile(src):
+                continue
+            dst = os.path.join(self._ckpt_run_dir, target + suffix)
+            if os.path.lexists(dst):
+                os.remove(dst)
+            try:
+                os.link(src, dst)
+            except OSError:
+                shutil.copy2(src, dst)
+            files[kind] = target + suffix
+        pnr_checkpoints.record_checkpoint(
+            self._ckpt_run_dir,
+            POST_ROUTE_REPAIR_STAGE,
+            files,
+            design=self.pnr_cfg.resolve_synth_cfg().get_top(),
+            source=source,
+        )
+
+    def _continue_in_sessions(self, env) -> tuple[int, str, str | None]:
+        """Run the stages after detailed route of a one-session run with post-route repair, once its first session ended with the detailed route's checkpoint."""
+        name = _checkpoint_name("detailed_route")
+        try:
+            log_text = Path(self._log_path()).read_text()
+        except OSError:
+            log_text = ""
+        if f"{_STAGE_DONE_MARKER}{name}" not in log_text.splitlines():
+            self._failed_stage = name
+            return 0, "", f"stage {name}: OpenROAD exited before the end of the stage"
+        return self._run_chain(env)
 
     def _parse_gr_overflow(self, log_text: str) -> int | None:
         """The total overflow in global routing's last usage table, or None without one."""
@@ -3101,6 +3669,7 @@ class OpenRoadPnr:
 
         metrics = {
             "routed": False,
+            "mode": self._mode.value,
             "stopped_after": stage,
             "area_um2": self._parse_area_um2(report),
             "cell_count": self._parse_cell_count(log_text),
@@ -3113,7 +3682,7 @@ class OpenRoadPnr:
             metrics["global_route_overflow"] = self._parse_gr_overflow(
                 log_text[: log_text.rfind(f"{_STAGE_REPORT_MARKER}{stage}")]
             )
-        if stage == "detailed_route":
+        if stage in pnr_checkpoints.DETAIL_ROUTED:
             metrics["drc_count"] = self._count_drcs()
         corner_fields = self._corner_fields(platform, report)
         checkpoint = os.path.join(self._ckpt_run_dir, _checkpoint_name(stage))
@@ -3128,9 +3697,10 @@ class OpenRoadPnr:
                 k: v for k, v in metrics.items() if k not in ("routed", "stopped_after")
             },
         )
+        probe = "probe " if self._mode is PnrMode.PROBE else ""
         return PnrPassResults(
             name=self.name + "/results",
-            desc=f"P&R stopped after {stage} (not routed)",
+            desc=f"P&R {probe}stopped after {stage} (not routed)",
             fields={
                 **metrics,
                 **corner_fields,
@@ -3332,6 +3902,14 @@ class OpenRoadPnr:
                 platform = platform.with_run_placement(
                     self.pnr_cfg.get_placement(), self.pnr_cfg.get_name()
                 )
+            run_repairs = (
+                self.pnr_cfg.global_route_repair,
+                self.pnr_cfg.post_route_repair,
+            )
+            if any(layer is not UNSET for layer in run_repairs):
+                platform = platform.with_run_repairs(
+                    *run_repairs, self.pnr_cfg.get_name()
+                )
             fp = self.pnr_cfg.get_floorplan()
             if fp.macros_file is not None or fp.pins_file is not None:
                 self.pnr_cfg = replace(
@@ -3348,6 +3926,33 @@ class OpenRoadPnr:
             )
             return PnrFailResults(
                 name=self.name + "/results", desc=str(e), fail_stage="setup"
+            )
+
+        self._configure_stages(platform)
+        stage_problem = pnr_stages.run_option_error(
+            self._stages, self._mode, self._requested_stop_after, self.resume_from
+        )
+        if stage_problem is not None:
+            return PnrFailResults(
+                name=self.name + "/results", desc=stage_problem, fail_stage="setup"
+            )
+        # Each round times extracted parasitics.
+        if self._post_route is not None and not rcx_rules:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.post_route_repair_without_rcx",
+                pnr=self.pnr_cfg.get_name(),
+                pdk=platform.get_pdk_name(),
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    f"post-route-repair needs rcx-rules on PDK "
+                    f"'{platform.get_pdk_name()}': each round times the route on "
+                    "extracted parasitics, and the PDK sets no rcx-rules"
+                ),
+                fail_stage="setup",
             )
 
         blocks_failure = self._resolve_blocks(platform)
@@ -3387,6 +3992,7 @@ class OpenRoadPnr:
             self.pnr_cfg.get_checkpoints() is not None
             or self._staged
             or self.stop_after is not None
+            or self._split
         ):
             try:
                 self._ckpt_run_dir = pnr_checkpoints.allocate_run_dir(self.artefact_dir)
@@ -3460,6 +4066,7 @@ class OpenRoadPnr:
                     },
                     inputs=self._checkpoint_inputs(platform, script_path),
                     staged=self._manifest_staging(),
+                    mode=self._mode.value,
                 )
             except Exception as e:
                 # Stop before OpenROAD: unrecorded checkpoints would be unidentifiable.
@@ -3537,6 +4144,8 @@ class OpenRoadPnr:
                         log_file.write(stderr_text + "\n")
                 except OSError:
                     pass
+            if self._split and returncode == 0:
+                returncode, stderr_text, chain_problem = self._continue_in_sessions(env)
         self._openroad_returncode = returncode
 
         try:
@@ -3667,6 +4276,7 @@ class OpenRoadPnr:
         ps_per_unit = self._ps_per_unit
         metrics = {
             "routed": True,
+            "mode": self._mode.value,
             "area_um2": area,
             "cell_count": cells,
             "routed_cell_count": routed_cells,

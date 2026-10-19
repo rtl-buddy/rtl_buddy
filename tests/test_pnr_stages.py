@@ -32,6 +32,11 @@ _NAMES = {
 }
 
 
+#: A run without post-route repair: every template stage, each but finish checkpointed.
+_STAGES = pnr_stages.TEMPLATE_STAGES
+_CKPT = _STAGES[:-1]
+
+
 def _staged(tmp_path, monkeypatch, **kw):
     return _backend(tmp_path, monkeypatch, stages=True, **kw)
 
@@ -49,29 +54,29 @@ def test_a_staged_run_runs_each_stage_in_its_own_session(tmp_path, monkeypatch):
     assert res.results["result"] == "PASS", res.results
     assert res.results["routed"] is True
     run_dir = _only_run(artefacts)
-    for stage in PNR_STAGES:
+    for stage in _STAGES:
         assert (run_dir / f"{_NAMES[stage]}.tcl").is_file()
         assert (run_dir / f"{_NAMES[stage]}.log").is_file()
-    for stage in CHECKPOINT_STAGES:
+    for stage in _CKPT:
         assert (run_dir / f"{_NAMES[stage]}.odb").is_file()
         assert (run_dir / f"{_NAMES[stage]}.state.tcl").is_file()
     # pnr.log is the chain's stage logs in order.
     assert (artefacts / "pnr.log").read_bytes() == b"".join(
-        (run_dir / f"{_NAMES[stage]}.log").read_bytes() for stage in PNR_STAGES
+        (run_dir / f"{_NAMES[stage]}.log").read_bytes() for stage in _STAGES
     )
     events = _events(run_dir)
     ended = [e for e in events if e["event"] == "stage_end"]
-    assert [e["stage"] for e in ended] == list(PNR_STAGES)
+    assert [e["stage"] for e in ended] == list(_STAGES)
     assert all(e["measured_by"] == "process" for e in ended)
     assert all(e["wall_s"] == STUB_RESOURCES["wall_s"] for e in ended)
     assert all("checkpoint" in e for e in ended[:-1])
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert manifest["staged"] is True
-    assert [c["stage"] for c in manifest["chain"]] == list(PNR_STAGES)
+    assert [c["stage"] for c in manifest["chain"]] == list(_STAGES)
     assert all(c["script"]["identity"] for c in manifest["chain"])
-    assert list(manifest["resources"]) == list(PNR_STAGES)
+    assert list(manifest["resources"]) == list(_STAGES)
     assert manifest["resources"]["cts"]["cpu_s"] == STUB_RESOURCES["cpu_s"]
-    assert list(manifest["checkpoints"]) == list(CHECKPOINT_STAGES)
+    assert list(manifest["checkpoints"]) == list(_CKPT)
 
 
 def test_each_stage_session_reads_its_predecessor_checkpoint(tmp_path, monkeypatch):
@@ -81,9 +86,9 @@ def test_each_stage_session_reads_its_predecessor_checkpoint(tmp_path, monkeypat
 
     floorplan = (run_dir / "01_floorplan.tcl").read_text()
     assert "read_verilog $NETLIST" in floorplan and "read_db" not in floorplan
-    for stage in PNR_STAGES[1:]:
+    for stage in _STAGES[1:]:
         script = (run_dir / f"{_NAMES[stage]}.tcl").read_text()
-        pred = _NAMES[pnr_stages.predecessor(stage)]
+        pred = _NAMES[pnr_stages.predecessor(stage, _STAGES)]
         assert f"read_db [file join $RB_PRED_DIR {pred}.odb]" in script
         assert f"read_sdc [file join $RB_PRED_DIR {pred}.sdc]" in script
         assert f"source [file join $RB_PRED_DIR {pred}.state.tcl]" in script
@@ -114,7 +119,7 @@ def test_each_stage_session_reads_its_predecessor_checkpoint(tmp_path, monkeypat
     assert "sta::max_fanout_min_slack" in finish
     assert "sta::max_fanout_min_slack" not in detailed
     assert not (run_dir / "05_detailed_route.segments").exists()
-    for stage in PNR_STAGES[:-1]:
+    for stage in _STAGES[:-1]:
         script = (run_dir / f"{_NAMES[stage]}.tcl").read_text()
         assert script.rstrip().endswith("exit 0")
         assert f"rb::ckpt::stage_end {stage}\n" in script
@@ -136,7 +141,7 @@ def test_stage_scripts_are_the_one_session_flow_split_at_its_markers(tmp_path):
         flow.head()
         + flow.piece("load")
         + flow.piece("session")
-        + "".join(flow.body(stage) for stage in PNR_STAGES)
+        + "".join(flow.body(stage) for stage in _STAGES)
         == flow.whole()
     )
     assert flow.whole() == re.sub(r"\{\{ @/?\w+ \}\}", "", template)
@@ -184,7 +189,7 @@ def test_stop_after_in_a_staged_run_ends_after_that_stage(tmp_path, monkeypatch)
     assert not list(artefacts.glob("*.routed.*"))
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert manifest["stop_after"] == "global_route"
-    assert list(manifest["resources"]) == list(PNR_STAGES[:4])
+    assert list(manifest["resources"]) == list(_STAGES[:4])
 
 
 def test_stop_after_in_an_unbroken_run_records_resources_per_stage(
@@ -206,7 +211,7 @@ def test_stop_after_in_an_unbroken_run_records_resources_per_stage(
     ended = [e for e in _events(run_dir) if e["event"] == "stage_end"]
     # Measured inside the session; the stop ends detailed routing, and no finish
     # stage starts.
-    assert [e["stage"] for e in ended] == list(CHECKPOINT_STAGES)
+    assert [e["stage"] for e in ended] == list(_CKPT)
     assert all(e["measured_by"] == "session" for e in ended)
     assert all(e["wall_s"] >= 0 for e in ended)
     if sys.platform.startswith("linux"):
@@ -223,7 +228,7 @@ def test_a_finished_unbroken_run_with_checkpoints_records_every_stage(
 
     assert res.results["routed"] is True
     manifest = json.loads((_only_run(artefacts) / "manifest.json").read_text())
-    assert list(manifest["resources"]) == list(PNR_STAGES)
+    assert list(manifest["resources"]) == list(_STAGES)
     assert manifest["resources"]["finish"]["status"] == "ok"
 
 
@@ -303,7 +308,7 @@ def test_resume_twice_from_one_global_route(tmp_path, monkeypatch):
         assert manifest["resumed_from"]["run_id"] == first.name
         assert manifest["resumed_from"]["from"] == "detailed_route"
         assert manifest["resumed_from"]["checkpoint"] == "04_global_route"
-        assert [c["stage"] for c in manifest["chain"]] == list(PNR_STAGES)
+        assert [c["stage"] for c in manifest["chain"]] == list(_STAGES)
         assert manifest["chain"][3]["inherited"] is True
         assert manifest["checkpoints"]["global_route"]["inherited_from"] == first.name
         assert "inherited_from" not in manifest["checkpoints"]["detailed_route"]

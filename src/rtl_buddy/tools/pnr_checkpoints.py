@@ -14,6 +14,7 @@ Layout under the run's artefact directory::
         03_cts.{odb,def,sdc}
         04_global_route.{odb,def,sdc,guide,segments}
         05_detailed_route.{odb,def,sdc}
+        06_post_route_repair.{odb,def,sdc}   # with post-route-repair set
         export/03_cts/...                 # `rb pnr-export --checkpoint`
 
 A staged run (`stages: true`) adds each stage's session script and log, `NN_<stage>.{tcl,log}`, and a `NN_<stage>.state.tcl` per checkpoint with the flow globals the next session needs.
@@ -51,13 +52,14 @@ CHECKPOINT_SCHEMA = 1
 
 _TCL_FILE = "checkpoints.tcl"
 
-#: Each stage's file index. Indexes are fixed per stage, so a file name names its stage whatever stages a run has; 06 is kept for a stage between detailed route and finish.
+#: Each stage's file index. Indexes are fixed per stage, so a file name names its stage whatever stages a run has.
 STAGE_INDEX = {
     "floorplan": "01",
     "place": "02",
     "cts": "03",
     "global_route": "04",
     "detailed_route": "05",
+    "post_route_repair": "06",
     "finish": "07",
 }
 
@@ -71,7 +73,10 @@ STAGE_ANCHORS = {
 }
 
 #: Checkpoints whose database holds a global route.
-GLOBAL_ROUTED = ("global_route", "detailed_route")
+GLOBAL_ROUTED = ("global_route", "detailed_route", "post_route_repair")
+
+#: Checkpoints whose database holds a detailed route.
+DETAIL_ROUTED = ("detailed_route", "post_route_repair")
 
 #: Checkpoints that also carry the route guides and global-route segments; the detailed-route session reads the segments. A routed database's pin access points no longer match the segments, which OpenROAD then refuses (GRT-0263), so a later session takes the global route from the guides the database keeps.
 ROUTE_FILES = ("global_route",)
@@ -144,8 +149,10 @@ def _tcl_quote(value: str) -> str:
     return f'"{escaped}"'
 
 
-def _arm_config(*, anchors: dict, wanted, account: bool, strict: bool, state=()) -> str:
-    """Return the braced Tcl dict `rb::ckpt::arm` takes; every name in it is a plain identifier."""
+def _arm_config(
+    *, anchors: dict, wanted, order, account: bool, strict: bool, state=()
+) -> str:
+    """Return the braced Tcl dict `rb::ckpt::arm` takes; every name in it is a plain identifier. `order` is the run's stages."""
     return (
         "{"
         + " ".join(
@@ -158,7 +165,7 @@ def _arm_config(*, anchors: dict, wanted, account: bool, strict: bool, state=())
                 + "}",
                 f"wanted {{{' '.join(wanted)}}}",
                 "order {"
-                + " ".join(f"{stage} {index}" for stage, index in STAGE_INDEX.items())
+                + " ".join(f"{stage} {STAGE_INDEX[stage]}" for stage in order)
                 + "}",
                 f"routed {{{' '.join(ROUTE_FILES)}}}",
                 f"state {{{' '.join(state)}}}",
@@ -175,11 +182,16 @@ def _procs() -> str:
 
 
 def render_tcl_block(
-    run_dir: str, stages: tuple[str, ...], *, stop_after: str | None = None
+    run_dir: str,
+    stages: tuple[str, ...],
+    *,
+    order: tuple[str, ...],
+    stop_after: str | None = None,
+    state: tuple[str, ...] = (),
 ) -> str:
     """Return the Tcl block the flow template splices in when checkpoints are on, for a one-session run.
 
-    Every stage boundary is armed, so each stage's resources are recorded; only `stages`, and the `stop_after` stage, write a checkpoint. The `stop_after` stage is ended by the flow's explicit stop, not by its anchor, so its checkpoint is strict and no later stage starts. The block carries its own leading newline so a run without checkpoints renders the template byte-identically.
+    `order` is the run's stages; `state` names the flow globals each checkpoint saves for a later session. Every stage boundary is armed, so each stage's resources are recorded; only `stages`, and the `stop_after` stage, write a checkpoint. The `stop_after` stage is ended by the flow's explicit stop, not by its anchor, so its checkpoint is strict and no later stage starts. The block carries its own leading newline so a run without checkpoints renders the template byte-identically.
     """
     wanted = [s for s in CHECKPOINT_STAGES if s in stages or s == stop_after]
     anchors = {
@@ -187,7 +199,14 @@ def render_tcl_block(
         for stage, a in STAGE_ANCHORS.items()
         if a is not None and stage != stop_after
     }
-    config = _arm_config(anchors=anchors, wanted=wanted, account=True, strict=False)
+    config = _arm_config(
+        anchors=anchors,
+        wanted=wanted,
+        order=order,
+        account=True,
+        strict=False,
+        state=state,
+    )
     return (
         f'\nputs ">>> Stage checkpoints (#653)"\n{_procs()}\n'
         f"rb::ckpt::arm {_tcl_quote(run_dir)} "
@@ -201,15 +220,22 @@ def render_tcl_block(
 RUN_BINDING_RE = re.compile(r"^set RB_(RUN|PRED)_DIR .*$", re.MULTILINE)
 
 
-def render_staged_block(stage: str, run_dir: str, pred_dir: str | None) -> str:
-    """Return the checkpoint block of one staged session.
+def render_staged_block(
+    stage: str,
+    run_dir: str,
+    pred_dir: str | None,
+    *,
+    order: tuple[str, ...],
+    session: str = "staged run",
+) -> str:
+    """Return the checkpoint block of one staged session; `order` is the run's stages and `session` names the session in its first log line.
 
     `RB_RUN_DIR` is where the session writes its checkpoint and events; `RB_PRED_DIR` holds the checkpoint it starts from. They are the only run-specific lines, so two runs' scripts of a stage compare equal apart from them (see `RUN_BINDING_RE`). A checkpoint that cannot be written fails the session.
     """
     index = STAGE_INDEX[stage]
     lines = [
         "",
-        f'puts ">>> Stage {index}_{stage} (staged run)"',
+        f'puts ">>> Stage {index}_{stage} ({session})"',
         f"set RB_RUN_DIR {_tcl_quote(run_dir)}",
     ]
     if pred_dir is not None:
@@ -217,6 +243,7 @@ def render_staged_block(stage: str, run_dir: str, pred_dir: str | None) -> str:
     config = _arm_config(
         anchors={},
         wanted=[stage] if stage in CHECKPOINT_STAGES else [],
+        order=order,
         account=False,
         strict=True,
         state=SESSION_STATE,
@@ -268,6 +295,27 @@ def stage_end(
         returncode=returncode,
         **resources,
         **({"checkpoint": _relativise(checkpoint, root)} if checkpoint else {}),
+    )
+
+
+def record_event(run_dir: str, event: str, **fields) -> None:
+    """Append an event rb itself observed, such as a post-route repair round's timing."""
+    _append_event(run_dir, event, **fields)
+
+
+def record_checkpoint(
+    run_dir: str, stage: str, files: dict, *, design: str, source: str
+) -> None:
+    """Record `stage`'s checkpoint as complete when rb made it from the files of checkpoint `source` (`{kind: file name}` in `run_dir`), as a session records one it wrote."""
+    _append_event(
+        run_dir,
+        "checkpoint",
+        stage=stage,
+        index=STAGE_INDEX[stage],
+        status="ok",
+        design=design,
+        files=files,
+        source=source,
     )
 
 
@@ -356,7 +404,7 @@ def checkpoint_label(stage: str) -> dict:
     global_routed = stage in GLOBAL_ROUTED
     return {
         "final": False,
-        "detail_routed": stage == "detailed_route",
+        "detail_routed": stage in DETAIL_ROUTED,
         "global_routed": global_routed,
         "congestion": {
             "available": False,
@@ -379,10 +427,11 @@ def begin_run(
     openroad: dict,
     inputs: dict,
     staged: dict | None = None,
+    mode: str = "closure",
 ) -> str:
     """Write the manifest and first event, point `latest` here, and return the manifest path.
 
-    Call after the flow scripts exist and just before OpenROAD starts, so `inputs.script` hashes the exact `pnr.tcl` OpenROAD runs. A staged run passes `staged`: its `chain` of stage sessions (script and log per stage, including stages a resume inherits), `resumed_from`, and the checkpoints it inherits, which `finish_run` keeps beside the ones it writes. `stop_after` is recorded for either kind of run.
+    Call after the flow scripts exist and just before OpenROAD starts, so `inputs.script` hashes the exact `pnr.tcl` OpenROAD runs. A staged run passes `staged`: its `chain` of stage sessions (script and log per stage, including stages a resume inherits), `resumed_from`, and the checkpoints it inherits, which `finish_run` keeps beside the ones it writes. `stop_after` is recorded for either kind of run, and `chain` for the sessions after detailed route of a one-session run with post-route repair. `mode` is the run's mode.
     """
     root = project_root_or_none(artefact_dir)
     staged = staged or {}
@@ -392,6 +441,7 @@ def begin_run(
         "run_id": os.path.basename(run_dir),
         "run": run,
         "design": design,
+        "mode": mode,
         "started_at": _now(),
         "pid": os.getpid(),
         "tool": openroad,

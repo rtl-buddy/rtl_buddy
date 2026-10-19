@@ -35,6 +35,20 @@ PLACEMENT_ALL = {
 }
 
 # Sized by core-margin; the second run sizes with die-area, core-area and core-cutouts instead.
+REPAIR_DESIGN_ALL = {"slew-margin": 20, "cap-margin": 10, "max-wire-length": 500}
+GLOBAL_ROUTE_REPAIR_ALL = {
+    "repair-design": dict(REPAIR_DESIGN_ALL),
+    "setup-margin": 0.05,
+    "hold-margin": 0.02,
+    "reroute": "full",
+}
+POST_ROUTE_REPAIR_ALL = {
+    "repair-design": dict(REPAIR_DESIGN_ALL),
+    "setup-margin": 0.05,
+    "hold-margin": None,
+    "rounds": 3,
+    "margin-step": 0.01,
+}
 RUN_SIZED = {
     "name": "a",
     "desc": "every key",
@@ -117,6 +131,9 @@ RUN_SIZED = {
         {"name": "blk2", "pnr": "blk2_run"},
     ],
     "placement": PLACEMENT_ALL,
+    "global-route-repair": GLOBAL_ROUTE_REPAIR_ALL,
+    "post-route-repair": POST_ROUTE_REPAIR_ALL,
+    "mode": "closure",
     "reglvl": 1000,
     "tool_overrides": {"any": 1},
     "threads": 2,
@@ -137,6 +154,7 @@ RUN_DIE = {
         "core-cutouts": [[20, 20, 30, 30]],
     },
     "stages": True,
+    "mode": "probe",
 }
 
 PDK_ALL = {
@@ -168,7 +186,8 @@ PLATFORM_ONE_CORNER = {
     "cts-buffer": ["b1", "b2"],
     "cts-sink-clustering": False,
     "post-cts-setup-repair": True,
-    "global-route-hold-repair": True,
+    "global-route-repair": GLOBAL_ROUTE_REPAIR_ALL,
+    "post-route-repair": POST_ROUTE_REPAIR_ALL,
     "routing-layer-adjustment": 0.1,
     "cts-apply-ndr": "half",
     "port-buffer": "buf",
@@ -177,7 +196,12 @@ PLATFORM_ONE_CORNER = {
     "placement": PLACEMENT_ALL,
     "dont-use-cells": ["y*"],
 }
-PLATFORM_CORNERS = {"name": "pl2", "pdk": "pdk1", "corners": ["typ", "my-fast_1"]}
+PLATFORM_CORNERS = {
+    "name": "pl2",
+    "pdk": "pdk1",
+    "corners": ["typ", "my-fast_1"],
+    "global-route-hold-repair": True,
+}
 
 
 def _specs(spec: KeySpec):
@@ -248,9 +272,9 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "name, desc, tool, synth, synth-path, constraints, pin-constraints, "
             "pdn-config, pdn, platform, floorplan, lef-paths, lib-paths, gds-paths, "
             "gds-mode, gds-allow-empty, checkpoints, stages, hooks, harden, abstract, "
-            "buffer-ports, fail-on-electrical, blocks, placement, reglvl, "
-            "tool_overrides, threads, detailed-route-verbose, xfail, xfail_strict, "
-            "xfail_match",
+            "buffer-ports, fail-on-electrical, blocks, placement, "
+            "global-route-repair, post-route-repair, mode, reglvl, tool_overrides, "
+            "threads, detailed-route-verbose, xfail, xfail_strict, xfail_match",
         ),
         (
             "pnr run 'a': floorplan",
@@ -298,6 +322,21 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "rotated-macro-footprint",
         ),
         ("pnr run 'a': blocks[1]", ("blocks", 1), "name, pnr, pnr-path"),
+        (
+            "pnr run 'a': global-route-repair",
+            ("global-route-repair",),
+            "repair-design, setup-margin, hold-margin, reroute",
+        ),
+        (
+            "pnr run 'a': post-route-repair",
+            ("post-route-repair",),
+            "repair-design, setup-margin, hold-margin, rounds, margin-step",
+        ),
+        (
+            "pnr run 'a': post-route-repair.repair-design",
+            ("post-route-repair", "repair-design"),
+            "slew-margin, cap-margin, max-wire-length",
+        ),
     ],
     ids=lambda v: v if isinstance(v, str) and v.startswith("pnr run") else None,
 )
@@ -545,9 +584,15 @@ cfg-pnr-platforms:
             (),
             "cfg-pnr-platforms 'pl1'",
             "name, pdk, corner, corners, cts-buffer, cts-sink-clustering, "
-            "post-cts-setup-repair, global-route-hold-repair, "
-            "routing-layer-adjustment, cts-apply-ndr, port-buffer, max-fanout, "
-            "routing-layers, placement, dont-use-cells",
+            "post-cts-setup-repair, global-route-hold-repair, global-route-repair, "
+            "post-route-repair, routing-layer-adjustment, cts-apply-ndr, "
+            "port-buffer, max-fanout, routing-layers, placement, dont-use-cells",
+        ),
+        (
+            "platform",
+            ("global-route-repair", "repair-design"),
+            "cfg-pnr-platforms 'pl1': global-route-repair.repair-design",
+            "slew-margin, cap-margin, max-wire-length",
         ),
         (
             "platform",
