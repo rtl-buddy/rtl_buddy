@@ -391,6 +391,12 @@ def abstract_config(pnr_cfg, platform) -> dict:
         ),
         # Emitted only when a PDK Tcl hook is set so existing digests do not change.
         **({"tcl_hooks": {k: _rel(v) for k, v in hooks.items()}} if hooks else {}),
+        # Emitted only when a run hook is set so existing digests do not change.
+        **(
+            {"hooks": {k: [_rel(p) for p in v] for k, v in pnr_cfg.get_hooks().items()}}
+            if pnr_cfg.get_hooks()
+            else {}
+        ),
         # Emitted only when non-default so existing digests do not change; a change regenerates.
         **(
             {

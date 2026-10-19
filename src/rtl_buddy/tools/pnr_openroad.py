@@ -50,6 +50,8 @@ _MACROS_FILE = "macros.tcl"
 _PINS_FILE = "pins.tcl"
 # Ties `blocks:` supply pins and joins top-layer ones to the parent's straps; see `_block_power_tcl`.
 _BLOCK_POWER_FILE = "block_power.tcl"
+# Sources the run's `hooks:` files; see `_hook_procs_block`.
+_HOOKS_FILE = "hooks.tcl"
 
 # Non-log files the flow writes under `$OUT_DIR`; `test_pnr.py` checks this covers every one.
 _FLOW_OUTPUT_NAMES = (
@@ -196,6 +198,36 @@ def _hook_block(title: str, path: str) -> str:
     if not path:
         return ""
     return f'\nputs ">>> {title}"\n{tcl_source(path)}\n'
+
+
+def _run_hook_lines(point: str, paths, indent: str = "") -> str:
+    """Return one announce-and-source pair per hook file of `point`, each line ending in a newline."""
+    return "".join(
+        f"{indent}puts {pnr_checkpoints._tcl_quote(f'>>> Hook {point}: {path}')}\n"
+        f"{indent}rb::hook::run {point} {pnr_checkpoints._tcl_quote(path)}\n"
+        for path in paths
+    )
+
+
+def _run_hook_block(point: str, hooks: dict) -> str:
+    """Return the flow block sourcing a run's hook files at `point`, or `""` when it has none.
+
+    The block carries its own leading newline so a run without hooks renders the template byte-identically.
+    """
+    paths = hooks.get(point)
+    return f"\n{_run_hook_lines(point, paths)}" if paths else ""
+
+
+def _hook_role(point: str) -> str:
+    """Return the manifest input role for a run hook point, such as `hook_after_cts`."""
+    return "hook_" + point.replace("-", "_")
+
+
+def _hook_procs_block(hooks: dict) -> str:
+    """Return the Tcl that defines `rb::hook::run`, or `""` when the run has no hooks."""
+    if not hooks:
+        return ""
+    return f"\n{files(_TEMPLATE_PACKAGE).joinpath(_HOOKS_FILE).read_text()}"
 
 
 def _buffer_ports_tcl(enabled: bool, buffer_cell: str | None) -> str:
@@ -905,6 +937,7 @@ class OpenRoadPnr:
                 escaped = escaped.replace(char, "\\" + char)
             pin_constraints_tcl = f'source "{escaped}"'
         max_fanout = max_fanout_cmd(platform)
+        hooks = self.pnr_cfg.get_hooks()
         substitutions = {
             "pin_constraints_tcl": pin_constraints_tcl,
             "floorplan_pins_block": _floorplan_pins_block(fp),
@@ -935,7 +968,12 @@ class OpenRoadPnr:
             "macro_pack_procs": self._load_macro_pack(),
             "macro_directives_block": _macro_directives_block(fp),
             "initialize_floorplan": _initialize_floorplan_tcl(fp),
-            "macro_place_block": _macro_place_block(fp, macro_pack_directives),
+            # A `macro-placement` hook replaces the packer or RTL-MP inside the macro branch.
+            "macro_place_block": (
+                _run_hook_lines("macro-placement", hooks["macro-placement"], "  ")
+                if "macro-placement" in hooks
+                else _macro_place_block(fp, macro_pack_directives)
+            ),
             "blockages_block": blockages_block,
             "dont_use_block": dont_use_block,
             "dont_use_check_block": dont_use_check_block,
@@ -954,6 +992,25 @@ class OpenRoadPnr:
                 "Tap and endcap cells (tapcell-tcl)", pdk.get_tapcell_tcl()
             ),
             "threads_block": threads_block,
+            "hook_procs_block": _hook_procs_block(hooks),
+            "hook_session_block": _run_hook_block("session", hooks),
+            "hook_after_floorplan_block": _run_hook_block("after-floorplan", hooks),
+            "hook_after_pdn_block": _run_hook_block("after-pdn", hooks),
+            "hook_after_pins_block": _run_hook_block("after-pins", hooks),
+            "hook_after_global_placement_block": _run_hook_block(
+                "after-global-placement", hooks
+            ),
+            "hook_after_repair_design_block": _run_hook_block(
+                "after-repair-design", hooks
+            ),
+            "hook_after_cts_block": _run_hook_block("after-cts", hooks),
+            "hook_after_global_route_block": _run_hook_block(
+                "after-global-route", hooks
+            ),
+            "hook_before_detailed_route_block": _run_hook_block(
+                "before-detailed-route", hooks
+            ),
+            "hook_before_reports_block": _run_hook_block("before-reports", hooks),
             "rcx_block": rcx_block,
             "final_parasitics": final_parasitics,
             "harden_block": (
@@ -2032,6 +2089,10 @@ class OpenRoadPnr:
                 key.replace("-", "_"): _file_fingerprint(path)
                 for key, path in pdk.get_tcl_hooks().items()
             },
+            **{
+                _hook_role(point): [_file_fingerprint(p) for p in paths]
+                for point, paths in self.pnr_cfg.get_hooks().items()
+            },
             "script": _file_fingerprint(script_path),
         }
 
@@ -2219,6 +2280,10 @@ class OpenRoadPnr:
             # Only the configured hooks, so an abstract hardened without any records no extra roles.
             **{
                 key.replace("-", "_"): path for key, path in pdk.get_tcl_hooks().items()
+            },
+            **{
+                _hook_role(point): list(paths)
+                for point, paths in self.pnr_cfg.get_hooks().items()
             },
         }
 
@@ -2454,6 +2519,24 @@ class OpenRoadPnr:
                     desc=f"{key} not found: {path}",
                     fail_stage="setup",
                 )
+
+        for point, paths in self.pnr_cfg.get_hooks().items():
+            for index, path in enumerate(paths):
+                if not os.path.isfile(path):
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "pnr.run_hook_missing",
+                        pnr=self.pnr_cfg.get_name(),
+                        point=point,
+                        index=index,
+                        path=path,
+                    )
+                    return PnrFailResults(
+                        name=self.name + "/results",
+                        desc=f"hooks.{point}[{index}] not found: {path}",
+                        fail_stage="setup",
+                    )
 
         # Read only after detailed route, so check now, before the checkpoint directory is allocated.
         rcx_rules = platform.get_pdk().get_rcx_rules()
