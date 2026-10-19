@@ -41,6 +41,8 @@ file mkdir $OUT_DIR
 # Buffers and fill cells the flow adds after the power grid is built have no
 # supply connections. The rules `add_global_connection` stored in the database
 # cover them; a database without rules (no `pdn-config`) has nothing to apply.
+# The flow applies them at the end of every stage, so a run gives the same
+# result whether or not it writes checkpoints or splits into sessions.
 namespace eval rb {}
 proc rb::global_connect {} {
   if {[llength [[ord::get_db_block] getGlobalConnects]] > 0} {
@@ -112,6 +114,7 @@ puts ">>> IO pin placement"
 {{ floorplan_pins_block }}{{ pin_constraints_tcl }}
 place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
 {{ hook_after_pins_block }}{{ buffer_ports_block }}
+rb::global_connect
 {{ @place }}puts ">>> Global placement"
 {{ gp_blockages_create }}global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}{{ routability_options }}{{ timing_driven_option }}
 {{ gp_blockages_destroy }}{{ hook_after_global_placement_block }}{{ tie_fanout_block }}
@@ -121,6 +124,7 @@ repair_design
 {{ hook_after_repair_design_block }}
 puts ">>> Detail placement (legalize)"
 detailed_placement{{ dpl_options }}
+rb::global_connect
 
 {{ @cts }}puts ">>> Clock tree synthesis"
 {{ @clocks }}set_propagated_clock [all_clocks]
@@ -142,21 +146,23 @@ puts ">>> Detail placement (legalize repair cells)"
 detailed_placement{{ dpl_options }}
 # -verbose names each failing instance.
 check_placement -verbose
+rb::global_connect
 
 {{ @global_route }}# -verbose logs the per-layer usage table (GRT-0096) of every global route.
 puts ">>> Global route"
 {{ @layers }}set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS
 {{ layer_adjustment }}{{ @/layers }}global_route -congestion_iterations 20 -congestion_report_file $CONGESTION_RPT -verbose
-{{ hook_after_global_route_block }}{{ global_route_hold_repair }}{{ @detailed_route }}{{ hook_before_detailed_route_block }}
+{{ hook_after_global_route_block }}{{ global_route_hold_repair }}rb::global_connect
+{{ @detailed_route }}{{ hook_before_detailed_route_block }}
 puts ">>> Detail route"
 detailed_route \
     -output_drc  $OUT_DIR/route.drc.rpt \
     -output_maze $OUT_DIR/route.maze.log \
     -verbose {{ detailed_route_verbose }}
+rb::global_connect
 {{ @finish }}{{ dont_use_check_block }}
 puts ">>> Fill insertion"
 filler_placement $FILL_CELLS
-# Before extraction, so the SPEF and the reports see the design as written.
 rb::global_connect
 {{ rcx_block }}{{ hook_before_reports_block }}
 puts ">>> Final reports"

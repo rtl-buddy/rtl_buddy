@@ -2970,7 +2970,7 @@ def test_pnr_flow_has_no_dont_use_check_without_dont_use_cells(tmp_path):
 
     assert "Don't-use check" not in text
     assert "RB-DONT-USE-VIOLATION" not in text
-    assert '    -verbose 1\n\nputs ">>> Fill insertion"\n' in text
+    assert '    -verbose 1\nrb::global_connect\n\nputs ">>> Fill insertion"\n' in text
 
 
 def test_pnr_flow_checks_dont_use_after_routing_before_fill_and_outputs(tmp_path):
@@ -3430,7 +3430,6 @@ def test_pnr_flow_without_rcx_rules_keeps_the_estimated_final_reports(tmp_path):
 
     assert (
         "filler_placement $FILL_CELLS\n"
-        "# Before extraction, so the SPEF and the reports see the design as written.\n"
         "rb::global_connect\n"
         "\n"
         'puts ">>> Final reports"\n'
