@@ -3924,6 +3924,8 @@ class OpenRoadPnr:
             "pin_constraints": self.pnr_cfg.pin_constraints,
             **self._planner_files(lambda path: path),
             "pdn_config": self._pdn_config(pdk) or None,
+            # Extraction times the final reports, the timing model and any post-route repair.
+            **({"rcx_rules": pdk.get_rcx_rules()} if pdk.get_rcx_rules() else {}),
             # Only the configured hooks, so an abstract hardened without any records no extra roles.
             **{
                 key.replace("-", "_"): path for key, path in pdk.get_tcl_hooks().items()
