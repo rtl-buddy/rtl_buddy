@@ -47,6 +47,7 @@ from .config.fpv import FpvRegConfig, FpvSuiteConfig
 from .config.mut import MutSuiteConfig
 from .config.model import ModelConfig, ModelConfigLoader
 from .config.pnr import GdsMode, PnrSuiteConfig
+from .config.pnr_repair import PnrMode
 from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .cov import model as cov_model
@@ -11017,6 +11018,7 @@ class RtlBuddy:
             "openroad_threads",
             "routed",
             "stopped_after",
+            "mode",
             "global_route_overflow",
             "resumed_from",
             "checkpoint_dir",
@@ -11401,8 +11403,9 @@ class RtlBuddy:
                 metavar="STAGE",
                 help=(
                     "end the run after STAGE (floorplan, place, cts, "
-                    "global_route, detailed_route): write its checkpoint and a "
-                    "stage report; the result is a PASS with routed: false, "
+                    "global_route, detailed_route, or post_route_repair when "
+                    "the run sets post-route-repair): write its checkpoint and "
+                    "a stage report; the result is a PASS with routed: false, "
                     "and no routed outputs or abstract. Needs a single named run"
                 ),
                 show_default="run to the end",
@@ -11431,8 +11434,9 @@ class RtlBuddy:
                 metavar="STAGE",
                 help=(
                     "the first stage a --resume runs (place, cts, global_route, "
-                    "detailed_route, finish); it starts from the resumed run's "
-                    "checkpoint of the stage before"
+                    "detailed_route, post_route_repair when the run sets "
+                    "post-route-repair, finish); it starts from the resumed "
+                    "run's checkpoint of the stage before"
                 ),
             ),
         ] = None,
@@ -11638,6 +11642,7 @@ class RtlBuddy:
                     name=f"{planned.name}/results",
                     desc=f"did not finish: {exc}",
                     fail_stage="error",
+                    fields={"mode": planned.cfg.get_mode().value},
                 ),
             }
 
@@ -11686,6 +11691,7 @@ class RtlBuddy:
                 name=f"{run.get_name()}/results",
                 desc=(f"reglvl {pnr_level} above {reg_level}"),
             )
+            res.results["mode"] = run.get_mode().value
             return {**row, "results": res}
         # An XFAIL passes the suite but delivers no abstract.
         blocked_by = [
@@ -11711,7 +11717,10 @@ class RtlBuddy:
                 name=f"{run.get_name()}/results",
                 desc=f"blocked: {noun} {names} did not pass",
                 fail_stage="blocked",
-                fields={"blocked_by": [dep.block for dep in blocked_by]},
+                fields={
+                    "blocked_by": [dep.block for dep in blocked_by],
+                    "mode": run.get_mode().value,
+                },
             )
             return {**row, "results": res}
         synth_row = None
@@ -11726,7 +11735,7 @@ class RtlBuddy:
                         f"{synth_row['desc']}"
                     ),
                     fail_stage="synth",
-                    fields={"synth": synth_row},
+                    fields={"synth": synth_row, "mode": run.get_mode().value},
                 )
                 return {**row, "results": res}
         runner = PnrRunner(
@@ -11745,8 +11754,9 @@ class RtlBuddy:
             dispatch=dispatch,
         )
         res = runner.run()
-        # A stopped run is no verdict on the routed design, so `xfail` does not apply.
-        if run.is_xfail() and stop_after is None:
+        res.results.setdefault("mode", run.get_mode().value)
+        # A stopped run, which a probe is, is no verdict on the routed design, so `xfail` applies neither way.
+        if run.is_xfail() and stop_after is None and run.get_mode() is PnrMode.CLOSURE:
             self._apply_xfail_logged(res, run, "pnr_suite.xfail")
         if synth_row is not None:
             res.results["synth"] = synth_row

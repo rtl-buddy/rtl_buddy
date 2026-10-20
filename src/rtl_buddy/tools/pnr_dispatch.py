@@ -54,7 +54,7 @@ DISPATCH_DIRNAME = "dispatch"
 JOBS_NAME = "jobs.json"
 GIVEN_UP_NAME = "given_up"
 
-#: Allocation source of the thread plan the head writes into a dispatched stage's script: the CPUs it asks the job for. The job sets the count again from the CPUs it receives (`_set_job_threads`).
+#: Allocation source of the thread plan the head writes into a dispatched stage's script: the CPUs it asks the job for. The job sets the count again from the CPUs it receives (`job_scripts`).
 JOB_CPUS_SOURCE = "requested cpus"
 
 #: `fail_stage` of a stage the scheduler ended, or that never ran; an `xfail:` never excuses it.
@@ -1186,7 +1186,7 @@ def job_scripts(run_dir: str, scripts: list[str], rewrite):
 def _job_thread_plan(stage: str, manifest: dict, *, run_name: str):
     """The thread plan of `stage` for the CPUs this job received, or None when the run sets no thread count.
 
-    The head wrote the count its plan gave for the CPUs it asked for; `sbatch-args` or the site can change what the job gets, so the job resolves `threads:` (recorded in the manifest's `dispatch`) again against its own allocation (`detect_allocation`). The thread count is not part of the stage's identity (`pnr_stages`), so the checkpoint is the same either way.
+    The head wrote the count its plan gave for the CPUs it asked for; `sbatch-args` or the site can change what the job gets, so the job resolves `threads:` (recorded in the manifest's `dispatch`) again against its own allocation (`detect_allocation`). Every script the stage runs gets it, each post-route repair session too (`stage_scripts`). The thread count is not part of the stage's identity (`pnr_stages`), so the checkpoint is the same either way.
     """
     entry = ((manifest.get("dispatch") or {}).get("stages") or {}).get(stage) or {}
     requested = entry.get("threads_requested")
@@ -1215,9 +1215,9 @@ def _artefact_dir(run_dir: str) -> str:
 def run_stage_job(run_dir: str, stage: str, *, openroad: str, pnr_log: str) -> bool:
     """Run `stage` of the staged run in `run_dir` inside a dispatched job; return whether it ended cleanly.
 
-    Writes `dispatch/NN_<stage>.result.json` for the head. The stage itself runs as in a local staged run, with the job's id and host added to its stage events, and from a copy of its script with the thread count the job's CPUs give (`job_scripts`). When rb gave the run up while the stage ran, the job removes the stage's outputs from the artefact directory once the stage ends, and the stage fails (`_discard_given_up_stage`).
+    Writes `dispatch/NN_<stage>.result.json` for the head. The stage itself runs as in a local staged run, with the job's id and host added to its stage events, and from a copy of each of its scripts, every post-route repair session's too (`stage_scripts`), with the thread count the job's CPUs give (`job_scripts`). When rb gave the run up while the stage ran, the job removes the stage's outputs from the artefact directory once the stage ends, and the stage fails (`_discard_given_up_stage`).
     """
-    from .pnr_openroad import run_stage
+    from .pnr_openroad import run_stage, stage_scripts
 
     see_job_writes(run_dir, pnr_log)
     refused = _refusal(run_dir, stage)
@@ -1242,13 +1242,19 @@ def run_stage_job(run_dir: str, stage: str, *, openroad: str, pnr_log: str) -> b
     plan = _job_thread_plan(stage, manifest, run_name=run_name)
     if plan is not None:
         fields["thread_plan"] = plan.fields()
-    script = os.path.join(run_dir, f"{stage_name(stage)}.tcl")
+    scripts = []
+    if plan is not None:
+        try:
+            scripts = stage_scripts(run_dir, stage)
+        except (OSError, ValueError, KeyError):
+            # The stage reads the same plan and reports why it cannot.
+            scripts = [os.path.join(run_dir, f"{stage_name(stage)}.tcl")]
     try:
         with (
             open(pnr_log, "ab") as log,
             job_scripts(
                 run_dir,
-                [script] if plan is not None else [],
+                scripts,
                 _with_threads(plan.count) if plan is not None else None,
             ),
         ):

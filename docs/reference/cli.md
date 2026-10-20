@@ -707,11 +707,12 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 │                                               hardened                               │
 │ --stop-after            STAGE                 end the run after STAGE (floorplan,    │
 │                                               place, cts, global_route,              │
-│                                               detailed_route): write its checkpoint  │
-│                                               and a stage report; the result is a    │
-│                                               PASS with routed: false, and no routed │
-│                                               outputs or abstract. Needs a single    │
-│                                               named run                              │
+│                                               detailed_route, or post_route_repair   │
+│                                               when the run sets post-route-repair):  │
+│                                               write its checkpoint and a stage       │
+│                                               report; the result is a PASS with      │
+│                                               routed: false, and no routed outputs   │
+│                                               or abstract. Needs a single named run  │
 │                                               [default: (run to the end)]            │
 │ --resume                RUN                   resume a staged run (stages: true) in  │
 │                                               a new checkpoint run directory:        │
@@ -726,9 +727,10 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 │                                               environment variables, are not checked │
 │ --from                  STAGE                 the first stage a --resume runs        │
 │                                               (place, cts, global_route,             │
-│                                               detailed_route, finish); it starts     │
-│                                               from the resumed run's checkpoint of   │
-│                                               the stage before                       │
+│                                               detailed_route, post_route_repair when │
+│                                               the run sets post-route-repair,        │
+│                                               finish); it starts from the resumed    │
+│                                               run's checkpoint of the stage before   │
 │ --dispatch              BACKEND               slurm: run each stage as its own job,  │
 │                                               each held until the one before         │
 │                                               succeeds, sized by the run's           │

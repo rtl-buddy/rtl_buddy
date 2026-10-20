@@ -42,8 +42,10 @@ from rtl_buddy.dispatch.slurm import SlurmDispatchBackend
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy import logging_utils
 from rtl_buddy.runner.xfail import apply_xfail
-from rtl_buddy.tools import pnr_checkpoints, pnr_dispatch, pnr_openroad
+from rtl_buddy.tools import pnr_checkpoints, pnr_dispatch, pnr_openroad, pnr_stages
 
+#: A run without post-route repair.
+_STAGES = pnr_stages.TEMPLATE_STAGES
 _NAMES = {
     stage: f"{pnr_checkpoints.STAGE_INDEX[stage]}_{stage}" for stage in PNR_STAGES
 }
@@ -356,14 +358,14 @@ def test_a_dispatched_run_submits_one_chained_job_per_stage(tmp_path, monkeypatc
     assert res.results["routed"] is True
     run_dir = _only_run(artefacts)
     jobs = slurm.submitted()
-    assert [_stage_of(j) for j in jobs] == list(PNR_STAGES)
-    assert [j["state"] for j in jobs] == ["COMPLETED"] * len(PNR_STAGES)
+    assert [_stage_of(j) for j in jobs] == list(_STAGES)
+    assert [j["state"] for j in jobs] == ["COMPLETED"] * len(_STAGES)
     assert jobs[0]["dependency"] is None
     assert "--kill-on-invalid-dep=yes" not in jobs[0]["argv"]
     for before, job in zip(jobs, jobs[1:]):
         assert job["dependency"] == before["id"]
         assert "--kill-on-invalid-dep=yes" in job["argv"]
-    for stage, job in zip(PNR_STAGES, jobs):
+    for stage, job in zip(_STAGES, jobs):
         flags = job["flags"]
         assert flags["--job-name"] == f"rb:pnr:demo_pnr:{stage}"
         assert flags["--chdir"] == str(tmp_path)
@@ -382,23 +384,23 @@ def test_a_dispatched_run_submits_one_chained_job_per_stage(tmp_path, monkeypatc
     ]
     # Each job measured its own stage and named itself in the stage's events.
     ended = [e for e in _events(run_dir) if e["event"] == "stage_end"]
-    assert [e["stage"] for e in ended] == list(PNR_STAGES)
+    assert [e["stage"] for e in ended] == list(_STAGES)
     assert [e["slurm_job"] for e in ended] == [j["id"] for j in jobs]
     assert all(e["measured_by"] == "process" for e in ended)
     assert all(e["status"] == "ok" for e in ended)
     assert all(e["threads"] == 1 for e in ended)
-    for stage in PNR_STAGES:
+    for stage in _STAGES:
         result = pnr_dispatch.read_result(str(run_dir), stage)
         assert result["ok"] is True and result["started"] is True
     # pnr.log is the stage logs in order, as in a local staged run.
     assert (artefacts / "pnr.log").read_bytes() == b"".join(
-        (run_dir / f"{_NAMES[stage]}.log").read_bytes() for stage in PNR_STAGES
+        (run_dir / f"{_NAMES[stage]}.log").read_bytes() for stage in _STAGES
     )
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert manifest["staged"] is True
     assert manifest["dispatch"]["backend"] == "slurm"
-    assert list(manifest["dispatch"]["stages"]) == list(PNR_STAGES)
-    assert list(manifest["resources"]) == list(PNR_STAGES)
+    assert list(manifest["dispatch"]["stages"]) == list(_STAGES)
+    assert list(manifest["resources"]) == list(_STAGES)
     assert manifest["outcome"]["result"] == "PASS"
 
 
@@ -408,7 +410,7 @@ def test_dispatch_makes_a_run_staged_whatever_its_config_says(tmp_path, monkeypa
     )
 
     assert backend.run().results["result"] == "PASS"
-    assert len(slurm.submitted()) == len(PNR_STAGES)
+    assert len(slurm.submitted()) == len(_STAGES)
 
 
 def test_stage_reservations_layer_field_by_field(tmp_path, monkeypatch):
@@ -435,7 +437,7 @@ def test_stage_reservations_layer_field_by_field(tmp_path, monkeypatch):
         assert flags["--time"] == "01:00:00"
     run_dir = _only_run(artefacts)
     # `threads: auto` takes each job's CPU count.
-    for stage in PNR_STAGES:
+    for stage in _STAGES:
         script = (run_dir / f"{_NAMES[stage]}.tcl").read_text()
         count = 16 if stage == "detailed_route" else 4
         assert f"set_thread_count {count}\n" in script
@@ -480,7 +482,7 @@ def test_threads_auto_takes_the_cpus_the_job_received(tmp_path, monkeypatch):
     assert manifest["dispatch"]["stages"]["cts"]["threads"] == 4
     # Each job ran a copy of its stage script; the recorded one matches the manifest.
     chain = {entry["stage"]: entry["script"] for entry in manifest["chain"]}
-    for stage in PNR_STAGES:
+    for stage in _STAGES:
         recorded = run_dir / f"{_NAMES[stage]}.tcl"
         assert "set_thread_count 4\n" in recorded.read_text()
         fingerprint = pnr_openroad._file_fingerprint(str(recorded))
@@ -512,7 +514,7 @@ def test_a_fixed_thread_count_is_the_same_in_every_stage(tmp_path, monkeypatch):
     assert backend.run().results["result"] == "PASS"
 
     run_dir = _only_run(artefacts)
-    for stage in PNR_STAGES:
+    for stage in _STAGES:
         assert "set_thread_count 2\n" in (run_dir / f"{_NAMES[stage]}.tcl").read_text()
 
 
@@ -724,7 +726,7 @@ def test_a_stage_whose_job_did_not_complete_fails_though_it_wrote_its_result(
         f"the stage succeeded and wrote its result (see {log})"
     )
     assert res.results["fail_stage"] == "dispatch"
-    later = PNR_STAGES[PNR_STAGES.index(stage) + 1 :]
+    later = _STAGES[_STAGES.index(stage) + 1 :]
     assert [jobs[s]["state"] for s in later] == ["CANCELLED"] * len(later)
     apply_xfail(res)
     assert res.results["result"] == "FAIL"
@@ -751,11 +753,11 @@ def test_a_result_is_taken_as_written_when_accounting_has_no_state(
     ]
     ids = [j["id"] for j in slurm.submitted()]
     assert warning.rtl_fields["job_ids"] == ids
-    assert warning.rtl_fields["stages"] == [_NAMES[s] for s in PNR_STAGES]
+    assert warning.rtl_fields["stages"] == [_NAMES[s] for s in _STAGES]
     assert warning.getMessage() == (
         f'P&R "demo_pnr": Slurm accounting has no end state for stage job(s) '
         f"{' '.join(ids)}, so the results of "
-        f"{', '.join(_NAMES[s] for s in PNR_STAGES)} are taken as the jobs wrote them"
+        f"{', '.join(_NAMES[s] for s in _STAGES)} are taken as the jobs wrote them"
     )
 
 
@@ -827,7 +829,7 @@ def test_an_interrupt_cancels_this_runs_jobs_and_no_others(
     if raised is SystemExit:
         assert caught.value.code == 128 + signum
     ours = [j["id"] for j in slurm.submitted() if j["id"] != "9001"]
-    assert len(ours) == len(PNR_STAGES)
+    assert len(ours) == len(_STAGES)
     assert sorted(slurm.cancelled) == sorted(ours)
     assert slurm.jobs["9001"]["state"] == "RUNNING"
     run_dir = _only_run(artefacts)
@@ -1055,7 +1057,7 @@ def test_a_job_opens_the_directories_before_it_checks_whether_its_run_was_given_
 
     dispatch_dir = str(_only_run(artefacts) / "dispatch")
     sessions = [i for i, entry in enumerate(seen) if entry == ("session",)]
-    assert len(sessions) == len(PNR_STAGES)
+    assert len(sessions) == len(_STAGES)
     for start in sessions:
         checked = seen.index(("check",), start)
         assert ("list", dispatch_dir) in seen[start:checked]
@@ -1447,7 +1449,7 @@ def test_stop_after_dispatches_only_the_stages_it_runs(tmp_path, monkeypatch):
     assert res.results["result"] == "PASS", res.results
     assert res.results["routed"] is False
     assert res.results["stopped_after"] == "global_route"
-    assert [_stage_of(j) for j in slurm.submitted()] == list(PNR_STAGES[:4])
+    assert [_stage_of(j) for j in slurm.submitted()] == list(_STAGES[:4])
 
 
 def test_a_resumed_dispatch_submits_only_the_stages_it_runs(tmp_path, monkeypatch):

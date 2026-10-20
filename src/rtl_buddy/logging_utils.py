@@ -2097,6 +2097,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{_capped_names(fields.get('commands'))}, which later stage "
                 "sessions do not have"
             )
+        case "pnr.post_route_eco_unguarded":
+            return (
+                f'P&R "{fields.get("pnr")}": post-route repair round(s) '
+                f"{_capped_names(fields.get('rounds'))} ran their eco repairs on "
+                "detailed-routing parasitics, since this OpenROAD's repair_timing "
+                "does not call design_is_routed; they may fail RSZ-0074, which "
+                "post-route-repair.reroute: full avoids"
+            )
         case "pnr.stage_job_submitted":
             after = fields.get("dependency")
             return (
@@ -2247,9 +2255,50 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 + (f" ({fields.get('error')})" if fields.get("error") else "")
             )
         case "pnr.stopped":
+            why = "mode: probe" if fields.get("mode") == "probe" else "--stop-after"
             return (
                 f'P&R "{fields.get("pnr")}" stopped after {fields.get("stage")} '
-                f"(--stop-after, not routed); checkpoint {fields.get('checkpoint')}"
+                f"({why}, not routed); checkpoint {fields.get('checkpoint')}"
+            )
+        case "pnr.post_route_round":
+
+            def _ns(ps):
+                return "n/a" if ps is None else f"{ps / 1000:.3f} ns"
+
+            def _wns(side):
+                if side in (fields.get("unconstrained") or ()):
+                    return "unconstrained"
+                return _ns(fields.get(f"wns_{side}_ps"))
+
+            timing = (
+                f"setup WNS {_wns('setup')} "
+                f"TNS {_ns(fields.get('tns_ps'))}, "
+                f"hold WNS {_wns('hold')} "
+                f"TNS {_ns(fields.get('tns_hold_ps'))}"
+            )
+            if fields.get("repair"):
+                margins = ", ".join(
+                    f"{kind} margin {fields.get(f'{kind}_margin_ns'):g} ns"
+                    for kind in ("setup", "hold")
+                    if fields.get(f"{kind}_margin_ns") is not None
+                )
+                then = f"repairing ({margins or 'repair_design only'})"
+            else:
+                then = "no repair"
+            return (
+                f'P&R "{fields.get("pnr")}" post-route repair round '
+                f"{fields.get('round')}/{fields.get('rounds')}: {timing}; {then}"
+            )
+        case "pnr.post_route_repair_done":
+            return (
+                f'P&R "{fields.get("pnr")}" post-route repair: '
+                f"{fields.get('repaired_rounds')} of {fields.get('rounds')} round(s) "
+                f"repaired; stopped: {fields.get('reason')}"
+            )
+        case "pnr.post_route_repair_without_rcx":
+            return (
+                f'P&R "{fields.get("pnr")}": post-route-repair needs rcx-rules on '
+                f"PDK '{fields.get('pdk')}'; OpenROAD was not started"
             )
         case "pnr.checkpoint_manifest_failed":
             return (
