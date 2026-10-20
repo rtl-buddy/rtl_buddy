@@ -92,7 +92,7 @@ if {[llength $macros] > 0} {
         [expr {[$bbox xMax] + $halo_x_dbu}] [expr {[$bbox yMax] + $halo_y_dbu}] \
         $inst
   }
-}{{ no_macros_block }}
+}
 {{ tapcell_block }}{{ pdn_block }}{{ hook_after_pdn_block }}
 # Pins are placed after the macros and power grid so the pin placer sees placed
 # macros (unplaced ones raise PPL-0015). `place_pins` only avoids boundary
@@ -103,14 +103,14 @@ puts ">>> IO pin placement"
 place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
 {{ hook_after_pins_block }}{{ buffer_ports_block }}
 puts ">>> Global placement"
-{{ gp_blockages_create }}global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}{{ routability_options }}
-{{ gp_blockages_destroy }}{{ hook_after_global_placement_block }}{{ tie_fanout_block }}
+global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}{{ routability_options }}
+{{ hook_after_global_placement_block }}{{ tie_fanout_block }}
 puts ">>> Resize"
 estimate_parasitics -placement
 repair_design
 {{ hook_after_repair_design_block }}
 puts ">>> Detail placement (legalize)"
-detailed_placement{{ dpl_options }}
+detailed_placement
 
 puts ">>> Clock tree synthesis"
 set_propagated_clock [all_clocks]
@@ -120,7 +120,7 @@ clock_tree_synthesis \
     {{ cts_clustering_option }}{{ cts_ndr_option }}
 {{ hook_after_cts_block }}
 puts ">>> Detail placement (post-CTS)"
-detailed_placement{{ dpl_options }}
+detailed_placement
 
 puts ">>> Post-CTS timing repair"
 estimate_parasitics -placement
@@ -129,7 +129,7 @@ estimate_parasitics -placement
 # repair_timing inserts unlegalized buffers; without this pass the
 # detailed router fails with DRT-0073.
 puts ">>> Detail placement (legalize repair cells)"
-detailed_placement{{ dpl_options }}
+detailed_placement
 # -verbose names each failing instance.
 check_placement -verbose
 

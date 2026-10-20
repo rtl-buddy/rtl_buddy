@@ -2230,9 +2230,8 @@ def test_pnr_template_legalizes_after_every_cell_inserting_repair():
     from importlib.resources import files
 
     template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
-    # `{{ dpl_options }}` adds options to `detailed_placement`, not passes.
     commands = [
-        line.strip().replace("{{ dpl_options }}", "")
+        line.strip()
         for line in template.splitlines()
         if line.strip() and not line.strip().startswith(("#", "puts "))
     ]

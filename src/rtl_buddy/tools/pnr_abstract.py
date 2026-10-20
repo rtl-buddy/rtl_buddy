@@ -15,15 +15,9 @@ from pathlib import Path
 from ..config.blocks import BlockRef
 from ..config.pdk import (
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
-    DEFAULT_ROTATED_MACRO_FOOTPRINT,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
 )
-from ..config.pnr import (
-    ABSTRACT_BLOAT_OCCUPIED,
-    BlockageLifetime,
-    MacroPlacement,
-    PnrAbstract,
-)
+from ..config.pnr import ABSTRACT_BLOAT_OCCUPIED, MacroPlacement, PnrAbstract
 from .artifact_paths import project_relative, project_root_or_none
 
 ABSTRACT_DIR_NAME = "abstract"
@@ -267,7 +261,6 @@ def abstract_config(pnr_cfg, platform) -> dict:
         return project_relative(path, root) if root and path else path
 
     fp = pnr_cfg.get_floorplan()
-    platform = platform.with_run_placement(pnr_cfg.get_placement(), pnr_cfg.get_name())
     hooks = dict(platform.get_pdk().get_tcl_hooks())
     return {
         "platform": pnr_cfg.get_platform(),
@@ -301,12 +294,6 @@ def abstract_config(pnr_cfg, platform) -> dict:
                     "rect": list(b.rect),
                     "type": str(b.type),
                     "max_density": b.max_density,
-                    # Emitted only when non-default so existing digests do not change.
-                    **(
-                        {"lifetime": str(b.lifetime)}
-                        if b.lifetime is not BlockageLifetime.FLOW
-                        else {}
-                    ),
                 }
                 for b in fp.blockages
             ],
@@ -318,12 +305,6 @@ def abstract_config(pnr_cfg, platform) -> dict:
             ),
             **({"pins": [_pin_config(p) for p in fp.pins]} if fp.pins else {}),
             **({"macros": [_macro_config(m) for m in fp.macros]} if fp.macros else {}),
-            # Planner files by path; their contents are fingerprinted as inputs.
-            **({"macros_file": _rel(fp.macros_file)} if fp.macros_file else {}),
-            **({"macro_snap": False} if not fp.macro_snap else {}),
-            **({"pins_file": _rel(fp.pins_file)} if fp.pins_file else {}),
-            **({"pin_snap": False} if not fp.pin_snap else {}),
-            **({"pins_complete": True} if fp.pins_complete else {}),
             **(
                 {"die_area": list(fp.die_area), "core_area": list(fp.core_area)}
                 if fp.die_area is not None
@@ -365,16 +346,6 @@ def abstract_config(pnr_cfg, platform) -> dict:
             **(
                 {"routability_use_grt": True}
                 if platform.get_placement_routability_use_grt() is True
-                else {}
-            ),
-            **(
-                {
-                    "rotated_macro_footprint": str(
-                        platform.get_placement_rotated_macro_footprint()
-                    )
-                }
-                if platform.get_placement_rotated_macro_footprint()
-                != DEFAULT_ROTATED_MACRO_FOOTPRINT
                 else {}
             ),
         },

@@ -51,11 +51,10 @@ The generated `pnr.tcl` runs these steps in order:
 
 1. Source `platform-tcl` when set, read Liberty, LEF, the synthesis netlist and the SDC, set the design's max fanout when `max-fanout` is set, then source `layer-rc-tcl` when set.
 2. Initialize the floorplan, create routing tracks and run `insert_tiecells` for the PDK's `tie-hi` and `tie-lo` ports, one tie cell per constant net.
-3. Place macros, insert tap and endcap cells when `tapcell-tcl` is set, build the power grid and place the IO pins, checking [`pins-complete`](#check-that-every-port-is-placed) when set, then run `buffer_ports -inputs -outputs` when the run buffers its ports (`buffer-ports`, on by default for `harden: true`; see [Harden a block](#harden-a-block)).
-4. Create the [`lifetime: global-placement`](#floorplan-controls) blockages and the [rotated-macro](#rotate-a-macro) blockages, run global placement, with `-reference_hpwl` when `placement.reference-hpwl` is set and `-routability_driven` / `-routability_use_grt` when `placement.routability-driven` / `placement.routability-use-grt` are `true`, and remove those blockages again. Then run `repair_tie_fanout` for each tie port, which gives every constant-driven load its own tie cell `placement.tie-separation` microns away (default 0).
+3. Place macros, insert tap and endcap cells when `tapcell-tcl` is set, build the power grid and place the IO pins, then run `buffer_ports -inputs -outputs` when the run buffers its ports (`buffer-ports`, on by default for `harden: true`; see [Harden a block](#harden-a-block)).
+4. Run global placement, with `-reference_hpwl` when `placement.reference-hpwl` is set and `-routability_driven` / `-routability_use_grt` when `placement.routability-driven` / `placement.routability-use-grt` are `true`, then `repair_tie_fanout` for each tie port, which gives every constant-driven load its own tie cell `placement.tie-separation` microns away (default 0).
 5. Run `repair_design`, legalization, clock-tree synthesis (with `-apply_ndr` when `cts-apply-ndr` is set), setup repair when `post-cts-setup-repair` is set, hold repair and a final legalization.
 6. Route globally with `-verbose` and a congestion report, after `set_global_routing_layer_adjustment` when `routing-layer-adjustment` is set, repair hold on the global-route parasitics when `global-route-hold-repair` is set, route in detail at the run's `detailed-route-verbose` level, insert fill, extract parasitics when `rcx-rules` is set, then write reports and outputs.
-7. After OpenROAD exits, compare the routed DEF with every macro the floorplan located and every pin it placed exactly; see [Check the routed floorplan](#check-the-routed-floorplan).
 
 A tie port the PDK leaves unset gets neither tie step.
 
@@ -77,7 +76,7 @@ A pass is qualified with `pnr.no_wire_rc` when the pre-route steps had no wire R
 
 `max_slew_violation_count`, `max_capacitance_violation_count` and `max_fanout_violation_count` count the routed design's pins that break a Liberty or SDC max-slew, max-capacitance or max-fanout limit, over every corner, as ORFS's `report_metrics` counts them. The summary shows them as the Slew/Cap/Fanout column, `pnr.log` prints them as `RB-ELECTRICAL: max_<check> <n>` after `>>> Final reports`, and `electrical.rpt` lists the violating pins. A pass with any violator is qualified `electrical N max-slew, ... violator(s)` and logs the warning `pnr.electrical_violators`. A count OpenROAD cannot report is left out.
 
-A run passes when OpenROAD exits 0 with no `[ERROR ...]` line, the routed DEF keeps every located macro and exact pin where the floorplan put it, and, under `gds-mode: strict`, the requested export was delivered complete. With `fail-on-electrical: true` a run with any electrical violator also fails, with no `fail_stage`, so `xfail:` can excuse it; it keeps its routed outputs and publishes no abstract. It skips when `reglvl` filters it out or `tool:` is unsupported. Timing violations and DRC counts are metrics only; gate signoff on them in your project.
+A run passes when OpenROAD exits 0 with no `[ERROR ...]` line and, under `gds-mode: strict`, the requested export was delivered complete. With `fail-on-electrical: true` a run with any electrical violator also fails, with no `fail_stage`, so `xfail:` can excuse it; it keeps its routed outputs and publishes no abstract. It skips when `reglvl` filters it out or `tool:` is unsupported. Timing violations and DRC counts are metrics only; gate signoff on them in your project.
 
 On a multi-corner platform, `wns_setup_ps`, `wns_hold_ps`, `tns_ps` and `tns_hold_ps` are the worst across corners. The result also names the `worst_setup_corner` and `worst_hold_corner` and lists each corner's own four values under `corners`, so setup at the slow corner and hold at the fast corner can be read separately; `pnr.log` has them after `>>> Per-corner timing`.
 
@@ -170,19 +169,8 @@ cfg-pnr-platforms:
 - **`placement.macro-cell-halo`** (default 1.0 µm) keeps standard cells off macros with a hard blockage. Without it, the router can report a Metal Spacing violation at a pin on a hardened block's edge. `0` disables it.
 - **`placement.tie-separation`** (default 0 µm) is how far from its load each per-load tie cell is placed; see [Flow steps](#flow-steps).
 - **`placement.reference-hpwl`** (positive number, unset by default) passes `-reference_hpwl` to `global_placement`. Unset, the placer's density-penalty controller derives its reference HPWL from the design size, which on a large design spreads cells less and ends routability inflation early, so global route can overflow. A fixed value such as `446000000` spreads cells further and can clear the overflow.
-- **`placement.rotated-macro-footprint`** (`block`, `diamond-legalizer` or `none`; default `block`) works around OpenROAD's legalizer for macros turned by 90 degrees; see [Rotate a macro](#rotate-a-macro).
 - **`placement.routability-driven`** (default `false`) adds `-routability_driven` to `global_placement`: the placer estimates congestion, inflates cells in congested regions and re-spreads them. Turn it on for a congested block whose global route overflows. **`placement.routability-use-grt`** (default `false`) adds `-routability_use_grt`, which estimates that congestion with the global router instead of RUDY; slower, closer to the real route. It takes effect only in routability mode, so a platform whose resolved settings enable it without `routability-driven` fails to load. Like the other `placement.*` keys, each is set on the PDK and overridden per platform.
 - **`cts-buffer`** takes a name or a list. With a list, the first entry is the root buffer.
-- A run may set its own `placement:` block in `pnr.yaml` with any of these keys. It overrides the platform, which overrides the PDK, field by field, and the `routability-use-grt` rule applies to the resolved values:
-
-  ```yaml
-  runs:
-    - name: blk_pnr
-      # ...
-      placement:
-        density: 0.25
-        rotated-macro-footprint: diamond-legalizer
-  ```
 - **`port-buffer`** (unset by default) is the cell `buffer_ports` inserts on each port of a run with `buffer-ports` on, passed as `-buffer_cell`; unset lets OpenROAD choose. See [Harden a block](#harden-a-block).
 - **`cts-sink-clustering`** (default `true`) passes `-sink_clustering_enable` to CTS. Set it to `false` when CTS fails with `CTS-0080 Sink not found`, as it can on coincident clock pins or a large ASAP7 clock tree.
 - **`cts-apply-ndr`** (unset by default) passes `-apply_ndr` (`none`, `root_only`, `half` or `full`) to CTS; unset keeps OpenROAD's default, `half`. Set `none` when the global router detours clock nets that carry non-default rules to several times their Manhattan length, which shows as large hold violations and `GRT-0273 Disabled NDR` in the log.
@@ -320,7 +308,7 @@ When macros do not fit, the run fails with `N macros do not fit the W x H um flo
       macro-placement: rtl-mp
 ```
 
-RTL-MP places macros by connectivity and wirelength and may flip them (`MX`, `MY` or `R180`), but never [turns](#rotate-a-macro) one by 90 degrees. Macros end up `LOCKED` on the track grid, and reports go to `artefacts/<run>/rtlmp/`. Use it for a flat netlist with many memories or when timing depends on macro placement; on the template's sky130hd assembly it gave about 0.8 ns better setup slack than the packer.
+RTL-MP places macros by connectivity and wirelength and may rotate them. Macros end up `LOCKED` on the track grid, and reports go to `artefacts/<run>/rtlmp/`. Use it for a flat netlist with many memories or when timing depends on macro placement; on the template's sky130hd assembly it gave about 0.8 ns better setup slack than the packer.
 
 - It keeps `placement.macro-halo` around every macro and keeps macros out of every placement blockage, including `soft` and `partial` ones that the packer lets macros sit on.
 - [`macro-cell-halo`](#tune-the-process-dependent-steps) and the power grid apply afterwards as usual.
@@ -354,23 +342,11 @@ Two optional `floorplan` keys steer where macros and standard cells may go.
 
 A row cut rounds outward to whole sites, so the remnants stay on the site grid. A remnant narrower than twice the row height is dropped. The power grid's followpins follow the cut rows.
 
-**Global-placement-only blockages.** `lifetime: global-placement` on an entry of any type (default `flow`) makes it a screen for global placement alone:
-
-```yaml
-      blockages:
-        - rect: [400, 300, 520, 420]
-          type: partial
-          max-density: 0.35
-          lifetime: global-placement
-```
-
-It is created immediately before `global_placement` and removed immediately after, by the handle the flow created, so legalization, repair and routing never see it. No row is cut under it, the packer and RTL-MP do not avoid it, and no [checkpoint](#keep-stage-checkpoints) holds it.
-
 Blockages need OpenROAD 26Q1 or newer; on an older build the run fails at setup. A malformed rectangle (`x0 >= x1`, `y0 >= y1`, a side under 0.001 µm, a negative coordinate, or not four numbers), an unknown type, or `max-density` on anything but `partial` fails when `pnr.yaml` loads.
 
 ## Place individual macros
 
-`floorplan.macros` gives individual macros a fixed location, an orientation or their own standard-cell halo. Each entry names an `instance`, by its full hierarchical name or a glob over the names. A floorplanner's output can come from a [file](#read-macros-and-pins-from-planner-files) instead:
+`floorplan.macros` gives individual macros a fixed location, an orientation or their own standard-cell halo. Each entry names an `instance`, by its full hierarchical name or a glob over the names:
 
 ```yaml
     floorplan:
@@ -386,83 +362,17 @@ Blockages need OpenROAD 26Q1 or newer; on an older build the run fails at setup.
 | Key | Meaning |
 | --- | --- |
 | `instance` | A macro instance name as OpenROAD reads it from the netlist, such as `u_inner/u_hist_mem/u_sram`. A name that is not an instance is matched as a glob, where `*` also crosses `/`. |
-| `location` | `[x, y]`, the lower-left corner of the macro's box after orientation, in die microns. The macro is fixed (`LOCKED`) before the packer or RTL-MP runs, and both leave it there. The pattern must match exactly one macro. |
-| `orientation` | `R0`, `R90`, `R180`, `R270`, `MX`, `MY`, `MXR90` or `MYR90`. Applied before any location and before placement, so a packed macro keeps it. See [Rotate a macro](#rotate-a-macro). |
+| `location` | `[x, y]`, the macro's lower-left corner in die microns, after orientation. The macro is fixed (`LOCKED`) before the packer or RTL-MP runs, and both leave it there. The pattern must match exactly one macro. |
+| `orientation` | `R0`, `R180`, `MX` or `MY`. Applied before placement, so a packed macro keeps it. |
 | `halo` | `[x, y]` in microns. Replaces `placement.macro-cell-halo` for the matched macros: no standard cell is placed within `x` of the macro's left and right edges or `y` of its top and bottom. `[0, 0]` removes the halo. |
 
 - A location snaps to the nearest standard-cell site and row from the core's lower-left corner, the grid the packer also uses, so the macro's bottom edge lies on a row boundary. A macro that fits the core before snapping still fits after. The log shows `fixed <inst> at (x, y) um <orientation> (requested (x, y))`.
-- `floorplan.macro-snap: false` (default `true`) places every located macro at its exact location, rounded once to the database unit, off the site and row grid. The location is then the floorplanner's to keep on the grids the flow relies on: a macro whose bottom edge lies between two rows can fail legalization with `DPL-0011`.
 - A fixed macro must lie inside the core and must not overlap another fixed macro; either fails the run naming the entry. Overlap with a placement blockage is allowed.
 - With the [packer](#macro-placement), fixed macros are keep-outs: the other macros stay `placement.macro-halo` away from them, as from each other. With `rtl-mp`, RTL-MP treats them as fixed obstacles.
-- Under `rtl-mp`, an `orientation` without a `location` is refused, because RTL-MP picks each placed macro's orientation itself.
-- A macro may be matched by several entries, inline or from the file, but only one entry may set each key for it.
+- Rotations by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) are refused: they swap the macro's width and height off the site grid and turn its pins across the routing tracks. Under `rtl-mp`, an `orientation` without a `location` is refused, because RTL-MP picks each placed macro's orientation itself.
+- A macro may be matched by several entries, but only one entry may set each key for it.
 - At run time a pattern that matches no instance, or that matches a standard cell, fails the run: `floorplan.macros[i]: no instance matches '<pattern>'`.
-- A `location` on a netlist with no hard macros fails the run at macro placement, naming up to three located entries: `floorplan.macros: the netlist has no hard macros, but 1 entry gives a macro location: floorplan.macros[0] (u_sram)`.
 - `floorplan.macros` is part of a hardened block's configuration. For a [hardened block](#assemble-hardened-blocks) placed with a `location`, check that its supply pins land on the parent's straps, and that a mirrored block's net order still fits the parent's grid.
-
-## Rotate a macro
-
-`R90`, `R270`, `MXR90` and `MYR90` turn a macro by 90 degrees, so its box is the master's height wide and its width tall. `location` is the lower-left corner of that turned box, and the packer packs a turned macro by its turned size. RTL-MP does not turn macros.
-
-Turning a macro turns its pins and power ring with it, so pin access and power are the floorplan's to check: horizontal pin shapes become vertical, and a PDK power grid written for unrotated macros may have no grid for the turned orientations or connect layers that no longer cross. `pdngen` then fails, for example with `PDN-0233` when a macro grid gets no via. Give the PDK's `pdn-config`, or the run's own, a macro grid for the turned orientations that reaches the turned power pins.
-
-OpenROAD's default legalizer blocks a turned fixed macro over its master's unrotated width and height from the macro's lower-left corner, not over its real box (OpenROAD#11735). Cells that global placement put in the part of that footprint outside the macro are then moved out by legalization, some far. `placement.rotated-macro-footprint` (PDK, platform or run [placement](#tune-the-process-dependent-steps) key) chooses the workaround; it acts only when a `floorplan.macros` or macros-file entry turns a macro, or when the run has a [hook](#run-tcl-hooks) before global placement (`session`, `after-floorplan`, `macro-placement`, `after-pdn` or `after-pins`), which may turn one:
-
-| Value | Effect |
-| --- | --- |
-| `block` (default) | A hard placement blockage over each turned macro's unrotated footprint, grown by its [cell halo](#tune-the-process-dependent-steps), then outward to whole rows and sites as the legalizer rounds it, and clipped to the core, exists during global placement only, like a [`lifetime: global-placement`](#floorplan-controls) blockage. No cell is placed where legalization would refuse it, and the area outside the macro stays empty. |
-| `diamond-legalizer` | Every `detailed_placement`, including the one after post-global-route hold repair, runs `-use_diamond_legalizer`, which sees the macro's real box. |
-| `none` | Neither. |
-
-The log names each blocked footprint under `>>> Rotated macros`, or the switch to the diamond legalizer.
-
-## Read macros and pins from planner files
-
-A floorplanner that writes hundreds of macro locations or thousands of pin positions can hand them over as files instead of `pnr.yaml` entries:
-
-```yaml
-    floorplan:
-      macros-file: plan/macros.yaml   # floorplan.macros entries
-      macro-snap: false               # exact locations, no site or row snapping
-      pins-file: plan/pins.json       # exact pins and floorplan.pins entries
-      pin-snap: false                 # exact pin centres, not moved to the edge or a track
-      pins-complete: true             # every signal port must be covered
-```
-
-```yaml
-# plan/macros.yaml
-- {instance: u_core/u_sram0, location: [120.0375, 80.64], orientation: R90}
-- {instance: "u_core/u_rf*", halo: [2, 2]}
-```
-
-```json
-[
-  {"name": "din[0]", "location": [0.5, 68.34], "layer": "met3", "size": [1.0, 0.3]},
-  {"names": ["dout*"], "side": "right"}
-]
-```
-
-- Each file is a YAML or JSON list, its path relative to `pnr.yaml`. It is read when the run starts, before OpenROAD, so `rb pnr --list` does not need it. A missing file, a malformed entry or an unknown key fails the run with `fail_stage: setup`, naming the file and the entry's index.
-- A macros-file entry has the [`floorplan.macros`](#place-individual-macros) keys. A pins-file entry is either an exact pin, `name` (or `names` with one name) with `location`, optional `layer` and optional `size`, or any [`floorplan.pins`](#constrain-boundary-pins) entry. `size` is `[width, height]` in microns, the pin's x and y extents, as in `floorplan.pins` and `place_pin -pin_size`.
-- File entries apply after the inline ones and keep their order: exact pins from `floorplan.pins`, then from the file, then the inline and file side and group rules, then `pin-constraints`. Messages name them `floorplan.macros-file[i]` and `floorplan.pins-file[i]`.
-- File coordinates reach OpenROAD at full precision and are rounded once, to the database unit. Inline coordinates are rounded to the nanometre.
-- Both files are fingerprinted as inputs of a [checkpoint](#keep-stage-checkpoints) run and of a [hardened block](#harden-a-block), so editing one makes the block's abstract stale.
-
-`macro-snap: false` is described under [Place individual macros](#place-individual-macros). `pin-snap: false` (default `true`) places each exact pin, inline or from the file, with its centre at its location to the database unit: `place_pin` runs without `-force_to_die_boundary`, so the pin is neither moved onto the die edge nor onto a routing track. Give a pin on an edge a centre half its depth inside the die. Without the force, placing a pin is also much faster, which matters for thousands of pins. The log still reports each pin's requested and final centre.
-
-### Check that every port is placed
-
-`floorplan.pins-complete: true` (default `false`) checks, just before the `pin-constraints` file and `place_pins`, that every port other than a power or ground port is covered by the inline and file pin entries. An exact pin covers its port; a side or group rule covers the ports it matches that have no exact pin. The run fails, listing up to ten ports per problem and the count:
-
-- a port with more than one exact entry;
-- a port with no exact entry that several side or group rules match;
-- a port nothing matches.
-
-The message reads `floorplan.pins-complete: 2 port(s) matched by no entry (irq, test_mode)`, and the result carries `fail_stage: pins_complete`, so `xfail:` does not excuse it. A port constrained only by the `pin-constraints` file counts as unmatched.
-
-### Check the routed floorplan
-
-A run with a located macro or an exact pin compares them with the routed `<top>.def` after OpenROAD succeeds. `pnr.log` records each as placed, `RB-FLOORPLAN-MACRO: <x> <y> <orientation> <instance>` and `RB-FLOORPLAN-PIN: <x0> <y0> <x1> <y1> <layer> <port>` in database units, and the check reads only the DEF's COMPONENTS and PINS. A macro at another location or orientation, or a pin with another layer or box, fails the run with `fail_stage: routed_check`, naming the first three differences, so `xfail:` does not excuse it. The routed outputs stay for inspection and no abstract is published.
 
 ## Size the die and core
 
@@ -540,11 +450,11 @@ While it sources the pdn-config, the flow skips each `define_pdn_grid` that is n
 | `side` | `left`, `right`, `top` or `bottom`: `set_io_pin_constraint -region <side>:<start>-<end>`. |
 | `start` / `end` | Optional range along the side in die microns: y for `left` and `right`, x for `top` and `bottom`. Either one alone leaves the other end open. Without both the whole edge is allowed. |
 | `group` / `order` | `group: true` keeps the matched pins next to each other (`-group`); `order: true` also keeps them in the order matched. With no `side` the group may land on any edge. |
-| `location` | `[x, y]` pin centre in die microns. Places exactly one pin with `place_pin -force_to_die_boundary`, so it moves onto the nearest die edge for its layer's direction and onto the nearest routing track; the log reports the requested and the final centre. `floorplan.pin-snap: false` places it at its centre instead; see [Read macros and pins from planner files](#read-macros-and-pins-from-planner-files). The pin is fixed, and pin placement leaves it there. |
+| `location` | `[x, y]` pin centre in die microns. Places exactly one pin with `place_pin -force_to_die_boundary`, so it moves onto the nearest die edge for its layer's direction and onto the nearest routing track; the log reports the requested and the final centre. The pin is fixed, and pin placement leaves it there. |
 | `layer` | With `location` only. Default: the PDK's horizontal pin layer on a left or right edge, its vertical one on a top or bottom edge, judged by the nearest edge. |
-| `size` | With `location` only. `[width, height]` in microns: the pin's x and y extents, as `place_pin -pin_size` takes them. Default: the layer's minimum width and area. |
+| `size` | With `location` only. `[width, height]` in microns. Default: the layer's minimum width and area. |
 
-- Exact pins are placed first, then the edge and group constraints, then the `pin-constraints` file below, all just before `place_pins`. A side or group rule leaves out the pins placed exactly, so a pin both placed and matched by a side keeps its location.
+- Exact pins are placed first, then the edge and group constraints, then the `pin-constraints` file below, all just before `place_pins`. A pin both placed and matched by a side keeps its location.
 - A name or glob that matches no port fails the run with `floorplan.pins[i]: no port matches '<pattern>'`, where `set_io_pin_constraint` alone would only warn. A `location` entry whose name matches more than one port fails too.
 - A malformed entry fails when `pnr.yaml` loads, naming `floorplan.pins[i]`: an unknown side, `start` at or above `end`, a negative coordinate, `start` or `end` without `side`, `order` without `group`, `location` with `side`, `group` or more than one name, `layer` or `size` without `location`, or an entry that sets none of `side`, `group` and `location`.
 - A `harden: true` run places its pins the same way, and the published abstract carries them. `floorplan.pins` is part of a hardened block's configuration, so changing it makes the block's abstract stale.
@@ -615,7 +525,7 @@ runs:
 
 | Stage | Written | Holds |
 | --- | --- | --- |
-| `floorplan` | before `global_placement` | floorplan, pins, tie cells, placed macros, PDN; no global-placement-only blockage |
+| `floorplan` | before `global_placement` | floorplan, pins, tie cells, placed macros, PDN |
 | `place` | before `clock_tree_synthesis` | legalized global placement |
 | `cts` | before `global_route` | clock tree, hold repair, legalization |
 | `global_route` | after a successful `global_route` | the global route |
@@ -843,10 +753,6 @@ rb pnr -c pnr/top/pnr.yaml --synth
 - **`fail_stage: abstract`, or `harden:` refused.** A view could not be produced (read `pnr.log`), or the platform has several corners.
 - **A missing or stale abstract, or a platform/corner mismatch.** Run the `rb pnr` command the message names, run `rb pnr` with no run name, or pass `--accept-stale`.
 - **`fail_stage: blocked`.** A block the run consumes failed. Fix it first.
-- **`fail_stage: routed_check`.** A located macro or exact pin in the routed DEF is not where the floorplan put it. A `pin-constraints` file or a platform hook that moves it is the usual cause. See [Check the routed floorplan](#check-the-routed-floorplan).
-- **`fail_stage: pins_complete`, `floorplan.pins-complete: ...`.** Add a pin entry for each port listed, or remove the duplicate entries. See [Check that every port is placed](#check-that-every-port-is-placed).
-- **`floorplan.macros: the netlist has no hard macros, ...`.** The netlist has no instance of a LEF `CLASS BLOCK` master, so the located entries place nothing. Check that synthesis kept the macro instances. See [Place individual macros](#place-individual-macros).
-- **`PDN-0008 ... halo overlaps row`.** A macro grid's `-halo` in the `pdn-config` reaches into a row beside the macro, which OpenROAD 26Q4's `pdngen` refuses. Reduce the halo to at most the value the message suggests.
 - **`block power: ... is not on a parent <net> strap`, `no single parent power net`, or `PDN-0233` on a block's macro grid.** A block's supply pins are off the parent's straps or cannot be tied. See [Blocks with supply pins on the top strap layer](#blocks-with-supply-pins-on-the-top-strap-layer).
 - **`instance '<inst>' ... of block '<blk>' sets <P>=...`, `port '<p>' is connected to N bit(s)`, `instances of block '<blk>' have different parameters`, or `... named by a hash`.** The parent instances a block with parameters or ports it was not hardened with. See [Instance a parameterised block](#instance-a-parameterised-block).
 - **`fail_stage: error`.** The run crashed; the exception is in the row description. Its consumers are blocked and other runs still report.

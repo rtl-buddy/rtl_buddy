@@ -1,4 +1,3 @@
-import copy
 import logging
 import re
 
@@ -11,7 +10,6 @@ from .pdk import (
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
     DEFAULT_PLACEMENT_PADDING,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
-    DEFAULT_ROTATED_MACRO_FOOTPRINT,
     PlacementFile,
     _validate_dont_use_cells,
     merge_dont_use_cells,
@@ -77,6 +75,11 @@ def _validate_port_buffer(value, where: str) -> str | None:
             f"{where}: port-buffer must be one buffer cell name, got {value!r}"
         )
     return value
+
+
+def _first_set(*values):
+    """Return the first value that is not `None`."""
+    return next(v for v in values if v is not None)
 
 
 @serde
@@ -154,60 +157,46 @@ class PnrPlatformConfig:
             ),
         )
 
-        self._platform_placement = validate_placement(
-            cfg.placement, f"pnr platform '{self._name}'"
+        placement = validate_placement(cfg.placement, f"pnr platform '{self._name}'")
+        self._placement_density = _first_set(
+            placement.density,
+            self._pdk.get_placement_density(),
+            DEFAULT_PLACEMENT_DENSITY,
         )
-        self._resolve_placement(
-            [self._platform_placement],
-            f"pnr platform '{self._name}'",
-            "set on the platform or its PDK",
+        self._placement_padding = _first_set(
+            placement.padding,
+            self._pdk.get_placement_padding(),
+            DEFAULT_PLACEMENT_PADDING,
         )
-
-    def _resolve_placement(
-        self, layers: list[PlacementFile], where: str, levels: str
-    ) -> None:
-        """Resolve each `placement:` key from `layers` (highest first), then the PDK, then the default."""
-
-        def _pick(key: str, pdk_value, default):
-            for layer in layers:
-                value = getattr(layer, key)
-                if value is not None:
-                    return value
-            return pdk_value if pdk_value is not None else default
-
-        pdk = self._pdk
-        self._placement_density = _pick(
-            "density", pdk.get_placement_density(), DEFAULT_PLACEMENT_DENSITY
+        self._placement_macro_halo = _first_set(
+            placement.macro_halo,
+            self._pdk.get_placement_macro_halo(),
+            DEFAULT_PLACEMENT_MACRO_HALO,
         )
-        self._placement_padding = _pick(
-            "padding", pdk.get_placement_padding(), DEFAULT_PLACEMENT_PADDING
-        )
-        self._placement_macro_halo = _pick(
-            "macro_halo", pdk.get_placement_macro_halo(), DEFAULT_PLACEMENT_MACRO_HALO
-        )
-        self._placement_macro_cell_halo = _pick(
-            "macro_cell_halo",
-            pdk.get_placement_macro_cell_halo(),
+        self._placement_macro_cell_halo = _first_set(
+            placement.macro_cell_halo,
+            self._pdk.get_placement_macro_cell_halo(),
             DEFAULT_PLACEMENT_MACRO_CELL_HALO,
         )
-        self._placement_reference_hpwl = _pick(
-            "reference_hpwl", pdk.get_placement_reference_hpwl(), None
+        self._placement_reference_hpwl = (
+            placement.reference_hpwl
+            if placement.reference_hpwl is not None
+            else self._pdk.get_placement_reference_hpwl()
         )
-        self._placement_tie_separation = _pick(
-            "tie_separation",
-            pdk.get_placement_tie_separation(),
+        self._placement_tie_separation = _first_set(
+            placement.tie_separation,
+            self._pdk.get_placement_tie_separation(),
             DEFAULT_PLACEMENT_TIE_SEPARATION,
         )
-        self._placement_routability_driven = _pick(
-            "routability_driven", pdk.get_placement_routability_driven(), False
+        self._placement_routability_driven = _first_set(
+            placement.routability_driven,
+            self._pdk.get_placement_routability_driven(),
+            False,
         )
-        self._placement_routability_use_grt = _pick(
-            "routability_use_grt", pdk.get_placement_routability_use_grt(), False
-        )
-        self._placement_rotated_macro_footprint = _pick(
-            "rotated_macro_footprint",
-            pdk.get_placement_rotated_macro_footprint(),
-            DEFAULT_ROTATED_MACRO_FOOTPRINT.value,
+        self._placement_routability_use_grt = _first_set(
+            placement.routability_use_grt,
+            self._pdk.get_placement_routability_use_grt(),
+            False,
         )
         # The placer reads `-routability_use_grt` only in routability mode, so alone it would be silently ignored.
         if (
@@ -215,27 +204,10 @@ class PnrPlatformConfig:
             and not self._placement_routability_driven
         ):
             raise FatalRtlBuddyError(
-                f"{where}: placement.routability-use-grt needs "
-                f"placement.routability-driven: true ({levels}); "
-                "global_placement ignores it otherwise"
+                f"pnr platform '{self._name}': placement.routability-use-grt "
+                "needs placement.routability-driven: true (set on the platform "
+                "or its PDK); global_placement ignores it otherwise"
             )
-
-    def with_run_placement(
-        self, placement: PlacementFile | None, run: str
-    ) -> "PnrPlatformConfig":
-        """Return this platform with a P&R run's `placement:` block over its own, field by field.
-
-        `placement` must already be validated. Without one the platform itself is returned.
-        """
-        if placement is None:
-            return self
-        resolved = copy.copy(self)
-        resolved._resolve_placement(
-            [placement, self._platform_placement],
-            f"pnr run '{run}' on platform '{self._name}'",
-            "set on the run, the platform or its PDK",
-        )
-        return resolved
 
     def _resolve_sta_corners(self, cfg: PnrPlatformConfigFile) -> list[str]:
         """Return the analysis corners, primary first, validated against the PDK.
@@ -359,10 +331,6 @@ class PnrPlatformConfig:
     def get_placement_routability_use_grt(self) -> bool:
         """Whether global placement passes `-routability_use_grt`, platform over PDK, default `False`."""
         return self._placement_routability_use_grt
-
-    def get_placement_rotated_macro_footprint(self) -> str:
-        """How the flow handles a macro rotated by 90 degrees (`block`, `diamond-legalizer` or `none`), platform over PDK, default `block`."""
-        return self._placement_rotated_macro_footprint
 
     def get_dont_use_cells(self) -> list[str]:
         """The PDK's excluded cells plus this platform's, PDK first."""
