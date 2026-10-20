@@ -1202,8 +1202,6 @@ def _load_abstract(
     if len(set(names)) != len(names):
         raise FatalRtlBuddyError(f"{where}.feedthrough-layers repeats a layer")
     gds = True if entry.gds is None else entry.gds
-    if not isinstance(gds, bool):
-        raise FatalRtlBuddyError(f"{where}.gds must be true or false, got {gds!r}")
     return PnrAbstract(bloat=bloat, feedthrough_layers=names, gds=gds)
 
 
