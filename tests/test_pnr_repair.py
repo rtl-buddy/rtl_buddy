@@ -12,6 +12,7 @@ import re
 from dataclasses import replace
 from importlib.resources import files
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -997,6 +998,83 @@ def test_an_eco_round_that_ends_early_after_rsz_0074_names_reroute_full(
         in res.results["desc"]
     )
     assert "set post-route-repair.reroute: full" in res.results["desc"]
+
+
+@pytest.mark.parametrize("code", [0, 3])
+def test_a_failed_stage_report_after_a_set_aside_eco_round_does_not_name_reroute_full(
+    tmp_path, monkeypatch, code
+):
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_PR, "rounds": 1},
+        env={"RB_STUB_SETUP": "-0.2", "RB_STUB_RSZ0074": "1"},
+        stop_after="post_route_repair",
+    )
+    # The stage report session fails after round 1's repair, set aside for RSZ-0074.
+    harness = tmp_path / "harness.tcl"
+    text = harness.read_text()
+    source = "source [lindex $argv 0]"
+    assert text.count(source) == 1
+    harness.write_text(
+        text.replace(
+            source,
+            f"if {{[string match *.report.tcl [lindex $argv 0]]}} {{ exit {code} }}\n"
+            + source,
+        )
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL", res.results
+    assert "stage 06_post_route_repair:" in res.results["desc"]
+    assert "reroute: full" not in res.results["desc"]
+
+
+@pytest.mark.parametrize(
+    "log, hint",
+    [
+        # The failing session is a repair session that failed RSZ-0074.
+        (
+            ">>> rb: begin 06_post_route_repair round 1 repair\n"
+            "[ERROR RSZ-0074] Failed to build tree from global routes\n",
+            True,
+        ),
+        # An earlier round's set-aside repair is not the failing session.
+        (
+            ">>> rb: begin 06_post_route_repair round 1 repair\n"
+            "[ERROR RSZ-0074] Failed to build tree from global routes\n"
+            ">>> rb: set aside 06_post_route_repair round 1 repair: x\n"
+            ">>> rb: begin 06_post_route_repair stage report\n",
+            False,
+        ),
+        (
+            ">>> rb: begin 06_post_route_repair round 1 repair\n"
+            "[ERROR RSZ-0074] Failed to build tree from global routes\n"
+            ">>> rb: begin 06_post_route_repair round 1 extraction\n",
+            False,
+        ),
+        # A repair session that failed otherwise.
+        (">>> rb: begin 06_post_route_repair round 1 repair\n[ERROR X-1] y\n", False),
+        ("[ERROR RSZ-0074] outside any post-route repair session\n", False),
+    ],
+    ids=[
+        "failing-repair",
+        "set-aside-then-report",
+        "repair-then-extraction",
+        "other-error",
+        "no-session",
+    ],
+)
+def test_the_eco_hint_follows_the_failing_post_route_repair_session(log, hint):
+    backend = SimpleNamespace(
+        _post_route=SimpleNamespace(reroute=PostRouteReroute.ECO),
+        _failed_stage="06_post_route_repair",
+    )
+
+    named = OpenRoadPnr._eco_hint(backend, log) != ""
+
+    assert named is hint
 
 
 def test_an_eco_round_overrides_design_is_routed_around_its_repairs_only(

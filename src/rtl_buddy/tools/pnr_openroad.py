@@ -1820,6 +1820,15 @@ def _error_lines(text: str) -> list[str]:
     return counted + pending
 
 
+def _last_session(text: str) -> tuple[str, str]:
+    """The `_SESSION_BEGIN_MARKER` line of the last post-route repair session in a log and the log after it, or two empty strings when it has none."""
+    lines = text.splitlines()
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].startswith(_SESSION_BEGIN_MARKER):
+            return lines[index], "\n".join(lines[index + 1 :])
+    return "", ""
+
+
 def _has_errors(section: bytes) -> bool:
     """Whether a session's log has an `[ERROR` line that fails the run (see `_error_lines`)."""
     return bool(_error_lines(section.decode(errors="replace")))
@@ -2694,7 +2703,7 @@ class OpenRoadPnr:
         )
 
     def _eco_hint(self, log_text: str) -> str:
-        """What to change when an `eco` post-route repair round failed RSZ-0074, else "".
+        """What to change when the post-route repair session that failed the run, the last one in `log_text`, is an `eco` round's repair that failed RSZ-0074, else "".
 
         An eco round's repairs build buffer trees from Steiner trees while `rb::eco::repair` can override `design_is_routed`; where it cannot (`pnr.post_route_eco_unguarded`), they build them from the global routes a fresh session rebuilds from the routed database's guides, which can miss pins.
         """
@@ -2703,8 +2712,10 @@ class OpenRoadPnr:
             repair is None
             or repair.reroute is not PostRouteReroute.ECO
             or self._failed_stage != _checkpoint_name(POST_ROUTE_REPAIR_STAGE)
-            or "[ERROR RSZ-0074]" not in log_text
         ):
+            return ""
+        label, session = _last_session(log_text)
+        if not label.endswith(" repair") or "[ERROR RSZ-0074]" not in session:
             return ""
         return f"; {_ECO_HINT}"
 
