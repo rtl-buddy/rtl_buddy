@@ -1973,6 +1973,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('exe')} does not have; upgrade OpenROAD or drop "
                 "the blockages"
             )
+        case "pnr.run_hook_missing":
+            return (
+                f'P&R "{fields.get("pnr")}": hooks.{fields.get("point")}'
+                f"[{fields.get('index')}] not found: {fields.get('path')}"
+            )
         # Hardened-block abstracts.
         case "pnr.harden_multi_corner":
             return (
