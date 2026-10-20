@@ -5,6 +5,7 @@ The head renders every stage script into the checkpoint run directory, then subm
 Files under the run directory's `dispatch/`:
 
     jobs.json                     # each stage's job, written as the scheduler accepts it, and whether all have left the queue
+    given_up                      # rb gave the run up; written before it cancels the jobs and clears the run's outputs
     NN_<stage>.sbatch             # the scheduler's answer to the stage's submission
     NN_<stage>.sbatch.tmp         # the answer while the scheduler has not given it
     NN_<stage>.sbatch.cancel      # the head gave the submission up
@@ -51,6 +52,7 @@ logger = logging.getLogger(__name__)
 
 DISPATCH_DIRNAME = "dispatch"
 JOBS_NAME = "jobs.json"
+GIVEN_UP_NAME = "given_up"
 
 #: Allocation source of the thread plan the head writes into a dispatched stage's script: the CPUs it asks the job for. The job sets the count again from the CPUs it receives (`job_scripts`).
 JOB_CPUS_SOURCE = "requested cpus"
@@ -105,6 +107,30 @@ def see_job_writes(run_dir: str, log_path: str) -> None:
 def job_file(run_dir: str, stage: str, suffix: str) -> str:
     """`dispatch/NN_<stage>.<suffix>` of a run directory."""
     return os.path.join(jobs_dir(run_dir), f"{stage_name(stage)}.{suffix}")
+
+
+def mark_given_up(run_dir: str, *, run: str | None = None) -> None:
+    """Record in `dispatch/given_up` that rb gave the run up. The head writes it before it cancels the jobs and clears the run's outputs.
+
+    A job then refuses to start its stage (`_refusal`), and a job whose stage was already running removes the run's outputs once the stage ends (`run_stage_job`). The head marks before it clears and the job checks after its stage has ended, so either the job sees the mark or the head clears after the stage wrote its outputs.
+    """
+    path = os.path.join(jobs_dir(run_dir), GIVEN_UP_NAME)
+    try:
+        Path(path).touch()
+    except OSError as e:
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.given_up_unrecorded",
+            pnr=run,
+            path=path,
+            error=str(e),
+        )
+
+
+def given_up(run_dir: str) -> bool:
+    """Whether rb gave the run in `run_dir` up (`mark_given_up`)."""
+    return os.path.exists(os.path.join(jobs_dir(run_dir), GIVEN_UP_NAME))
 
 
 class ChainCancelled(FatalRtlBuddyError):
@@ -612,8 +638,9 @@ def settle_cancelled_chain(
 ) -> str:
     """Finish a chain rb gave up on (an interrupt, `max-wait`, a failed submission or wait) and return the run's failure description.
 
-    The chain's remaining jobs are cancelled (again, if the scheduler refused before), the head waits a bounded time for them to leave the queue, and a stage a cancelled job was running gets its `stage_end` from accounting and its log from `pnr.log`. Jobs still queued after the wait are named with the command that cancels them, and `jobs.json` is marked drained only when none is, so the next `rb pnr` looks them up. The description is that of the first exception the chain was left with (`StageChain.failure`), else `error`'s.
+    The run is first marked given up (`mark_given_up`), so the caller may clear its outputs once this returns. The chain's remaining jobs are cancelled (again, if the scheduler refused before), the head waits a bounded time for them to leave the queue, and a stage a cancelled job was running gets its `stage_end` from accounting and its log from `pnr.log`. Jobs still queued after the wait are named with the command that cancels them, and `jobs.json` is marked drained only when none is, so the next `rb pnr` looks them up. The description is that of the first exception the chain was left with (`StageChain.failure`), else `error`'s.
     """
+    mark_given_up(run_dir, run=chain.run)
     first = chain.failure if chain.failure is not None else error
     if isinstance(first, KeyboardInterrupt | SystemExit):
         text = _interrupted_desc()
@@ -1072,7 +1099,7 @@ def _write_result(run_dir: str, stage: str, **fields) -> None:
 def _refusal(run_dir: str, stage: str) -> str | None:
     """Why a job must not run `stage` of `run_dir`, or None.
 
-    A job runs only while its run has not finished, and only with the rtl_buddy version its head ran (the manifest's `generator`), since the head wrote the stage scripts and reads what the job leaves. A later `rb pnr` of the same configuration refuses to start while a job of this run is queued (`live_orphans`), so a job never writes over a newer run.
+    A job runs only while its run has not finished and has not been given up (`mark_given_up`), and only with the rtl_buddy version its head ran (the manifest's `generator`), since the head wrote the stage scripts and reads what the job leaves. A later `rb pnr` of the same configuration refuses to start while a job of this run is queued (`live_orphans`), so a job never writes over a newer run.
     """
     script = os.path.join(run_dir, f"{stage_name(stage)}.tcl")
     if not os.path.isfile(script):
@@ -1082,6 +1109,8 @@ def _refusal(run_dir: str, stage: str) -> str | None:
         return f"run {os.path.basename(run_dir)} has no readable manifest"
     if manifest.get("outcome") is not None:
         return f"run {os.path.basename(run_dir)} has already finished"
+    if given_up(run_dir):
+        return f"rb gave run {os.path.basename(run_dir)} up"
     head, job = manifest.get("generator"), generator()
     if head != job:
         return (
@@ -1175,7 +1204,7 @@ def _artefact_dir(run_dir: str) -> str:
 def run_stage_job(run_dir: str, stage: str, *, openroad: str, pnr_log: str) -> bool:
     """Run `stage` of the staged run in `run_dir` inside a dispatched job; return whether it ended cleanly.
 
-    Writes `dispatch/NN_<stage>.result.json` for the head. The stage itself runs as in a local staged run, with the job's id and host added to its stage events, and from a copy of each of its scripts, every post-route repair session's too (`stage_scripts`), with the thread count the job's CPUs give (`job_scripts`).
+    Writes `dispatch/NN_<stage>.result.json` for the head. The stage itself runs as in a local staged run, with the job's id and host added to its stage events, and from a copy of each of its scripts, every post-route repair session's too (`stage_scripts`), with the thread count the job's CPUs give (`job_scripts`). When rb gave the run up while the stage ran, the job removes the stage's outputs from the artefact directory once the stage ends, and the stage fails (`_discard_given_up_stage`).
     """
     from .pnr_openroad import run_stage, stage_scripts
 
@@ -1209,40 +1238,86 @@ def run_stage_job(run_dir: str, stage: str, *, openroad: str, pnr_log: str) -> b
         except (OSError, ValueError, KeyError):
             # The stage reads the same plan and reports why it cannot.
             scripts = [os.path.join(run_dir, f"{stage_name(stage)}.tcl")]
-    with (
-        open(pnr_log, "ab") as log,
-        job_scripts(
-            run_dir,
-            scripts,
-            _with_threads(plan.count) if plan is not None else None,
-        ),
-    ):
-        outcome = run_stage(
-            run_dir,
-            stage,
-            openroad=openroad,
-            log=log,
-            log_path=pnr_log,
-            cwd=_artefact_dir(run_dir),
-            env=env,
-            run_name=run_name,
-            fields=fields,
+    try:
+        with (
+            open(pnr_log, "ab") as log,
+            job_scripts(
+                run_dir,
+                scripts,
+                _with_threads(plan.count) if plan is not None else None,
+            ),
+        ):
+            outcome = run_stage(
+                run_dir,
+                stage,
+                openroad=openroad,
+                log=log,
+                log_path=pnr_log,
+                cwd=_artefact_dir(run_dir),
+                env=env,
+                run_name=run_name,
+                fields=fields,
+            )
+    finally:
+        discarded = _discard_given_up_stage(
+            run_dir, stage, manifest, pnr_log=pnr_log, run_name=run_name
         )
+    ok = outcome.ok and discarded is None
     _write_result(
         run_dir,
         stage,
-        ok=outcome.ok,
+        ok=ok,
         started=True,
         returncode=outcome.returncode,
         stderr=outcome.stderr[-_STDERR_KEEP:],
         stderr_first_line=_first_line(outcome.stderr),
-        problem=outcome.problem,
-        fail_stage=outcome.fail_stage,
+        problem=discarded or outcome.problem,
+        fail_stage=DISPATCH_FAIL_STAGE if discarded else outcome.fail_stage,
         errors=outcome.errors,
         rtl_buddy=generator(),
         **fields,
     )
-    return outcome.ok
+    return ok
+
+
+def _discard_given_up_stage(
+    run_dir: str, stage: str, manifest: dict, *, pnr_log: str, run_name: str
+) -> str | None:
+    """When rb gave the run up while `stage` ran, remove the run's outputs from the artefact directory and return why the stage failed; else None.
+
+    The head clears the same outputs after it marks the run given up, so they hold nothing of the run but what this stage wrote. The directories are opened first (`see_job_writes`), so a mark written on another host is seen.
+    """
+    from .pnr_openroad import clear_run_outputs
+
+    see_job_writes(run_dir, pnr_log)
+    if not given_up(run_dir):
+        return None
+    problem = (
+        f"rb gave run {os.path.basename(run_dir)} up while stage "
+        f"{stage_name(stage)} ran; the job removed the outputs the stage wrote"
+    )
+    error = None
+    try:
+        removed = clear_run_outputs(
+            _artefact_dir(run_dir), owner=run_name, design=manifest.get("design")
+        )
+    except (FatalRtlBuddyError, OSError) as e:
+        removed, error = [], str(e)
+        problem = (
+            f"rb gave run {os.path.basename(run_dir)} up while stage "
+            f"{stage_name(stage)} ran, and the job could not remove the outputs "
+            f"the stage wrote: {error}"
+        )
+    log_event(
+        logger,
+        logging.WARNING,
+        "pnr.stage_job_given_up",
+        run_dir=run_dir,
+        stage=stage,
+        removed=removed,
+        error=error,
+    )
+    return problem
 
 
 @dataclass

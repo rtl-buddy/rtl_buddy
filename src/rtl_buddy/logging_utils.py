@@ -2140,6 +2140,25 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"P&R stage job refused stage {fields.get('stage')} of "
                 f"{fields.get('run_dir')}: {fields.get('reason')}"
             )
+        case "pnr.stage_job_given_up":
+            if fields.get("error"):
+                return (
+                    f"P&R stage job: rb gave {fields.get('run_dir')} up while stage "
+                    f"{fields.get('stage')} ran, and the job could not remove the "
+                    f"outputs the stage wrote: {fields.get('error')}"
+                )
+            return (
+                f"P&R stage job: rb gave {fields.get('run_dir')} up while stage "
+                f"{fields.get('stage')} ran; removed the "
+                f"{len(fields.get('removed') or [])} output(s) the stage wrote"
+            )
+        case "pnr.given_up_unrecorded":
+            return (
+                f'P&R "{fields.get("pnr")}": could not write {fields.get("path")} '
+                f"({fields.get('error')}); a stage job still running does not "
+                "learn that rb gave the run up, and may leave outputs that look "
+                "valid when its stage ends"
+            )
         case "pnr.stage_job_script_unchanged":
             return (
                 f"P&R stage job could not write its copy of {fields.get('script')} "
@@ -2154,8 +2173,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
             return (
                 f'P&R "{fields.get("pnr")}": stage job(s) {ids} are still queued '
-                f"{how}; the next rb pnr of this configuration waits for them; "
-                f"cancel them with `{fields.get('command')}`"
+                f"{how}; one that is running its stage removes the outputs the "
+                "stage wrote when it ends, and the next rb pnr of this "
+                f"configuration waits for them; cancel them with "
+                f"`{fields.get('command')}`"
             )
         case "pnr.stage_jobs_orphaned":
             ids = " ".join(map(str, fields.get("job_ids") or []))

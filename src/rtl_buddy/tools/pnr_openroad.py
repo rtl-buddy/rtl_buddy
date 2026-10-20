@@ -522,6 +522,54 @@ def run_output_paths(artefact_dir: str, design: str) -> list[str]:
     ]
 
 
+def clear_run_outputs(
+    artefact_dir: str, *, owner: str, design: str | None, include_script: bool = False
+) -> list[str]:
+    """Remove a P&R run's outputs from `artefact_dir` and return the paths removed (see `OpenRoadPnr._clear_stale_outputs`).
+
+    `owner` names the run in errors. `design` is the run's top, whose outputs are removed even when their names match a protected pattern; None removes by suffix only. A stage job whose run was given up while its stage ran removes the same set (`pnr_dispatch.run_stage_job`).
+    """
+    stale = clear_stale_artefacts(
+        [
+            os.path.join(artefact_dir, name)
+            for name in (
+                *_FIXED_OUTPUT_NAMES,
+                _DEF2STREAM_REPORT_NAME,
+                _EXPORT_PROVENANCE_NAME,
+                *(
+                    (
+                        _SCRIPT_NAME,
+                        _DEF2STREAM_INPUTS_NAME,
+                        _BLOCK_NETLIST_NAME,
+                        _CONGESTION_REPORT_NAME,
+                    )
+                    if include_script
+                    else ()
+                ),
+            )
+        ]
+        + ([pnr_checkpoints.latest_pointer(artefact_dir)] if include_script else []),
+        owner=owner,
+    )
+    # `own` lets a design colliding with a sibling's protected name still clear its own files.
+    own = [f"{design}{suffix}" for suffix in _MANAGED_OUTPUT_SUFFIXES] if design else []
+    stale += clear_managed_outputs(
+        artefact_dir,
+        _MANAGED_OUTPUT_SUFFIXES,
+        owner=owner,
+        own=own,
+        own_flow="pnr-openroad",
+    )
+    # The abstract is cut from the result being replaced, whether or not this run hardens.
+    stale += pnr_abstract.clear_abstract(artefact_dir)
+    # The parameter probe's scratch files belong to the abstract.
+    probe_dir = os.path.join(artefact_dir, _PARAM_PROBE_DIR)
+    if include_script and os.path.isdir(probe_dir):
+        shutil.rmtree(probe_dir, ignore_errors=True)
+        stale.append(probe_dir)
+    return stale
+
+
 _KLAYOUT_PACKAGE = "rtl_buddy.pnr.klayout"
 
 _DEF2STREAM_INPUTS_NAME = "def2stream.inputs.json"
@@ -1183,21 +1231,27 @@ def _flow_done(log_text: str) -> bool:
     return _last_logged_step(log_text) == _FLOW_DONE_MARKER.removeprefix(">>> ")
 
 
-def _session_events(run_dir: str | None) -> list[dict]:
-    """The progress events in `run_dir` of the stage that ran last: those after its `stage_begin`, or all of them without one."""
+def _session_events(run_dir: str | None, since: int | None = None) -> list[dict]:
+    """The progress events in `run_dir` of the session that ran last: those from index `since`, else those after the last `stage_begin`, or all of them without one."""
     if run_dir is None:
         return []
     events = pnr_checkpoints.read_progress(run_dir)
+    if since is not None:
+        return events[since:]
     begins = [i for i, e in enumerate(events) if e.get("event") == "stage_begin"]
     return events[begins[-1] :] if begins else events
 
 
 def _incomplete_desc(
-    run_dir: str | None, until: str, marker: str, session_log: str
+    run_dir: str | None,
+    until: str,
+    marker: str,
+    session_log: str,
+    since: int | None = None,
 ) -> str:
     """Return the failure description of a session that exited 0 without printing `marker`.
 
-    `until` names where the session was to end. The last step comes from the session's log, which every run has, and, with checkpoints in `run_dir`, the last command from its progress events.
+    `until` names where the session was to end. The last step comes from the session's log, which every run has, and, with checkpoints in `run_dir`, the last command from its progress events (`_session_events`).
     """
     step = _last_logged_step(session_log)
     reached = f"the last step in the log is '{step}'" if step else "no step is logged"
@@ -1206,7 +1260,7 @@ def _incomplete_desc(
         if marker not in session_log.splitlines()
         else f"'{marker}' is not the last step in the log"
     )
-    command = pnr_checkpoints.last_step(_session_events(run_dir))
+    command = pnr_checkpoints.last_step(_session_events(run_dir, since))
     if command:
         reached += f" (last command: {command['step']}, {command['status']})"
     return (
@@ -1511,6 +1565,7 @@ def run_post_route_repair(
 
     def _run(file: str, label: str, done: str):
         """Run one session; return its exit code, stderr, why the stage fails if it exited 0 before `done`, why it failed (None if it did not), and its log."""
+        since = len(pnr_checkpoints.read_progress(run_dir))
         sections.append(note(f"{_SESSION_BEGIN_MARKER}{stage} {label}"))
         returncode, stderr, resources, section = session(
             os.path.join(run_dir, file), label
@@ -1532,7 +1587,9 @@ def run_post_route_repair(
                 f": {first}" if first else ""
             )
         elif done not in text.splitlines():
-            failure = _incomplete_desc(run_dir, f"the end of {label}", done, text)
+            failure = _incomplete_desc(
+                run_dir, f"the end of {label}", done, text, since
+            )
             problem = f"stage {stage}: {failure}"
         elif errors:
             failure = f"{len(errors)} ERROR(s) in its log, the first: {errors[0]}"
@@ -3671,54 +3728,16 @@ class OpenRoadPnr:
 
         `include_script` also clears `pnr.tcl`, the stream-out input manifest and `congestion.rpt` so a rerun that dies before `_write_script` leaves no stale script. Only `run` sets it; `_fail_after_openroad` keeps them because they are what the tools read and why a route failed.
         """
-        stale = clear_stale_artefacts(
-            [
-                os.path.join(self.artefact_dir, name)
-                for name in (
-                    *_FIXED_OUTPUT_NAMES,
-                    _DEF2STREAM_REPORT_NAME,
-                    _EXPORT_PROVENANCE_NAME,
-                    *(
-                        (
-                            _SCRIPT_NAME,
-                            _DEF2STREAM_INPUTS_NAME,
-                            _BLOCK_NETLIST_NAME,
-                            _CONGESTION_REPORT_NAME,
-                        )
-                        if include_script
-                        else ()
-                    ),
-                )
-            ]
-            + (
-                [pnr_checkpoints.latest_pointer(self.artefact_dir)]
-                if include_script
-                else []
-            ),
-            owner=self.pnr_cfg.get_name(),
-        )
-        # `own` lets a design colliding with a sibling's protected name still clear its own files.
-        own: list[str] = []
         try:
             design = self.pnr_cfg.resolve_synth_cfg().get_top()
         except Exception:
-            pass
-        else:
-            own = [f"{design}{suffix}" for suffix in _MANAGED_OUTPUT_SUFFIXES]
-        stale += clear_managed_outputs(
+            design = None
+        stale = clear_run_outputs(
             self.artefact_dir,
-            _MANAGED_OUTPUT_SUFFIXES,
             owner=self.pnr_cfg.get_name(),
-            own=own,
-            own_flow="pnr-openroad",
+            design=design,
+            include_script=include_script,
         )
-        # The abstract is cut from the result being replaced, whether or not this run hardens.
-        stale += pnr_abstract.clear_abstract(self.artefact_dir)
-        # The parameter probe's scratch files belong to the abstract.
-        probe_dir = os.path.join(self.artefact_dir, _PARAM_PROBE_DIR)
-        if include_script and os.path.isdir(probe_dir):
-            shutil.rmtree(probe_dir, ignore_errors=True)
-            stale.append(probe_dir)
         if stale:
             log_event(
                 logger,
@@ -5306,7 +5325,7 @@ class OpenRoadPnr:
             return self._fail_after_openroad(desc, fail_stage="pins_complete")
 
         stage_prefix = f"stage {self._failed_stage}: " if self._failed_stage else ""
-        # A local session reports a problem only when it exited 0; a dispatched stage job killed by the scheduler has a problem and no exit code.
+        # `_unfinished_flow` reported every chain problem with exit code 0; what is left is a dispatched stage job the scheduler ended, with no exit code.
         if chain_problem is not None:
             log_event(
                 logger,
