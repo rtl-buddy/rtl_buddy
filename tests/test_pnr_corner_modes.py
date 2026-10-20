@@ -559,7 +559,7 @@ def test_checkpoints_write_every_mode_into_one_sdc_and_each_alone(tmp_path):
     proc = text.index("proc rb::ckpt::write_sdc {args} {")
     assert text.index("define_scene ff") < proc < text.index("read_verilog")
     assert "foreach mode {tt ss ff} {" in text[proc:]
-    assert " strict 0 modes {tt ss ff}}" in text
+    assert " scenes 1 modes {tt ss ff}}" in text
 
 
 def test_a_failed_global_route_writes_every_mode_as_a_checkpoint_does(tmp_path):
@@ -579,7 +579,7 @@ def test_checkpoints_of_a_run_without_modes_list_no_corner_sdc(tmp_path):
         (_platform(_pdk(tmp_path), corners=["tt"]), True),
     ):
         text = _render(tmp_path, platform, modes=modes, checkpoints=True)
-        assert " strict 0}" in text
+        assert re.search(r" scenes [01]}", text)
         assert "proc rb::ckpt::write_sdc" not in text
 
 

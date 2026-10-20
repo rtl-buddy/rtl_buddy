@@ -291,6 +291,7 @@ def _backend(
         **options,
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: "26Q2-stub")
+    monkeypatch.setattr(backend, "_has_tcl_command", lambda _c: True)
     monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     harness = tmp_path / "harness.tcl"
     harness.write_text(_HARNESS)

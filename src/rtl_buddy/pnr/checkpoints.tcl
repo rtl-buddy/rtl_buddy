@@ -15,6 +15,11 @@
 # Events are appended to a JSON-lines file, opened and closed per event, so the
 # file survives a kill: the last `step_begin` without a `step_end` names the
 # interrupted step.
+#
+# A `stage_timing` event carries each corner's setup and hold worst slack and
+# TNS, in ps, on the parasitics the stage's own report uses. A stage's end is
+# timed in `stage_end`; the flow calls `stage_timing` and `timing_event` where
+# a stage has another point to time.
 
 namespace eval rb::ckpt {
     variable dir ""
@@ -35,6 +40,15 @@ namespace eval rb::ckpt {
     variable account 0
     # 1: a checkpoint that cannot be written fails the session.
     variable strict 0
+    # stage -> {source command}: the parasitics `source` a stage's end is timed
+    # on and the command that sets them ({} for none).
+    variable timed {}
+    # The corners to time, and whether they are STA scenes (a platform with
+    # corners) or the session's one default scene.
+    variable corners {}
+    variable scenes 0
+    # The stage/point pairs already timed.
+    variable timed_done {}
     # Corners with an SDC mode each: `write_sdc` (rb::ckpt::write_sdc) also
     # writes each one's mode alone, to NN_<stage>.<corner>.sdc.
     variable modes {}
@@ -249,6 +263,7 @@ proc rb::ckpt::stage_end {stage {then next}} {
         write_checkpoint [dict get $order $stage] $stage \
             [expr {$strict || $then eq "stop"}]
     }
+    stage_timing $stage stage_end
     end_stage ok
     if {$then eq "next"} {
         set stages [dict keys $order]
@@ -256,6 +271,125 @@ proc rb::ckpt::stage_end {stage {then next}} {
         if {$next ne ""} {
             begin_stage $next
         }
+    }
+}
+
+# Slack in seconds as a JSON number of ps; null without a value or for INF, the
+# slack of a side with no constrained path.
+proc rb::ckpt::ps {seconds} {
+    if {![string is double -strict $seconds] || $seconds != $seconds \
+            || abs($seconds) >= 1e20} {
+        return null
+    }
+    return [format %.3f [expr {$seconds * 1e12}]]
+}
+
+# OpenSTA 3.0 names scenes what earlier versions call corners.
+proc rb::ckpt::find_scene {name} {
+    if {[info commands ::sta::find_scene] ne ""} {
+        return [sta::find_scene $name]
+    }
+    return [sta::find_corner $name]
+}
+
+# Setup and hold worst slack, then setup and hold TNS, of corner `name`, in
+# seconds. One query each; the session's one default scene without `scenes`.
+proc rb::ckpt::corner_slacks {name} {
+    variable scenes
+    if {!$scenes} {
+        return [list [sta::worst_slack_cmd max] [sta::worst_slack_cmd min] \
+            [sta::total_negative_slack_cmd max] \
+            [sta::total_negative_slack_cmd min]]
+    }
+    set scene [find_scene $name]
+    if {[info commands ::sta::worst_slack_scene] ne ""} {
+        return [list [sta::worst_slack_scene $scene max] \
+            [sta::worst_slack_scene $scene min] \
+            [sta::total_negative_slack_scene_cmd $scene max] \
+            [sta::total_negative_slack_scene_cmd $scene min]]
+    }
+    return [list [sta::worst_slack_corner $scene max] \
+        [sta::worst_slack_corner $scene min] \
+        [sta::total_negative_slack_corner_cmd $scene max] \
+        [sta::total_negative_slack_corner_cmd $scene min]]
+}
+
+# Append a `stage_timing` event for `stage` at `point`, on the parasitics now
+# set, which `source` names. Every corner is listed; a side with no constrained
+# path is null with its TNS, and a corner that cannot be queried, or all of
+# them after an `error`, is null with the reason.
+proc rb::ckpt::timing_emit {stage point source round error} {
+    variable corners
+    variable order
+    set entries {}
+    set unavailable ""
+    foreach name $corners {
+        set values {null null null null}
+        set reason $error
+        if {$reason eq ""} {
+            if {[catch {corner_slacks $name} slacks]} {
+                set reason $slacks
+            } else {
+                lassign $slacks setup hold tns tns_hold
+                # A side with no constrained path has no TNS either.
+                set values [list [ps $setup] [ps $hold] null null]
+                if {[lindex $values 0] ne "null"} {
+                    lset values 2 [ps $tns]
+                }
+                if {[lindex $values 1] ne "null"} {
+                    lset values 3 [ps $tns_hold]
+                }
+            }
+        }
+        lassign $values setup hold tns tns_hold
+        set body "\"wns_setup_ps\": $setup, \"wns_hold_ps\": $hold,"
+        append body " \"tns_ps\": $tns, \"tns_hold_ps\": $tns_hold"
+        if {$reason ne ""} {
+            append body ", \"error\": [json_str $reason]"
+            set unavailable $reason
+        }
+        lappend entries "[json_str $name]: \{$body\}"
+    }
+    if {$unavailable ne ""} {
+        puts ">>> rb checkpoints: timing of $stage ($point) unavailable: $unavailable"
+    }
+    set fields [list stage [json_str $stage]]
+    if {[dict exists $order $stage]} {
+        lappend fields index [json_str [dict get $order $stage]]
+    }
+    lappend fields point [json_str $point]
+    if {$round ne ""} {
+        lappend fields round $round
+    }
+    lappend fields parasitics [json_str $source] \
+        corners "\{[join $entries {, }]\}"
+    emit stage_timing $fields
+}
+
+# Time `stage` at `point` on the parasitics now set, as the flow's own reports
+# do. Timing is a side record: a failure is logged and never fails the flow.
+proc rb::ckpt::timing_event {stage point source {round ""}} {
+    if {[catch {timing_emit $stage $point $source $round ""} message]} {
+        puts ">>> rb checkpoints: timing of $stage ($point) failed: $message"
+    }
+}
+
+# Time `stage` at `point` on the parasitics its own report uses, which this
+# sets first, once. A stage with no entry in `timed` is timed elsewhere.
+proc rb::ckpt::stage_timing {stage point} {
+    variable timed
+    variable timed_done
+    if {![dict exists $timed $stage] || "$stage/$point" in $timed_done} {
+        return
+    }
+    lappend timed_done "$stage/$point"
+    lassign [dict get $timed $stage] source command
+    set error ""
+    if {$command ne "" && [catch {uplevel #0 $command} message]} {
+        set error $message
+    }
+    if {[catch {timing_emit $stage $point $source "" $error} message]} {
+        puts ">>> rb checkpoints: timing of $stage ($point) failed: $message"
     }
 }
 
@@ -347,12 +481,13 @@ proc rb::ckpt::write_checkpoint {index stage {strict 0}} {
 
 # Arm progress, stage resources and checkpoints. `steps` are the traced flow
 # commands; `config` is a dict of the namespace variables above (anchors,
-# wanted, order, routed, reports, state, account, strict). A session that
+# wanted, order, routed, reports, state, account, strict, timed, corners,
+# scenes). A session that
 # measures its stages starts measuring the first one here.
 proc rb::ckpt::arm {ckpt_dir progress_file steps config} {
     variable dir $ckpt_dir
     variable progress $progress_file
-    foreach key {anchors wanted order routed reports state account strict modes} {
+    foreach key {anchors wanted order routed reports state account strict timed corners scenes modes} {
         if {[dict exists $config $key]} {
             variable $key [dict get $config $key]
         }

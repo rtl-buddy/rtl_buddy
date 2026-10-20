@@ -53,6 +53,7 @@ Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previo
 | `tns_ps`, `tns_hold_ps` | Total negative setup and hold slack. |
 | `drc_count` | Violations left in `route.drc.rpt`. 0 is a clean route. |
 | `max_slew_violation_count`, `max_capacitance_violation_count`, `max_fanout_violation_count` | Pins over a Liberty or SDC limit at any corner, listed in `electrical.rpt`. |
+| `macro_pin_buffered_count`, `macro_pin_unmet_count` | With `placement.macro-pin-limits`: macro pins it buffered, and those still over their limit less the margin on placement parasitics. |
 | `area_um2` | Design area. |
 | `routed_cell_count` | Instances of the finished design, including added tie, buffer and clock cells, excluding physical-only cells. Compare experiments on this. |
 | `cell_count` | Instances of the input netlist (the summary's Cells column). |
@@ -101,7 +102,7 @@ When OpenROAD fails, the run removes the routed database so `rb power` never rea
 - `tail -f artefacts/<run>/pnr.log`. Each step starts with a `>>> ` line.
 - Global route prints a per-layer usage table (`GRT-0096 Final congestion report`).
 - Detailed route logs each iteration (`DRT-0195`) and its violation count (`DRT-0199`), so a converging route can be told from a stalled one. `detailed-route-verbose: 0` silences this; higher levels add detail.
-- With [checkpoints](#keep-stage-checkpoints), `checkpoints/latest/progress.jsonl` records each step, hook and stage. After a kill, the last `step_begin` without a `step_end` is where the run was.
+- With [checkpoints](#keep-stage-checkpoints), `checkpoints/latest/progress.jsonl` records each step, hook and stage. After a kill, the last `step_begin` without a `step_end` is where the run was. Its `stage_timing` events give each corner's slack at every stage end; see [Compare timing across stages](#compare-timing-across-stages).
 
 ## Fix a failed run
 
@@ -126,6 +127,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `GRT-0116`, global-route overflow | Too congested. The result's `failed_global_route` names the checkpoint (`<run-id>/global_route`) that holds the failed route's database and a copy of `congestion.rpt`; open it with `rb pnr-export --checkpoint` or `read_db` in OpenROAD. Lower utilization or density, try `placement.routability-driven`, or [tune global routing](#tune-global-routing). |
 | Large `drc_count` | Try `routing-layer-adjustment`, a lower density, or `post-route-repair` with several rounds. |
 | `RSZ-0090` at a slow corner | A macro with one Liberty limits that corner. Give it a Liberty per corner. |
+| Macro pins in `electrical.rpt`, or `pnr.macro_pin_limits_unmet` | Set `placement.macro-pin-limits`, add a stronger buffer to it, or lower the macro's `macro-cell-halo`. See [Tune placement](#tune-placement-clock-tree-and-repair). |
 | `RSZ-0074` in a post-route repair round | Set `post-route-repair.reroute: full`. |
 | `CTS-0080 Sink not found` | Set `cts-sink-clustering: false`. |
 | `GRT-0273 Disabled NDR`, large hold violations | Clock nets with non-default rules detour. Set `cts-apply-ndr: none`. |
@@ -224,8 +226,22 @@ Process-dependent knobs live on the PDK, can be overridden on the platform, and 
 | A block needs other tap spacing or endcaps than the PDK's | `tapcell-tcl` on the platform or the run |
 | Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm, default 1.0) |
 | Tie cells too close to their loads | `placement.tie-separation` (µm, default 0) |
+| Macro pins over a tight Liberty limit, such as OpenRAM SKY130 SRAM inputs (0.04 ns) | `placement.macro-pin-limits`, below |
 
 A platform that ends up with `routability-use-grt` but not `routability-driven` fails to load.
+
+`repair_design` sizes repeaters for the library's target slew, so a macro pin whose own limit is far below it stays in `electrical.rpt`. `placement.macro-pin-limits` buffers such pins at the end of the place stage, after `repair_design`, the `after-repair-design` hook and legalization:
+
+```yaml
+    placement:
+      macro-pin-limits:
+        buffers: [sky130_fd_sc_hd__buf_1, sky130_fd_sc_hd__buf_2, sky130_fd_sc_hd__buf_4,
+                  sky130_fd_sc_hd__buf_8, sky130_fd_sc_hd__buf_12, sky130_fd_sc_hd__buf_16]
+        margin: 0.05              # of each max-slew limit, kept in hand
+        capacitance-margin: 0.5   # of each max-capacitance limit; default: margin
+```
+
+Each macro data pin over its limit less the margin gets a buffer fixed on the free row site nearest it (an input also gets a pre-driver), sized from `buffers` weakest first and marked `dont_touch`, so later repair leaves it alone. `pnr.log` has one `>>>` line per pin. The step judges on placement parasitics, so check `electrical.rpt`: a long macro-output net can route to twice its estimated capacitance (hence `capacitance-margin: 0.5` on sky130hd), a large `macro-cell-halo` keeps the buffer too far from the pin (3 µm works with `buf_8` on sky130hd, 20 µm does not), and a pin route that global routing detours around the macro is out of its reach. A block set on the run or platform replaces a lower level's whole.
 
 ## Tune global routing
 
@@ -272,6 +288,20 @@ Each block runs `repair_design` when `repair-design` is set (`{}` for OpenROAD's
 **`global-route-repair`** runs after global route on its parasitic estimate, then legalizes and reroutes the changed nets (`reroute: incremental`, default) or the whole design (`full`).
 
 **`post-route-repair`** adds the stage `post_route_repair` after detailed route. It needs the PDK's `rcx-rules`. It extracts and times the detailed route (round 0), then runs up to `rounds` (default 1) repair rounds, each in fresh OpenROAD sessions: repair on the extracted parasitics, route again, extract and time. `reroute: eco` (default) keeps the detailed route and reroutes only the changed nets; `full` routes the whole design again, costing about a global and a detailed route per round. Round k repairs with the margins plus (k − 1) × `margin-step`. `rounds` above 1 needs a margin.
+
+Two `repair-design` keys apply to `post-route-repair` only. Both are off by default:
+
+```yaml
+post-route-repair:
+  repair-design:
+    slew-margin: 20
+    wire-rc: {resistance: 0.06, capacitance: 0.17}   # kohm/um, fF/um; or {layer: M5}
+    after-timing: true
+  setup-margin: 0.05
+```
+
+- `wire-rc`: each `repair_design` estimates the nets it changes at this signal wire RC instead of the session's, which is set for placement. Routed nets that `repair_design` buffers are often longer and higher in the stack than that estimate assumes, so it can leave them over their slew limit. `{layer: M5}` takes that layer's RC per corner from `set_layer_rc`, else from the LEF. The session's signal wire RC, including one a `session` hook set, is restored right after, and `repair_timing` estimates the nets it changes at it. The nets `repair_design` changed keep their `wire-rc` estimate through `repair_timing` until OpenROAD estimates them again, for example after legalizing moves their cells. Clock wire RC is not changed. Each repair line in `pnr.log` names the signal wire RC it ran at.
+- `after-timing: true`: each round runs `repair_design` again after setup and hold repair, before legalizing. `repair_timing` checks the slew of the nets it changes at the session's RC, and some end a few picoseconds over their limit. It needs `setup-margin` or `hold-margin`.
 
 The stage keeps the best round, never worse than the detailed route:
 
@@ -387,7 +417,7 @@ By default each stripe layer connects to the next; `connect: [[met1, met4], ...]
 | `after-pdn` | After taps and the power grid |
 | `after-pins` | After pin placement, before port buffering. A hook that buffers ports needs `buffer-ports: false`. |
 | `after-global-placement` | After `global_placement` |
-| `after-repair-design` | After `repair_design` |
+| `after-repair-design` | After `repair_design`, before legalization and the `placement.macro-pin-limits` step |
 | `after-cts` | After CTS, before setup and hold repair |
 | `after-global-route` | After `global_route`, before global-route repair |
 | `before-detailed-route` | Before each detailed route, including each post-route repair round's |
@@ -419,6 +449,33 @@ On a multi-corner platform the `.sdc` holds every corner's SDC mode, and `<NN>_<
 Look at a checkpoint in OpenROAD or with `rb pnr-export --checkpoint`. It is never a final result. Old run directories are not pruned.
 
 A global route that fails writes its database as the `global_route` checkpoint, marked `failed`, with a copy of `congestion.rpt` (`04_global_route.congestion.rpt`), whether or not the run sets `checkpoints`; a run without them gets a run directory for it. The run still fails, and its `failed_global_route` field names the checkpoint as `<run-id>/global_route`. `rb pnr-export --checkpoint` opens it; no `--resume` starts from it.
+
+## Compare timing across stages
+
+A run that writes `progress.jsonl` (`checkpoints:` set, even to `[]`, `stages: true`, `--stop-after`, or post-route repair) appends one `stage_timing` event to it when each stage ends, and lists the events per stage under `timing` in `manifest.json`. They compare iterations of a block stage by stage without reports of your own:
+
+```json
+{"event": "stage_timing", "stage": "global_route", "index": "04", "point": "stage_end", "parasitics": "global_route", "corners": {"tt": {"wns_setup_ps": -224.675, "wns_hold_ps": 343.534, "tns_ps": -322.268, "tns_hold_ps": 0.0}}}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `stage`, `index` | The stage and its file index. |
+| `point` | `stage_end`, `before_repair` or `round`. |
+| `round` | The post-route repair round (0 is the detailed route); on a `stage_end` of `post_route_repair`, the kept round. |
+| `parasitics` | What the slacks were timed on: `none` (no wire RC), `placement` (placement estimate), `global_route` (global-route estimate) or `extracted` (OpenRCX SPEF). |
+| `corners` | Per corner, in config order, `wns_setup_ps`, `wns_hold_ps`, `tns_ps` and `tns_hold_ps`, in picoseconds as in the result row. A single-corner platform has one entry, named by its `corner:`. |
+
+| Stage | Events | `parasitics` |
+| --- | --- | --- |
+| `floorplan` | `stage_end` | `none` |
+| `place`, `cts` | `stage_end` | `placement` |
+| `global_route` | `before_repair` when [global-route repair](#tune-placement-clock-tree-and-repair) runs, then `stage_end` after it | `global_route` |
+| `detailed_route` | `stage_end` | `global_route`, the estimate from the route guides |
+| `post_route_repair` | one `round` per round, then a `stage_end` copied from the kept round | `extracted` |
+| `finish` | `stage_end` | `extracted` with `rcx-rules`, else `global_route` |
+
+A stage's numbers are what its own report prints on the same parasitics: the `--stop-after` stage report, and the final reports for `finish`. They carry more digits than the report. A side with no constrained path has null WNS and TNS. A corner rb could not time has nulls and an `error`; this never fails the run, and no result field or verdict reads the events.
 
 ## Run stages as separate sessions
 
@@ -540,7 +597,7 @@ For maintainers and hook authors. The generated `pnr.tcl` runs:
 1. `platform-tcl`, Liberty, LEF, a mode and scene per corner on a multi-corner platform, netlist, SDC, `max-fanout`, `layer-rc-tcl`, don't-use cells, `session` hooks. The SDC and `max-fanout` go into every mode.
 2. Floorplan, tracks, blockages and cut-outs, tie cells.
 3. Macro placement, tap cells, power grid, pin placement, port buffering.
-4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present), `repair_tie_fanout`, `repair_design`, legalization.
+4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present), `repair_tie_fanout`, `repair_design`, legalization, the `placement.macro-pin-limits` step.
 5. CTS, optional post-CTS setup repair, hold repair, legalization.
 6. Global route, optional global-route repair, detailed route, optional post-route repair stage.
 7. Fill, global connections, extraction with `rcx-rules`, final reports, outputs.
@@ -550,4 +607,4 @@ A `probe` skips the setup and hold repair and stops after global route. Each ses
 
 A staged session starts with a prelude regenerated from the same template: the header, Liberty and LEF, `read_db` and `read_sdc` of the previous checkpoint (every mode), its saved flow variables, then step 1's per-session settings. It keeps only what the database, the checkpoint SDC and the state file hold. A resume compares each earlier stage's script up to its end-of-stage line, ignoring comments, the run-directory lines, `set_thread_count` and header variables the stage does not read.
 
-Each stage's wall time, CPU time and peak memory are recorded as `stage_end` events in `progress.jsonl` and under `resources` in the manifest. In a one-session run the peak memory of a stage includes what earlier stages left resident.
+Each stage's wall time, CPU time and peak memory are recorded as `stage_end` events in `progress.jsonl` and under `resources` in the manifest. In a one-session run the peak memory of a stage includes what earlier stages left resident. Its [timing](#compare-timing-across-stages) is recorded as `stage_timing` events and under `timing`.

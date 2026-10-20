@@ -16,6 +16,7 @@ from .pdk import (
     DEFAULT_PLACEMENT_PADDING,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
     DEFAULT_ROTATED_MACRO_FOOTPRINT,
+    MacroPinLimitsFile,
     PlacementFile,
     _validate_dont_use_cells,
     merge_dont_use_cells,
@@ -419,6 +420,10 @@ class PnrPlatformConfig:
             pdk.get_placement_rotated_macro_footprint(),
             DEFAULT_ROTATED_MACRO_FOOTPRINT.value,
         )
+        # A whole block: a higher level's `macro-pin-limits` replaces a lower one's.
+        self._placement_macro_pin_limits = _pick(
+            "macro_pin_limits", pdk.get_placement_macro_pin_limits(), None
+        )
         # The placer reads `-routability_use_grt` only in routability mode, so alone it would be silently ignored.
         if (
             self._placement_routability_use_grt
@@ -605,6 +610,10 @@ class PnrPlatformConfig:
     def get_placement_rotated_macro_footprint(self) -> str:
         """How the flow handles a macro rotated by 90 degrees (`block`, `diamond-legalizer` or `none`), platform over PDK, default `block`."""
         return self._placement_rotated_macro_footprint
+
+    def get_placement_macro_pin_limits(self) -> MacroPinLimitsFile | None:
+        """`placement.macro-pin-limits`, run over platform over PDK, or `None` when the step is off."""
+        return self._placement_macro_pin_limits
 
     def get_dont_use_cells(self) -> list[str]:
         """The PDK's excluded cells plus this platform's, PDK first."""

@@ -76,7 +76,7 @@ class RightsizeFinding:
     # The scheduler's allocation when it differs from `reserved`; cpus findings only.
     allocated: str | None = None
     # Key that sets this build-job row's `compile.parallel`, for the table footnote.
-    # Not in `as_event()`: the machine payload's key set is a contract.
+    # Human-table metadata only.
     parallel_origin: str | None = None
     # For an aggregated reservation, `suggested` is one contributor's new value;
     # these give the whole-job figure and the amount added to that contributor.
@@ -84,8 +84,7 @@ class RightsizeFinding:
     aggregate_delta: str | None = None
 
     def as_event(self) -> dict:
-        return {
-            "event": "reservation-advice",
+        fields = {
             "suite": self.suite,
             "test": self.test,
             "resource": self.resource,
@@ -103,6 +102,7 @@ class RightsizeFinding:
             "suggested_total": self.suggested_total,
             "aggregate_delta": self.aggregate_delta,
         }
+        return {key: value for key, value in fields.items() if value is not None}
 
 
 def _is_arg_override(entry: str) -> bool:

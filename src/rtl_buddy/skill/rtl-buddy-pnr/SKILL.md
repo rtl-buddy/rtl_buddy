@@ -33,6 +33,7 @@ rb --machine pnr-export <run> -c <pnr.yaml> --png        # GDS/PNG from a saved 
 - OpenROAD is single-threaded unless the run sets `threads:` (`auto` = the allocation's CPUs). Quote `openroad_threads.effective`.
 - `--dispatch slurm` sizes each stage from the run's `resources:` (`stages.<stage>` overrides). `rb pnr` blocks until the chain ends; Ctrl-C cancels its jobs.
 - `pnr.log` is live. Before calling a route hung, check `DRT-0195` iterations and `DRT-0199` violation counts, and `checkpoints/latest/progress.jsonl` for the current step.
+- To compare iterations stage by stage, read the `stage_timing` events of `checkpoints/latest/progress.jsonl` (or `timing` in `manifest.json`): per corner setup and hold WNS and TNS in ps, with the `parasitics` they were timed on. Null means no constrained path. Compare only events with the same `parasitics`.
 
 ## Read results
 
@@ -58,6 +59,7 @@ Frequent cases:
 - `fail_stage: dispatch`: the stage job was killed by Slurm; read `dispatch/<NN>_<stage>.slurm.log` and raise that stage's `resources:`.
 - `PDN-*` errors: macro halo, macro grid or a turned macro; `N macros do not fit`: lower `utilization`.
 - Global-route overflow or high `drc_count`: lower density or utilization, `placement.routability-driven`, `routing-layer-adjustment`, `global-route:` options. A failed global route leaves its database as the checkpoint its `failed_global_route` field names; inspect it with `rb pnr-export --checkpoint <that value>`.
+- Macro pins in `electrical.rpt`, such as SRAM inputs with a tight `max_transition`: `placement.macro-pin-limits`; `macro_pin_unmet_count` counts the pins it could not fix.
 - `RB-DONT-USE-VIOLATION`: the netlist uses an excluded cell; fix synthesis, not P&R.
 - Change one knob per rerun and compare the same fields.
 
