@@ -1881,6 +1881,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"check skipped (error {fields.get('message')!r}); the reader "
                 "cannot answer design queries, so the check is assumed to pass"
             )
+        case "constraints.tcl_checks_skipped":
+            return (
+                f'constraint file "{fields.get("source")}": '
+                f"{fields.get('count')} `error` check(s) skipped; the reader "
+                "has no design to answer them, so each is assumed to pass "
+                "(each one is logged at DEBUG as constraints.tcl_check_skipped)"
+            )
         case "constraints.source_unreadable":
             return (
                 f'constraint file "{fields.get("source")}" line {fields.get("line")}: '

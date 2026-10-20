@@ -323,6 +323,7 @@ def extract_names(word: str) -> list[str]:
 
 
 def _log_worker_warnings(response: dict, source: str | None) -> None:
+    skipped: dict[str | None, int] = {}
     for warning in response.get("warnings") or ():
         if not isinstance(warning, dict):
             continue
@@ -347,14 +348,24 @@ def _log_worker_warnings(response: dict, source: str | None) -> None:
             )
         elif warning.get("kind") == "check_skipped":
             # The stubs cannot answer a design query, so the file's own check is assumed to pass.
+            file = warning.get("file") or source
+            skipped[file] = skipped.get(file, 0) + 1
             log_event(
                 logger,
                 logging.DEBUG,
                 "constraints.tcl_check_skipped",
-                source=warning.get("file") or source,
+                source=file,
                 line=warning.get("line"),
                 message=warning.get("message") or "",
             )
+    for file, count in skipped.items():
+        log_event(
+            logger,
+            logging.WARNING,
+            "constraints.tcl_checks_skipped",
+            source=file,
+            count=count,
+        )
 
 
 def _read_with_tcl(

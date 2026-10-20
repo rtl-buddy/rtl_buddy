@@ -911,12 +911,62 @@ def test_lenient_queries_evaluate_a_proc_that_validates_its_ports(
         ("create_clock", ["-name", "clk", "-period", "2.0", "clk"]),
         ("set_input_delay", ["-clock", "clk", "-max", "0.5", "{a b}"]),
     ]
-    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
     skipped = _events(caplog, "constraints.tcl_check_skipped")
     assert [r.rtl_fields["message"] for r in skipped] == [
         "port a is not an input",
         "port b is not an input",
     ]
+    assert {r.levelno for r in skipped} == {logging.DEBUG}
+    [summary] = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert summary.rtl_event == "constraints.tcl_checks_skipped"
+    assert summary.rtl_fields == {"source": str(top), "count": 2}
+    assert "2 `error` check(s) skipped" in summary.getMessage()
+
+
+def test_lenient_queries_warn_once_per_file_with_skipped_checks(
+    tcl_backend, tmp_path, caplog
+):
+    (tmp_path / "inner.sdc").write_text('error "a"\nerror "b"\n')
+    top = tmp_path / "top.sdc"
+    top.write_text('foreach p [get_ports x] { error "c" }\nsource inner.sdc\n')
+    with caplog.at_level(logging.WARNING):
+        _cmds, used = _read_file(top, lenient_queries=True)
+    assert used == "tcl"
+    assert [
+        (pathlib.Path(r.rtl_fields["source"]).name, r.rtl_fields["count"])
+        for r in _events(caplog, "constraints.tcl_checks_skipped")
+    ] == [("top.sdc", 1), ("inner.sdc", 2)]
+
+
+def test_lenient_queries_still_fall_back_when_a_sourced_file_errors(
+    tcl_backend, tmp_path, caplog
+):
+    (tmp_path / "clocks.sdc").write_text(
+        "set p $undefined_var\ncreate_clock -name fast -period 1.0 [get_ports f]\n"
+    )
+    top = tmp_path / "top.sdc"
+    top.write_text(
+        "source clocks.sdc\ncreate_clock -name late -period 3.0 [get_ports l]\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        cmds, used = _read_file(top, lenient_queries=True)
+    assert used == "tokenizer"
+    assert [c.words[c.words.index("-period") + 1] for c in cmds] == ["1.0", "3.0"]
+    [rec] = _events(caplog, "constraints.tcl_error")
+    assert "undefined_var" in rec.rtl_fields["message"]
+    assert not _events(caplog, "constraints.tcl_checks_skipped")
+
+
+def test_lenient_queries_still_fail_a_file_that_sources_itself(
+    tcl_backend, tmp_path, caplog
+):
+    top = tmp_path / "top.sdc"
+    top.write_text("create_clock -period 2 c\nsource [info script]\n")
+    with caplog.at_level(logging.WARNING):
+        _cmds, used = _read_file(top, lenient_queries=True)
+    assert used == "tokenizer"
+    [rec] = _events(caplog, "constraints.tcl_error")
+    assert "source nesting" in rec.rtl_fields["message"]
 
 
 def test_name_accessors_answer_the_name_under_lenient_queries(tcl_backend):

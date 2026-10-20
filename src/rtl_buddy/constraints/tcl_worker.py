@@ -58,7 +58,7 @@ proc file args {
 }
 """
 
-#: The child's `source` under ``script_path``: the parent reads and evaluates the file in this interp.
+#: The child's `source` under ``script_path``: the parent reads and evaluates the file in this interp. It raises with `return -code error`, which the lenient `error` (`_ERROR_PROC`) cannot skip.
 _SOURCE_PROC = r"""
 proc source args {
     if {[catch {dict get [info frame -1] line} __rb_line]} {
@@ -67,7 +67,7 @@ proc source args {
     set __rb_result [__rb_source $__rb_line {*}$args]
     set __rb_error [__rb_source_error]
     if {$__rb_error ne ""} {
-        error $__rb_error
+        return -code error $__rb_error
     }
     return $__rb_result
 }
