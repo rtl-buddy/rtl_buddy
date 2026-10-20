@@ -43,8 +43,8 @@ namespace eval rb::ckpt {
     # stage -> {source command}: the parasitics `source` a stage's end is timed
     # on and the command that sets them ({} for none).
     variable timed {}
-    # The corners to time, and whether they are STA scenes (a multi-corner
-    # platform) or the session's one default scene.
+    # The corners to time, and whether they are STA scenes (a platform with
+    # corners) or the session's one default scene.
     variable corners {}
     variable scenes 0
     # The stage/point pairs already timed.
