@@ -439,6 +439,15 @@ def test_the_description_names_each_failed_gate_and_the_run_keeps_its_outputs(
     )
 
 
+def test_the_result_row_carries_the_record(tmp_path, monkeypatch):
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    res = _signoff_run(tmp_path, monkeypatch, {"fail-on": ["drc"]}).run()
+
+    row = RtlBuddy._pnr_result_row(None, {"pnr_name": "demo", "results": res})
+    assert row["signoff"] == res.results["signoff"]
+
+
 def test_xfail_excuses_a_failed_gate(tmp_path, monkeypatch):
     res = _signoff_run(tmp_path, monkeypatch, {"fail-on": ["timing"]}).run()
 

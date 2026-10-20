@@ -5696,7 +5696,8 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
         try:
-            platform = platform.with_run_overrides(self.pnr_cfg.get_overrides())
+            if not self.pnr_cfg.get_overrides().is_empty():
+                platform = platform.with_run_overrides(self.pnr_cfg.get_overrides())
         except FatalRtlBuddyError as e:
             log_event(
                 logger,

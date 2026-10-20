@@ -11035,6 +11035,7 @@ class RtlBuddy:
             "mode",
             "global_route_overflow",
             "post_route_repair",
+            "signoff",
             "resumed_from",
             "checkpoint_dir",
             "checkpoint_stages",
