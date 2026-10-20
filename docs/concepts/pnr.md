@@ -60,7 +60,7 @@ A tie port the PDK leaves unset gets neither tie step.
 
 ## Interpret results
 
-The summary reports cell count, design area, setup and hold WNS, and the number of non-empty DRC report lines. Positive slack meets timing and zero DRC lines indicate a clean route. `wns_setup_ps`, `wns_hold_ps`, `tns_ps` (setup) and `tns_hold_ps` are converted to picoseconds from the Liberty `time_unit`; see [Synthesis: Configure tools and the PDK](synthesis.md#configure-tools-and-the-pdk).
+The summary reports cell count, design area, setup and hold WNS, and `drc_count`, the number of violations in `route.drc.rpt`, which lists each as a `violation type:` line and its detail lines. Positive slack meets timing and zero DRC violations indicate a clean route. `wns_setup_ps`, `wns_hold_ps`, `tns_ps` (setup) and `tns_hold_ps` are converted to picoseconds from the Liberty `time_unit`; see [Synthesis: Configure tools and the PDK](synthesis.md#configure-tools-and-the-pdk).
 
 Three result fields count cells; compare experiments on `routed_cell_count`:
 

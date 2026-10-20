@@ -367,6 +367,15 @@ def read_def_design_name(path: str) -> str | None:
     return match.group(1) if match else None
 
 
+def count_drc_violations(path: str) -> int:
+    """The violations a detailed-route DRC report lists, each a `violation type:` line and its detail lines; 0 without the report."""
+    try:
+        with open(path) as f:
+            return sum(1 for line in f if line.startswith("violation type:"))
+    except OSError:
+        return 0
+
+
 def _file_fingerprint(path: str | None) -> dict | None:
     """Return `{path, size, sha256}` for a file, or None without a path; an unreadable file gets a null size and digest."""
     if not path:
@@ -1120,14 +1129,7 @@ class OpenRoadPnr:
         return os.path.join(self.artefact_dir, "route.drc.rpt")
 
     def _count_drcs(self) -> int:
-        drc_path = self._drc_report_path()
-        if not os.path.isfile(drc_path):
-            return 0
-        try:
-            with open(drc_path) as f:
-                return sum(1 for line in f if line.strip())
-        except OSError:
-            return 0
+        return count_drc_violations(self._drc_report_path())
 
     def _klayout_script_path(self, name: str) -> str:
         """Copy a bundled KLayout helper into the artefact directory and return its path.
