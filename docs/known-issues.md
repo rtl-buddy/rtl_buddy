@@ -266,11 +266,7 @@ With `reroute: full` a round also removes the detailed route and routes the whol
 
 ## Eco post-route repair overrides an OpenROAD procedure
 
-An `eco` post-route repair round runs its repairs with OpenROAD's Tcl procedure `design_is_routed` replaced by one that answers 0, and restores the original after them, also when a repair fails. It relies on `repair_timing` calling `design_is_routed` to pick detailed-routing parasitics, as it does in OpenROAD 26Q4. When the session's `repair_timing` does not call it, the round runs its repairs without the override, logs that in `pnr.log`, and rb warns `pnr.post_route_eco_unguarded`. Those repairs can fail with `[ERROR RSZ-0074] Failed to build tree from global routes`; the failure then names the fix, `post-route-repair.reroute: full`, which removes the detailed route and repairs on a fresh global route.
-
-## Post-route repair keeps the last repaired round
-
-The `post_route_repair` stage keeps the last round that repaired, even when that round's extracted timing is worse than an earlier round's or its detailed route has DRC violations, and `finish` continues from it. Compare the rounds' `pnr.post_route_round` events (also in `progress.jsonl`) before relying on more than one round, and lower `rounds` or `margin-step` when a later round loses slack. See [rtl_buddy#884](https://github.com/rtl-buddy/rtl_buddy/issues/884).
+An `eco` post-route repair round runs its repairs with OpenROAD's Tcl procedure `design_is_routed` replaced by one that answers 0, and restores the original after them, also when a repair fails. It relies on `repair_timing` calling `design_is_routed` to pick detailed-routing parasitics, as it does in OpenROAD 26Q4. When the session's `repair_timing` does not call it, the round runs its repairs without the override, logs that in `pnr.log`, and rb warns `pnr.post_route_eco_unguarded`. Those repairs can fail with `[ERROR RSZ-0074] Failed to build tree from global routes`; the stage then [sets the round aside](concepts/pnr.md#keep-the-best-post-route-repair-round), and its warning and the run's result name the fix, `post-route-repair.reroute: full`, which removes the detailed route and repairs on a fresh global route.
 
 ## Post-route repair rounds and the final report can disagree on a multi-corner platform
 
