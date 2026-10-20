@@ -364,6 +364,7 @@ def test_an_unconstrained_hold_passes_and_an_unreported_one_fails(
     assert timing["hold"]["wns_ps"] is None
     assert res.results["result"] == "PASS"
 
+    (tmp_path / "b").mkdir()
     res = _signoff_run(
         tmp_path / "b",
         monkeypatch,
@@ -401,6 +402,8 @@ def test_setup_inf_at_every_judged_corner_fails_and_at_one_passes(
         "fail-on": ["timing"],
     }
 
+    for sub in "ab":
+        (tmp_path / sub).mkdir()
     res = _signoff_run(tmp_path / "a", monkeypatch, block, inf_ss).run()
     assert res.results["result"] == "PASS"
     assert res.results["signoff"]["timing"]["setup"]["worst_corner"] == "tt"
@@ -492,6 +495,23 @@ def test_the_drc_gate_fails_on_the_detailed_route_s_violations(
         assert res.results["result"] == "PASS"
 
 
+def test_a_gated_drc_check_without_a_report_fails(tmp_path, monkeypatch):
+    res = _signoff_run(tmp_path, monkeypatch, {"fail-on": ["drc"]}, drcs=None).run()
+
+    assert res.results["signoff"]["drc"] == {"count": None, "verdict": "fail"}
+    assert res.results["desc"] == "signoff failed: drc (no DRC report written)"
+    assert "fail_stage" not in res.results
+
+
+def test_an_ungated_drc_check_without_a_report_does_not_fail(tmp_path, monkeypatch):
+    res = _signoff_run(
+        tmp_path, monkeypatch, {"fail-on": ["electrical"]}, drcs=None
+    ).run()
+
+    assert res.results["result"] == "PASS"
+    assert res.results["signoff"]["drc"] == {"count": None, "verdict": "not_gated"}
+
+
 _DIRTY = _MC_LOG.replace("RB-ELECTRICAL: max_slew 0", "RB-ELECTRICAL: max_slew 2")
 
 
@@ -506,6 +526,40 @@ def test_the_electrical_gate_fails_on_violators(tmp_path, monkeypatch, log, verd
         )
     else:
         assert res.results["result"] == "PASS"
+
+
+def test_a_gated_electrical_check_with_an_unreported_count_fails(tmp_path, monkeypatch):
+    log = _MC_LOG.replace("RB-ELECTRICAL: max_capacitance 0\n", "")
+    res = _signoff_run(tmp_path, monkeypatch, {"fail-on": ["electrical"]}, log).run()
+
+    electrical = res.results["signoff"]["electrical"]
+    assert electrical["max_capacitance_violation_count"] is None
+    assert electrical["verdict"] == "fail"
+    assert res.results["desc"] == (
+        "signoff failed: electrical (max-capacitance count not reported)"
+    )
+
+
+def test_an_unreported_electrical_count_is_named_beside_the_violators(
+    tmp_path, monkeypatch
+):
+    log = _DIRTY.replace("RB-ELECTRICAL: max_fanout 0\n", "")
+    res = _signoff_run(tmp_path, monkeypatch, {"fail-on": ["electrical"]}, log).run()
+
+    assert res.results["desc"] == (
+        "signoff failed: electrical (2 max-slew violator(s); see electrical.rpt); "
+        "electrical (max-fanout count not reported)"
+    )
+
+
+def test_an_ungated_electrical_check_with_an_unreported_count_does_not_fail(
+    tmp_path, monkeypatch
+):
+    log = _MC_LOG.replace("RB-ELECTRICAL: max_capacitance 0\n", "")
+    res = _signoff_run(tmp_path, monkeypatch, {"fail-on": ["drc"]}, log).run()
+
+    assert res.results["result"] == "PASS"
+    assert res.results["signoff"]["electrical"]["verdict"] == "not_gated"
 
 
 def test_the_description_names_each_failed_gate_and_the_run_keeps_its_outputs(
@@ -572,24 +626,73 @@ def test_fail_on_electrical_without_the_block_keeps_its_result(tmp_path, monkeyp
     assert "signoff" not in res.results
 
 
-@pytest.mark.parametrize(
-    ("signoff", "fail_on_electrical"),
-    [({"fail-on": ["electrical"]}, False), ({}, True), ({"fail-on": ["drc"]}, True)],
-    ids=["fail-on", "flag", "union"],
+def test_fail_on_in_the_block_is_the_electrical_gate(tmp_path, monkeypatch):
+    backend = _signoff_run(tmp_path, monkeypatch, {"fail-on": ["electrical"]}, _DIRTY)
+    res = backend.run()
+
+    assert res.results["signoff"]["electrical"]["verdict"] == "fail"
+    assert res.results["desc"] == (
+        "signoff failed: electrical (2 max-slew violator(s); see electrical.rpt)"
+    )
+    assert backend._gates() == ("electrical",)
+
+
+_LEGACY = (
+    "electrical violators in the routed design: 2 max-slew violator(s) "
+    "(fail-on-electrical; see electrical.rpt)"
 )
-def test_fail_on_electrical_is_the_electrical_gate(
-    tmp_path, monkeypatch, signoff, fail_on_electrical
+
+
+@pytest.mark.parametrize(
+    ("signoff", "gates"),
+    [({}, ("electrical",)), ({"fail-on": ["drc"]}, ("drc", "electrical"))],
+    ids=["flag", "union"],
+)
+def test_fail_on_electrical_keeps_its_description_with_the_block(
+    tmp_path, monkeypatch, signoff, gates
 ):
     backend = _signoff_run(
-        tmp_path, monkeypatch, signoff, _DIRTY, fail_on_electrical=fail_on_electrical
+        tmp_path, monkeypatch, signoff, _DIRTY, fail_on_electrical=True
     )
     res = backend.run()
 
     assert res.results["signoff"]["electrical"]["verdict"] == "fail"
-    assert res.results["desc"].startswith("signoff failed: electrical (2 max-slew")
+    assert _LEGACY in res.results["desc"]
+    assert res.results["desc"] == f"signoff failed: {_LEGACY}"
+    assert backend._gates() == gates
     assert backend._gates_electrical() is True
-    if "drc" in signoff.get("fail-on", []):
-        assert backend._gates() == ("drc", "electrical")
+
+
+def test_fail_on_electrical_with_other_failed_gates_names_all_of_them(
+    tmp_path, monkeypatch
+):
+    res = _signoff_run(
+        tmp_path,
+        monkeypatch,
+        {"setup-corners": ["ss"], "fail-on": ["timing"]},
+        _DIRTY,
+        fail_on_electrical=True,
+    ).run()
+
+    assert res.results["desc"] == (
+        "signoff failed: timing (setup WNS -0.1200 ns at ss, hold WNS -0.0500 ns at "
+        f"ff); {_LEGACY}"
+    )
+
+
+@pytest.mark.parametrize("signoff", [None, {}, {"fail-on": ["drc"]}])
+def test_an_xfail_match_written_for_fail_on_electrical_still_matches(
+    tmp_path, monkeypatch, signoff
+):
+    """Adding `signoff:` to a platform does not turn an excused run into a `FAIL`."""
+    backend = _signoff_run(
+        tmp_path, monkeypatch, signoff, _DIRTY, fail_on_electrical=True
+    )
+    res = backend.run()
+
+    apply_xfail(res, match=r"electrical violators in the routed design: 2 max-slew")
+
+    assert res.results["result"] == "XFAIL"
 
 
 # -- stopped and probe runs ----------------------------------------------------------
@@ -739,6 +842,39 @@ def test_the_kept_round_is_judged_on_the_setup_corners_only(tmp_path, monkeypatc
     assert [r["best_round"] for r in _rounds(run_dir)] == [0, 1]
 
 
+def test_signoff_on_a_single_corner_platform_leaves_the_rounds_unchanged(
+    tmp_path, monkeypatch
+):
+    env = {"RB_STUB_SETUP": "-0.2 -0.1 0.01", "RB_STUB_HOLD": "0.1 0.1 0.1"}
+    seen = []
+    for sub, signoff in (("plain", None), ("signoff", {})):
+        (tmp_path / sub).mkdir()
+        backend, artefacts = _repair_backend(
+            tmp_path / sub, monkeypatch, post_route=_PR, env=env
+        )
+        if signoff is not None:
+            _with_run_signoff(backend, signoff)
+        res = backend.run()
+        assert res.results["result"] == "PASS", res.results
+        (run_dir,) = _runs(artefacts)
+        plan = json.loads((run_dir / "06_post_route_repair.plan.json").read_text())
+        assert "judged" not in plan
+        assert "judged_corners" not in _done(run_dir)
+        assert all("signoff_timing" not in r for r in _rounds(run_dir))
+        assert "the rounds judge" not in Path(backend._script_path()).read_text()
+        done = _done(run_dir)
+        seen.append(
+            (
+                done["kept_round"],
+                done["repaired_rounds"],
+                done["stop"],
+                [r["wns_setup_ps"] for r in _rounds(run_dir)],
+            )
+        )
+    assert seen[0] == seen[1]
+    assert seen[0][1] == 2
+
+
 def test_judged_timing_takes_each_side_over_its_corners():
     timing = {
         "wns_setup_ps": -300.0,
@@ -827,3 +963,34 @@ def test_the_block_joins_the_digest_only_when_set(tmp_path):
         lambda _name: _make_pdk_cfg(tmp_path),
     )
     assert pnr_abstract.abstract_config(plain, on_platform) == signed
+
+
+@pytest.mark.parametrize(
+    ("block", "flag"),
+    [
+        ({"fail-on": ["electrical"]}, False),
+        ({}, True),
+        ({"fail-on": ["electrical"]}, True),
+    ],
+    ids=["fail-on", "flag", "both"],
+)
+def test_equivalent_gates_share_a_digest(tmp_path, block, flag):
+    platform = _platform(_make_pdk_cfg(tmp_path), sta_corner="typ")
+
+    def _digest(block, flag):
+        cfg = _make_pnr_cfg(
+            tmp_path,
+            harden=True,
+            fail_on_electrical=flag,
+            overrides=_run(tmp_path, block).get_overrides(),
+        )
+        config = pnr_abstract.abstract_config(cfg, platform)
+        return config, pnr_abstract.config_digest(config)
+
+    reference, digest = _digest({"fail-on": ["electrical"]}, False)
+    config, same = _digest(block, flag)
+    assert config["signoff"]["fail_on"] == ["electrical"]
+    assert reference == config
+    assert digest == same
+    # Without the gate the digest differs.
+    assert _digest({}, False)[1] != digest

@@ -227,7 +227,7 @@ The block a run ends up with must set at least one of `repair-design`, `setup-ma
 | Key | Behavior |
 |---|---|
 | `setup-corners`, `hold-corners` | Non-empty lists of the platform's corners at which setup and hold are signed off. Default every corner. A corner the platform does not analyse is a config error naming it |
-| `fail-on` | List of `timing`, `drc` and `electrical`. `timing` fails a routed run whose setup WNS over `setup-corners` or hold WNS over `hold-corners` is negative or not reported; `drc` one whose detailed route has violations; `electrical` is `fail-on-electrical`. Default none |
+| `fail-on` | List of `timing`, `drc` and `electrical`. `timing` fails a routed run whose setup WNS over `setup-corners` or hold WNS over `hold-corners` is negative (`-0.00` is) or not reported, or whose setup is unconstrained at every one of its corners; `drc` one whose detailed route has violations or wrote no DRC report; `electrical` one with a max-slew, max-capacitance or max-fanout violator or a count not reported, and is `fail-on-electrical`. Default none |
 
 A run's block overrides the platform's field by field; `null` sets a key to its default or turns the block off. On a multi-corner platform the post-route repair rounds judge setup at `setup-corners` and hold at `hold-corners` only. See [Gate signoff](../concepts/pnr.md#gate-signoff).
 
