@@ -701,6 +701,28 @@ def _normalise_checkpoints(run: str, value) -> tuple[str, ...] | None:
     return tuple(s for s in CHECKPOINT_STAGES if s in names)
 
 
+def _load_constraints(run: str, value, config_dir: str) -> str | dict[str, str] | None:
+    """Return `constraints:` with each path resolved against `config_dir`: one SDC path, or a mapping of corner name to SDC path in config order. Whether the mapping names the platform's corners is checked when the run starts (see `PnrConfig.constraints_problem`)."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return os.path.normpath(os.path.join(config_dir, value))
+    if not value:
+        raise FatalRtlBuddyError(
+            f"pnr run '{run}': constraints: a per-corner mapping must name "
+            "each corner of the platform"
+        )
+    out: dict[str, str] = {}
+    for corner, path in value.items():
+        if not isinstance(corner, str) or not isinstance(path, str) or not path:
+            raise FatalRtlBuddyError(
+                f"pnr run '{run}': constraints: corner {corner!r} must map to "
+                f"an SDC path, not {path!r}"
+            )
+        out[corner] = os.path.normpath(os.path.join(config_dir, path))
+    return out
+
+
 @serde
 class PnrStageResourcesFile:
     """One stage job's reservation, `resources.stages.<stage>`: the `cfg-dispatch.resources` fields without `modes`, as a P&R stage has no builder mode."""
@@ -1183,7 +1205,8 @@ class PnrConfigFile:
     tool: str = "openroad"
     synth: str = ""
     synth_path: str = field(rename="synth-path", default="")
-    constraints: str | None = None
+    # One SDC path, or a mapping of corner name to SDC path; typed loosely so `initialise` names a bad entry.
+    constraints: str | dict | None = None
     pin_constraints: str | None = field(rename="pin-constraints", default=None)
     # Replaces the PDK's `pdn-config` for this run; relative to pnr.yaml.
     pdn_config: str | None = field(rename="pdn-config", default=None)
@@ -1395,11 +1418,7 @@ class PnrConfigFile:
             )
 
         synth_path_abs = os.path.normpath(os.path.join(config_dir, self.synth_path))
-        constraints = (
-            os.path.normpath(os.path.join(config_dir, self.constraints))
-            if self.constraints is not None
-            else None
-        )
+        constraints = _load_constraints(self.name, self.constraints, config_dir)
         lef_paths = [
             os.path.normpath(os.path.join(config_dir, p)) for p in self.lef_paths
         ]
@@ -1507,7 +1526,8 @@ class PnrConfig:
     tool: str
     synth_name: str
     synth_suite_path: str
-    constraints: str | None
+    # One SDC path, or corner name -> SDC path; absolute.
+    constraints: str | dict[str, str] | None
     platform: str
     floorplan: PnrFloorplan
     _reglvl: int | dict | None
@@ -1571,8 +1591,31 @@ class PnrConfig:
     def get_synth_suite_path(self) -> str:
         return self.synth_suite_path
 
-    def get_constraints(self) -> str | None:
+    def get_constraints(self) -> str | dict[str, str] | None:
+        """The SDC path, or a mapping of corner name to SDC path."""
         return self.constraints
+
+    def constraints_problem(self, corners: list[str]) -> str | None:
+        """Why a per-corner `constraints:` mapping does not fit a platform of `corners`, or None: it must name each corner and no other."""
+        if not isinstance(self.constraints, dict):
+            return None
+        missing = [c for c in corners if c not in self.constraints]
+        unknown = [c for c in self.constraints if c not in corners]
+        problems = []
+        if missing:
+            problems.append(f"no SDC for corner(s) {', '.join(missing)}")
+        if unknown:
+            problems.append(
+                f"corner(s) {', '.join(unknown)} not among the platform's "
+                f"({', '.join(corners)})"
+            )
+        return "; ".join(problems) or None
+
+    def constraints_by_corner(self, corners: list[str]) -> dict[str, str]:
+        """Each of `corners`' SDC path, in `corners` order: the one path for every corner, or the mapping's entry. The mapping must fit (see `constraints_problem`)."""
+        if isinstance(self.constraints, dict):
+            return {c: self.constraints[c] for c in corners}
+        return {c: self.constraints for c in corners}
 
     def get_platform(self) -> str:
         return self.platform

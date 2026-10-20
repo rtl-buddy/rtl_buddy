@@ -35,6 +35,9 @@ namespace eval rb::ckpt {
     variable account 0
     # 1: a checkpoint that cannot be written fails the session.
     variable strict 0
+    # Corners with an SDC mode each: `write_sdc` (rb::ckpt::write_sdc) also
+    # writes each one's mode alone, to NN_<stage>.<corner>.sdc.
+    variable modes {}
     # A stage ends once.
     variable done {}
     variable seq 0
@@ -269,11 +272,12 @@ proc rb::ckpt::write_state {path} {
 }
 
 # One checkpoint: ODB (what a resume re-enters), DEF (what KLayout stream-out
-# reads, so `rb pnr-export --checkpoint` needs no OpenROAD), the SDC, for the
-# stages in `routed` the route guides and global-route segments, in a staged
-# run the saved globals, and a copy of each of the stage's `reports` that it
-# wrote. Guides alone do not restore the parasitics
-# `estimate_parasitics -global_routing` needs.
+# reads, so `rb pnr-export --checkpoint` needs no OpenROAD), the SDC and each
+# of `modes`' own, for the stages in `routed` the route guides and global-route
+# segments, in a staged run the saved globals, and a copy of each of the
+# stage's `reports` that it wrote. Guides alone do not restore the parasitics
+# `estimate_parasitics -global_routing` needs. The supply connections of the
+# cells added since `pdngen` are made first.
 #
 # The `checkpoint` event is written after every file is on disk; a checkpoint
 # without one is incomplete. With `strict` a failed write is an error.
@@ -284,7 +288,11 @@ proc rb::ckpt::write_checkpoint {index stage {strict 0}} {
     variable reports
     global DESIGN OUT_DIR
     set base [file join $dir "${index}_${stage}"]
+    variable modes
     set files [list odb "$base.odb" def "$base.def" sdc "$base.sdc"]
+    foreach mode $modes {
+        lappend files sdc_$mode "$base.$mode.sdc"
+    }
     if {[lsearch -exact $routed $stage] >= 0} {
         lappend files guides "$base.guide" segments "$base.segments"
     }
@@ -305,12 +313,14 @@ proc rb::ckpt::write_checkpoint {index stage {strict 0}} {
     puts ">>> Checkpoint ${index}_${stage}"
     emit checkpoint_begin [list stage [json_str $stage] index [json_str $index]]
     if {[catch {
+        rb::global_connect
         file mkdir $dir
         foreach {kind path} $files {
-            switch -- $kind {
+            switch -glob -- $kind {
                 odb      { write_db $path }
                 def      { write_def $path }
                 sdc      { write_sdc -no_timestamp -digits 9 $path }
+                sdc_*    { if {![file exists $path]} { error "$path not written" } }
                 guides   { write_guides $path }
                 segments { write_global_route_segments $path }
                 state    { write_state $path }
@@ -342,7 +352,7 @@ proc rb::ckpt::write_checkpoint {index stage {strict 0}} {
 proc rb::ckpt::arm {ckpt_dir progress_file steps config} {
     variable dir $ckpt_dir
     variable progress $progress_file
-    foreach key {anchors wanted order routed reports state account strict} {
+    foreach key {anchors wanted order routed reports state account strict modes} {
         if {[dict exists $config $key]} {
             variable $key [dict get $config $key]
         }

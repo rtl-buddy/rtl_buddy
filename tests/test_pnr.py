@@ -27,6 +27,9 @@ from rtl_buddy.runner.pnr_results import (
     PnrSkipResults,
 )
 
+# The last line of a flow's log; a run whose log lacks it did not finish.
+_FLOW_DONE = ">>> DONE\n"
+
 
 def _make_pdk_cfg(tmp_path, **overrides):
     base = dict(
@@ -881,6 +884,7 @@ def test_pnr_run_rejects_a_missing_pdn_config_before_launching_openroad(
         root_cfg=root_cfg,
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     events = _capture_pnr_events(monkeypatch)
 
     res = backend.run()
@@ -912,6 +916,7 @@ def test_pnr_run_accepts_a_pdn_config_that_is_on_disk(tmp_path, monkeypatch):
         root_cfg=root_cfg,
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     monkeypatch.setattr(
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
@@ -2045,6 +2050,7 @@ def _run_backend_with_export(tmp_path, monkeypatch, *, mode, missing=()):
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     artefacts = Path(backend.artefact_dir)
     streamout = _fake_klayout(backend, "demo_top", missing=missing)
@@ -2053,7 +2059,7 @@ def _run_backend_with_export(tmp_path, monkeypatch, *, mode, missing=()):
         if hasattr(kwargs.get("stdout"), "write"):
             kwargs["stdout"].write(
                 "Design area 123.45 um^2 1% utilization\n"
-                "Number of instances:          42\n"
+                "Number of instances:          42\n" + _FLOW_DONE
             )
             (artefacts / "demo_top.routed.odb").write_bytes(b"\x00odb\x00")
             (artefacts / "demo_top.def").write_text("DESIGN demo_top ;\n")
@@ -2391,6 +2397,7 @@ def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatc
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     artefacts = Path(backend.artefact_dir)
     stale_drc = artefacts / "route.drc.rpt"
@@ -2402,7 +2409,7 @@ def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatc
 
     def _fake_run(cmd, **_kwargs):
         # OpenROAD exits 0 and writes only its log.
-        _kwargs["stdout"].write("")
+        _kwargs["stdout"].write(_FLOW_DONE)
         result = MagicMock()
         result.returncode = 0
         result.stderr = ""
@@ -2569,6 +2576,7 @@ def test_pnr_openroad_writes_odb_then_fails_removes_it(tmp_path, monkeypatch):
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     artefacts = Path(backend.artefact_dir)
     odb = artefacts / "demo_top.routed.odb"
@@ -2645,6 +2653,7 @@ def test_pnr_openroad_stderr_reaches_the_log_and_the_verdict(tmp_path, monkeypat
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     diagnostic = (
         "Error: pnr.tcl, 272 3 macros do not fit the 492.660 x 489.600 um "
@@ -2728,6 +2737,7 @@ def test_pnr_post_openroad_failure_keeps_the_flow_script(tmp_path, monkeypatch):
 
     monkeypatch.setattr(backend, "_write_script", _fake_write_script)
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     artefacts = Path(backend.artefact_dir)
     odb = artefacts / "demo_top.routed.odb"
@@ -2797,6 +2807,7 @@ def test_a_failed_route_keeps_its_congestion_report(tmp_path, monkeypatch):
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     report = Path(backend.artefact_dir) / "congestion.rpt"
     report.write_text("a previous run's congestion\n")
@@ -2873,11 +2884,12 @@ def test_pnr_error_line_after_writing_removes_the_odb(tmp_path, monkeypatch):
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     odb = Path(backend.artefact_dir) / "demo_top.routed.odb"
 
     def _writes_then_errors(cmd, **_kwargs):
-        _kwargs["stdout"].write("[ERROR GRT-0012] detailed route failed\n")
+        _kwargs["stdout"].write("[ERROR GRT-0012] detailed route failed\n" + _FLOW_DONE)
         odb.write_bytes(b"\x00partial odb\x00")
         result = MagicMock()
         result.returncode = 0
@@ -3048,7 +3060,7 @@ def test_pnr_flow_has_no_dont_use_check_without_dont_use_cells(tmp_path):
 
     assert "Don't-use check" not in text
     assert "RB-DONT-USE-VIOLATION" not in text
-    assert '    -verbose 1\n\nputs ">>> Fill insertion"\n' in text
+    assert '    -verbose 1\nrb::global_connect\n\nputs ">>> Fill insertion"\n' in text
 
 
 def test_pnr_flow_checks_dont_use_after_routing_before_fill_and_outputs(tmp_path):
@@ -3228,10 +3240,11 @@ def _dont_use_backend(tmp_path, monkeypatch, *, log, returncode, dont_use_cells)
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     odb = Path(backend.artefact_dir) / "demo_top.routed.odb"
 
     def _fake_openroad(cmd, **_kwargs):
-        _kwargs["stdout"].write(log)
+        _kwargs["stdout"].write(log + _FLOW_DONE)
         odb.write_bytes(b"\x00odb\x00")
         result = MagicMock()
         result.returncode = returncode
@@ -3512,7 +3525,10 @@ def test_pnr_flow_without_rcx_rules_keeps_the_estimated_final_reports(tmp_path):
     )
 
     assert (
-        "filler_placement $FILL_CELLS\n"
+        'filler_placement $FILL_CELLS\nrb::global_connect\n\nputs ">>> Supply ports"\n'
+    ) in text
+    assert (
+        "rb::supply_ports::reassert\n"
         "\n"
         'puts ">>> Final reports"\n'
         "estimate_parasitics -global_routing\n"
@@ -3621,6 +3637,7 @@ def test_pnr_run_rejects_missing_rcx_rules_before_launching_openroad(
         root_cfg=root_cfg,
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     events = _capture_pnr_events(monkeypatch)
 
     res = backend.run()
@@ -3673,6 +3690,7 @@ def _pnr_backend_over_a_real_synth(tmp_path, monkeypatch, pdk):
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     return backend
 
 
@@ -3690,7 +3708,7 @@ def test_a_rerun_without_rcx_rules_clears_the_previous_spef(tmp_path, monkeypatc
     stale_spef.write_text("*SPEF stale\n")
 
     def _fake_run(cmd, **_kwargs):
-        _kwargs["stdout"].write("")
+        _kwargs["stdout"].write(_FLOW_DONE)
         (artefacts / "demo_top.routed.odb").write_bytes(b"\x00fresh odb\x00")
         result = MagicMock()
         result.returncode = 0
@@ -3757,6 +3775,7 @@ def test_missing_rcx_rules_leaves_no_checkpoint_run_behind(tmp_path, monkeypatch
         root_cfg=root_cfg,
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     res = backend.run()
 
@@ -4060,6 +4079,119 @@ def test_a_yaml_routability_key_rejects_a_non_boolean():
         )
 
 
+def test_global_placement_is_not_timing_driven_by_default(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path)
+    assert pdk.get_placement_timing_driven() is None
+    platform = _platform(pdk)
+    assert platform.get_placement_timing_driven() is False
+    text = _render_flow(tmp_path, platform)
+    assert "global_placement -density 0.7 -pad_left 1 -pad_right 1\n" in text
+    assert "timing_driven" not in text
+
+
+def test_an_unset_or_false_timing_driven_renders_the_same_script(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    plain = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
+    for placement in (
+        PlacementFile(timing_driven=False),
+        PlacementFile(timing_driven=None),
+    ):
+        platform = _platform(_make_pdk_cfg(tmp_path), placement=placement)
+        assert _render_flow(tmp_path, platform) == plain
+
+
+def test_global_placement_emits_timing_driven(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    platform = _platform(
+        _make_pdk_cfg(tmp_path), placement=PlacementFile(timing_driven=True)
+    )
+    text = _render_flow(tmp_path, platform)
+    assert (
+        "global_placement -density 0.7 -pad_left 1 -pad_right 1 -timing_driven\n"
+    ) in text
+    assert text.count("-timing_driven") == 1
+
+
+def test_timing_driven_follows_the_other_global_placement_options(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    platform = _platform(
+        _make_pdk_cfg(tmp_path),
+        placement=PlacementFile(
+            reference_hpwl=4.46e8, routability_driven=True, timing_driven=True
+        ),
+    )
+    assert (
+        "global_placement -density 0.7 -pad_left 1 -pad_right 1 "
+        "-reference_hpwl 446000000 -routability_driven -timing_driven\n"
+    ) in _render_flow(tmp_path, platform)
+
+
+def test_timing_driven_resolves_run_over_platform_over_pdk(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(timing_driven=True))
+    inherited = _platform(pdk)
+    assert inherited.get_placement_timing_driven() is True
+
+    # The platform opts out of the PDK's setting; a run opts back in.
+    off = _platform(pdk, placement=PlacementFile(timing_driven=False))
+    assert off.get_placement_timing_driven() is False
+    assert "-timing_driven" not in _render_flow(tmp_path, off)
+    on = off.with_run_placement(PlacementFile(timing_driven=True), "r")
+    assert on.get_placement_timing_driven() is True
+    assert "-timing_driven" in _render_flow(tmp_path, on)
+
+    # A run that leaves it unset keeps the platform's value.
+    kept = off.with_run_placement(PlacementFile(density=0.5), "r")
+    assert kept.get_placement_timing_driven() is False
+
+    # A run turns it on over a platform and PDK that leave it unset.
+    plain = _platform(_make_pdk_cfg(tmp_path))
+    run_on = plain.with_run_placement(PlacementFile(timing_driven=True), "r")
+    assert run_on.get_placement_timing_driven() is True
+    assert plain.get_placement_timing_driven() is False
+
+
+def test_yaml_timing_driven_loads_on_a_pdk_a_platform_and_a_run(tmp_path):
+    from serde.yaml import from_yaml
+
+    from rtl_buddy.config.pdk import PlacementFile
+    from rtl_buddy.config.pnr import PnrConfigFile
+
+    platform_file = from_yaml(
+        PnrPlatformConfigFile,
+        'name: "p"\npdk: "p"\nplacement: {timing-driven: true}\n',
+    )
+    platform = PnrPlatformConfig(platform_file, lambda _n: _make_pdk_cfg(tmp_path))
+    assert platform.get_placement_timing_driven() is True
+
+    pdk = _make_pdk_cfg(
+        tmp_path, placement=from_yaml(PlacementFile, "timing-driven: true\n")
+    )
+    assert pdk.get_placement_timing_driven() is True
+
+    run = from_yaml(
+        PnrConfigFile,
+        'name: "r"\ndesc: "r"\nsynth: "s"\nsynth-path: "synth.yaml"\n'
+        'platform: "p"\nplacement: {timing-driven: true}\n',
+    )
+    assert run.placement.timing_driven is True
+
+
+def test_a_yaml_timing_driven_key_rejects_a_non_boolean():
+    from serde import SerdeError
+    from serde.yaml import from_yaml
+
+    with pytest.raises(SerdeError):
+        from_yaml(
+            PnrPlatformConfigFile,
+            'name: "p"\npdk: "p"\nplacement: {timing-driven: "on"}\n',
+        )
+
+
 def _rtl_mp_yaml(tmp_path, floorplan_extra):
     pnr_yaml = tmp_path / "pnr.yaml"
     pnr_yaml.write_text(
@@ -4302,6 +4434,7 @@ def test_pnr_run_rejects_a_missing_tcl_hook_before_launching_openroad(
         root_cfg=root_cfg,
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     events = _capture_pnr_events(monkeypatch)
 
     res = backend.run()
@@ -4775,6 +4908,7 @@ def test_pnr_log_shows_openroad_output_while_it_runs(tmp_path, monkeypatch):
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     log_path = backend._log_path()
     Path(log_path).write_text("[ERROR GRT-0000] a previous run\n")
 

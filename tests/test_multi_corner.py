@@ -145,28 +145,6 @@ def test_pnr_one_entry_corners_renders_byte_identically_to_corner(tmp_path):
     assert listed == single
 
 
-def test_pnr_multi_corner_script_defines_every_corner_before_reading(tmp_path):
-    macro = _write_macro(tmp_path)
-    platform = _platform(_pdk(tmp_path), sta_corners=["tt", "ss", "ff"])
-    text = _render_flow(tmp_path, platform, lib_paths=[macro])
-
-    lines = text.splitlines()
-    define = lines.index("define_corners tt ss ff")
-    reads = [ln for ln in lines if ln.startswith("read_liberty")]
-    assert reads == [
-        f"read_liberty -corner tt {tmp_path / 'pdk/lib/tt.lib'}",
-        f"read_liberty -corner ss {tmp_path / 'pdk/lib/ss.lib'}",
-        f"read_liberty -corner ff {tmp_path / 'pdk/lib/ff.lib'}",
-        # A single-Liberty macro is read into every corner.
-        f"read_liberty -corner tt {macro}",
-        f"read_liberty -corner ss {macro}",
-        f"read_liberty -corner ff {macro}",
-    ]
-    assert define < lines.index(reads[0])
-    assert "read_liberty $LIBERTY" not in text
-    assert "{{" not in text
-
-
 def test_pnr_multi_corner_reports_follow_the_global_worst(tmp_path):
     platform = _platform(_pdk(tmp_path), sta_corners=["tt", "ss", "ff"])
     text = _render_flow(tmp_path, platform)
@@ -279,9 +257,10 @@ def _pnr_backend_over(tmp_path, monkeypatch, platform, log_text):
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     def _fake_run(cmd, **_kwargs):
-        _kwargs["stdout"].write(log_text)
+        _kwargs["stdout"].write(log_text + ">>> DONE\n")
         return MagicMock(returncode=0, stderr="")
 
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)

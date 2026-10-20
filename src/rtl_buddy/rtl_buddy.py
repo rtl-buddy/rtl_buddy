@@ -11032,6 +11032,7 @@ class RtlBuddy:
             "stopped_after",
             "mode",
             "global_route_overflow",
+            "post_route_repair",
             "resumed_from",
             "checkpoint_dir",
             "checkpoint_stages",

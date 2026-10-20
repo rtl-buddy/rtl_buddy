@@ -183,6 +183,7 @@ def test_a_stray_off_track_shape_is_a_warning_not_a_failure(
     def _run(cmd, **_kw):
         _kw["stdout"].write(
             f"RB-BLOCK-POWER-WARNING: {stray}; the pin's other shapes are joined\n"
+            ">>> DONE\n"
         )
         return MagicMock(returncode=0, stdout="", stderr="")
 

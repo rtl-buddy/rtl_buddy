@@ -1092,6 +1092,7 @@ def _routed_backend(tmp_path, monkeypatch, fp, log, def_text=None, returncode=0)
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     monkeypatch.setattr(backend, "_has_tcl_command", lambda _c: True)
     monkeypatch.setattr(backend, "_ps_per_unit", 1.0, raising=False)
     monkeypatch.setattr(pnr_openroad, "liberty_time_unit_ps", lambda _libs: 1.0)
@@ -1099,7 +1100,7 @@ def _routed_backend(tmp_path, monkeypatch, fp, log, def_text=None, returncode=0)
 
     def _fake_openroad(cmd, **kwargs):
         launched.append(cmd)
-        kwargs["stdout"].write(log)
+        kwargs["stdout"].write(log + ">>> DONE\n")
         if def_text is not None:
             (Path(backend.artefact_dir) / "demo_top.def").write_text(def_text)
         result = MagicMock()

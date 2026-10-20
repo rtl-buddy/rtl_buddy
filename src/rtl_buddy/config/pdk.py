@@ -73,6 +73,8 @@ class PlacementFile:
     # `global_placement -routability_driven` / `-routability_use_grt`; `None` inherits, unset means off.
     routability_driven: bool | None = field(rename="routability-driven", default=None)
     routability_use_grt: bool | None = field(rename="routability-use-grt", default=None)
+    # `global_placement -timing_driven`; `None` inherits, unset means off.
+    timing_driven: bool | None = field(rename="timing-driven", default=None)
     # `block`, `diamond-legalizer` or `none`; `None` inherits, unset means `block`.
     rotated_macro_footprint: str | None = field(
         rename="rotated-macro-footprint", default=None
@@ -153,6 +155,7 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
         reference_hpwl=reference_hpwl,
         routability_driven=placement.routability_driven,
         routability_use_grt=placement.routability_use_grt,
+        timing_driven=placement.timing_driven,
         rotated_macro_footprint=rotated,
     )
 
@@ -367,6 +370,10 @@ class PdkConfig:
     def get_placement_routability_use_grt(self) -> bool | None:
         """Configured `global_placement -routability_use_grt`, or `None` when unset."""
         return self._placement.routability_use_grt
+
+    def get_placement_timing_driven(self) -> bool | None:
+        """Configured `global_placement -timing_driven`, or `None` when unset."""
+        return self._placement.timing_driven
 
     def get_placement_rotated_macro_footprint(self) -> str | None:
         """Configured `placement.rotated-macro-footprint`, or `None` when unset."""

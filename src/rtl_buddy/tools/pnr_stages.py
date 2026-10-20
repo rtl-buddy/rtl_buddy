@@ -153,6 +153,9 @@ def after(stage: str, other: str) -> bool:
 #: Printed by each staged session but `finish` once its checkpoint is written.
 STAGE_DONE_MARKER = ">>> End of stage "
 
+#: Printed by the flow's last command, which `finish` and a one-session run end on.
+FLOW_DONE_MARKER = ">>> DONE"
+
 
 #: The `threads:` block of a stage script; the thread count is not part of its identity.
 _THREADS_RE = re.compile(r'\nputs ">>> Threads"\nset_thread_count [^\n]*\n')

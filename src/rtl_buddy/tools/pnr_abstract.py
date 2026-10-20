@@ -294,6 +294,16 @@ def abstract_config(pnr_cfg, platform) -> dict:
     def _rel(path):
         return project_relative(path, root) if root and path else path
 
+    # A one-corner mapping means its one SDC, as a plain path does.
+    constraints = pnr_cfg.get_constraints()
+    if isinstance(constraints, dict):
+        constraints = (
+            _rel(next(iter(constraints.values())))
+            if len(constraints) == 1
+            else {c: _rel(p) for c, p in constraints.items()}
+        )
+    else:
+        constraints = _rel(constraints)
     fp = pnr_cfg.get_floorplan()
     platform = platform.with_run_placement(pnr_cfg.get_placement(), pnr_cfg.get_name())
     platform = platform.with_run_repairs(
@@ -306,7 +316,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
             "name": pnr_cfg.get_synth_name(),
             "path": _rel(pnr_cfg.get_synth_suite_path()),
         },
-        "constraints": _rel(pnr_cfg.get_constraints()),
+        "constraints": constraints,
         "pin_constraints": _rel(pnr_cfg.pin_constraints),
         # Emitted only when set so existing digests do not change.
         **(
@@ -396,6 +406,11 @@ def abstract_config(pnr_cfg, platform) -> dict:
             **(
                 {"routability_use_grt": True}
                 if platform.get_placement_routability_use_grt() is True
+                else {}
+            ),
+            **(
+                {"timing_driven": True}
+                if platform.get_placement_timing_driven() is True
                 else {}
             ),
             **(

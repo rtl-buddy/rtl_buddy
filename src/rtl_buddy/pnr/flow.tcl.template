@@ -37,20 +37,31 @@ set OUT_DIR         {{ out_dir }}
 # the router keeps a pointer to the file name's Tcl string past the command.
 set CONGESTION_RPT  $OUT_DIR/congestion.rpt
 file mkdir $OUT_DIR
+
+# Buffers and fill cells the flow adds after the power grid is built have no
+# supply connections. The rules `add_global_connection` stored in the database
+# cover them; a database without rules (no `pdn-config`) has nothing to apply.
+# The flow applies them at the end of every stage, so a run gives the same
+# result whether or not it writes checkpoints or splits into sessions.
+namespace eval rb {}
+proc rb::global_connect {} {
+  if {[llength [[ord::get_db_block] getGlobalConnects]] > 0} {
+    ::global_connect
+  }
+}
 {{ threads_block }}{{ checkpoint_block }}{{ platform_tcl_block }}{{ hook_procs_block }}
 puts ">>> Reading Liberty + LEF"
 {{ read_liberty }}
 read_lef     $TECH_LEF
 read_lef     $MACRO_LEF
-{{ extra_libs_lefs }}
+{{ extra_libs_lefs }}{{ scenes_block }}
 
 {{ @load }}puts ">>> Reading netlist"
 read_verilog $NETLIST
 link_design  $DESIGN
 
 puts ">>> Reading SDC"
-read_sdc $SDC_FILE
-{{ @session }}{{ max_fanout_block }}{{ layer_rc_block }}{{ dont_use_block }}{{ hook_session_block }}
+{{ read_sdc }}{{ @session }}{{ max_fanout_block }}{{ layer_rc_block }}{{ dont_use_block }}{{ hook_session_block }}
 {{ @floorplan }}puts ">>> Initializing floorplan"
 {{ initialize_floorplan }}
 {{ make_tracks }}
@@ -100,10 +111,11 @@ foreach inst [$block getInsts] {
 # inside the core is `floorplan.macro-anchor`'s job.
 puts ">>> IO pin placement"
 {{ floorplan_pins_block }}{{ pin_constraints_tcl }}
-place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
+{{ place_pins_block }}
 {{ hook_after_pins_block }}{{ buffer_ports_block }}
+rb::global_connect
 {{ @place }}puts ">>> Global placement"
-{{ gp_blockages_create }}global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}{{ routability_options }}
+{{ gp_blockages_create }}global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}{{ routability_options }}{{ timing_driven_option }}
 {{ gp_blockages_destroy }}{{ hook_after_global_placement_block }}{{ tie_fanout_block }}
 puts ">>> Resize"
 estimate_parasitics -placement
@@ -111,10 +123,10 @@ repair_design
 {{ hook_after_repair_design_block }}
 puts ">>> Detail placement (legalize)"
 detailed_placement{{ dpl_options }}
+rb::global_connect
 
 {{ @cts }}puts ">>> Clock tree synthesis"
-{{ @clocks }}set_propagated_clock [all_clocks]
-{{ @/clocks }}clock_tree_synthesis \
+{{ @clocks }}{{ propagated_clocks }}{{ @/clocks }}clock_tree_synthesis \
     -root_buf {{ cts_root_buf }} \
     -buf_list $CTS_BUF \
     {{ cts_clustering_option }}{{ cts_ndr_option }}
@@ -128,21 +140,27 @@ puts ">>> Detail placement (legalize repair cells)"
 detailed_placement{{ dpl_options }}
 # -verbose names each failing instance.
 check_placement -verbose
+rb::global_connect
 
 {{ @global_route }}# -verbose logs the per-layer usage table (GRT-0096) of every global route.
 puts ">>> Global route"
 {{ @layers }}set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS
 {{ layer_adjustment }}{{ @/layers }}global_route -congestion_iterations 20 -congestion_report_file $CONGESTION_RPT -verbose
-{{ hook_after_global_route_block }}{{ global_route_repair }}{{ @detailed_route }}{{ hook_before_detailed_route_block }}
+{{ hook_after_global_route_block }}{{ global_route_repair }}rb::global_connect
+{{ @detailed_route }}{{ hook_before_detailed_route_block }}
+# Again for cells a before-detailed-route hook added.
+rb::global_connect
 puts ">>> Detail route"
 detailed_route \
     -output_drc  $OUT_DIR/route.drc.rpt \
     -output_maze $OUT_DIR/route.maze.log \
     -verbose {{ detailed_route_verbose }}
+rb::global_connect
 {{ @finish }}{{ dont_use_check_block }}
 puts ">>> Fill insertion"
 filler_placement $FILL_CELLS
-{{ rcx_block }}{{ hook_before_reports_block }}
+rb::global_connect
+{{ rcx_block }}{{ hook_before_reports_block }}{{ supply_ports_block }}
 puts ">>> Final reports"
 {{ final_parasitics }}
 report_design_area
@@ -185,11 +203,13 @@ if {[catch {
   report_check_types -max_slew -max_capacitance -max_fanout -violators > $OUT_DIR/electrical.rpt
 } rb_err]} { puts "rb: electrical.rpt unavailable: $rb_err" }
 
+# Again for cells a before-reports hook added.
+rb::global_connect
 puts ">>> Write outputs"
 write_def     $OUT_DIR/${DESIGN}.def
 write_verilog $OUT_DIR/${DESIGN}.routed.v
 write_sdc     $OUT_DIR/${DESIGN}.routed.sdc
-# OpenROAD binary DB: placement, routing and parasitic annotations, so
+{{ routed_corner_sdcs }}# OpenROAD binary DB: placement, routing and parasitic annotations, so
 # downstream tools (rb power with netlist-source: pnr) can re-enter at the
 # post-route state.
 #
