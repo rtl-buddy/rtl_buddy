@@ -78,6 +78,22 @@ If a third-party generator writes only relative to the working directory, wrap t
 
 Rename `budget.per_module_cap` to `budget.per_file_cap` in every `mut.yaml`. The old key is ignored, which removes the cap; it does not fail validation.
 
+## v6 to v7
+
+Machine-mode summaries on stderr omit `PASS`, `SKIP`, and `XFAIL` rows by default and retain the tally of all verdicts. Read the stdout result or the `summary` log event's `rows` for the complete list. Human-mode summaries retain their full default; `--print-failures-only` filters them.
+
+Machine mode also suppresses per-phase status lines such as `Compiling ...` and `Running simulation ...` at default verbosity. Use `--verbose` or `--debug` to display them. Dispatch heartbeats, job announcements, hook output, warnings, and errors remain visible.
+
+Update consumers of `payload.reservation_advice`:
+
+- Remove checks for `event: reservation-advice`; array elements no longer include `event`.
+- Treat missing `reg_level`, `allocated`, `suggested_total`, and `aggregate_delta` as null. These fields are omitted when inapplicable. A present `reg_level` remains per finding; build-job findings do not inherit the simulation filter.
+- Continue applying the explicit `edit_hint.file` and `edit_hint.path`. Files remain absolute, and an environment override has `path: env` without a file. Field names, units, ordering, and edit provenance are unchanged.
+
+Individual `rightsize.advice` log events move from INFO to DEBUG. Run with `--debug` to collect them. At normal verbosity, read the complete machine payload or the INFO `rightsize.summary` event, whose `total` and `counts` (`raise`, `reduce`) describe a nonempty advice list.
+
+Unknown keys in reservation and dispatch configuration are fatal instead of warnings. Correct or remove unknown keys in `cfg-dispatch`, its `resources`, `compile`, `compile.verilate`, `coverage`, `retry`, and `rightsize` blocks, suite/testbench `compile` blocks (including `verilate`), test/testbench `resources`, and elaboration-profile `resources`. Configuration loading exits with code 2 before execution. Log consumers must handle ERROR `config.unknown_key_rejected` in place of WARNING `config.unknown_key`. The error names the file, block, key, and nearest known spelling. Free-form mode names remain allowed; unknown keys inside a mode remain fatal.
+
 ## Submodule to uv
 
 Replace the `tools/rtl_buddy` submodule and editable pip install with a `uv` dependency:

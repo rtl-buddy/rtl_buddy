@@ -30,7 +30,7 @@ Dispatched `test`, `randtest`, `regression` exit 0 with no real failure, 1 when 
 
 ## Size resources from evidence
 
-In machine mode, read `payload.reservation_advice` and apply each `edit_hint.file` and `edit_hint.path` exactly. The governing field is a test or testbench `resources:` entry, a `compile:` block on a testbench or atop the suite's `tests.yaml`, or `cfg-dispatch.compile` in `root_config.yaml`. Each layer overrides the previous field by field; `parallel` and `split-verilate` go only at suite level or above.
+In machine mode, apply `payload.reservation_advice[*].edit_hint` exactly. `file` is absolute; `path: env` has no file. Findings omit `event` and null optional fields. INFO `rightsize.summary` counts advice; use `--debug` for individual events. A hint may name test/testbench `resources`, suite/testbench `compile`, or `cfg-dispatch.compile`; never derive it from the test. `parallel` and `split-verilate` belong only at suite level or above.
 
 - Slurm `OUT_OF_MEMORY`, or a local Verilator or compiler SIGKILL or `Killed`: raise the governing `mem` (for elaboration, `compile.verilate.mem`), never `sim_timeout`.
 - Scheduler `TIMEOUT`: raise the governing job `time`. `Sim hit timeout` in a completed job points at the test's `sim_timeout`.
@@ -40,7 +40,7 @@ In machine mode, read `payload.reservation_advice` and apply each `edit_hint.fil
 - A `(build job)` row (`phase: compile`) is the C++ build job. A `(verilate job)` row (`phase: verilate`) hints at `compile.verilate.<field>`. Their `cpus` suggestion is per build while `reserved` is the scaled product; read `edit_hint.note`.
 - The build-job `cpus` row is withheld as `parallel-utilization-ambiguous` above `compile.parallel: 1`. Size `parallel` against the suite's distinct compile keys, then read `cpus` from a `parallel: 1` run.
 - A build-job `reduce` is withheld (`rightsize.build_advice_withheld`) when nothing compiled or the job left no record. Right-size from a run that rebuilt.
-- A misspelt key in a reservation block or in `cfg-dispatch` (and its `coverage`, `retry`, `rightsize`) is ignored with WARNING `config.unknown_key`, naming the nearest key, so the job got the inherited value. A later major makes it fatal; `modes:` already rejects unknown keys.
+- A misspelt key in a reservation block or in `cfg-dispatch` (and its `coverage`, `retry`, `rightsize`) is fatal (exit 2), with ERROR `config.unknown_key_rejected` naming the nearest key. Correct every reported key before rerunning.
 - The head reserves one build per test with a `preproc` hook, since it may set plusdefines. If the hook only writes stimulus, set `preproc-sets-plusdefines: false` on the test or suite so identical tests share one build. A hook that moves the key anyway logs `build_job.preproc_changed_compile_key` (`changed=[...]`); the reservation may be short.
 - Right-size from representative levels and seeds; rerun until the advice retires. rtl_buddy never edits YAML.
 

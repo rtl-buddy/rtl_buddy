@@ -343,6 +343,10 @@ Logs are separated by process:
 
 After a Slurm run, rtl_buddy compares reservations with `sacct` usage and prints a Reservation Advice table. Machine output returns the findings in `payload.reservation_advice`. rtl_buddy never edits configuration. Turn the report off with `rightsize: {report: false}`. Without `sacct` accounting there is no advice.
 
+Each machine finding uses descriptive keys and carries its explicit `edit_hint`: apply `file` as an absolute path and `path` as the named YAML field. An environment override instead names `path: env` without a file. Do not derive an edit target from the test name; inherited compile settings and mode overrides can belong to another block or file. Optional `reg_level`, `allocated`, `suggested_total`, and `aggregate_delta` fields are absent when inapplicable; read missing fields as null. Findings have no `event` field. Regression levels remain per finding because build-job findings do not carry a test-level filter.
+
+The log records one INFO `rightsize.summary` event with `total` and `counts` by direction. Use `--debug` for individual `rightsize.advice` events; the machine payload includes all findings at every verbosity.
+
 Advice is per test, from the peak across runs in this invocation:
 
 - Utilization below `over-threshold` suggests a reduction. A lower value reports fewer tests: `0.3` lists only tests that used under a third of what they asked for.
@@ -399,7 +403,7 @@ A test whose retries ran under different cpu requests gets no `cpus` row (`right
 
 ## Troubleshoot reservations, arrays, and waits
 
-- **`config.unknown_key`:** a reservation or `cfg-dispatch` key was misspelt and ignored, so the job gets the inherited value. Rename it to the suggested key. See [Parallel dispatch](../reference/yaml.md#parallel-dispatch).
+- **`config.unknown_key_rejected`:** an unknown reservation or `cfg-dispatch` key stops configuration loading with exit code 2. Rename it to the suggested key or remove it. See [Parallel dispatch](../reference/yaml.md#parallel-dispatch).
 - **`dispatch.reservations_ignored`:** `local-parallel` does not enforce `cpus`, `mem`, or `time`. Lower `--jobs` if memory runs out.
 - **`OUT_OF_MEMORY` (Slurm) or `Killed` / exit 137 (local):** raise the field named by `reservation_advice[*].edit_hint`, not `sim_timeout`. Elaboration of large generated structures can be the memory peak.
 - **sbatch refuses an array:** set `cfg-dispatch.max-array-size` or `max-array-tasks`. `dispatch.max_array_size_unknown` (INFO) means no limit could be read.

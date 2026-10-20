@@ -16,7 +16,7 @@ Use `rb --machine` and read `payload.results`, not rendered tables. For syntax a
 - `rb test --plusarg KEY=VALUE` (repeatable; bare `KEY` for `+KEY`) overrides one runtime plusarg for a single run. It reaches `preproc` and the simulator, survives `--dispatch`, never rebuilds, and is recorded as `plusarg_overrides`.
 - Test artefacts are in `artefacts/<test>/`; randtest iterations use `run-NNNN/`. Durable verdicts are in `result.json`; `rtl_buddy.log` is JSONL.
 - "another rtl-buddy run is already using this artefact tree" means one lock per artefact tree. To run two tiers at once, give each run `--run-tag <name>`: its tree, lock, log and overlay move under `artefacts/.runs/<name>/`, shared builds stay shared, and `rb graph results --run-tag <name>` converts that run. The compile cwd moves too, so write project files in `compile-time` opts as `${RTL_BUDDY_PROJECT_ROOT}/...`.
-- On a long regression, `rb --print-failures-only --machine regression ...` trims `PASS`/`SKIP`/`XFAIL` rows from the console summary. The `summary` event and the log keep every row.
+- Machine mode trims `PASS`/`SKIP`/`XFAIL` rows from console summaries by default and keeps the tally. Use `--print-failures-only` in human mode. The `summary` event and the log keep every row.
 
 ## Verdicts
 
@@ -46,7 +46,7 @@ A recognized VCS `-licqueue` wait pauses the clock; check the reported queue dur
 
 ## Memory
 
-Verilator elaboration of large generated structures can be OOM-killed. A Slurm `OUT_OF_MEMORY` state, or a local compiler `Killed`/SIGKILL, calls for more memory, not a longer timeout. When queued, use the `rtl-buddy-dispatch` skill. A misspelt key in a `resources:` or `compile:` block (`memory:`) is ignored with WARNING `config.unknown_key` naming the nearest key, so the job gets the inherited value; a later major makes it fatal.
+Verilator elaboration of large generated structures can be OOM-killed. A Slurm `OUT_OF_MEMORY` state, or a local compiler `Killed`/SIGKILL, calls for more memory, not a longer timeout. When queued, use the `rtl-buddy-dispatch` skill. A misspelt key in a `resources:` or `compile:` block (`memory:`) is fatal (exit 2), with ERROR `config.unknown_key_rejected` naming the nearest key; correct it before rerunning.
 
 ## Shared builds
 

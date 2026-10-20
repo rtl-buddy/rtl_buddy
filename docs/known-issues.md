@@ -120,10 +120,6 @@ A resource group larger than the cluster's array limit is submitted as several a
 
 YAML 1.1 reads an unquoted `time: 4:00:00` as an integer, and rtl_buddy rejects it. Quote every `time` value in `resources:`, `compile:` and `modes:` blocks.
 
-## An unknown key in a reservation block is ignored after a warning
-
-An unknown key in a `resources:` or `compile:` block, in `cfg-dispatch`, or in its `coverage:`, `retry:` or `rightsize:` block is ignored. Each one logs the warning `config.unknown_key`, naming the file, the block and the nearest known key, so a typo such as `memory:` reserves nothing but is reported. A later major release will make an unknown key fatal. A `modes:` block already rejects unknown keys, but a release without `modes:` drops the whole block silently, so confirm a new mode's reservation once. See [YAML formats](reference/yaml.md#parallel-dispatch).
-
 ## Dispatch build jobs cover the whole suite
 
 One build job compiles every build of a suite. `compile.parallel` runs that many builds at once, but only `cpus` is scaled for you: size `compile.mem` for the concurrent builds and `compile.time` for the longest batch. Each build job reserves `cpus` times `min(parallel, planned tests)`, so set `parallel` to the expected number of distinct builds. See [Compile several builds at once](concepts/dispatch.md#compile-several-builds-at-once) and [Split verilation from the C++ build](concepts/dispatch.md#split-verilation-from-the-c-build).

@@ -14,7 +14,7 @@ from .dispatch import (
     RESOURCES_BLOCK,
     DispatchResourcesFile,
     validate_resources_block,
-    warn_unknown_block_keys,
+    unknown_block_key_errors,
 )
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
@@ -386,10 +386,10 @@ class ModelConfigFile:
     models: list[ModelConfig] = field(default_factory=list)
 
 
-def _warn_unknown_elaboration_resources_keys(raw, path) -> list[str]:
-    """Warn about unknown keys in each elaboration profile's ``resources:`` block, which serde drops; return them."""
+def _reject_unknown_elaboration_resources_keys(raw, path) -> None:
+    """Reject unknown keys in each elaboration profile's ``resources:`` block."""
     if not isinstance(raw, dict) or not isinstance(raw.get("models"), list):
-        return []
+        return
     found = []
     for model in raw["models"]:
         if not isinstance(model, dict) or not isinstance(
@@ -399,7 +399,7 @@ def _warn_unknown_elaboration_resources_keys(raw, path) -> list[str]:
         for profile in model["elaborations"]:
             if not isinstance(profile, dict):
                 continue
-            found += warn_unknown_block_keys(
+            found += unknown_block_key_errors(
                 profile.get("resources"),
                 RESOURCES_BLOCK,
                 path=path,
@@ -408,7 +408,8 @@ def _warn_unknown_elaboration_resources_keys(raw, path) -> list[str]:
                     f"{profile.get('name')!r} resources"
                 ),
             )
-    return found
+    if found:
+        raise FatalRtlBuddyError("\n".join(found))
 
 
 # TODO: Raise errors instead of killing things here
@@ -422,7 +423,7 @@ class ModelConfigLoader:
         try:
             with open(self.path, "r") as file:
                 text = file.read()
-            _warn_unknown_elaboration_resources_keys(load_yaml(text, path), path)
+            _reject_unknown_elaboration_resources_keys(load_yaml(text, path), path)
             data = config_from_yaml(ModelConfigFile, text, path)
             self.models = data.models
         except Exception as e:

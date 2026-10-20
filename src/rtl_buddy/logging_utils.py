@@ -246,8 +246,11 @@ def task_status(message: str, *, spinner: str = "dots"):
     """Show a spinner for a long phase, or print one plain line.
 
     The spinner is confined to the main thread, since a console allows only one Rich
-    ``Live``. Worker threads and non-terminal runs print the message instead.
+    ``Live``. Machine mode requires verbose output for per-phase messages.
     """
+    if is_machine_mode() and console_level() > logging.INFO:
+        yield None
+        return
     if threading.current_thread() is threading.main_thread():
         if _should_use_rich_console():
             with get_stderr_console().status(message, spinner=spinner) as status:
@@ -736,6 +739,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('path')} ({fields.get('error')}); the result "
                 "itself is unaffected — the envelope keeps the content it "
                 "already had"
+            )
+        case "rightsize.summary":
+            counts = fields.get("counts") or {}
+            return (
+                f"Reservation advice: {fields.get('total')} findings "
+                f"({counts.get('raise', 0)} raise, {counts.get('reduce', 0)} reduce)"
             )
         case "rightsize.advice":
             return (
@@ -2305,20 +2314,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "ignored, falling back to the ./<flow>_regression.yaml filename "
                 "convention"
             )
-        case "config.unknown_key":
+        case "config.unknown_key_rejected":
             msg = (
                 f"{fields.get('path')}: unknown key {fields.get('key')!r} in "
-                f"{fields.get('block')} ignored"
+                f"{fields.get('block')}"
             )
             if fields.get("suggestion"):
                 msg += f" (did you mean {fields.get('suggestion')!r}?)"
             known = fields.get("known") or []
             if known:
                 msg += f"; known keys are {', '.join(str(k) for k in known)}"
-            return msg + (
-                ". The block is read without it; a later major release will "
-                "make an unknown key fatal"
-            )
+            return msg
         case "root_config.reg_cfg_unknown_keys":
             return (
                 f"{fields.get('path')}: cfg-rtl-reg has unknown key(s) "
@@ -2908,14 +2914,14 @@ def render_summary(
     logger: logging.Logger,
     metadata: list[str] | None = None,
 ) -> None:
-    """Console render honours print_failures_only; log and event keep every row."""
+    """Machine summaries and print_failures_only hide passing console rows."""
     cols = list(columns)
     verdict_key = _verdict_column(cols, rows)
     counts = _verdict_counts(rows, verdict_key) if verdict_key else {}
 
     footer = [_tally_line(counts)] if counts else []
 
-    if verdict_key is not None and print_failures_only():
+    if verdict_key is not None and (is_machine_mode() or print_failures_only()):
         console_rows = [
             row
             for row in rows
@@ -2943,6 +2949,7 @@ def render_summary(
                 )
             ),
             markup=False,
+            soft_wrap=True,
         )
         return
 

@@ -108,9 +108,10 @@ In machine mode:
 - Rich formatting, colors, and spinners are off.
 - Supported commands print one structured JSON result to stdout.
 - Python hook stdout is captured as `hook.stdout` events so it cannot corrupt the result.
-- `test`, `regression`, and `fpv` render their result summary as plain text on stderr and record it as a `summary` event with `rows` and `counts`.
+- Result summaries omit `PASS`, `SKIP`, and `XFAIL` rows from stderr and keep the tally of all verdicts. The `summary` event retains every row and the complete `counts`.
+- Per-phase status lines require `--verbose` or `--debug`; dispatch progress and job announcements remain visible.
 
-Add `--print-failures-only` to omit `PASS`, `SKIP`, and `XFAIL` rows from the stderr summary of a long run. The `summary` event still carries every row.
+Use `--print-failures-only` for the same filtering in human mode. Read the stdout result or `summary.rows` for all results.
 
 A hook that starts an external process inheriting file descriptor 1 can still write to stdout. Redirect that process; see [Hook execution context](concepts/plugins.md#handle-hook-execution-context).
 

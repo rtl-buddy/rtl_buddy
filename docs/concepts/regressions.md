@@ -104,4 +104,4 @@ On a large regression, show only rows that need attention:
 rb --print-failures-only regression -c regression.yaml
 ```
 
-The flag drops `PASS`, `SKIP` and `XFAIL` rows from the console and keeps the tally. `rtl_buddy.log` and the machine-mode `summary` event still carry every row.
+The flag drops `PASS`, `SKIP` and `XFAIL` rows from the console and keeps the tally. Machine mode applies this filtering by default. `rtl_buddy.log` and the machine-mode `summary` event still carry every row.

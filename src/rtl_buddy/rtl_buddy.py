@@ -284,9 +284,20 @@ def _raise_first(findings: list) -> list:
 
 
 def _log_reservation_advice(findings: list) -> None:
+    if not findings:
+        return
+    log_event(
+        logger,
+        logging.INFO,
+        "rightsize.summary",
+        total=len(findings),
+        counts={
+            direction: sum(f.direction == direction for f in findings)
+            for direction in ("raise", "reduce")
+        },
+    )
     for finding in findings:
-        fields = {k: v for k, v in finding.as_event().items() if k != "event"}
-        log_event(logger, logging.INFO, "rightsize.advice", **fields)
+        log_event(logger, logging.DEBUG, "rightsize.advice", **finding.as_event())
 
 
 def _replace_environ(snapshot: dict) -> None:
@@ -1083,14 +1094,15 @@ class RtlBuddy:
         machine: Annotated[
             bool,
             typer.Option(
-                "--machine", help="Emit machine-oriented logs and plain console output"
+                "--machine",
+                help="Emit machine-oriented logs and JSON results; show failing summary rows and counts on stderr",
             ),
         ] = False,
         print_failures_only: Annotated[
             bool,
             typer.Option(
                 "--print-failures-only",
-                help="Hide PASS, SKIP, and XFAIL rows from console summaries",
+                help="Hide PASS, SKIP, and XFAIL rows from console summaries (default with --machine)",
             ),
         ] = False,
         color: Annotated[

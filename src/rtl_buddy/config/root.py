@@ -41,7 +41,7 @@ from .dispatch import (
     DISPATCH_BLOCK,
     DispatchConfig,
     DispatchConfigFile,
-    warn_unknown_block_keys,
+    unknown_block_key_errors,
 )
 from .env_file import apply_env_file
 from ..errors import FatalRtlBuddyError
@@ -358,10 +358,17 @@ class RootConfig:
         try:
             with open(self.root_cfg_path, "r") as file:
                 text = file.read()
-            data = config_from_yaml(RootConfigFile, text, self.root_cfg_path)
-            # Untyped second read: pyserde drops unknown keys that `_reject_unroutable_platform_keys` must see.
             reparsed = load_yaml(text, self.root_cfg_path)
             raw = reparsed if isinstance(reparsed, dict) else {}
+            errors = unknown_block_key_errors(
+                raw.get("cfg-dispatch"),
+                DISPATCH_BLOCK,
+                path=self.root_cfg_path,
+                block="cfg-dispatch",
+            )
+            if errors:
+                raise FatalRtlBuddyError("\n".join(errors))
+            data = config_from_yaml(RootConfigFile, text, self.root_cfg_path)
 
         except Exception as e:
             log_event(
@@ -491,13 +498,6 @@ class RootConfig:
 
             # cfg-dispatch execution backend (optional, single block)
             if data.dispatch is not None:
-                # serde drops an unknown key; warn before the typed block is validated.
-                warn_unknown_block_keys(
-                    raw.get("cfg-dispatch"),
-                    DISPATCH_BLOCK,
-                    path=self.root_cfg_path,
-                    block="cfg-dispatch",
-                )
                 self.dispatch_cfg = data.dispatch.initialise()
 
             # RegConfig loads lazily in get_rtl_reg_cfg() so non-simulation commands never read regression.yaml or suite files.

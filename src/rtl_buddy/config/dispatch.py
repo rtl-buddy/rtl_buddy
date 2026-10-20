@@ -71,7 +71,7 @@ class CompileVerilateFile:
 class DispatchCompileFile:
     """``cfg-dispatch.compile``: the compile's reservation and its concurrency.
 
-    Separate from :class:`DispatchResourcesFile` because ``parallel`` belongs to the per-suite build job, not to a per-test reservation. An unknown key such as ``parallel`` in a per-test ``resources:`` block is dropped by serde; :func:`warn_unknown_block_keys` warns about it.
+    Separate from :class:`DispatchResourcesFile` because ``parallel`` belongs to the per-suite build job, not to a per-test reservation. Unknown reservation keys are rejected before the typed load.
     """
 
     cpus: int | None = None
@@ -740,7 +740,7 @@ def _serde_keys(cls) -> tuple[str, ...]:
     )
 
 
-# Nested reservation blocks checked by warn_unknown_block_keys: key -> (class, its own nested blocks).
+# Nested reservation blocks: key -> (class, its own nested blocks).
 _VERILATE_BLOCK = {"verilate": (CompileVerilateFile, {})}
 RESOURCES_BLOCK = (DispatchResourcesFile, {})
 SUITE_COMPILE_BLOCK = (SuiteCompileFile, _VERILATE_BLOCK)
@@ -757,14 +757,10 @@ DISPATCH_BLOCK = (
 )
 
 
-# (path, block, key) already warned about: a models.yaml is reloaded for every test that names one of its models.
-_WARNED_UNKNOWN_KEYS: set[tuple[str, str, str]] = set()
+def unknown_block_key_errors(raw, spec, *, path, block) -> list[str]:
+    """Log and return errors for every unknown key in a reservation mapping.
 
-
-def warn_unknown_block_keys(raw, spec, *, path, block) -> list[str]:
-    """Warn about every key serde would drop from the raw mapping ``raw``; return them as ``block.key`` paths.
-
-    ``spec`` is ``(serde class, {key: nested spec})``. Each unknown key logs ``config.unknown_key`` naming ``path``, the block, the key and its closest known spelling, once per process.
+    ``spec`` is ``(serde class, {key: nested spec})``. Each unknown key logs ``config.unknown_key_rejected`` naming ``path``, the block, the key and its closest known spelling.
     A non-mapping ``raw`` is left to the typed load, and a ``modes:`` block is not descended into because :func:`validate_modes_block` already rejects its unknown keys.
     """
     if not isinstance(raw, dict):
@@ -777,24 +773,21 @@ def warn_unknown_block_keys(raw, spec, *, path, block) -> list[str]:
             continue
         # YAML 1.1 reads an unquoted `on`/`yes` key as a boolean.
         name = str(key)
-        found.append(f"{block}.{name}")
-        seen = (str(path), block, name)
-        if seen in _WARNED_UNKNOWN_KEYS:
-            continue
-        _WARNED_UNKNOWN_KEYS.add(seen)
         close = difflib.get_close_matches(name, known, n=1)
-        log_event(
-            logger,
-            logging.WARNING,
-            "config.unknown_key",
-            path=str(path),
-            block=block,
-            key=name,
-            suggestion=close[0] if close else None,
-            known=list(known),
+        found.append(
+            log_event(
+                logger,
+                logging.ERROR,
+                "config.unknown_key_rejected",
+                path=str(path),
+                block=block,
+                key=name,
+                suggestion=close[0] if close else None,
+                known=list(known),
+            )
         )
     for key, child in nested.items():
-        found += warn_unknown_block_keys(
+        found += unknown_block_key_errors(
             raw.get(key), child, path=path, block=f"{block}.{key}"
         )
     return found
