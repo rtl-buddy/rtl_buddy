@@ -11643,6 +11643,7 @@ class RtlBuddy:
                     name=f"{planned.name}/results",
                     desc=f"did not finish: {exc}",
                     fail_stage="error",
+                    fields={"mode": planned.cfg.get_mode().value},
                 ),
             }
 

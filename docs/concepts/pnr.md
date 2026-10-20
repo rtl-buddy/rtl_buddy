@@ -247,11 +247,11 @@ The stage keeps the best round, never worse than the detailed route:
 - A clean route always beats one with DRCs.
 - Otherwise a round wins when no repaired side's worst slack (setup if `setup-margin` is set, hold if `hold-margin` is set; 0 when met) is lower and one is higher, without more DRCs; or when it ties on timing with fewer DRCs.
 
-Rounds stop (`post_route_repair.stop`) when the best round is clean and meets timing (`timing_met`), a clean round does not improve (`no_improvement`), timing is not reported (`timing_not_reported`), a session fails (`session_failed`) or `rounds` run out (`last_round`). `timing_met` and `no_improvement` need a clean route, so rounds with DRCs keep going. A failure extracting round 0 fails the run; a failed session of a later round does not: rb warns `pnr.post_route_round_failed`, keeps the best round and qualifies the `PASS`. `finish` continues from the kept round, whose DRC report becomes `route.drc.rpt`. `pnr.post_route_round` logs each round's slack and DRCs.
+Rounds stop (`post_route_repair.stop`) when the best round is clean and meets timing (`timing_met`), a clean round does not improve (`no_improvement`), timing is not reported (`timing_not_reported`), a session fails (`session_failed`) or `rounds` run out (`last_round`). `timing_met` and `no_improvement` need a clean route, so rounds with DRCs keep going. The first clean round that does not become the best ends the stage, so no later round starts from it and raising `rounds` does not change that. A failure extracting round 0 fails the run; a failed session of a later round does not: rb warns `pnr.post_route_round_failed`, keeps the best round and qualifies the `PASS`. `finish` continues from the kept round, whose DRC report becomes `route.drc.rpt`. `pnr.post_route_round` logs each round's slack and DRCs.
 
 ## Probe a floorplan
 
-`mode: probe` on a run checks quickly whether a floorplan places and routes. It skips setup and hold repair, stops after global route and writes the `global_route` checkpoint. The result is a `PASS` with `routed: false`, the global-route overflow and timing on the global-route estimate. `xfail:` does not apply to it, and a `closure` run cannot resume from a probe's checkpoints.
+`mode: probe` on a run checks quickly whether a floorplan places and routes. It skips setup and hold repair, stops after global route and writes the `global_route` checkpoint. The result is a `PASS` with `routed: false`, the global-route overflow and timing on the global-route estimate. `xfail:` does not apply to it, and a `closure` run cannot resume from a probe's checkpoints. A probe publishes no abstract, so `harden: true` with `mode: probe` fails to load.
 
 ## Shape the floorplan
 

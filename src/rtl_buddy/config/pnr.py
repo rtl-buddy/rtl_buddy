@@ -1334,6 +1334,11 @@ class PnrConfigFile:
             f"pnr run '{self.name}'", self.post_route_repair
         )
         mode = read_mode(f"pnr run '{self.name}'", self.mode)
+        if mode is PnrMode.PROBE and self.harden:
+            raise FatalRtlBuddyError(
+                f"pnr run '{self.name}': mode: probe stops after global route and "
+                "publishes no abstract, so it cannot be harden: true"
+            )
         shape = _load_floorplan_shape(self.name, self.floorplan)
         if self.pdn_config is not None and not self.pdn_config:
             raise FatalRtlBuddyError(
