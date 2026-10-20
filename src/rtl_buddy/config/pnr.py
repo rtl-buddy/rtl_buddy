@@ -1292,6 +1292,8 @@ class PnrConfigFile:
     )
     port_buffer: str | list | None = field(rename="port-buffer", default=None)
     tapcell_tcl: str | None = field(rename="tapcell-tcl", default=None)
+    cts_dont_use_cells: Any = field(rename="cts-dont-use-cells", default=None)
+    keep_sizing_vt: bool | None = field(rename="keep-sizing-vt", default=None)
     # `clock_tree_synthesis -clk_nets`: the clock nets CTS builds trees for; run only.
     cts_clock_nets: str | list | None = field(rename="cts-clock-nets", default=None)
     # Over the platform's `global-route:` field by field. Read by `pnr_global_route`.
@@ -1425,6 +1427,8 @@ class PnrConfigFile:
             port_buffer=self.port_buffer,
             tapcell_tcl=self.tapcell_tcl,
             config_dir=config_dir,
+            cts_dont_use_cells=self.cts_dont_use_cells,
+            keep_sizing_vt=self.keep_sizing_vt,
             signoff=self.signoff,
             global_route=self.global_route,
         )

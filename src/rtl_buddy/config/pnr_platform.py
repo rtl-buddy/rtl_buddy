@@ -150,6 +150,18 @@ def _validate_tcl_path(key: str, value, where: str, config_dir: str) -> str | No
     return os.path.normpath(os.path.join(config_dir, value))
 
 
+def _validate_cts_dont_use_cells(value, where: str) -> tuple[str, ...]:
+    """Check a `cts-dont-use-cells` list of cell patterns; duplicates are dropped."""
+    if not isinstance(value, list):
+        raise FatalRtlBuddyError(
+            f"{where}: cts-dont-use-cells must be a list of cell-name patterns, "
+            f"got {value!r}"
+        )
+    return tuple(
+        dict.fromkeys(_validate_dont_use_cells(value, where, "cts-dont-use-cells"))
+    )
+
+
 @serde
 class PnrRoutingLayersFile:
     signal: str = ""
@@ -173,6 +185,8 @@ class PnrRunOverrides:
     routing_layer_adjustment: float | None = None
     port_buffer: str | None = None
     tapcell_tcl: str | None = None
+    cts_dont_use_cells: tuple[str, ...] | None = None
+    keep_sizing_vt: bool | None = None
     # The run's `signoff:` layer (see `pnr_signoff`): `UNSET` when absent, `None` when `null`.
     signoff: Any = UNSET
     global_route: GlobalRoute = GlobalRoute()
@@ -194,6 +208,8 @@ def read_run_overrides(
     port_buffer,
     tapcell_tcl,
     config_dir: str,
+    cts_dont_use_cells=None,
+    keep_sizing_vt: bool | None = None,
     signoff=UNSET,
     global_route: PnrGlobalRouteFile | None = None,
 ) -> PnrRunOverrides:
@@ -220,6 +236,12 @@ def read_run_overrides(
         ),
         port_buffer=_validate_port_buffer(port_buffer, where),
         tapcell_tcl=_validate_tcl_path("tapcell-tcl", tapcell_tcl, where, config_dir),
+        cts_dont_use_cells=(
+            _validate_cts_dont_use_cells(cts_dont_use_cells, where)
+            if cts_dont_use_cells is not None
+            else None
+        ),
+        keep_sizing_vt=keep_sizing_vt,
         signoff=read_signoff(where, signoff),
         global_route=read_global_route(where, global_route),
     )
@@ -265,6 +287,10 @@ class PnrPlatformConfigFile:
     placement: PlacementFile = field(default_factory=PlacementFile)
     # Added to the PDK's `dont-use-cells`, not replacing them.
     dont_use_cells: list[str] = field(rename="dont-use-cells", default_factory=list)
+    # Excluded for `clock_tree_synthesis` and `repair_clock_nets` only. Typed loosely so the validator names a bad value.
+    cts_dont_use_cells: Any = field(rename="cts-dont-use-cells", default_factory=list)
+    # `set_opt_config -keep_sizing_vt true`: sizing keeps each cell's threshold voltage.
+    keep_sizing_vt: bool = field(rename="keep-sizing-vt", default=False)
     # Replaces the PDK's `tapcell-tcl`; relative to the root config.
     tapcell_tcl: str | None = field(rename="tapcell-tcl", default=None)
     # `global_route` options; a run overrides them field by field. Read by `pnr_global_route`.
@@ -333,6 +359,10 @@ class PnrPlatformConfig:
                 cfg.dont_use_cells, f"pnr platform '{self._name}'"
             ),
         )
+        self._cts_dont_use_cells = _validate_cts_dont_use_cells(
+            cfg.cts_dont_use_cells, f"pnr platform '{self._name}'"
+        )
+        self._keep_sizing_vt = cfg.keep_sizing_vt
 
         self._platform_placement = validate_placement(
             cfg.placement, f"pnr platform '{self._name}'"
@@ -473,6 +503,8 @@ class PnrPlatformConfig:
             ("_routing_layer_adjustment", o.routing_layer_adjustment),
             ("_port_buffer", o.port_buffer),
             ("_tapcell_tcl", o.tapcell_tcl),
+            ("_cts_dont_use_cells", o.cts_dont_use_cells),
+            ("_keep_sizing_vt", o.keep_sizing_vt),
         ):
             if value is not None:
                 setattr(resolved, attr, value)
@@ -634,6 +666,14 @@ class PnrPlatformConfig:
     def get_dont_use_cells(self) -> list[str]:
         """The PDK's excluded cells plus this platform's, PDK first."""
         return list(self._dont_use_cells)
+
+    def get_cts_dont_use_cells(self) -> list[str]:
+        """The cells excluded for clock-tree synthesis and `repair_clock_nets` only, run over platform."""
+        return list(self._cts_dont_use_cells)
+
+    def get_keep_sizing_vt(self) -> bool:
+        """Whether sizing keeps each cell's threshold voltage (`set_opt_config -keep_sizing_vt`), run over platform."""
+        return self._keep_sizing_vt
 
     def get_cts_sink_clustering(self) -> bool:
         return self._cts_sink_clustering

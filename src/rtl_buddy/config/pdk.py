@@ -239,8 +239,10 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
 _TCL_METACHARACTERS = frozenset('[]{}$"\\;')
 
 
-def _validate_dont_use_cells(cells: list[str], where: str) -> list[str]:
-    """Check a `dont-use-cells:` list; ``where`` names it in errors.
+def _validate_dont_use_cells(
+    cells: list[str], where: str, key: str = "dont-use-cells"
+) -> list[str]:
+    """Check a `dont-use-cells:` list, or another list of cell patterns named `key`; ``where`` names it in errors.
 
     Each entry becomes one Tcl list element and one Yosys `-dont_use` argument, so whitespace would split it into two patterns.
     """
@@ -248,19 +250,19 @@ def _validate_dont_use_cells(cells: list[str], where: str) -> list[str]:
     for cell in cells:
         if not isinstance(cell, str) or not cell.strip():
             raise FatalRtlBuddyError(
-                f"{where}: dont-use-cells entries must be non-empty cell-name "
+                f"{where}: {key} entries must be non-empty cell-name "
                 f"patterns, got {cell!r}"
             )
         if len(cell.split()) > 1:
             raise FatalRtlBuddyError(
-                f"{where}: dont-use-cells entry {cell!r} contains whitespace; "
+                f"{where}: {key} entry {cell!r} contains whitespace; "
                 "write one pattern per list entry"
             )
         # Spliced unquoted into a Tcl `[list ...]`: a metacharacter would be executed, not matched.
         bad = sorted(set(cell) & _TCL_METACHARACTERS)
         if bad:
             raise FatalRtlBuddyError(
-                f"{where}: dont-use-cells entry {cell!r} contains "
+                f"{where}: {key} entry {cell!r} contains "
                 f"{' '.join(bad)}; patterns support only the `*` and `?` "
                 "wildcards"
             )

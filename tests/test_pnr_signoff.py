@@ -395,7 +395,11 @@ def test_setup_inf_at_every_judged_corner_fails_and_at_one_passes(
     inf_ss_tt = inf_ss.replace(
         "corner tt worst slack max 0.30", "corner tt worst slack max INF"
     )
-    block = {"setup-corners": ["tt", "ss"], "hold-corners": ["tt"], "fail-on": ["timing"]}
+    block = {
+        "setup-corners": ["tt", "ss"],
+        "hold-corners": ["tt"],
+        "fail-on": ["timing"],
+    }
 
     res = _signoff_run(tmp_path / "a", monkeypatch, block, inf_ss).run()
     assert res.results["result"] == "PASS"

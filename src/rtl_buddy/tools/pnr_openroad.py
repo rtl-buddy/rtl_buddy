@@ -701,6 +701,43 @@ def _cts_repair_clock_nets_tcl(platform) -> str:
     )
 
 
+def _keep_sizing_vt_tcl(platform) -> str:
+    """Return `set_opt_config -keep_sizing_vt true` when `keep-sizing-vt` is set, or `""`; false is OpenROAD's default."""
+    if platform.get_keep_sizing_vt() is not True:
+        return ""
+    return "set_opt_config -keep_sizing_vt true\n"
+
+
+def _cts_dont_use_tcl(platform) -> tuple[str, str]:
+    """Return the `cts-dont-use-cells` exclusion that precedes `clock_tree_synthesis`, and its undoing after `repair_clock_nets`; both `""` when the list is empty.
+
+    The exclusion records which matching cells are not yet dont-use, from `report_dont_use`, and the undoing frees only those. A blanket `unset_dont_use` would also free cells that Liberty, the platform or a hook had made dont-use.
+    """
+    cells = list(platform.get_cts_dont_use_cells())
+    if not cells:
+        return "", ""
+    patterns = f"[list {' '.join(cells)}]"
+    return (
+        f'puts ">>> CTS don\'t-use cells"\n'
+        "with_output_to_variable rb_cts_du_report { report_dont_use }\n"
+        "set rb_cts_du_before [dict create]\n"
+        'foreach rb_line [lrange [split $rb_cts_du_report "\\n"] 1 end] {\n'
+        "  dict set rb_cts_du_before [string trim $rb_line] 1\n"
+        "}\n"
+        "set rb_cts_du_added [list]\n"
+        f"foreach rb_cell [get_lib_cells -quiet {patterns}] {{\n"
+        "  if {![dict exists $rb_cts_du_before [get_name $rb_cell]]} {\n"
+        "    lappend rb_cts_du_added $rb_cell\n"
+        "  }\n"
+        "}\n"
+        f"set_dont_use {patterns}\n",
+        'puts ">>> Don\'t-use cells after CTS"\n'
+        "if {[llength $rb_cts_du_added] > 0} {\n"
+        "  unset_dont_use $rb_cts_du_added\n"
+        "}\n",
+    )
+
+
 def max_fanout_cmd(platform) -> str:
     """Return the `set_max_fanout` command that follows each `read_sdc`, or `""` when the platform sets no max fanout."""
     fanout = platform.get_max_fanout()
@@ -2801,6 +2838,7 @@ class OpenRoadPnr:
             else ""
         )
         dont_use_check_block = _dont_use_check_tcl(dont_use_cells)
+        cts_dont_use_block, cts_dont_use_restore_block = _cts_dont_use_tcl(platform)
 
         pdn_config = self._pdn_config(pdk)
         pdn = self.pnr_cfg.get_pdn()
@@ -2952,6 +2990,10 @@ class OpenRoadPnr:
             "blockages_block": blockages_block,
             "dont_use_block": dont_use_block,
             "dont_use_check_block": dont_use_check_block,
+            # In the `session` piece, so every staged session's prelude sets it too.
+            "keep_sizing_vt_block": _keep_sizing_vt_tcl(platform),
+            "cts_dont_use_block": cts_dont_use_block,
+            "cts_dont_use_restore_block": cts_dont_use_restore_block,
             "pdn_block": pdn_block,
             # Before the first `read_liberty`, as ORFS `PLATFORM_TCL`, so its `suppress_message` covers the Liberty reads.
             "platform_tcl_block": _hook_block(
@@ -3131,7 +3173,7 @@ class OpenRoadPnr:
     def _prelude(self, stage: str, read_tcl: str) -> list[str]:
         """The start of a session of `stage` after `floorplan`: the template head, `read_tcl` opening the database it starts from, and what a database does not keep.
 
-        That is the header variables, threads, `platform-tcl`, Liberty and LEF, then the database, SDC and saved globals, max fanout, layer RC, don't-use cells and `session` hooks; the flow's design variables; the detailed-placement options; propagated clocks after CTS; the routing layers after global routing; for detailed routing, the global route's segments; and, for `finish`, a fanout check.
+        That is the header variables, threads, `platform-tcl`, Liberty and LEF, then the database, SDC and saved globals, max fanout, layer RC, don't-use cells, `keep-sizing-vt` and `session` hooks; the flow's design variables; the detailed-placement options; propagated clocks after CTS; the routing layers after global routing; for detailed routing, the global route's segments; and, for `finish`, a fanout check.
         """
         flow = self._flow
         parts = [
@@ -4671,7 +4713,7 @@ class OpenRoadPnr:
         return hits
 
     def _warn_unmatched_dont_use(self, log_text: str, cells: list[str]) -> None:
-        """Log a warning naming every `dont-use-cells` pattern that matched no Liberty cell.
+        """Log a warning naming every `dont-use-cells` or `cts-dont-use-cells` pattern that matched no Liberty cell.
 
         OpenROAD only warns (`STA-0122`, or `STA-0121` for a missing library), so a misspelt pattern would otherwise exclude nothing silently. STA prints only the cell part of a `lib/cell` pattern, so both spellings are compared.
         """
@@ -6449,7 +6491,14 @@ class OpenRoadPnr:
             return unfinished
 
         # Before the exit-code check: the violating instances are the diagnostic.
-        self._warn_unmatched_dont_use(log_text, platform.get_dont_use_cells())
+        self._warn_unmatched_dont_use(
+            log_text,
+            list(
+                dict.fromkeys(
+                    [*platform.get_dont_use_cells(), *platform.get_cts_dont_use_cells()]
+                )
+            ),
+        )
         dont_use_hits = self._dont_use_violations(log_text)
         if dont_use_hits:
             log_event(

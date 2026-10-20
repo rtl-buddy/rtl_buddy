@@ -3109,7 +3109,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "pnr.dont_use_unmatched":
             patterns = ", ".join(str(p) for p in fields.get("patterns") or [])
             return (
-                f"pnr {fields.get('pnr')}: dont-use-cells pattern(s) {patterns} "
+                f"pnr {fields.get('pnr')}: don't-use pattern(s) {patterns} "
                 "matched no Liberty cell (STA-0122), so they exclude nothing — "
                 "check them for typos"
             )

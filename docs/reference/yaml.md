@@ -193,6 +193,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `cts-clock-nets` | run | One net or a list: `clock_tree_synthesis -clk_nets`, building trees for those clock nets only. Unset lets CTS find every clock |
 | `cts-latency-balancing` | platform, run | `false` adds `-no_insertion_delay`: CTS does not pad shallow branches of a clock net with delay buffers to match its deepest. Default `true` |
 | `cts-repair-clock-nets` | platform, run | `true` runs `repair_clock_nets` right after CTS, before the `after-cts` hooks. Default `false` |
+| `cts-dont-use-cells` | platform, run | Cell names or globs, one per entry, excluded for CTS and `repair_clock_nets` only: `set_dont_use` just before `clock_tree_synthesis`, then, before the `after-cts` hooks, `unset_dont_use` on the matching cells that were not dont-use before it. Cells that Liberty `dont_use`, `dont-use-cells` or an earlier hook excluded stay excluded. The routed-design check does not read it. A run's list replaces the platform's; `[]` clears it. Empty by default |
 | `cts-sink-clustering` | platform | `-sink_clustering_enable` for CTS. Default `true` |
 | `cts-apply-ndr` | platform | `none`, `root_only`, `half` or `full`. Unset keeps OpenROAD's `half` |
 | `port-buffer` | platform, run | Cell `buffer_ports` inserts. Unset lets OpenROAD choose |
@@ -204,6 +205,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `routing-layer-adjustment` | platform, run | 0 to 1: signal-layer capacity withheld from the global router. Unset keeps the router's default |
 | `global-route` | platform, run | `global_route` options. See below |
 | `max-fanout` | platform | Positive integer; `set_max_fanout` after each `read_sdc` in `rb pnr` and `rb power` |
+| `keep-sizing-vt` | platform, run | `true` runs `set_opt_config -keep_sizing_vt true` after `set_dont_use` in every OpenROAD session of the run: resizing keeps each cell's threshold-voltage flavour. Default `false` |
 
 `global-route-repair` and `post-route-repair` take:
 
@@ -880,7 +882,7 @@ runs:
 | `pdn-config` | PDK's | Tcl that replaces the PDK's `pdn-config` |
 | `pdn` | — | Core grid in YAML; see below |
 | `placement` | Platform's | Any `placement.*` key, overriding the platform for this run |
-| `routing-layers`, `routing-layer-adjustment`, `cts-buffer`, `cts-clock-nets`, `cts-latency-balancing`, `cts-repair-clock-nets`, `post-cts-setup-repair`, `global-route-hold-repair`, `port-buffer`, `tapcell-tcl` | Platform's | Override the platform's value for this run. See [P&R keys](#synthesis-and-physical-design-tools) |
+| `routing-layers`, `routing-layer-adjustment`, `cts-buffer`, `cts-clock-nets`, `cts-latency-balancing`, `cts-repair-clock-nets`, `cts-dont-use-cells`, `post-cts-setup-repair`, `global-route-hold-repair`, `port-buffer`, `keep-sizing-vt`, `tapcell-tcl` | Platform's | Override the platform's value for this run. See [P&R keys](#synthesis-and-physical-design-tools) |
 | `global-route` | Platform's | Overrides the platform's block field by field. See [P&R keys](#synthesis-and-physical-design-tools) |
 | `global-route-repair`, `post-route-repair` | Platform's | Overrides the platform's block field by field; `null` turns it off. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing) |
 | `mode` | `closure` | `probe` skips timing repair and stops after global route. Not with `harden: true`. See [Probe a floorplan](../concepts/pnr.md#probe-a-floorplan) |

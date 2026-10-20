@@ -139,7 +139,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `DPL-0011` | A macro placed off the row grid (`macro-snap: false`). Put its bottom edge on a row. |
 | `IFP-0039` at `make_tracks` (ASAP7) | Set the PDK's `tracks-tcl`. |
 | `RB-DONT-USE-VIOLATION` | The routed design uses an excluded cell, usually one the netlist already had. Change the RTL, synthesis or pattern. |
-| `STA-0122 cell '<pattern>' not found` | A `dont-use-cells` pattern matches nothing. |
+| `STA-0122 cell '<pattern>' not found` | A `dont-use-cells` or `cts-dont-use-cells` pattern matches nothing. |
 | `openroad.threads_capped` | `threads:` exceeds the allocation. Raise the reservation or use `threads: auto`. |
 | `floorplan.pins[i]: no port matches`, `floorplan.macros[i]: no instance matches` | Fix the name or glob. |
 | `floorplan.macros: the netlist has no hard macros` | Located macros place nothing; check that synthesis kept the macro instances. |
@@ -230,7 +230,7 @@ To catch hold problems from wire length before detailed routing, also set `globa
 
 - **Nangate45.** All defaults are tuned for it. It has no `pdn-config`, so runs have no power grid. For extraction use ORFS `flow/platforms/nangate45/rcx_patterns.rules`.
 - **sky130hd.** The template's `sky130hd` entry is a worked example: `pin-layers` `met3` / `met2`, `met*` routing layers, a `pdn-config`, `placement.density: 0.60`, a `dont-use-cells` list for the probe and `lpflow` cells, a `cts-buffer` list, and ORFS `sky130hs/rcx_patterns.rules`. Set `port-buffer` for hardened blocks.
-- **ASAP7.** Set the four Tcl keys to ORFS's `liberty_suppressions.tcl`, `setRC.tcl`, `openRoad/make_tracks.tcl` and a copy of `openRoad/tapcell.tcl` with `TAP_CELL_NAME` and `MACRO_ROWS_HALO_X` / `_Y` filled in. List each corner's split Liberty files under that corner. List each threshold flavour's cell LEF (`asap7sc7p5t_28_R_1x_*.lef`, `..._L_...`) in `macro-lef`, which takes a list read in order, and macro LEFs in `lef-paths`. In a Tcl hook, `$MACRO_LEF` names only the first LEF of the list. ORFS uses `routing-layer-adjustment: 0.25`.
+- **ASAP7.** Set the four Tcl keys to ORFS's `liberty_suppressions.tcl`, `setRC.tcl`, `openRoad/make_tracks.tcl` and a copy of `openRoad/tapcell.tcl` with `TAP_CELL_NAME` and `MACRO_ROWS_HALO_X` / `_Y` filled in. List each corner's split Liberty files under that corner. List each threshold flavour's cell LEF (`asap7sc7p5t_28_R_1x_*.lef`, `..._L_...`) in `macro-lef`, which takes a list read in order, and macro LEFs in `lef-paths`. Give `fill-cells` each flavour's fillers too, or fill insertion fails with `DPL-0050`. In a Tcl hook, `$MACRO_LEF` names only the first LEF of the list. ORFS uses `routing-layer-adjustment: 0.25`.
 
 ## Tune placement, clock tree and repair
 
@@ -255,6 +255,8 @@ Process-dependent knobs live on the PDK, can be overridden on the platform, and 
 | Macro pins over a tight Liberty limit, such as OpenRAM SKY130 SRAM inputs (0.04 ns) | `placement.macro-pin-limits`, below |
 
 A platform that ends up with `routability-use-grt` but not `routability-driven` fails to load.
+
+On a library with several threshold-voltage flavours, such as ASAP7 RVT and LVT with both flavours' Liberty in each corner and both cell LEFs in `macro-lef`, resizing moves cells between flavours freely. `keep-sizing-vt: true` keeps each cell's flavour when `repair_design` or `repair_timing` resizes it, so a cell changes flavour only through timing repair's threshold-voltage swap. `cts-dont-use-cells` keeps cells out of the clock tree only: CTS and `repair_clock_nets` skip them, and post-CTS repair may still place them on data paths. After `repair_clock_nets` the flow frees only the cells the list made dont-use; a matching cell that Liberty `dont_use`, `dont-use-cells` or an earlier hook excluded stays excluded. Neither CTS nor `repair_clock_nets` checks the `cts-buffer` cells against either list. The list governs the cells CTS picks itself: dummy-load inverters, and delay buffers it infers. Name the buffer flavour in `cts-buffer`. To keep a flavour out of every step, list it in `dont-use-cells`.
 
 `repair_design` sizes repeaters for the library's target slew, so a macro pin whose own limit is far below it stays in `electrical.rpt`. `placement.macro-pin-limits` buffers such pins at the end of the place stage, after `repair_design`, the `after-repair-design` hook and legalization:
 
