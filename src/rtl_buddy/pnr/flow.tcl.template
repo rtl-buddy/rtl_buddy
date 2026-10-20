@@ -231,6 +231,8 @@ rb::global_connect
 puts ">>> Write outputs"
 write_def     $OUT_DIR/${DESIGN}.def
 write_verilog $OUT_DIR/${DESIGN}.routed.v
+# The powered netlist for LVS: supply ports and every instance supply pin.
+write_verilog -include_pwr_gnd $OUT_DIR/${DESIGN}.routed.pwr.v
 write_sdc     $OUT_DIR/${DESIGN}.routed.sdc
 {{ routed_corner_sdcs }}# OpenROAD binary DB: placement, routing and parasitic annotations, so
 # downstream tools (rb power with netlist-source: pnr) can re-enter at the

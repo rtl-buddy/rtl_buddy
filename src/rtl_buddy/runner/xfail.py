@@ -36,6 +36,7 @@ FAIL_STAGE_REASONS = {
     "tool": "tool failure before a verdict",
     "export": "requested export not delivered",
     "abstract": "hardened abstract not produced",
+    "outputs": "routed outputs not finalised",
 }
 
 

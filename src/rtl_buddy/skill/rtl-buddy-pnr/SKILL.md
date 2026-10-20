@@ -67,7 +67,7 @@ Frequent cases:
 
 ## Hierarchical designs
 
-- A block run sets `harden: true` (single-corner platform, KLayout required) and publishes `artefacts/<run>/abstract/`. Set the platform's `port-buffer`.
+- A block run sets `harden: true` (single-corner platform; KLayout required unless `abstract: {gds: false}`) and publishes `artefacts/<run>/abstract/`. Set the platform's `port-buffer`.
 - A top names blocks under `blocks:` in its `pnr.yaml` and in its `synth.yaml` entry, and its filelist keeps the module a blackbox.
 - `rb pnr -c <pnr.yaml> --synth` with no run name builds blocks, then their consumers. `fail_stage: blocked` with `blocked_by` means fix the block, not the top.
 - A stale abstract fails naming what changed. Re-harden the block instead of passing `--accept-stale`.
