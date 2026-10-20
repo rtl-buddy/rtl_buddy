@@ -1835,6 +1835,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('min_flops')} is ignored on an unmapped run "
                 "(no Liberty to take an ICG from); set a platform or lib-paths"
             )
+        case "synth.clock_gating_max_ignored":
+            return (
+                f"synth {fields.get('synth')}: clock-gating-max-flops "
+                f"{fields.get('max_flops')} is ignored without "
+                "clock-gating-min-flops, which turns clock gating on"
+            )
+        case "synth.icg_not_split":
+            return (
+                f"synth {fields.get('synth')}: clock-gating-max-flops could not "
+                f"split an ICG: {fields.get('detail')}; see {fields.get('log')}"
+            )
         case "synth.yosys_abc_missing":
             return (
                 f"abc-persistent: false needs yosys-abc, but none was found next to "
@@ -1883,6 +1894,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"Tcl refused to evaluate it ({fields.get('message')}); falling "
                 "back to the word tokenizer, which does not evaluate "
                 "$variables or [expr]"
+            )
+        case "constraints.tcl_check_skipped":
+            return (
+                f'constraint file "{fields.get("source")}" line {fields.get("line")}: '
+                f"check skipped (error {fields.get('message')!r}); the reader "
+                "cannot answer design queries, so the check is assumed to pass"
+            )
+        case "constraints.tcl_checks_skipped":
+            return (
+                f'constraint file "{fields.get("source")}": '
+                f"{fields.get('count')} `error` check(s) skipped; the reader "
+                "has no design to answer them, so each is assumed to pass "
+                "(each one is logged at DEBUG as constraints.tcl_check_skipped)"
             )
         case "constraints.source_unreadable":
             return (
@@ -2336,6 +2360,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             round_ = fields.get("round")
             if not round_:
                 repair = "the detailed route"
+            elif fields.get("electrical_round"):
+                repair = "electrical, repair_design only"
             else:
                 repair = ", ".join(
                     f"{kind} margin {fields.get(f'{kind}_margin_ns'):g} ns"
@@ -2352,10 +2378,18 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 )
             else:
                 timing = "not timed"
+            electrical = ""
+            if "max_slew_violation_count" in fields:
+                electrical = (
+                    f", {fields.get('max_slew_violation_count')} max-slew and "
+                    f"{fields.get('max_capacitance_violation_count')} "
+                    "max-capacitance violator(s)"
+                )
             return (
-                f'P&R "{fields.get("pnr")}" post-route repair round '
-                f"{round_}/{fields.get('rounds')} ({repair}): {timing}, "
-                f"{fields.get('drc_count')} DRC violation(s); "
+                f'P&R "{fields.get("pnr")}" post-route repair round {round_}'
+                + ("" if fields.get("electrical_round") else f"/{fields.get('rounds')}")
+                + f" ({repair}): {timing}, "
+                f"{fields.get('drc_count')} DRC violation(s){electrical}; "
                 f"best round {fields.get('best_round')}"
             )
         case "pnr.post_route_round_failed":
@@ -2372,6 +2406,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 + (" (the detailed route)" if kept == 0 else "")
                 + f"; {fields.get('repaired_rounds')} of {fields.get('rounds')} "
                 f"round(s) repaired; stopped: {fields.get('reason')}"
+                + (
+                    f"; electrical round {electrical.get('round')} "
+                    f"{electrical.get('status', '').replace('_', ' ')}: "
+                    f"{electrical.get('reason')}"
+                    if (electrical := fields.get("electrical_round"))
+                    else ""
+                )
             )
         case "pnr.post_route_repair_without_rcx":
             return (

@@ -156,6 +156,10 @@ On a platform with `corners:`, `rb pnr` times each corner in an OpenSTA SDC mode
 
 See [Sign off at several corners](concepts/pnr.md#sign-off-at-several-corners).
 
+### Synthesis repair buffers the unplaced netlist
+
+A synthesis effort with `openroad.repair: true` runs `repair_design -pre_placement` when no instance is placed after its `pre-sta-tcl`. In v6 it ran plain `repair_design`, which on an unplaced netlist only resizes, so high-fanout nets stayed unbuffered. Such runs usually report more area and less negative WNS and TNS, and their options digest changes. No config change is needed. See [Select an effort](concepts/synthesis.md#select-an-effort).
+
 ## Submodule to uv
 
 Replace the `tools/rtl_buddy` submodule and editable pip install with a `uv` dependency:

@@ -323,6 +323,7 @@ def extract_names(word: str) -> list[str]:
 
 
 def _log_worker_warnings(response: dict, source: str | None) -> None:
+    skipped: dict[str | None, int] = {}
     for warning in response.get("warnings") or ():
         if not isinstance(warning, dict):
             continue
@@ -345,6 +346,26 @@ def _log_worker_warnings(response: dict, source: str | None) -> None:
                 included=warning.get("included") or "",
                 error=warning.get("error") or "",
             )
+        elif warning.get("kind") == "check_skipped":
+            # The stubs cannot answer a design query, so the file's own check is assumed to pass.
+            file = warning.get("file") or source
+            skipped[file] = skipped.get(file, 0) + 1
+            log_event(
+                logger,
+                logging.DEBUG,
+                "constraints.tcl_check_skipped",
+                source=file,
+                line=warning.get("line"),
+                message=warning.get("message") or "",
+            )
+    for file, count in skipped.items():
+        log_event(
+            logger,
+            logging.WARNING,
+            "constraints.tcl_checks_skipped",
+            source=file,
+            count=count,
+        )
 
 
 def _read_with_tcl(
@@ -628,7 +649,7 @@ def read_commands(
 
     ``script_path`` names the file ``text`` was read from. With it, ``source`` is followed: relative to the sourcing file's directory, then the working directory, with ``[info script]`` and path-only ``file`` subcommands (``dirname``, ``join``, ``normalize`` ...) answering as Tcl would; each command's ``file`` says where it came from. The tokenizer follows only a literal path. Without it, ``source`` is reported as unsupported.
 
-    ``lenient_queries`` retries a file the interp refused with object queries (``get_ports`` ...) answering their name arguments as a Tcl list rather than their source form, so a proc or loop that iterates a query's result is evaluated. Words then hold the names, not ``[get_ports ...]``; use it only where the query form does not matter.
+    ``lenient_queries`` retries a file the interp refused with object queries (``get_ports`` ...) and name accessors (``get_full_name`` ...) answering their name arguments as a Tcl list rather than their source form, so a proc or loop that iterates a query's result is evaluated. The retry skips each ``error`` the file raises, logged at DEBUG as ``constraints.tcl_check_skipped``: a check such as ``[get_property $p direction] ne "input"`` needs the design, which the reader does not have. Words then hold the names, not ``[get_ports ...]``; use it only where the query form does not matter.
     """
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     if script_path is not None:
