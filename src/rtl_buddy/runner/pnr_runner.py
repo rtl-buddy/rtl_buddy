@@ -27,6 +27,7 @@ class PnrRunner:
         stop_after: str | None = None,
         resume: str | None = None,
         resume_from: str | None = None,
+        dispatch=None,
     ):
         self.name = name
         self.root_cfg = root_cfg
@@ -38,6 +39,8 @@ class PnrRunner:
         self.stop_after = stop_after
         self.resume = resume
         self.resume_from = resume_from
+        # `--dispatch`: the backend that runs each stage as a job; see `OpenRoadPnr`.
+        self.dispatch = dispatch
         self.emit_gds = emit_gds
         self.emit_png = emit_png
         # `None` defers to each run's `gds-mode:`; otherwise it overrides every run.
@@ -86,6 +89,7 @@ class PnrRunner:
             stop_after=self.stop_after,
             resume=self.resume,
             resume_from=self.resume_from,
+            dispatch=self.dispatch,
         )
         return backend.run()
 

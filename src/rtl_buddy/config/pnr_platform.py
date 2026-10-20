@@ -1,6 +1,7 @@
 import copy
 import logging
 import re
+from typing import Any
 
 from serde import serde, field
 
@@ -17,6 +18,18 @@ from .pdk import (
     _validate_dont_use_cells,
     merge_dont_use_cells,
     validate_placement,
+)
+from .pnr_repair import (
+    GLOBAL_ROUTE_REPAIR_SPEC,
+    HOLD_REPAIR_SHORTHAND,
+    POST_ROUTE_REPAIR_SPEC,
+    UNSET,
+    GlobalRouteRepair,
+    PostRouteRepair,
+    read_global_route_repair,
+    read_post_route_repair,
+    resolve_global_route_repair,
+    resolve_post_route_repair,
 )
 from .unknown_keys import KeySpec
 
@@ -99,10 +112,13 @@ class PnrPlatformConfigFile:
     cts_sink_clustering: bool = field(rename="cts-sink-clustering", default=True)
     # Runs `repair_timing -setup` before the post-CTS hold repair.
     post_cts_setup_repair: bool = field(rename="post-cts-setup-repair", default=False)
-    # Repairs hold again after global route, on `estimate_parasitics -global_routing`, as ORFS does.
+    # Repairs hold again after global route, on `estimate_parasitics -global_routing`, as ORFS does: shorthand for `global-route-repair: {hold-margin: 0}`.
     global_route_hold_repair: bool = field(
         rename="global-route-hold-repair", default=False
     )
+    # Repair after global route and after detailed route; a run overrides them field by field. Read by `pnr_repair`.
+    global_route_repair: Any = field(rename="global-route-repair", default=UNSET)
+    post_route_repair: Any = field(rename="post-route-repair", default=UNSET)
     # `set_global_routing_layer_adjustment` over the signal layers; `None` leaves the router's default.
     routing_layer_adjustment: float | None = field(
         rename="routing-layer-adjustment", default=None
@@ -125,7 +141,12 @@ class PnrPlatformConfigFile:
 #: The keys of one `cfg-pnr-platforms` entry, for the unknown-key check.
 PNR_PLATFORM_SPEC = KeySpec(
     PnrPlatformConfigFile,
-    {"routing-layers": KeySpec(PnrRoutingLayersFile), "placement": PLACEMENT_SPEC},
+    {
+        "routing-layers": KeySpec(PnrRoutingLayersFile),
+        "placement": PLACEMENT_SPEC,
+        "global-route-repair": GLOBAL_ROUTE_REPAIR_SPEC,
+        "post-route-repair": POST_ROUTE_REPAIR_SPEC,
+    },
 )
 
 
@@ -141,7 +162,7 @@ class PnrPlatformConfig:
         self._cts_buffers = _as_cell_list(cfg.cts_buffer)
         self._cts_sink_clustering = cfg.cts_sink_clustering
         self._post_cts_setup_repair = cfg.post_cts_setup_repair
-        self._global_route_hold_repair = cfg.global_route_hold_repair
+        self._read_repairs(cfg)
         self._routing_layer_adjustment = _validate_layer_adjustment(
             cfg.routing_layer_adjustment, f"pnr platform '{self._name}'"
         )
@@ -171,6 +192,52 @@ class PnrPlatformConfig:
             f"pnr platform '{self._name}'",
             "set on the platform or its PDK",
         )
+
+    def _read_repairs(self, cfg: PnrPlatformConfigFile) -> None:
+        """Read the platform's repair blocks into layers a run's blocks go over. They are resolved per run (see `with_run_repairs`), so a partial platform block fails only the runs that leave it partial."""
+        where = f"pnr platform '{self._name}'"
+        gr_layer = read_global_route_repair(where, cfg.global_route_repair)
+        if cfg.global_route_hold_repair:
+            if gr_layer is not UNSET:
+                raise FatalRtlBuddyError(
+                    f"{where}: set either global-route-hold-repair or "
+                    "global-route-repair, not both (global-route-hold-repair: true "
+                    "is global-route-repair: {hold-margin: 0})"
+                )
+            gr_layer = dict(HOLD_REPAIR_SHORTHAND)
+        self._global_route_repair_layer = gr_layer
+        self._post_route_repair_layer = read_post_route_repair(
+            where, cfg.post_route_repair
+        )
+        # Resolved on first use, or by `with_run_repairs`.
+        self._repairs: (
+            tuple[GlobalRouteRepair | None, PostRouteRepair | None] | None
+        ) = None
+
+    def _resolve_repairs(self, gr_run, pr_run, where: str) -> None:
+        self._repairs = (
+            resolve_global_route_repair(
+                where, [self._global_route_repair_layer, gr_run]
+            ),
+            resolve_post_route_repair(where, [self._post_route_repair_layer, pr_run]),
+        )
+
+    def with_run_repairs(
+        self, global_route_repair, post_route_repair, run: str
+    ) -> "PnrPlatformConfig":
+        """Return this platform with a P&R run's repair layers (see `pnr_repair`) over its own, field by field; raise when the merged block is incomplete."""
+        resolved = copy.copy(self)
+        resolved._resolve_repairs(
+            global_route_repair,
+            post_route_repair,
+            f"pnr run '{run}' on platform '{self._name}'",
+        )
+        return resolved
+
+    def _resolved_repairs(self):
+        if self._repairs is None:
+            self._resolve_repairs(UNSET, UNSET, f"pnr platform '{self._name}'")
+        return self._repairs
 
     def _resolve_placement(
         self, layers: list[PlacementFile], where: str, levels: str
@@ -384,9 +451,13 @@ class PnrPlatformConfig:
         """Whether post-CTS repair fixes setup before hold."""
         return self._post_cts_setup_repair
 
-    def get_global_route_hold_repair(self) -> bool:
-        """Whether hold is repaired again on global-route parasitics, before detail route."""
-        return self._global_route_hold_repair
+    def get_global_route_repair(self) -> GlobalRouteRepair | None:
+        """The repair after global route, platform under run, or None when off."""
+        return self._resolved_repairs()[0]
+
+    def get_post_route_repair(self) -> PostRouteRepair | None:
+        """The repair rounds after detailed route, platform under run, or None when off."""
+        return self._resolved_repairs()[1]
 
     def get_routing_layer_adjustment(self) -> float | None:
         """Global-route capacity adjustment, 0 to 1, or `None` for the router's default."""
