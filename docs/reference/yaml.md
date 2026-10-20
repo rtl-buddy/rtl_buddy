@@ -851,6 +851,7 @@ runs:
 | `gds-allow-empty` | — | Cell names or case-sensitive globs that have no layout on purpose |
 | `pin-constraints` | — | Tcl sourced just before pin placement |
 | `hooks` | — | Map of hook point to a Tcl path or list. See [Run Tcl hooks](../concepts/pnr.md#run-tcl-hooks) |
+| `inputs` | — | Files the SDC or hooks `source`, relative to `pnr.yaml`. Fingerprinted for `--resume` and hardened-block staleness. See [Run Tcl hooks](../concepts/pnr.md#run-tcl-hooks) |
 | `pdn-config` | PDK's | Tcl that replaces the PDK's `pdn-config` |
 | `pdn` | — | Core grid in YAML; see below |
 | `placement` | Platform's | Any `placement.*` key, overriding the platform for this run |

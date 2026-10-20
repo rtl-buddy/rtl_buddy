@@ -419,6 +419,12 @@ By default each stripe layer connects to the next; `connect: [[met1, met4], ...]
 
 Hooks run at Tcl global scope in `artefacts/<run>/`, with `$OUT_DIR` and `$DESIGN` set. A Tcl error, `exit` or stray `return` in a hook fails the run naming the point and file. Results come from the final reports, so a report a hook prints earlier does not change them. Hook files are inputs of checkpoints and hardened abstracts. On a multi-corner platform an SDC command in a hook constrains the primary corner only; see [Sign off at several corners](#sign-off-at-several-corners).
 
+rb does not read the Tcl for `source` targets. List the files the SDC or a hook sources under `inputs:`, relative to `pnr.yaml`. Each is fingerprinted by path and content with the hook files, so editing one or listing another in its place refuses a `--resume` and makes a hardened block's abstract stale. `rb pnr` fails before any run starts when a run it would run lists a missing file:
+
+```yaml
+    inputs: [scripts/window.tcl]
+```
+
 When a run splits into several OpenROAD sessions (`stages: true`, `--resume`, `--dispatch slurm`, or `post-route-repair`), Tcl procedures, `rename` wrappers, `set_wire_rc` and `set_dont_use` set by a hook are gone in the next session. Put such state in a `session` hook. rb warns `pnr.hook_commands_not_kept` when a hook redefines an existing command.
 
 ## OpenROAD threads
@@ -482,7 +488,7 @@ rb pnr alu_pnr -c pnr/alu/pnr.yaml --resume latest --from detailed_route
 
 - `--stop-after <stage>` works on any run, writes that checkpoint and a stage report, and passes with `routed: false`. It writes no routed outputs, GDS or abstract, and `xfail:` does not apply.
 - `--resume <run> --from <stage>` starts a new staged run from a staged run's checkpoint of the stage before. `<run>` is `latest`, a run id or a checkpoint directory. The old run is left unchanged, so detailed routing can be retried from one global route.
-- The resume is refused (`fail_stage: resume`) when the earlier stages' generated scripts, their input files or the OpenROAD version changed, or when resuming a probe into a closure run. A `constraints:` path and a map of that path to every corner count as different. Settings read only from `--from` on, such as `detailed-route-verbose`, routing layers or `threads:`, may change. Files sourced by hooks, `platform-tcl`, a `pdn-config` or the SDC, and environment variables, are not checked.
+- The resume is refused (`fail_stage: resume`) when the earlier stages' generated scripts, their input files or the OpenROAD version changed, or when resuming a probe into a closure run. A `constraints:` path and a map of that path to every corner count as different. Settings read only from `--from` on, such as `detailed-route-verbose`, routing layers or `threads:`, may change. Files sourced by hooks, `platform-tcl`, a `pdn-config` or the SDC are not checked unless listed under [`inputs:`](#run-tcl-hooks), and environment variables are not checked.
 
 ## Dispatch the stages to Slurm
 
