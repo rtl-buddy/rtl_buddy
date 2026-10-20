@@ -183,8 +183,12 @@ class SupplyOrder:
 
 
 def _read(path: str) -> str:
-    with open(path, encoding="utf-8", newline="") as f:
-        return f.read()
+    try:
+        with open(path, encoding="utf-8", newline="") as f:
+            return f.read()
+    except UnicodeDecodeError as e:
+        e.reason = f"{e.reason} in {path}"
+        raise
 
 
 def _write(path: str, text: str) -> None:

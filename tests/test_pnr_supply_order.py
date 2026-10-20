@@ -261,6 +261,14 @@ def test_a_failed_write_leaves_the_original(tmp_path, monkeypatch):
     assert sorted(os.listdir(tmp_path)) == ["t.lib", "t.pwr.v", "t.v"]
 
 
+def test_a_decoding_error_names_the_file(tmp_path):
+    paths = _files(tmp_path)
+    paths[2].write_bytes(b"library (x) { /* \xff */ }\n")
+
+    with pytest.raises(UnicodeDecodeError, match=f"in {paths[2]}"):
+        canonicalise(*map(str, paths[:2]), "top", str(paths[2]))
+
+
 def test_the_supply_order_events_read_as_sentences():
     unverified = _human_message(
         "pnr.supply_order_unverified",
