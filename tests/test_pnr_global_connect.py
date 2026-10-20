@@ -299,6 +299,8 @@ def test_the_flow_defines_a_guarded_connect_before_any_stage():
 
     assert "proc rb::global_connect" in head
     assert "getGlobalConnects" in head
-    # The end of five stages, before detailed route, after fill, and before the outputs.
-    assert text.count("rb::global_connect\n") == 8
+    # The end of five stages, before detailed route, after fill, and before the
+    # outputs; the failed global route's keeper calls it too.
+    assert text.count("rb::global_connect\n") == 8 + 1
+    assert text.count("    rb::global_connect\n") == 1
     assert text.rindex("rb::global_connect\n") > text.index("filler_placement")
