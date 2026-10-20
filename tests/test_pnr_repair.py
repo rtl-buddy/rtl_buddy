@@ -627,7 +627,7 @@ proc detailed_route {args} {
     rb_stub detailed_route
     set i [lsearch $args -output_drc]
     if {$i >= 0 && [info exists env(RB_STUB_DRC)] && $env(RB_STUB_DRC) == [rb_round]} {
-        rb_write [lindex $args [expr {$i + 1}]] "violation"
+        rb_write [lindex $args [expr {$i + 1}]] "violation type: Short\n\tsrcs: net:a net:b\n\tbbox = (1.0, 2.0) - (1.1, 2.1) on Layer met1"
     }
     set i [lsearch $args -output_maze]
     if {$i >= 0} { rb_write [lindex $args [expr {$i + 1}]] "maze r[rb_round]" }
@@ -1444,11 +1444,11 @@ def test_a_round_with_drc_violations_stops_the_rounds(tmp_path, monkeypatch):
     (run_dir,) = _runs(artefacts)
     assert [r["round"] for r in _rounds(run_dir)] == [1]
     assert _done(run_dir)["repaired_rounds"] == 1
-    assert "DRC" in _done(run_dir)["reason"]
+    assert "1 DRC violation(s)" in _done(run_dir)["reason"]
     assert res.results["drc_count"] == 1
     # The stage's checkpoint keeps the last round's router reports.
     kept = run_dir / "06_post_route_repair.route.drc.rpt"
-    assert kept.read_text().strip() == "violation"
+    assert kept.read_text().startswith("violation type: Short")
     maze = run_dir / "06_post_route_repair.route.maze.log"
     assert maze.read_text().strip() == "maze r1"
 
@@ -1498,6 +1498,40 @@ def test_a_resume_from_finish_restores_the_last_round_s_reports(tmp_path, monkey
 
     assert res.results["result"] == "PASS", res.results
     assert (artefacts / "route.maze.log").read_text().strip() == "maze r1"
+
+
+@pytest.mark.parametrize("post_route", [_PR, None], ids=["repaired", "unrepaired"])
+def test_a_resume_from_finish_refuses_changed_rcx_rules_only_after_repair_rounds(
+    tmp_path, monkeypatch, post_route
+):
+    """The rounds extract with `rcx-rules`; without them only `finish`, which a resume from finish reruns, reads the file."""
+    first, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=post_route,
+        stages=True,
+        env={"RB_STUB_SETUP": "-0.2 0.01"},
+    )
+    assert first.run().results["result"] == "PASS"
+    (first_dir,) = _runs(artefacts)
+    again, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=post_route,
+        stages=True,
+        resume=str(first_dir),
+        resume_from="finish",
+        env={"RB_STUB_SETUP": "-0.2 0.01"},
+    )
+    (tmp_path / "pdk" / "rcx.rules").write_text("recalibrated rules\n")
+
+    res = again.run()
+
+    if post_route is None:
+        assert res.results["result"] == "PASS", res.results
+    else:
+        assert res.results["fail_stage"] == "resume", res.results
+        assert "input rcx_rules differs" in res.results["desc"]
 
 
 def test_a_failed_repair_session_fails_the_stage(tmp_path, monkeypatch):
