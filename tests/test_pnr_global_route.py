@@ -238,8 +238,17 @@ def test_every_full_route_takes_the_options_and_every_call_the_origin(tmp_path):
     # The legalization between the repairs is incremental: origin and allow-congestion only.
     assert stage.count(_START) == 1
     assert stage.count(_END) == 1
-    # The last route is a full one, so the grid already sits at the origin.
-    assert _GUIDES not in text
+    # A full route also leaves the grid at the die origin, so it is rebuilt after the reroute.
+    assert stage.count(_GUIDES) == 1
+    assert stage.rindex(_FULL) < stage.index(_GUIDES)
+
+
+def test_a_route_without_repair_rebuilds_the_grid_at_the_origin(tmp_path):
+    text = _render(tmp_path, _gr_platform(tmp_path, {"grid_origin": [3, 3]}))
+    stage = text[text.index('puts ">>> Global route"') : text.index(">>> Detail route")]
+    route = stage.index("global_route -congestion_iterations 20 -grid_origin {3 3} ")
+    assert stage.count(_GUIDES) == 1
+    assert route < stage.index(_GUIDES) < stage.index("rb::global_connect\n", route)
 
 
 def test_an_incremental_repair_carries_the_origin_and_rebuilds_the_grid(tmp_path):

@@ -364,7 +364,10 @@ def _end_incremental_cmd(gr: GlobalRoute) -> str:
 
 
 def _grid_origin_guides_tcl(gr: GlobalRoute) -> str:
-    """Rebuild the GCell grid from the guides after an incremental global route, which rebuilds it at the die origin while `-grid_origin` offsets only the guides; `""` without a grid origin."""
+    """Rebuild the GCell grid from the guides before detailed route, `""` without a grid origin.
+
+    Every `global_route`, full or incremental, writes the GCell grid at the die origin while `-grid_origin` offsets only the guides; detailed route then fails (DRT-0155). `read_guides` rebuilds the grid from the guides.
+    """
     if gr.grid_origin is None:
         return ""
     return (
@@ -465,7 +468,7 @@ def _global_route_repair_tcl(
 
     A hold-only repair with no margin is what `global-route-hold-repair: true` stands for, and renders as that key always has, so its scripts and checkpoints compare equal.
 
-    `gr` holds the `global-route:` options: a full reroute takes them all, the incremental calls the grid origin and `allow-congestion`. With a grid origin, a repair that ends on an incremental route rebuilds the GCell grid from the guides (`_grid_origin_guides_tcl`).
+    `gr` holds the `global-route:` options: a full reroute takes them all, the incremental calls the grid origin and `allow-congestion`.
     """
     if repair is None:
         return ""
@@ -480,7 +483,6 @@ def _global_route_repair_tcl(
             + f"detailed_placement{dpl_options}\n"
             + _end_incremental_cmd(gr)
             + "check_placement -verbose\n"
-            + _grid_origin_guides_tcl(gr)
         )
     title = "Global-route repair"
     legalize = _legalize_tcl(dpl_options, gr)
@@ -505,7 +507,7 @@ def _global_route_repair_tcl(
             + f'puts ">>> {title}: global route"\n'
             + _global_route_cmd(gr)
         )
-    return head + steps + legalize + _grid_origin_guides_tcl(gr)
+    return head + steps + legalize
 
 
 def _layer_adjustment_tcl(platform) -> str:
@@ -2606,6 +2608,7 @@ class OpenRoadPnr:
             "post_cts_repair": _post_cts_repair_tcl(platform, self._mode),
             "layer_adjustment": _layer_adjustment_tcl(platform),
             "global_route_cmd": _global_route_cmd(platform.get_global_route()),
+            "grid_origin_guides": _grid_origin_guides_tcl(platform.get_global_route()),
             # `_mode_checkpoint_sdc_tcl` defines it with an SDC mode per corner.
             "failed_global_route_write_sdc": (
                 "rb::ckpt::write_sdc" if self._mode_corners else "write_sdc"

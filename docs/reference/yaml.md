@@ -220,7 +220,7 @@ The block a run ends up with must set at least one of `repair-design`, `setup-ma
 |---|---|
 | `congestion-iterations` | Positive integer: `-congestion_iterations` of every full global route. Default `20` |
 | `congestion-report-iter-step` | Non-negative integer: `-congestion_report_iter_step` of every full global route |
-| `grid-origin` | `[x, y]` in DBU: `-grid_origin` of every `global_route` call, incremental ones included. After a repair that ends on an incremental route the flow writes and reads back the guides, which rebuilds the GCell grid at the origin |
+| `grid-origin` | `[x, y]` in DBU: `-grid_origin` of every `global_route` call, incremental ones included. Before each detailed route the flow writes and reads back the guides, which rebuilds the GCell grid at the origin |
 | `layer-adjustment` | Map of routing layer to 0–1: `set_global_routing_layer_adjustment <layer>` after the all-layers `routing-layer-adjustment` |
 | `critical-nets-percentage` | 0 to 100: `-critical_nets_percentage` of every full global route |
 | `resistance-aware` | `true` adds `-resistance_aware` to every full global route |
