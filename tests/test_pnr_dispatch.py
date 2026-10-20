@@ -941,6 +941,7 @@ _FINISH_OUTPUTS = {
     "demo_top.routed.odb",
     "demo_top.routed.sdc",
     "demo_top.routed.v",
+    "demo_top.routed.pwr.v",
 }
 
 
