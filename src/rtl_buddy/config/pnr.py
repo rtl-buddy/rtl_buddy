@@ -6,22 +6,21 @@ import pprint
 import re
 from dataclasses import dataclass, field as dc_field, replace
 from enum import StrEnum
-from typing import Any, Literal, NoReturn
+from typing import Any, Literal
 
 import yaml
 from serde import field, serde
 from serde.compat import SerdeError
-from .yaml_loader import config_from_data, load_yaml
+from .yaml_loader import config_from_yaml, load_yaml
 
 from ..errors import FatalRtlBuddyError
 from ..runner.xfail import compile_xfail_match
 from ..logging_utils import log_event
 from .blocks import BlockRef, BlockRefFile, load_block_refs
 from .openroad_threads import validate_threads
-from .pdk import PLACEMENT_SPEC, PlacementFile, validate_placement
+from .pdk import PlacementFile, validate_placement
 from .synth import SynthSuiteConfig
 from .toolpath import resolve_tool_path
-from .unknown_keys import KeySpec, find_unknown_entry_keys, reject_unknown_keys
 
 logger = logging.getLogger(__name__)
 
@@ -1321,32 +1320,6 @@ class PnrConfigFile:
         )
 
 
-#: The keys of one `pnr.yaml` run and its nested blocks, for the unknown-key check. `hooks` names its own points in `_normalise_hooks`.
-PNR_RUN_SPEC = KeySpec(
-    PnrConfigFile,
-    {
-        "floorplan": KeySpec(
-            PnrFloorplanFile,
-            {
-                "blockages": KeySpec(PnrBlockageFile, many=True),
-                "pins": KeySpec(PnrPinFile, many=True),
-                "macros": KeySpec(PnrMacroFile, many=True),
-            },
-        ),
-        "pdn": KeySpec(
-            PnrPdnFile,
-            {
-                "ring": KeySpec(PnrPdnRingFile),
-                "stripes": KeySpec(PnrPdnStripeFile, many=True),
-            },
-        ),
-        "abstract": KeySpec(PnrAbstractFile),
-        "placement": PLACEMENT_SPEC,
-        "blocks": KeySpec(BlockRefFile, many=True),
-    },
-)
-
-
 @dataclass
 class PnrConfig:
     name: str
@@ -1532,22 +1505,16 @@ class PnrSuiteConfig:
         self.runs: dict[str, PnrConfig] = {}
         try:
             with open(path, "r") as f:
-                raw = load_yaml(f.read(), path)
+                data = config_from_yaml(PnrSuiteConfigFile, f.read(), path)
         except Exception as e:
-            self._raise_load_failed(e)
-        # Before the typed load, which drops an unknown key and whose own errors a misspelt key can cause.
-        reject_unknown_keys(
-            find_unknown_entry_keys(
-                raw.get("runs") if isinstance(raw, dict) else None,
-                PNR_RUN_SPEC,
-                kind="pnr run",
-            ),
-            path=path,
-        )
-        try:
-            data = config_from_data(PnrSuiteConfigFile, raw)
-        except Exception as e:
-            self._raise_load_failed(e)
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr_suite_config.load_failed",
+                path=path,
+                error=e,
+            )
+            raise FatalRtlBuddyError(f'failed to load "{path}"') from e
 
         config_dir = os.path.dirname(os.path.abspath(path))
         try:
@@ -1563,16 +1530,6 @@ class PnrSuiteConfig:
                 error=e,
             )
             raise FatalRtlBuddyError(f"{path}: runs section malformed") from e
-
-    def _raise_load_failed(self, error: Exception) -> NoReturn:
-        log_event(
-            logger,
-            logging.ERROR,
-            "pnr_suite_config.load_failed",
-            path=self.path,
-            error=error,
-        )
-        raise FatalRtlBuddyError(f'failed to load "{self.path}"') from error
 
     def get_runs(self, name: str | None = None) -> list[PnrConfig]:
         if name is not None:

@@ -6,7 +6,6 @@ from serde import serde, field
 
 from ..errors import FatalRtlBuddyError
 from .pdk import (
-    PLACEMENT_SPEC,
     DEFAULT_PLACEMENT_DENSITY,
     DEFAULT_PLACEMENT_MACRO_HALO,
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
@@ -18,7 +17,6 @@ from .pdk import (
     merge_dont_use_cells,
     validate_placement,
 )
-from .unknown_keys import KeySpec
 
 logger = logging.getLogger(__name__)
 
@@ -120,13 +118,6 @@ class PnrPlatformConfigFile:
     placement: PlacementFile = field(default_factory=PlacementFile)
     # Added to the PDK's `dont-use-cells`, not replacing them.
     dont_use_cells: list[str] = field(rename="dont-use-cells", default_factory=list)
-
-
-#: The keys of one `cfg-pnr-platforms` entry, for the unknown-key check.
-PNR_PLATFORM_SPEC = KeySpec(
-    PnrPlatformConfigFile,
-    {"routing-layers": KeySpec(PnrRoutingLayersFile), "placement": PLACEMENT_SPEC},
-)
 
 
 class PnrPlatformConfig:

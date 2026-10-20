@@ -161,8 +161,6 @@ cfg-pnr-platforms:
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
 
-An unknown key in a `cfg-pdks` or `cfg-pnr-platforms` entry, including its `pin-layers`, `routing-layers` and `placement` blocks, is a config error that names the key, the entry and the valid keys. It stops every command that loads `root_config.yaml`. A `corners` mapping takes any corner name.
-
 `placement.*` stands for `placement.density`, `placement.padding`, `placement.macro-halo`, `placement.macro-cell-halo`, `placement.tie-separation`, `placement.reference-hpwl`, `placement.routability-driven`, `placement.routability-use-grt`, and `placement.rotated-macro-footprint`.
 
 The process-dependent P&R keys are all optional:
@@ -796,8 +794,6 @@ Paths resolve from the manifest. Each suite keeps the command root of its `synth
 ## pnr.yaml
 
 Required keys are `rtl-buddy-filetype: pnr_config` and `runs`.
-
-An unknown key in a run or in any mapping nested in it (`floorplan`, `floorplan.blockages[]`, `floorplan.pins[]`, `floorplan.macros[]`, `pdn`, `pdn.ring`, `pdn.stripes[]`, `abstract`, `placement`, `blocks[]`) is a config error. The message names the file, the run, the block's position, the key, the nearest valid key and every valid key, for example `pnr run 'top': floorplan.blockages[2]: unknown key 'lifetme', did you mean 'lifetime'?`. Every unknown key is reported at once. `hooks` rejects an unknown point, and a planner file rejects an unknown entry key.
 
 ```yaml
 rtl-buddy-filetype: pnr_config
