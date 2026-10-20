@@ -61,7 +61,7 @@ def test_suite_reservation_blocks_reject_all_unknown_keys(
     events = _unknown_key_events(caplog)
     assert _summary(events) == {
         ("compile", "split_verilate", "split-verilate"),
-        ("compile.verilate", "cpu", "cpus"),
+        ("compile: verilate", "cpu", "cpus"),
         ("testbench 'tb_basic' resources", "memory", "mem"),
         ("testbench 'tb_basic' compile", "walltime", "time"),
         ("test 'basic' resources", "tmie", "time"),
@@ -146,11 +146,11 @@ def test_cfg_dispatch_blocks_reject_all_unknown_keys(minimal_project: Path, capl
     events = _unknown_key_events(caplog)
     assert _summary(events) == {
         ("cfg-dispatch", "poll_interval", "poll-interval"),
-        ("cfg-dispatch.resources", "memory", "mem"),
-        ("cfg-dispatch.compile.verilate", "mme", "mem"),
-        ("cfg-dispatch.coverage", "tme", "time"),
-        ("cfg-dispatch.retry", "attempt", "attempts"),
-        ("cfg-dispatch.rightsize", "margins", "margin"),
+        ("cfg-dispatch: resources", "memory", "mem"),
+        ("cfg-dispatch: compile.verilate", "mme", "mem"),
+        ("cfg-dispatch: coverage", "tme", "time"),
+        ("cfg-dispatch: retry", "attempt", "attempts"),
+        ("cfg-dispatch: rightsize", "margins", "margin"),
     }
     assert {e["path"] for e in events} == {str(root_cfg_path)}
     for event in events:
@@ -215,10 +215,10 @@ def test_the_unknown_key_message_names_the_fix():
         },
     )
     assert message.startswith(
-        "tests.yaml: unknown key 'memory' in testbench 'tb' resources"
+        "tests.yaml: testbench 'tb' resources: unknown key 'memory'"
     )
     assert "did you mean 'mem'?" in message
-    assert "known keys are cpus, mem, time, modes" in message
+    assert "valid keys: cpus, mem, time, modes" in message
     assert "ignored" not in message
 
 

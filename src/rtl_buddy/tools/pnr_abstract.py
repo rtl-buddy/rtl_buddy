@@ -7,17 +7,25 @@ import hashlib
 import json
 import os
 import shutil
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
+from enum import Enum
 from importlib.metadata import version
 from pathlib import Path
 
 from ..config.blocks import BlockRef
 from ..config.pdk import (
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
+    DEFAULT_ROTATED_MACRO_FOOTPRINT,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
 )
-from ..config.pnr import ABSTRACT_BLOAT_OCCUPIED, MacroPlacement, PnrAbstract
+from ..config.pnr_repair import GlobalRouteRepair
+from ..config.pnr import (
+    ABSTRACT_BLOAT_OCCUPIED,
+    BlockageLifetime,
+    MacroPlacement,
+    PnrAbstract,
+)
 from .artifact_paths import project_relative, project_root_or_none
 
 ABSTRACT_DIR_NAME = "abstract"
@@ -250,6 +258,32 @@ def _pdn_config(pdn) -> dict:
     }
 
 
+def _repair_digest(platform) -> dict:
+    """The timing repairs after global and detailed route, each emitted only when set so existing digests do not change.
+
+    A hold-only global-route repair with no margin is what `global-route-hold-repair: true` always ran, so it keeps that key.
+    """
+    digest = {}
+    gr = platform.get_global_route_repair()
+    if gr == GlobalRouteRepair(hold_margin=0.0):
+        digest["global_route_hold_repair"] = True
+    elif gr is not None:
+        digest["global_route_repair"] = _jsonable(asdict(gr))
+    pr = platform.get_post_route_repair()
+    if pr is not None:
+        digest["post_route_repair"] = _jsonable(asdict(pr))
+    return digest
+
+
+def _jsonable(value):
+    """`value` with every enum as its string, for a digest."""
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, Enum):
+        return value.value
+    return value
+
+
 def abstract_config(pnr_cfg, platform) -> dict:
     """Return the configuration a hardened result depends on, with project-relative paths.
 
@@ -261,6 +295,10 @@ def abstract_config(pnr_cfg, platform) -> dict:
         return project_relative(path, root) if root and path else path
 
     fp = pnr_cfg.get_floorplan()
+    platform = platform.with_run_placement(pnr_cfg.get_placement(), pnr_cfg.get_name())
+    platform = platform.with_run_repairs(
+        pnr_cfg.global_route_repair, pnr_cfg.post_route_repair, pnr_cfg.get_name()
+    )
     hooks = dict(platform.get_pdk().get_tcl_hooks())
     return {
         "platform": pnr_cfg.get_platform(),
@@ -294,6 +332,12 @@ def abstract_config(pnr_cfg, platform) -> dict:
                     "rect": list(b.rect),
                     "type": str(b.type),
                     "max_density": b.max_density,
+                    # Emitted only when non-default so existing digests do not change.
+                    **(
+                        {"lifetime": str(b.lifetime)}
+                        if b.lifetime is not BlockageLifetime.FLOW
+                        else {}
+                    ),
                 }
                 for b in fp.blockages
             ],
@@ -305,6 +349,12 @@ def abstract_config(pnr_cfg, platform) -> dict:
             ),
             **({"pins": [_pin_config(p) for p in fp.pins]} if fp.pins else {}),
             **({"macros": [_macro_config(m) for m in fp.macros]} if fp.macros else {}),
+            # Planner files by path; their contents are fingerprinted as inputs.
+            **({"macros_file": _rel(fp.macros_file)} if fp.macros_file else {}),
+            **({"macro_snap": False} if not fp.macro_snap else {}),
+            **({"pins_file": _rel(fp.pins_file)} if fp.pins_file else {}),
+            **({"pin_snap": False} if not fp.pin_snap else {}),
+            **({"pins_complete": True} if fp.pins_complete else {}),
             **(
                 {"die_area": list(fp.die_area), "core_area": list(fp.core_area)}
                 if fp.die_area is not None
@@ -348,6 +398,16 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 if platform.get_placement_routability_use_grt() is True
                 else {}
             ),
+            **(
+                {
+                    "rotated_macro_footprint": str(
+                        platform.get_placement_rotated_macro_footprint()
+                    )
+                }
+                if platform.get_placement_rotated_macro_footprint()
+                != DEFAULT_ROTATED_MACRO_FOOTPRINT
+                else {}
+            ),
         },
         "routing": {
             "signal_layers": platform.get_signal_layers(),
@@ -366,11 +426,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
             if platform.get_post_cts_setup_repair() is True
             else {}
         ),
-        **(
-            {"global_route_hold_repair": True}
-            if platform.get_global_route_hold_repair() is True
-            else {}
-        ),
+        **_repair_digest(platform),
         **(
             {"cts_apply_ndr": platform.get_cts_apply_ndr()}
             if isinstance(platform.get_cts_apply_ndr(), str)
@@ -391,6 +447,12 @@ def abstract_config(pnr_cfg, platform) -> dict:
         ),
         # Emitted only when a PDK Tcl hook is set so existing digests do not change.
         **({"tcl_hooks": {k: _rel(v) for k, v in hooks.items()}} if hooks else {}),
+        # Emitted only when a run hook is set so existing digests do not change.
+        **(
+            {"hooks": {k: [_rel(p) for p in v] for k, v in pnr_cfg.get_hooks().items()}}
+            if pnr_cfg.get_hooks()
+            else {}
+        ),
         # Emitted only when non-default so existing digests do not change; a change regenerates.
         **(
             {

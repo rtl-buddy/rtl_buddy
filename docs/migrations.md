@@ -80,6 +80,8 @@ Rename `budget.per_module_cap` to `budget.per_file_cap` in every `mut.yaml`. The
 
 ## v6 to v7
 
+### Machine output and reservation keys
+
 Machine-mode summaries on stderr omit `PASS`, `SKIP`, and `XFAIL` rows by default and retain the tally of all verdicts. Read the stdout result or the `summary` log event's `rows` for the complete list. Human-mode summaries retain their full default; `--print-failures-only` filters them.
 
 Machine mode also suppresses per-phase status lines such as `Compiling ...` and `Running simulation ...` at default verbosity. Use `--verbose` or `--debug` to display them. Dispatch heartbeats, job announcements, hook output, warnings, and errors remain visible.
@@ -92,7 +94,43 @@ Update consumers of `payload.reservation_advice`:
 
 Individual `rightsize.advice` log events move from INFO to DEBUG. Run with `--debug` to collect them. At normal verbosity, read the complete machine payload or the INFO `rightsize.summary` event, whose `total` and `counts` (`raise`, `reduce`) describe a nonempty advice list.
 
-Unknown keys in reservation and dispatch configuration are fatal instead of warnings. Correct or remove unknown keys in `cfg-dispatch`, its `resources`, `compile`, `compile.verilate`, `coverage`, `retry`, and `rightsize` blocks, suite/testbench `compile` blocks (including `verilate`), test/testbench `resources`, and elaboration-profile `resources`. Configuration loading exits with code 2 before execution. Log consumers must handle ERROR `config.unknown_key_rejected` in place of WARNING `config.unknown_key`. The error names the file, block, key, and nearest known spelling. Free-form mode names remain allowed; unknown keys inside a mode remain fatal.
+Unknown keys in reservation and dispatch configuration are fatal instead of warnings. Correct or remove unknown keys in `cfg-dispatch`, its `resources`, `compile`, `compile.verilate`, `coverage`, `retry`, and `rightsize` blocks, suite/testbench `compile` blocks (including `verilate`), test/testbench `resources`, and elaboration-profile `resources`. Configuration loading exits with code 2 before execution. Log consumers must handle ERROR `config.unknown_key_rejected` in place of WARNING `config.unknown_key`. The error names the file, block, key, and nearest known spelling. Nested block locations use the P&R validator's syntax, such as `cfg-dispatch: compile.verilate` in place of `cfg-dispatch.compile.verilate`. Free-form mode names remain allowed; unknown keys inside a mode remain fatal.
+
+### Unknown P&R keys are errors
+
+An unknown key in a P&R run, a P&R platform or a PDK is a config error. Before, it was dropped without a word, so a misspelt key changed the flow silently: a blockage written with `lifetme: global-placement` loaded as a permanent one.
+
+The check covers:
+
+- Every mapping of a `pnr.yaml` run: the run, `floorplan`, `floorplan.blockages[]`, `floorplan.pins[]`, `floorplan.macros[]`, `pdn`, `pdn.ring`, `pdn.stripes[]`, `abstract`, `placement` and `blocks[]`.
+- Every `cfg-pnr-platforms` entry, with its `routing-layers` and `placement` blocks.
+- Every `cfg-pdks` entry, with its `pin-layers` and `placement` blocks.
+
+Each unknown key is reported with the file, its location, the nearest valid key and every valid key:
+
+```text
+pnr.yaml: pnr run 'top': floorplan.blockages[2]: unknown key 'lifetme', did you mean 'lifetime'? (valid keys: rect, type, max-density, lifetime)
+```
+
+Remove the key or correct its spelling. A `pnr.yaml` error stops `rb pnr`. A `cfg-pdks` or `cfg-pnr-platforms` error stops every command that loads `root_config.yaml`. See [YAML formats](reference/yaml.md#pnryaml).
+
+### The routed DEF must keep located macros and exact pins
+
+A run with a located macro or an exact pin compares them with the routed DEF and fails with `fail_stage: routed_check` when one moved; `xfail:` does not excuse it. In v6 nothing compared them, so a run whose `pin-constraints` file or platform hook moved a located macro or an exact pin passed. Remove the conflicting placement or the floorplan entry. See [Check the routed floorplan](concepts/pnr.md#check-the-routed-floorplan).
+
+### Exact pins leave side and group rules
+
+A port with an exact location in `floorplan.pins` is left out of every side or group rule that also matches it. In v6 it stayed in the rule's list: the run failed with `PPL-0107` when the pin lay outside the rule's edge, and otherwise the rule's other pins were placed around it. Such a config now places the rule's other pins differently.
+
+### Stage checkpoints
+
+The `global_route` checkpoint holds the design after the `after-global-route` hooks and the global-route repair (`global-route-hold-repair` or `global-route-repair`), before the `before-detailed-route` hooks: the design detailed routing starts from. In v6 it held the design as `global_route` returned, before the hold repair. A `detailed_route` checkpoint (`05_detailed_route.odb`, `.def` and `.sdc`) follows detailed routing, so `checkpoints: true` writes five stages and `rb pnr-export --checkpoint detailed_route` exports the route before fill. Checkpoint SDC files are written with `write_sdc -no_timestamp -digits 9`. No `pnr.yaml` change is needed; a script that reads `04_global_route` as the design before hold repair gets the repaired design. See [Keep stage checkpoints](concepts/pnr.md#keep-stage-checkpoints).
+
+A one-session run that reaches its end without writing a checkpoint it keeps fails with `fail_stage: checkpoint`. In v6 it passed without that checkpoint, which happened when a checkpoint's write failed or when a hook wrapped the stage's boundary command (`global_placement`, `clock_tree_synthesis`, `global_route`) with `rename`. Fix the write's cause or remove the wrapper, or set `stages: true`.
+
+### OpenROAD runs in the artefact directory
+
+Every OpenROAD session runs in the run's artefact directory, `artefacts/<run>/`. In v6 it ran in the directory `rb` was started from, so a relative path in a run hook, `platform-tcl`, `layer-rc-tcl`, `tapcell-tcl`, `pin-constraints` file or `pdn-config` (`source`, `open`, `read_*`, `write_*`) resolved there. Such a path now resolves from `artefacts/<run>/`. Build paths from the script's own location instead, `[file join [file dirname [info script]] <name>]`, or from the variables the flow sets (`OUT_DIR`). See [Run Tcl hooks](concepts/pnr.md#run-tcl-hooks).
 
 ## Submodule to uv
 

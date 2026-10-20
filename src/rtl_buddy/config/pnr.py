@@ -1,22 +1,42 @@
+import json
 import logging
 import math
 import os
 import pprint
 import re
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass, field as dc_field, make_dataclass, replace
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal, NoReturn
 
+import yaml
 from serde import field, serde
-from .yaml_loader import config_from_yaml
+from serde.compat import SerdeError
+from .yaml_loader import config_from_data, load_yaml
 
 from ..errors import FatalRtlBuddyError
 from ..runner.xfail import compile_xfail_match
 from ..logging_utils import log_event
 from .blocks import BlockRef, BlockRefFile, load_block_refs
+from .dispatch import (
+    DispatchResourcesFile,
+    JobResources,
+    apply_resource_layers,
+    validate_resources_block,
+)
 from .openroad_threads import validate_threads
+from .pdk import PLACEMENT_SPEC, PlacementFile, validate_placement
+from .pnr_repair import (
+    GLOBAL_ROUTE_REPAIR_SPEC,
+    POST_ROUTE_REPAIR_SPEC,
+    UNSET,
+    PnrMode,
+    read_global_route_repair,
+    read_mode,
+    read_post_route_repair,
+)
 from .synth import SynthSuiteConfig
 from .toolpath import resolve_tool_path
+from .unknown_keys import KeySpec, find_unknown_entry_keys, reject_unknown_keys
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +107,22 @@ class BlockageType(StrEnum):
     PARTIAL = "partial"
 
 
+class BlockageLifetime(StrEnum):
+    """How long a placement blockage exists.
+
+    ``FLOW`` blockages are created after the floorplan and stay. ``GLOBAL_PLACEMENT`` ones are created immediately before `global_placement` and destroyed immediately after it.
+    """
+
+    FLOW = "flow"
+    GLOBAL_PLACEMENT = "global-placement"
+
+
 @serde
 class PnrBlockageFile:
     rect: list[float]
     type: str = BlockageType.HARD.value
     max_density: float | None = field(rename="max-density", default=None)
+    lifetime: str = BlockageLifetime.FLOW.value
 
 
 @dataclass(frozen=True)
@@ -101,6 +132,7 @@ class PnrBlockage:
     rect: tuple[float, float, float, float]
     type: BlockageType
     max_density: float | None = None
+    lifetime: BlockageLifetime = BlockageLifetime.FLOW
 
 
 class PinSide(StrEnum):
@@ -142,11 +174,16 @@ class PnrPin:
     location: tuple[float, float] | None = None
     layer: str | None = None
     size: tuple[float, float] | None = None
+    # Where the entry came from in `pnr.tcl` messages; `None` for an inline `floorplan.pins` entry.
+    label: str | None = None
+    # Coordinates are passed to OpenROAD at full precision instead of to the nanometre.
+    exact: bool = False
 
 
-#: Orientations `floorplan.macros` accepts: those that keep a macro's width, height and pin directions, so it stays on the site grid and the routing tracks.
-MACRO_ORIENTATIONS = ("R0", "R180", "MX", "MY")
-_ROTATED_ORIENTATIONS = ("R90", "R270", "MXR90", "MYR90")
+#: OpenDB orientations that turn a macro by 90 degrees, swapping its width and height.
+ROTATED_ORIENTATIONS = ("R90", "R270", "MXR90", "MYR90")
+#: Orientations `floorplan.macros` accepts: all eight OpenDB orientations.
+MACRO_ORIENTATIONS = ("R0", "R180", "MX", "MY", *ROTATED_ORIENTATIONS)
 
 
 @serde
@@ -169,6 +206,10 @@ class PnrMacro:
     location: tuple[float, float] | None = None
     orientation: str | None = None
     halo: tuple[float, float] | None = None
+    # Where the entry came from in `pnr.tcl` messages; `None` for an inline `floorplan.macros` entry.
+    label: str | None = None
+    # Coordinates are passed to OpenROAD at full precision instead of to the nanometre.
+    exact: bool = False
 
 
 #: `floorplan` sizing defaults when neither `die-area` nor `core-area` is set.
@@ -197,6 +238,12 @@ class PnrFloorplanFile:
     blockages: list[PnrBlockageFile] = field(default_factory=list)
     pins: list[PnrPinFile] = field(default_factory=list)
     macros: list[PnrMacroFile] = field(default_factory=list)
+    # Planner files, relative to pnr.yaml; read at run setup, not at load.
+    macros_file: str | None = field(rename="macros-file", default=None)
+    macro_snap: bool = field(rename="macro-snap", default=True)
+    pins_file: str | None = field(rename="pins-file", default=None)
+    pin_snap: bool = field(rename="pin-snap", default=True)
+    pins_complete: bool = field(rename="pins-complete", default=False)
 
 
 @dataclass
@@ -216,6 +263,25 @@ class PnrFloorplan:
     core_cutouts: list[tuple[float, float, float, float]] = dc_field(
         default_factory=list
     )
+    # Absolute planner-file paths; their entries join `macros` and `pins` at run setup (`with_planner_files`).
+    macros_file: str | None = None
+    pins_file: str | None = None
+    # False places located macros at the exact DBU given, off the site and row grid.
+    macro_snap: bool = True
+    # False places exact pins at their exact centre, without `-force_to_die_boundary`.
+    pin_snap: bool = True
+    # Every signal port must be covered by exactly one exact entry or region rule.
+    pins_complete: bool = False
+
+    def flow_blockages(self) -> list["PnrBlockage"]:
+        """The blockages that live for the whole flow."""
+        return [b for b in self.blockages if b.lifetime is BlockageLifetime.FLOW]
+
+    def global_placement_blockages(self) -> list["PnrBlockage"]:
+        """The blockages that exist only during `global_placement`."""
+        return [
+            b for b in self.blockages if b.lifetime is BlockageLifetime.GLOBAL_PLACEMENT
+        ]
 
     def ring_margin(self) -> float | None:
         """The narrowest core-to-die gap the floorplan asks for, in microns; None when only OpenROAD knows it."""
@@ -280,7 +346,16 @@ def _load_blockage(run: str, index: int, entry: PnrBlockageFile) -> PnrBlockage:
         raise FatalRtlBuddyError(
             f"{where}: max-density applies to partial blockages only, not {kind.value}"
         )
-    return PnrBlockage(rect=(x0, y0, x1, y1), type=kind, max_density=max_density)
+    try:
+        lifetime = BlockageLifetime(entry.lifetime)
+    except ValueError:
+        raise FatalRtlBuddyError(
+            f"{where}: unknown lifetime {entry.lifetime!r} "
+            f"(expected one of {', '.join(t.value for t in BlockageLifetime)})"
+        ) from None
+    return PnrBlockage(
+        rect=(x0, y0, x1, y1), type=kind, max_density=max_density, lifetime=lifetime
+    )
 
 
 def _finite_number(value) -> bool:
@@ -322,9 +397,8 @@ def _tcl_safe_names(where: str, key: str, value) -> tuple[str, ...]:
     return tuple(names)
 
 
-def _load_pin(run: str, index: int, entry: PnrPinFile) -> PnrPin:
-    """Validate one `floorplan.pins` entry at load time."""
-    where = f"pnr run '{run}': floorplan.pins[{index}]"
+def _load_pin(where: str, entry: PnrPinFile) -> PnrPin:
+    """Validate one `floorplan.pins` or pins-file entry; `where` names it in errors."""
     names = _tcl_safe_names(where, "names", entry.names)
     if entry.location is not None:
         extra = [
@@ -415,10 +489,9 @@ def _load_pin(run: str, index: int, entry: PnrPinFile) -> PnrPin:
 
 
 def _load_macro(
-    run: str, index: int, entry: PnrMacroFile, placement: "MacroPlacement"
+    where: str, entry: PnrMacroFile, placement: "MacroPlacement"
 ) -> PnrMacro:
-    """Validate one `floorplan.macros` entry at load time."""
-    where = f"pnr run '{run}': floorplan.macros[{index}]"
+    """Validate one `floorplan.macros` or macros-file entry; `where` names it in errors."""
     (instance,) = _tcl_safe_names(where, "instances", entry.instance)
     location = None
     if entry.location is not None:
@@ -430,13 +503,6 @@ def _load_macro(
             )
     orientation = entry.orientation
     if orientation is not None:
-        if orientation in _ROTATED_ORIENTATIONS:
-            raise FatalRtlBuddyError(
-                f"{where}: orientation {orientation} rotates the macro by 90 "
-                "degrees, which swaps its width and height off the site grid and "
-                "turns its pins across the routing tracks; use one of "
-                f"{', '.join(MACRO_ORIENTATIONS)}"
-            )
         if orientation not in MACRO_ORIENTATIONS:
             raise FatalRtlBuddyError(
                 f"{where}: unknown orientation {orientation!r} "
@@ -465,8 +531,154 @@ def _load_macro(
     )
 
 
-#: Stages `checkpoints:` can name, in flow order. Each is written when its stage finishes; none is detail-routed.
-CHECKPOINT_STAGES = ("floorplan", "place", "cts", "global_route")
+_MACRO_FILE_KEYS = ("instance", "location", "orientation", "halo")
+_PIN_FILE_KEYS = (
+    "name",
+    "names",
+    "side",
+    "start",
+    "end",
+    "group",
+    "order",
+    "location",
+    "layer",
+    "size",
+)
+
+
+def _reject_duplicate_keys(pairs):
+    keys = [k for k, _ in pairs]
+    duplicated = sorted({k for k in keys if keys.count(k) > 1})
+    if duplicated:
+        raise ValueError(f"duplicate key {duplicated[0]!r}")
+    return dict(pairs)
+
+
+def _read_planner_file(where: str, path: str) -> list:
+    """Return the entry list a planner file holds; JSON is read directly, anything else as YAML."""
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError as e:
+        raise FatalRtlBuddyError(f"{where}: cannot read {path}: {e.strerror or e}")
+    data = None
+    if text.lstrip().startswith("["):
+        try:
+            data = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+        except ValueError:
+            data = None
+    if data is None:
+        try:
+            data = load_yaml(text, path, fast=True)
+        except FatalRtlBuddyError as e:
+            raise FatalRtlBuddyError(f"{where}: {e}") from None
+        except yaml.YAMLError as e:
+            raise FatalRtlBuddyError(
+                f"{where}: {path} is not valid YAML: {e}"
+            ) from None
+    if data is None:
+        return []
+    if not isinstance(data, list):
+        raise FatalRtlBuddyError(
+            f"{where}: {path} must hold a list of entries, got {type(data).__name__}"
+        )
+    return data
+
+
+def _file_entry_object(where: str, cls, entry: dict):
+    """Build `cls` from one planner-file entry, reporting a wrongly typed value against `where`."""
+    try:
+        return cls(**entry)
+    except SerdeError as e:
+        match = re.search(r"parameter (\w+)=", str(e))
+        key = match.group(1) if match else "an entry value"
+        raise FatalRtlBuddyError(
+            f"{where}: {key} has the wrong type, got {entry.get(key)!r}"
+        ) from None
+
+
+def _file_entry(where: str, entry, keys: tuple[str, ...]) -> dict:
+    if not isinstance(entry, dict):
+        raise FatalRtlBuddyError(f"{where}: an entry must be a mapping, got {entry!r}")
+    unknown = [k for k in entry if k not in keys]
+    if unknown:
+        raise FatalRtlBuddyError(
+            f"{where}: unknown key {unknown[0]!r} (expected {', '.join(keys)})"
+        )
+    return entry
+
+
+def _load_macros_file(
+    run: str, path: str, placement: "MacroPlacement"
+) -> list[PnrMacro]:
+    """Read and validate a `floorplan.macros-file`: entries with the `floorplan.macros` keys."""
+    entries = _read_planner_file(f"pnr run '{run}': floorplan.macros-file", path)
+    macros = []
+    for i, raw in enumerate(entries):
+        where = f"pnr run '{run}': floorplan.macros-file {path} [{i}]"
+        entry = _file_entry(where, raw, _MACRO_FILE_KEYS)
+        if "instance" not in entry:
+            raise FatalRtlBuddyError(f"{where}: instance is required")
+        macro = _load_macro(
+            where, _file_entry_object(where, PnrMacroFile, entry), placement
+        )
+        macros.append(replace(macro, label=f"floorplan.macros-file[{i}]", exact=True))
+    return macros
+
+
+def _load_pins_file(run: str, path: str) -> list[PnrPin]:
+    """Read and validate a `floorplan.pins-file`: exact `{name, location, layer, size}` pins and `floorplan.pins` entries."""
+    entries = _read_planner_file(f"pnr run '{run}': floorplan.pins-file", path)
+    pins = []
+    for i, raw in enumerate(entries):
+        where = f"pnr run '{run}': floorplan.pins-file {path} [{i}]"
+        entry = dict(_file_entry(where, raw, _PIN_FILE_KEYS))
+        if "name" in entry:
+            if "names" in entry:
+                raise FatalRtlBuddyError(f"{where}: give name or names, not both")
+            if entry.get("location") is None:
+                raise FatalRtlBuddyError(
+                    f"{where}: name places one pin exactly and needs a location; "
+                    "use names for a side or group rule"
+                )
+            entry["names"] = entry.pop("name")
+        if "names" not in entry:
+            raise FatalRtlBuddyError(f"{where}: name or names is required")
+        pin = _load_pin(where, _file_entry_object(where, PnrPinFile, entry))
+        pins.append(replace(pin, label=f"floorplan.pins-file[{i}]", exact=True))
+    return pins
+
+
+def with_planner_files(run: str, fp: PnrFloorplan) -> PnrFloorplan:
+    """Return `fp` with its `macros-file` and `pins-file` entries after the inline ones.
+
+    Read at run setup, not when `pnr.yaml` loads. Raises FatalRtlBuddyError naming the file and entry index.
+    """
+    macros = list(fp.macros)
+    pins = list(fp.pins)
+    if fp.macros_file is not None:
+        macros += _load_macros_file(run, fp.macros_file, fp.macro_placement)
+    if fp.pins_file is not None:
+        pins += _load_pins_file(run, fp.pins_file)
+    return replace(fp, macros=macros, pins=pins)
+
+
+#: The flow's stages in order. A staged run (`stages: true`) runs each in its own OpenROAD session; `--stop-after`, `--resume` and `--from` name them. `post_route_repair` runs only when `post-route-repair` is set.
+PNR_STAGES = (
+    "floorplan",
+    "place",
+    "cts",
+    "global_route",
+    "detailed_route",
+    "post_route_repair",
+    "finish",
+)
+
+#: The stage a run has only when `post-route-repair` is set.
+POST_ROUTE_REPAIR_STAGE = "post_route_repair"
+
+#: Stages `checkpoints:` can name, in flow order: every stage but `finish`. Each is written when its stage finishes.
+CHECKPOINT_STAGES = PNR_STAGES[:-1]
 
 
 def _normalise_checkpoints(run: str, value) -> tuple[str, ...] | None:
@@ -487,6 +699,147 @@ def _normalise_checkpoints(run: str, value) -> tuple[str, ...] | None:
             f"(expected true, false or any of {', '.join(CHECKPOINT_STAGES)})"
         )
     return tuple(s for s in CHECKPOINT_STAGES if s in names)
+
+
+@serde
+class PnrStageResourcesFile:
+    """One stage job's reservation, `resources.stages.<stage>`: the `cfg-dispatch.resources` fields without `modes`, as a P&R stage has no builder mode."""
+
+    cpus: int | None = None
+    mem: str | int | None = None
+    time: str | int | None = None
+
+
+@serde
+class PnrResourcesFile:
+    """A run's `resources:`: the reservation of each stage job under `--dispatch slurm`, with per-stage overrides under `stages`."""
+
+    cpus: int | None = None
+    mem: str | int | None = None
+    time: str | int | None = None
+    # Stage name -> a `PnrStageResourcesFile` block; typed loosely so `initialise` names a bad entry.
+    stages: dict | None = None
+
+
+@dataclass(frozen=True)
+class PnrResources:
+    """A run's validated `resources:` block: the run-wide reservation and each stage's override."""
+
+    base: DispatchResourcesFile | None = None
+    stages: dict[str, DispatchResourcesFile] = dc_field(default_factory=dict)
+
+
+def _validated_block(block, where: str) -> DispatchResourcesFile:
+    """One reservation block through the dispatch validators, with `cpus` a positive integer; errors name `where`."""
+    try:
+        valid = validate_resources_block(block, where=where)
+    except FatalRtlBuddyError as e:
+        if str(e).startswith(where):
+            raise
+        raise FatalRtlBuddyError(f"{where[:-1]}: {e}") from None
+    cpus = valid.cpus
+    if cpus is not None and (
+        not isinstance(cpus, int) or isinstance(cpus, bool) or cpus < 1
+    ):
+        raise FatalRtlBuddyError(
+            f"{where}cpus must be a positive integer, got {cpus!r}"
+        )
+    return valid
+
+
+def _load_resources(run: str, entry: PnrResourcesFile | None) -> PnrResources | None:
+    """Validate a run's `resources:` block at load time."""
+    if entry is None:
+        return None
+    where = f"pnr run '{run}': resources."
+    base = _validated_block(entry, where)
+    if entry.stages is not None and not isinstance(entry.stages, dict):
+        raise FatalRtlBuddyError(
+            f"{where}stages must map stage names ({', '.join(PNR_STAGES)}) to "
+            f"cpus/mem/time blocks, got {entry.stages!r}"
+        )
+    stages = {}
+    for stage, raw in (entry.stages or {}).items():
+        here = f"{where}stages.{stage}."
+        if stage not in PNR_STAGES:
+            raise FatalRtlBuddyError(
+                f"{here[:-1]}: unknown stage (expected any of {', '.join(PNR_STAGES)})"
+            )
+        if not isinstance(raw, dict):
+            raise FatalRtlBuddyError(
+                f"{here[:-1]} must be a block of cpus, mem and time, got {raw!r}"
+            )
+        stages[stage] = _validated_block(
+            config_from_data(PnrStageResourcesFile, raw), here
+        )
+    has_base = any(v is not None for v in (base.cpus, base.mem, base.time))
+    return PnrResources(base=base if has_base else None, stages=stages)
+
+
+#: The key check's view of `resources.stages`: one key per stage, each a reservation block.
+_STAGE_RESOURCES_SPEC = KeySpec(
+    make_dataclass(
+        "PnrStageResourcesKeys", [(stage, Any, None) for stage in PNR_STAGES]
+    ),
+    {stage: KeySpec(PnrStageResourcesFile) for stage in PNR_STAGES},
+)
+
+
+#: Flow points `hooks:` can name, in flow order.
+HOOK_POINTS = (
+    "session",
+    "after-floorplan",
+    "macro-placement",
+    "after-pdn",
+    "after-pins",
+    "after-global-placement",
+    "after-repair-design",
+    "after-cts",
+    "after-global-route",
+    "before-detailed-route",
+    "before-reports",
+)
+
+
+def _normalise_hooks(run: str, value, config_dir: str) -> dict[str, tuple[str, ...]]:
+    """Return the `hooks:` files by point, in flow order with absolute paths; a point with no file is dropped.
+
+    A point takes one path or a list of paths, relative to `pnr.yaml`; null or an empty list is unset.
+    """
+    where = f"pnr run '{run}': hooks"
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise FatalRtlBuddyError(
+            f"{where} must map a flow point to a Tcl file or a list of Tcl files "
+            f"(points: {', '.join(HOOK_POINTS)}), got {value!r}"
+        )
+    unknown = [k for k in value if k not in HOOK_POINTS]
+    if unknown:
+        raise FatalRtlBuddyError(
+            f"{where} has unknown point(s) {', '.join(repr(k) for k in unknown)} "
+            f"(valid points: {', '.join(HOOK_POINTS)})"
+        )
+    hooks: dict[str, tuple[str, ...]] = {}
+    for point in HOOK_POINTS:
+        if point not in value:
+            continue
+        entry = value[point]
+        if entry is None:
+            continue
+        names = [entry] if isinstance(entry, str) else entry
+        if not (
+            isinstance(names, list) and all(isinstance(n, str) and n for n in names)
+        ):
+            raise FatalRtlBuddyError(
+                f"{where}.{point} must be a Tcl file path or a list of non-empty "
+                f"paths, got {entry!r}"
+            )
+        if names:
+            hooks[point] = tuple(
+                os.path.abspath(os.path.join(config_dir, n)) for n in names
+            )
+    return hooks
 
 
 #: `detailed_route -verbose` level when a run sets none: iteration and violation counts, no per-net detail.
@@ -847,6 +1200,10 @@ class PnrConfigFile:
     gds_allow_empty: list[str] = field(rename="gds-allow-empty", default_factory=list)
     # `str` precedes the list so a single stage name is not read as characters.
     checkpoints: bool | str | list[str] = False
+    # One OpenROAD session per stage, chained through the stage checkpoints.
+    stages: bool = False
+    # Tcl files sourced at fixed flow points: point -> a path or a list of paths. Typed loosely so `initialise` names a bad value.
+    hooks: Any = None
     # Publish a hard-macro abstract (LEF, Liberty, GDS, manifest) under `abstract/`; forces a strict GDS export.
     harden: bool = False
     # Obstruction style of a hardened run's abstract LEF; unset keeps `-bloat_occupied_layers`.
@@ -857,10 +1214,19 @@ class PnrConfigFile:
     fail_on_electrical: bool = field(rename="fail-on-electrical", default=False)
     # Hardened blocks instanced as hard macros, each a `harden: true` run's abstract.
     blocks: list[BlockRefFile] = field(default_factory=list)
+    # Overrides the platform's `placement:` keys field by field.
+    placement: PlacementFile | None = None
+    # Override the platform's repair blocks field by field; `null` turns one off. Read by `pnr_repair`.
+    global_route_repair: Any = field(rename="global-route-repair", default=UNSET)
+    post_route_repair: Any = field(rename="post-route-repair", default=UNSET)
+    # `closure` (default) or `probe`: no timing repair, stop after global route.
+    mode: str | None = None
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
     # OpenROAD threads: a positive integer or `auto`; unset means single-threaded.
     threads: int | str | None = None
+    # Each stage job's reservation under `--dispatch slurm`, over `cfg-dispatch.resources` field by field.
+    resources: PnrResourcesFile | None = None
     # `detailed_route -verbose` level; unset means 1. Typed loosely so `initialise` names a bad value.
     detailed_route_verbose: int | float | str | None = field(
         rename="detailed-route-verbose", default=None
@@ -899,6 +1265,7 @@ class PnrConfigFile:
                 f"(expected one of {', '.join(m.value for m in GdsMode)})"
             ) from None
         threads = validate_threads(self.threads, where=f"pnr run '{self.name}'")
+        resources = _load_resources(self.name, self.resources)
         detailed_route_verbose = _validate_detailed_route_verbose(
             self.name, self.detailed_route_verbose
         )
@@ -933,13 +1300,45 @@ class PnrConfigFile:
             for i, entry in enumerate(self.floorplan.blockages)
         ]
         pins = [
-            _load_pin(self.name, i, entry)
+            _load_pin(f"pnr run '{self.name}': floorplan.pins[{i}]", entry)
             for i, entry in enumerate(self.floorplan.pins)
         ]
         macros = [
-            _load_macro(self.name, i, entry, macro_placement)
+            _load_macro(
+                f"pnr run '{self.name}': floorplan.macros[{i}]", entry, macro_placement
+            )
             for i, entry in enumerate(self.floorplan.macros)
         ]
+        planner_files = {}
+        for key, value in (
+            ("macros-file", self.floorplan.macros_file),
+            ("pins-file", self.floorplan.pins_file),
+        ):
+            if value is None:
+                continue
+            if not isinstance(value, str) or not value:
+                raise FatalRtlBuddyError(
+                    f"pnr run '{self.name}': floorplan.{key} must be a path to a "
+                    f"YAML or JSON file, got {value!r}"
+                )
+            planner_files[key] = os.path.abspath(os.path.join(config_dir, value))
+        placement = (
+            validate_placement(self.placement, f"pnr run '{self.name}'")
+            if self.placement is not None
+            else None
+        )
+        global_route_repair = read_global_route_repair(
+            f"pnr run '{self.name}'", self.global_route_repair
+        )
+        post_route_repair = read_post_route_repair(
+            f"pnr run '{self.name}'", self.post_route_repair
+        )
+        mode = read_mode(f"pnr run '{self.name}'", self.mode)
+        if mode is PnrMode.PROBE and self.harden:
+            raise FatalRtlBuddyError(
+                f"pnr run '{self.name}': mode: probe stops after global route and "
+                "publishes no abstract, so it cannot be harden: true"
+            )
         shape = _load_floorplan_shape(self.name, self.floorplan)
         if self.pdn_config is not None and not self.pdn_config:
             raise FatalRtlBuddyError(
@@ -955,6 +1354,28 @@ class PnrConfigFile:
             else None
         )
         checkpoints = _normalise_checkpoints(self.name, self.checkpoints)
+        # Every stage but `post_route_repair`, which a run without that knob lacks, also counts as all.
+        if (
+            self.stages
+            and checkpoints is not None
+            and set(checkpoints) | {POST_ROUTE_REPAIR_STAGE} != set(CHECKPOINT_STAGES)
+        ):
+            raise FatalRtlBuddyError(
+                f"pnr run '{self.name}': 'stages: true' writes every stage "
+                "checkpoint; remove 'checkpoints' or set it to true"
+            )
+        hooks = _normalise_hooks(self.name, self.hooks, config_dir)
+        if "macro-placement" in hooks:
+            for key, is_default in (
+                ("floorplan.macro-placement", macro_placement is MacroPlacement.PACK),
+                ("floorplan.macro-anchor", macro_anchor is MacroAnchor.LOWER_LEFT),
+            ):
+                if not is_default:
+                    raise FatalRtlBuddyError(
+                        f"pnr run '{self.name}': '{key}' steers rb's macro placement "
+                        "and has no effect with a 'macro-placement' hook — remove "
+                        "one of them"
+                    )
 
         blocks = load_block_refs(
             f"pnr run '{self.name}'",
@@ -1014,13 +1435,24 @@ class PnrConfigFile:
                 macro_placement=macro_placement,
                 pins=pins,
                 macros=macros,
+                macros_file=planner_files.get("macros-file"),
+                pins_file=planner_files.get("pins-file"),
+                macro_snap=self.floorplan.macro_snap,
+                pin_snap=self.floorplan.pin_snap,
+                pins_complete=self.floorplan.pins_complete,
             ),
+            placement=placement,
+            global_route_repair=global_route_repair,
+            post_route_repair=post_route_repair,
+            mode=mode,
             lef_paths=lef_paths,
             lib_paths=lib_paths,
             gds_paths=gds_paths,
             gds_mode=gds_mode,
             gds_allow_empty=list(self.gds_allow_empty),
-            checkpoints=checkpoints,
+            checkpoints=CHECKPOINT_STAGES if self.stages else checkpoints,
+            stages=bool(self.stages),
+            hooks=hooks,
             harden=bool(self.harden),
             abstract=_load_abstract(self.name, self.abstract, bool(self.harden)),
             buffer_ports=(
@@ -1031,11 +1463,41 @@ class PnrConfigFile:
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             threads=threads,
+            resources=resources,
             detailed_route_verbose=detailed_route_verbose,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
             xfail_match=self.xfail_match,
         )
+
+
+#: The keys of one `pnr.yaml` run and its nested blocks, for the unknown-key check. `hooks` names its own points in `_normalise_hooks`.
+PNR_RUN_SPEC = KeySpec(
+    PnrConfigFile,
+    {
+        "floorplan": KeySpec(
+            PnrFloorplanFile,
+            {
+                "blockages": KeySpec(PnrBlockageFile, many=True),
+                "pins": KeySpec(PnrPinFile, many=True),
+                "macros": KeySpec(PnrMacroFile, many=True),
+            },
+        ),
+        "pdn": KeySpec(
+            PnrPdnFile,
+            {
+                "ring": KeySpec(PnrPdnRingFile),
+                "stripes": KeySpec(PnrPdnStripeFile, many=True),
+            },
+        ),
+        "abstract": KeySpec(PnrAbstractFile),
+        "placement": PLACEMENT_SPEC,
+        "global-route-repair": GLOBAL_ROUTE_REPAIR_SPEC,
+        "post-route-repair": POST_ROUTE_REPAIR_SPEC,
+        "blocks": KeySpec(BlockRefFile, many=True),
+        "resources": KeySpec(PnrResourcesFile, {"stages": _STAGE_RESOURCES_SPEC}),
+    },
+)
 
 
 @dataclass
@@ -1060,14 +1522,25 @@ class PnrConfig:
     gds_mode: GdsMode = GdsMode.PREVIEW
     gds_allow_empty: list[str] = dc_field(default_factory=list)
     threads: int | str | None = None
+    # The validated `resources:` block; None when unset.
+    resources: PnrResources | None = None
     detailed_route_verbose: int = DEFAULT_DETAILED_ROUTE_VERBOSE
     checkpoints: tuple[str, ...] | None = None
+    stages: bool = False
+    # Absolute paths by flow point, in flow order; only points with a file.
+    hooks: dict[str, tuple[str, ...]] = dc_field(default_factory=dict)
     harden: bool = False
     abstract: PnrAbstract = dc_field(default_factory=PnrAbstract)
     # As written in pnr.yaml; `None` follows `harden`. Read it through `get_buffer_ports`.
     buffer_ports: bool | None = None
     fail_on_electrical: bool = False
     blocks: list[BlockRef] = dc_field(default_factory=list)
+    # The run's validated `placement:` block, applied over the platform's; None when unset.
+    placement: PlacementFile | None = None
+    # The run's repair layers (see `pnr_repair`), applied over the platform's: `UNSET` when absent, `None` when off.
+    global_route_repair: Any = UNSET
+    post_route_repair: Any = UNSET
+    mode: PnrMode = PnrMode.CLOSURE
     xfail: bool = False
     xfail_strict: bool = False
     xfail_match: str | None = None
@@ -1134,6 +1607,24 @@ class PnrConfig:
         """Validated `threads:`: a positive int, `auto`, or None."""
         return self.threads
 
+    def get_resources(self) -> PnrResources | None:
+        """The run's validated `resources:` block, or None."""
+        return self.resources
+
+    def stage_resources(self, dispatch_cfg, stage: str) -> JobResources:
+        """The reservation of `stage`'s job: built-in defaults, then `cfg-dispatch.resources`, the run's `resources:` and its `resources.stages.<stage>`, field by field.
+
+        `modes:` blocks do not apply; a P&R stage has no builder mode.
+        """
+        own = self.resources or PnrResources()
+        return apply_resource_layers(
+            [
+                dispatch_cfg.resources if dispatch_cfg is not None else None,
+                own.base,
+                own.stages.get(stage),
+            ]
+        )
+
     def get_detailed_route_verbose(self) -> int:
         """Validated `detailed-route-verbose:`, the `detailed_route -verbose` level."""
         return self.detailed_route_verbose
@@ -1141,6 +1632,14 @@ class PnrConfig:
     def get_checkpoints(self) -> tuple[str, ...] | None:
         """The stages to checkpoint, in flow order; ``None`` when off."""
         return self.checkpoints
+
+    def get_stages(self) -> bool:
+        """Whether the run is staged: one OpenROAD session per stage."""
+        return self.stages
+
+    def get_hooks(self) -> dict[str, tuple[str, ...]]:
+        """The run's Tcl hook files by flow point, in flow order; empty when none."""
+        return {point: tuple(paths) for point, paths in self.hooks.items()}
 
     def get_harden(self) -> bool:
         """Whether the run publishes a hard-macro abstract."""
@@ -1164,6 +1663,14 @@ class PnrConfig:
     def get_blocks(self) -> list[BlockRef]:
         """The hardened blocks this run instances."""
         return list(self.blocks)
+
+    def get_mode(self) -> PnrMode:
+        """`closure`, or `probe`: no timing repair after CTS or global route, and the run stops after global route."""
+        return self.mode
+
+    def get_placement(self) -> PlacementFile | None:
+        """The run's `placement:` overrides, or None; apply them with `PnrPlatformConfig.with_run_placement`."""
+        return self.placement
 
     def get_reglvl(self, tool_name: str) -> int:
         match self._reglvl:
@@ -1211,16 +1718,22 @@ class PnrSuiteConfig:
         self.runs: dict[str, PnrConfig] = {}
         try:
             with open(path, "r") as f:
-                data = config_from_yaml(PnrSuiteConfigFile, f.read(), path)
+                raw = load_yaml(f.read(), path)
         except Exception as e:
-            log_event(
-                logger,
-                logging.ERROR,
-                "pnr_suite_config.load_failed",
-                path=path,
-                error=e,
-            )
-            raise FatalRtlBuddyError(f'failed to load "{path}"') from e
+            self._raise_load_failed(e)
+        # Before the typed load, which drops an unknown key and whose own errors a misspelt key can cause.
+        reject_unknown_keys(
+            find_unknown_entry_keys(
+                raw.get("runs") if isinstance(raw, dict) else None,
+                PNR_RUN_SPEC,
+                kind="pnr run",
+            ),
+            path=path,
+        )
+        try:
+            data = config_from_data(PnrSuiteConfigFile, raw)
+        except Exception as e:
+            self._raise_load_failed(e)
 
         config_dir = os.path.dirname(os.path.abspath(path))
         try:
@@ -1236,6 +1749,16 @@ class PnrSuiteConfig:
                 error=e,
             )
             raise FatalRtlBuddyError(f"{path}: runs section malformed") from e
+
+    def _raise_load_failed(self, error: Exception) -> NoReturn:
+        log_event(
+            logger,
+            logging.ERROR,
+            "pnr_suite_config.load_failed",
+            path=self.path,
+            error=error,
+        )
+        raise FatalRtlBuddyError(f'failed to load "{self.path}"') from error
 
     def get_runs(self, name: str | None = None) -> list[PnrConfig]:
         if name is not None:

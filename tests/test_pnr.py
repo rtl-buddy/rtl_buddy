@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 from contextlib import nullcontext
 from pathlib import Path
 from textwrap import dedent
@@ -12,6 +13,7 @@ import pytest
 
 from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
 from rtl_buddy.config.pnr import PnrConfig, PnrSuiteConfig
+from rtl_buddy.config.pnr_repair import GlobalRouteRepair
 from rtl_buddy.config.pnr_platform import (
     PnrPlatformConfig,
     PnrPlatformConfigFile,
@@ -1032,6 +1034,9 @@ def test_def2stream_preview_keeps_an_incomplete_gds_and_names_the_cells(
 
     pdk = _make_stream_pdk(tmp_path)
     platform = MagicMock()
+    platform.get_global_route_repair.return_value = None
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = pdk
 
     backend = OpenRoadPnr(
@@ -1078,6 +1083,9 @@ def test_def2stream_treats_empty_gds_as_failure(tmp_path, monkeypatch):
 
     pdk = _make_stream_pdk(tmp_path)
     platform = MagicMock()
+    platform.get_global_route_repair.return_value = None
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = pdk
 
     backend = OpenRoadPnr(
@@ -1109,6 +1117,9 @@ def test_def2stream_ignores_a_previous_runs_gds(tmp_path, monkeypatch):
 
     pdk = _make_stream_pdk(tmp_path)
     platform = MagicMock()
+    platform.get_global_route_repair.return_value = None
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = pdk
 
     backend = OpenRoadPnr(
@@ -1227,6 +1238,9 @@ def test_def2stream_inputs_are_ordered_and_deduplicated(tmp_path):
 
     pdk = _make_stream_pdk(tmp_path, cell_gds=["pdk/gds/cells.gds", "pdk/gds/fill.gds"])
     platform = MagicMock()
+    platform.get_global_route_repair.return_value = None
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = pdk
 
     sram_lef = str(tmp_path / "pdk" / "sram" / "sram.lef")
@@ -1276,6 +1290,9 @@ def test_def2stream_reports_every_missing_input_and_skips_klayout(
     pdk = _make_stream_pdk(tmp_path)
     Path(pdk.get_cell_gds()).unlink()
     platform = MagicMock()
+    platform.get_global_route_repair.return_value = None
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = pdk
 
     missing_lef = str(tmp_path / "pdk" / "sram" / "sram.lef")
@@ -1324,6 +1341,9 @@ def test_def2stream_hands_klayout_a_json_manifest_that_survives_spaces(
 
     pdk = _make_stream_pdk(tmp_path, cell_gds=["pdk/gds lib/std cells.gds"])
     platform = MagicMock()
+    platform.get_global_route_repair.return_value = None
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = pdk
 
     sram_lef = str(tmp_path / "macro dir" / "sram macro.lef")
@@ -1611,6 +1631,9 @@ def _stream_backend(tmp_path, monkeypatch, *, run_overrides=None, **backend_kwar
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
     pdk = _make_stream_pdk(tmp_path, klayout_props="pdk/klayout/props.lyp")
     platform = MagicMock()
+    platform.get_global_route_repair.return_value = None
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = pdk
     backend = OpenRoadPnr(
         name="demo/openroad",
@@ -1754,6 +1777,11 @@ def test_strict_export_fails_without_a_klayout_technology(tmp_path, monkeypatch)
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
     platform = MagicMock()
+
+    platform.get_global_route_repair.return_value = None
+
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)  # no klayout-tech
     backend = OpenRoadPnr(
         name="demo/openroad",
@@ -1999,6 +2027,9 @@ def _run_backend_with_export(tmp_path, monkeypatch, *, mode, missing=()):
     )
     _touch(pdk.get_layer_rc_tcl())
     platform = MagicMock()
+    platform.get_global_route_repair.return_value = None
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = pdk
     root_cfg = MagicMock()
     root_cfg.get_pnr_platform_cfg.return_value = platform
@@ -2230,8 +2261,11 @@ def test_pnr_template_legalizes_after_every_cell_inserting_repair():
     from importlib.resources import files
 
     template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
+    # Stage markers render as nothing in a one-session run.
+    template = re.sub(r"\{\{ @/?\w+ \}\}", "", template)
+    # `{{ dpl_options }}` adds options to `detailed_placement`, not passes.
     commands = [
-        line.strip()
+        line.strip().replace("{{ dpl_options }}", "")
         for line in template.splitlines()
         if line.strip() and not line.strip().startswith(("#", "puts "))
     ]
@@ -2287,6 +2321,23 @@ def test_pnr_template_packs_macros_by_their_own_size():
     assert "slot_w" not in template
 
 
+def test_drc_count_counts_violations_not_report_lines(tmp_path):
+    from rtl_buddy.tools import pnr_openroad
+
+    report = tmp_path / "route.drc.rpt"
+    report.write_text(
+        "violation type: Short\n"
+        "\tsrcs: net:a net:b\n"
+        "\tbbox = (1.0, 2.0) - (1.1, 2.1) on Layer met1\n"
+        "violation type: Metal Spacing\n"
+        "\tsrcs: net:c PIN/VPWR\n"
+        "\tbbox = (3.0, 4.0) - (3.1, 4.1) on Layer met2\n"
+    )
+
+    assert pnr_openroad.count_drc_violations(str(report)) == 2
+    assert pnr_openroad.count_drc_violations(str(tmp_path / "missing.rpt")) == 0
+
+
 def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatch):
     """A run that reaches OpenROAD but writes nothing scores zero DRCs, not a previous
     run's count, and leaves no previous ODB for `rb power`.
@@ -2321,6 +2372,11 @@ def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatc
     )
 
     platform = MagicMock()
+
+    platform.get_global_route_repair.return_value = None
+
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
     root_cfg = MagicMock()
     root_cfg.get_pnr_platform_cfg.return_value = platform
@@ -2494,6 +2550,11 @@ def test_pnr_openroad_writes_odb_then_fails_removes_it(tmp_path, monkeypatch):
     monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
 
     platform = MagicMock()
+
+    platform.get_global_route_repair.return_value = None
+
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
     root_cfg = MagicMock()
     root_cfg.get_pnr_platform_cfg.return_value = platform
@@ -2565,6 +2626,11 @@ def test_pnr_openroad_stderr_reaches_the_log_and_the_verdict(tmp_path, monkeypat
     monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
 
     platform = MagicMock()
+
+    platform.get_global_route_repair.return_value = None
+
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
     root_cfg = MagicMock()
     root_cfg.get_pnr_platform_cfg.return_value = platform
@@ -2639,6 +2705,11 @@ def test_pnr_post_openroad_failure_keeps_the_flow_script(tmp_path, monkeypatch):
     monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
 
     platform = MagicMock()
+
+    platform.get_global_route_repair.return_value = None
+
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
     root_cfg = MagicMock()
     root_cfg.get_pnr_platform_cfg.return_value = platform
@@ -2710,6 +2781,9 @@ def test_a_failed_route_keeps_its_congestion_report(tmp_path, monkeypatch):
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
     monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
     platform = MagicMock()
+    platform.get_global_route_repair.return_value = None
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
     root_cfg = MagicMock()
     root_cfg.get_pnr_platform_cfg.return_value = platform
@@ -2780,6 +2854,11 @@ def test_pnr_error_line_after_writing_removes_the_odb(tmp_path, monkeypatch):
     monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
 
     platform = MagicMock()
+
+    platform.get_global_route_repair.return_value = None
+
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
     root_cfg = MagicMock()
     root_cfg.get_pnr_platform_cfg.return_value = platform
@@ -2822,6 +2901,9 @@ def test_def2stream_removes_a_zero_length_gds(tmp_path, monkeypatch):
 
     pdk = _make_stream_pdk(tmp_path)
     platform = MagicMock()
+    platform.get_global_route_repair.return_value = None
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = pdk
     backend = OpenRoadPnr(
         name="demo/openroad",
@@ -2851,6 +2933,9 @@ def test_gds2png_removes_a_partial_png(tmp_path, monkeypatch):
 
     pdk = _make_pdk_cfg(tmp_path, klayout_props="pdk/klayout/props.lyp")
     platform = MagicMock()
+    platform.get_global_route_repair.return_value = None
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = pdk
     backend = OpenRoadPnr(
         name="demo/openroad",
@@ -3123,6 +3208,11 @@ def _dont_use_backend(tmp_path, monkeypatch, *, log, returncode, dont_use_cells)
     monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
 
     platform = MagicMock()
+
+    platform.get_global_route_repair.return_value = None
+
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
     platform.get_dont_use_cells.return_value = list(dont_use_cells)
     root_cfg = MagicMock()
@@ -4261,7 +4351,8 @@ def test_tcl_hooks_are_checkpoint_and_abstract_inputs(tmp_path):
 def test_pnr_platform_leaves_the_flow_knobs_off_by_default(tmp_path):
     platform = _platform(_make_pdk_cfg(tmp_path))
     assert platform.get_post_cts_setup_repair() is False
-    assert platform.get_global_route_hold_repair() is False
+    assert platform.get_global_route_repair() is None
+    assert platform.get_post_route_repair() is None
     assert platform.get_routing_layer_adjustment() is None
     assert platform.get_cts_apply_ndr() is None
     assert platform.get_max_fanout() is None
@@ -4284,7 +4375,7 @@ def test_pnr_flow_knobs_are_kebab_case(tmp_path):
     )
     platform = PnrPlatformConfig(platform_file, lambda _n: _make_pdk_cfg(tmp_path))
     assert platform.get_post_cts_setup_repair() is True
-    assert platform.get_global_route_hold_repair() is True
+    assert platform.get_global_route_repair() == GlobalRouteRepair(hold_margin=0.0)
     assert platform.get_routing_layer_adjustment() == 0.25
     # YAML `none` is the string OpenROAD takes, not an unset key.
     assert platform.get_cts_apply_ndr() == "none"
@@ -4667,6 +4758,9 @@ def test_pnr_log_shows_openroad_output_while_it_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
     monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
     platform = MagicMock()
+    platform.get_global_route_repair.return_value = None
+    platform.get_post_route_repair.return_value = None
+    platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
     platform.get_dont_use_cells.return_value = []
     root_cfg = MagicMock()

@@ -362,6 +362,27 @@ def test_a_top_run_reads_a_stripped_copy_of_the_netlist(tmp_path, monkeypatch):
     assert inputs["synth_netlist"]["path"] == str(source)
 
 
+def test_a_planned_copy_writes_nothing_and_matches_the_written_one(
+    tmp_path, monkeypatch
+):
+    """A `--resume` compares the stripped copy before writing it."""
+    from rtl_buddy.tools.pnr_openroad import _file_fingerprint
+
+    _block_with_params(tmp_path)
+    backend, _ = _top_backend(tmp_path, monkeypatch, _BLOCK_YAML)
+    _top_netlist(tmp_path, _ISSUE_NETLIST)
+    assert backend._resolve_blocks(backend.root_cfg.get_pnr_platform_cfg()) is None
+    copy = _write(Path(backend.artefact_dir) / "pnr_netlist.v", "old\n")
+
+    assert backend._prepare_netlist(write=False) is None
+
+    assert copy.read_text() == "old\n"
+    assert backend._openroad_netlist == str(copy)
+    planned = backend._planned_netlist
+    assert backend._prepare_netlist() is None
+    assert _file_fingerprint(str(copy)) == planned
+
+
 def test_a_top_run_with_a_clean_netlist_reads_it_directly(tmp_path, monkeypatch):
     _block_with_params(tmp_path)
     backend, _ = _top_backend(tmp_path, monkeypatch, _BLOCK_YAML)

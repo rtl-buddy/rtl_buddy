@@ -42,13 +42,18 @@ from rtl_buddy.config.pnr_platform import (
 )
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.tools import pnr_checkpoints
+from rtl_buddy.tools.pnr_stages import TEMPLATE_STAGES
 
 DESIGN = "demo_top"
 
 # Stub OpenROAD: every command the flow calls, as a Tcl proc or through `unknown`.
 # Writers put a recognisable file at the given path (a DEF with its DESIGN statement).
 # `RB_STUB_FAIL=<cmd>` raises an OpenROAD-style error in that command;
-# `RB_STUB_KILL=<cmd>` SIGKILLs the interpreter on entry.
+# `RB_STUB_KILL=<cmd>` SIGKILLs the interpreter on entry;
+# `RB_STUB_EXIT=<cmd>` exits 0 on entry, as a flow that ends early by accident;
+# `RB_STUB_DRC=<n>` makes `detailed_route` report n DRC violations and write a maze log;
+# `RB_STUB_ERRLINE=<cmd>` prints an OpenROAD `[ERROR` line in that command, which returns.
+# `RB_STUB_CKPT_FAIL=<NN_stage>` makes `write_db` of that checkpoint fail without an `[ERROR` line.
 _HARNESS = r"""
 # `clock format` loads msgcat through the auto-loader, which the catch-all
 # `unknown` below would swallow; load it first.
@@ -63,9 +68,15 @@ proc rb_stub {name args} {
         flush stdout
         exec kill -9 [pid]
     }
+    if {[info exists env(RB_STUB_EXIT)] && $env(RB_STUB_EXIT) eq $name} {
+        exit 0
+    }
     if {[info exists env(RB_STUB_FAIL)] && $env(RB_STUB_FAIL) eq $name} {
         puts "\[ERROR STUB-0001\] $name failed: \"quoted\"\nsecond line"
         error "STUB-0001 $name failed: \"quoted\"\nsecond line"
+    }
+    if {[info exists env(RB_STUB_ERRLINE)] && $env(RB_STUB_ERRLINE) eq $name} {
+        puts "\[ERROR STUB-0002\] $name complained but returned"
     }
     return ""
 }
@@ -76,17 +87,41 @@ foreach cmd {link_design read_sdc initialize_floorplan place_pins
              check_placement global_route detailed_route filler_placement} {
     proc $cmd {args} [list rb_stub $cmd]
 }
+proc detailed_route {args} {
+    global env
+    if {[info exists env(RB_STUB_DRC)]} {
+        set fh [open [lindex $args [expr {[lsearch -exact $args -output_drc] + 1}]] w]
+        for {set i 0} {$i < $env(RB_STUB_DRC)} {incr i} {
+            puts $fh "violation type: Short\n\tsrcs: net:a$i net:b$i\n\tbbox = ($i.0, 0.0) - ($i.1, 0.1) on Layer met1"
+        }
+        close $fh
+        set fh [open [lindex $args [expr {[lsearch -exact $args -output_maze] + 1}]] w]
+        puts $fh "-output_maze 0"
+        close $fh
+    }
+    rb_stub detailed_route
+}
 proc rb_write {path text} {
     set fh [open $path w]
     puts $fh $text
     close $fh
 }
 proc write_def {path} { global DESIGN; rb_write $path "DESIGN $DESIGN ;\nEND DESIGN" }
-proc write_db {path} { rb_write $path "odb" }
-proc write_sdc {path} { rb_write $path "sdc" }
+proc write_db {path} {
+    global env
+    if {[info exists env(RB_STUB_CKPT_FAIL)]
+        && [file rootname [file tail $path]] eq $env(RB_STUB_CKPT_FAIL)} {
+        error "cannot write $path"
+    }
+    rb_stub write_db
+    rb_write $path "odb"
+}
+proc write_sdc {args} { rb_write [lindex $args end] "sdc" }
 proc write_verilog {path} { rb_write $path "module m(); endmodule" }
 proc write_guides {path} { rb_write $path "guides" }
 proc write_global_route_segments {path} { rb_write $path "segments" }
+proc write_abstract_lef {args} { rb_write [lindex $args end] "MACRO demo_top" }
+proc write_timing_model {args} { rb_write [lindex $args end] "library (demo_top) {}" }
 source [lindex $argv 0]
 """
 
@@ -127,31 +162,32 @@ def _tcl_command(harness: Path, script: str) -> list[str]:
     return [sys.executable, "-c", _EMBEDDED_DRIVER, str(harness), script]
 
 
-def _pdk(tmp_path):
+def _pdk(tmp_path, **changes):
+    fields = {
+        "name": "nangate45",
+        "site": "FreePDK45_38x28_10R_NP_162NW_34O",
+        "corners": {"typ": "pdk/lib/typ.lib"},
+        "tech_lef": "pdk/lef/tech.lef",
+        "macro_lef": "pdk/lef/cells.lef",
+        "tie_hi": "LOGIC1_X1/Z",
+        "tie_lo": "LOGIC0_X1/Z",
+        "fill_cells": ["FILLCELL_X1"],
+        "klayout_tech": "pdk/klayout/tech.lyt",
+        "cell_gds": "pdk/gds/cells.gds",
+    }
     return PdkConfig(
-        PdkConfigFile(
-            name="nangate45",
-            site="FreePDK45_38x28_10R_NP_162NW_34O",
-            corners={"typ": "pdk/lib/typ.lib"},
-            tech_lef="pdk/lef/tech.lef",
-            macro_lef="pdk/lef/cells.lef",
-            tie_hi="LOGIC1_X1/Z",
-            tie_lo="LOGIC0_X1/Z",
-            fill_cells=["FILLCELL_X1"],
-            klayout_tech="pdk/klayout/tech.lyt",
-            cell_gds="pdk/gds/cells.gds",
-        ),
-        str(tmp_path / "root_config.yaml"),
+        PdkConfigFile(**{**fields, **changes}), str(tmp_path / "root_config.yaml")
     )
 
 
-def _platform(pdk):
+def _platform(pdk, signal="metal2-metal6", **platform):
     return PnrPlatformConfig(
         PnrPlatformConfigFile(
             name="nangate45_typ",
             pdk="nangate45",
             cts_buffer="BUF",
-            routing_layers=PnrRoutingLayersFile(signal="metal2-metal6", clock="metal4"),
+            routing_layers=PnrRoutingLayersFile(signal=signal, clock="metal4"),
+            **platform,
         ),
         lambda _name: pdk,
     )
@@ -180,7 +216,7 @@ def _write_synth_config(tmp_path):
     )
 
 
-def _pnr_cfg(tmp_path, checkpoints=CHECKPOINT_STAGES):
+def _pnr_cfg(tmp_path, checkpoints=CHECKPOINT_STAGES, *, stages=False):
     sdc = tmp_path / "constraints.sdc"
     sdc.write_text("create_clock -period 1 [get_ports clk]\n")
     return PnrConfig(
@@ -194,12 +230,29 @@ def _pnr_cfg(tmp_path, checkpoints=CHECKPOINT_STAGES):
         floorplan=PnrFloorplan(utilization=0.55, aspect=1.0, core_margin=2.0),
         _reglvl=0,
         tool_overrides=None,
-        checkpoints=checkpoints,
+        checkpoints=CHECKPOINT_STAGES if stages else checkpoints,
+        stages=stages,
     )
 
 
-def _backend(tmp_path, monkeypatch, *, checkpoints=CHECKPOINT_STAGES, env=None):
-    """An `OpenRoadPnr` whose OpenROAD is the stub harness under Tcl."""
+#: What the stub sessions of a staged run report as their resources.
+STUB_RESOURCES = {"wall_s": 1.5, "cpu_s": 2.25, "peak_rss_kb": 4096}
+
+
+def _backend(
+    tmp_path,
+    monkeypatch,
+    *,
+    checkpoints=CHECKPOINT_STAGES,
+    env=None,
+    stages=False,
+    pnr_cfg=None,
+    **options,
+):
+    """An `OpenRoadPnr` whose OpenROAD is the stub harness under Tcl.
+
+    `options` are `OpenRoadPnr` keywords (`stop_after`, `resume`, `resume_from`).
+    """
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -211,9 +264,10 @@ def _backend(tmp_path, monkeypatch, *, checkpoints=CHECKPOINT_STAGES, env=None):
     root_cfg.get_pnr_platform_cfg.return_value = _platform(pdk)
     backend = OpenRoadPnr(
         name="demo/openroad",
-        pnr_cfg=_pnr_cfg(tmp_path, checkpoints),
+        pnr_cfg=pnr_cfg or _pnr_cfg(tmp_path, checkpoints, stages=stages),
         suite_dir=str(tmp_path),
         root_cfg=root_cfg,
+        **options,
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: "26Q2-stub")
     harness = tmp_path / "harness.tcl"
@@ -231,7 +285,17 @@ def _backend(tmp_path, monkeypatch, *, checkpoints=CHECKPOINT_STAGES, env=None):
         )
         return subprocess.CompletedProcess(cmd, done.returncode, None, done.stderr)
 
+    def _session(cmd, *, stdout, env, cwd):
+        assert cwd == backend.artefact_dir
+        done = _run(cmd, stdout=stdout)
+        return (
+            done.returncode,
+            done.stderr,
+            {**STUB_RESOURCES, "measured_by": "process"},
+        )
+
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _run)
+    monkeypatch.setattr(pnr_openroad, "_run_session", _session)
     return backend, Path(backend.artefact_dir)
 
 
@@ -306,19 +370,20 @@ def test_checkpoints_key_loads_from_yaml(tmp_path):
     assert suite.get_runs("one")[0].get_checkpoints() == ("global_route",)
 
 
-def _render(tmp_path, checkpoints):
+def _render(tmp_path, checkpoints, *, pnr_cfg=None, **platform):
+    """Write a one-session run's `pnr.tcl`; `platform` are `PnrPlatformConfigFile` keywords."""
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
     _write_synth_config(tmp_path)
     backend = OpenRoadPnr(
         name="demo/openroad",
-        pnr_cfg=_pnr_cfg(tmp_path, checkpoints),
+        pnr_cfg=pnr_cfg or _pnr_cfg(tmp_path, checkpoints),
         suite_dir=str(tmp_path),
         root_cfg=MagicMock(),
     )
     if checkpoints is not None:
         backend._ckpt_run_dir = str(tmp_path / "ck" / "run")
-    platform = _platform(_pdk(tmp_path))
+    platform = _platform(_pdk(tmp_path), **platform)
     return Path(backend._write_script(platform, backend.pnr_cfg.get_floorplan()))
 
 
@@ -334,9 +399,11 @@ def test_flow_without_checkpoints_renders_the_template_unchanged(tmp_path):
 def test_flow_with_checkpoints_arms_only_the_requested_stages(tmp_path):
     text = _render(tmp_path, ("cts", "global_route")).read_text()
     arm = next(line for line in text.splitlines() if line.startswith("rb::ckpt::arm"))
-    assert "{cts {03 global_route enter}}" in arm
-    assert "{global_route {04 global_route leave}}" in arm
-    assert "{floorplan " not in arm
+    assert "wanted {cts global_route}" in arm
+    # Every stage boundary is armed, so each stage's resources are recorded.
+    assert "cts {global_route enter}" in arm
+    assert "detailed_route {detailed_route leave}" in arm
+    assert "account 1" in arm
     assert '"' + str(tmp_path / "ck" / "run" / "progress.jsonl") + '"' in arm
     # Armed before the first flow command, so every step is traced.
     assert text.index("rb::ckpt::arm") < text.index("read_liberty $LIBERTY")
@@ -353,7 +420,7 @@ def test_successful_run_writes_every_checkpoint_and_a_complete_manifest(
     (run_dir,) = _runs(artefacts)
     assert os.readlink(artefacts / "checkpoints" / "latest") == run_dir.name
     assert res.results["checkpoint_dir"] == str(run_dir)
-    assert res.results["checkpoint_stages"] == list(CHECKPOINT_STAGES)
+    assert res.results["checkpoint_stages"] == list(TEMPLATE_STAGES[:-1])
     names = sorted(p.name for p in run_dir.iterdir())
     assert names == sorted(
         [
@@ -366,6 +433,7 @@ def test_successful_run_writes_every_checkpoint_and_a_complete_manifest(
                 f"04_global_route.{e}"
                 for e in ("odb", "def", "sdc", "guide", "segments")
             ),
+            *(f"05_detailed_route.{e}" for e in ("odb", "def", "sdc")),
         ]
     )
     # Never a name a consumer of the final outputs would take.
@@ -407,7 +475,12 @@ def test_successful_run_writes_every_checkpoint_and_a_complete_manifest(
         order.index(("step_end", "global_route"))
         < order.index(("checkpoint", "global_route"))
         < order.index(("step_begin", "detailed_route"))
+        < order.index(("step_end", "detailed_route"))
+        < order.index(("checkpoint", "detailed_route"))
+        < order.index(("step_begin", "filler_placement"))
     )
+    dr = manifest["checkpoints"]["detailed_route"]
+    assert dr["final"] is False and dr["detail_routed"] is True
 
 
 def test_failure_before_detailed_routing_leaves_labelled_pre_route_checkpoints(
@@ -423,7 +496,7 @@ def test_failure_before_detailed_routing_leaves_labelled_pre_route_checkpoints(
     res = backend.run()
 
     assert res.results["result"] == "FAIL"
-    assert res.results["checkpoint_stages"] == list(CHECKPOINT_STAGES)
+    assert res.results["checkpoint_stages"] == list(TEMPLATE_STAGES[:-2])
     assert res.results["last_step"]["step"] == "detailed_route"
     assert res.results["last_step"]["status"] == "error"
     for name in _ROUTED:

@@ -26,6 +26,7 @@ rb test --filter '^smoke_' --dispatch slurm
 - `rb test` takes the same name list or regex filter locally and under dispatch. See [Run tests](tests.md#run-tests).
 - Dispatch cannot be combined with `--early-stop`.
 - Dispatch implies [`--share-build`](tests.md#sharing-compiled-builds-across-tests).
+- `rb pnr --dispatch slurm` runs each stage of a P&R run as a chained job, sized by the run's `resources:` over `cfg-dispatch.resources`. See [Dispatch the stages to Slurm](pnr.md#dispatch-the-stages-to-slurm).
 
 ## Run on one host
 

@@ -1,10 +1,16 @@
-# Stage checkpoints and progress events for the rb pnr flow.
+# Stage checkpoints, stage resources and progress events for the rb pnr flow.
 #
-# Substituted into the generated `pnr.tcl` only when pnr.yaml sets `checkpoints:`.
-# Progress and checkpoints hang off Tcl execution traces on the flow's commands;
-# the flow's stage sequence is not edited. A checkpoint is written on entry to
-# the first command of the next stage, so it holds the database the previous
-# stage left.
+# Substituted into the generated script when pnr.yaml sets `checkpoints:` or
+# `stages: true`, or `rb pnr` runs with `--stop-after`. Progress hangs off Tcl
+# execution traces on the flow's commands; the flow's stage sequence is not
+# edited.
+#
+# In a one-session run a stage ends on an edge of a traced flow command (its
+# anchor) or where the flow calls `rb::ckpt::stage_end`. There the stage's wall
+# time, CPU time and peak RSS are recorded and, when requested, its checkpoint
+# is written, so the checkpoint holds the database the stage left. A staged
+# session calls `rb::ckpt::stage_end` once, at its end; rb measures the session
+# as a process.
 #
 # Events are appended to a JSON-lines file, opened and closed per event, so the
 # file survives a kill: the last `step_begin` without a `step_end` names the
@@ -13,13 +19,33 @@
 namespace eval rb::ckpt {
     variable dir ""
     variable progress ""
-    # stage -> {index command when}
+    # stage -> {command enter|leave}: the traced edge that ends the stage.
     variable anchors {}
-    # A command the flow calls repeatedly checkpoints once.
+    # Stages whose checkpoint is written.
+    variable wanted {}
+    # stage -> file index, in flow order.
+    variable order {}
+    # Stages whose checkpoint carries the route guides and segments.
+    variable routed {}
+    # stage -> {kind file ...}: reports in $OUT_DIR a stage's checkpoint keeps.
+    variable reports {}
+    # Globals a staged checkpoint saves for the next session.
+    variable state {}
+    # 1: this session measures its stages; 0: rb measures the session.
+    variable account 0
+    # 1: a checkpoint that cannot be written fails the session.
+    variable strict 0
+    # A stage ends once.
     variable done {}
     variable seq 0
     # command -> stack of begin times (ms)
     variable started {}
+    # The stage being measured ("" for none), its start and the counters then.
+    variable current ""
+    variable begin_ms 0
+    variable begin_cpu ""
+    variable measured 0
+    variable rss_reset 0
 }
 
 # JSON string literal; error messages carry quotes, backslashes and newlines.
@@ -95,36 +121,186 @@ proc rb::ckpt::on_leave {cmd_string code result op} {
 proc rb::ckpt::on_exit {cmd_string op} {
     set code [lindex $cmd_string 1]
     if {$code eq ""} { set code 0 }
+    end_stage [expr {$code == 0 ? "ok" : "error"}]
     emit flow_end [list exit_code $code]
 }
 
-# Write the checkpoint anchored at this command and edge, if not yet written.
+# End the stage whose anchor is this command and edge, if it has not ended.
 proc rb::ckpt::checkpoint_for {cmd when} {
     variable anchors
-    variable done
-    dict for {stage spec} $anchors {
-        lassign $spec index anchor_cmd anchor_when
-        if {$anchor_cmd ne $cmd || $anchor_when ne $when} { continue }
-        if {[lsearch -exact $done $stage] >= 0} { continue }
-        lappend done $stage
-        write_checkpoint $index $stage
+    dict for {stage anchor} $anchors {
+        if {$anchor eq [list $cmd $when]} {
+            stage_end $stage
+        }
     }
 }
 
+# CPU seconds (user + system, every thread) of this process so far: fields 14
+# and 15 of /proc/self/stat, in USER_HZ ticks, which Linux fixes at 100. ""
+# without /proc.
+proc rb::ckpt::cpu_seconds {} {
+    if {[catch {
+        set fh [open /proc/self/stat r]
+        set text [read $fh]
+        close $fh
+    }]} {
+        return ""
+    }
+    # The command name in field 2 may hold spaces; count from its closing paren.
+    set rest [string range $text [expr {[string last ")" $text] + 2}] end]
+    lassign [lrange $rest 11 12] utime stime
+    if {![string is integer -strict $utime] || ![string is integer -strict $stime]} {
+        return ""
+    }
+    return [expr {($utime + $stime) / 100.0}]
+}
+
+# Peak resident set size (VmHWM) in kB, or "" without /proc.
+proc rb::ckpt::peak_rss_kb {} {
+    if {[catch {
+        set fh [open /proc/self/status r]
+        set text [read $fh]
+        close $fh
+    }]} {
+        return ""
+    }
+    if {[regexp -line {^VmHWM:\s+([0-9]+)\s+kB} $text -> kb]} {
+        return $kb
+    }
+    return ""
+}
+
+# Restart the peak-RSS window (Linux 4.0+); 0 when the kernel refuses.
+proc rb::ckpt::reset_peak_rss {} {
+    if {[catch {
+        set fh [open /proc/self/clear_refs WRONLY]
+        puts -nonewline $fh 5
+        close $fh
+    }]} {
+        return 0
+    }
+    return 1
+}
+
+proc rb::ckpt::begin_stage {stage} {
+    variable account
+    variable order
+    variable current
+    variable begin_ms
+    variable begin_cpu
+    variable rss_reset
+    if {!$account || ![dict exists $order $stage]} {
+        return
+    }
+    set current $stage
+    set rss_reset [reset_peak_rss]
+    set begin_cpu [cpu_seconds]
+    set begin_ms [clock milliseconds]
+    emit stage_begin [list stage [json_str $stage] \
+        index [json_str [dict get $order $stage]]]
+}
+
+# Record the measured stage's wall time, CPU time and peak RSS. A peak that
+# could not be reset since an earlier stage is unknown (null).
+proc rb::ckpt::end_stage {status} {
+    variable order
+    variable current
+    variable begin_ms
+    variable begin_cpu
+    variable measured
+    variable rss_reset
+    if {$current eq ""} {
+        return
+    }
+    set wall [format %.3f [expr {([clock milliseconds] - $begin_ms) / 1000.0}]]
+    set cpu [cpu_seconds]
+    if {$cpu ne "" && $begin_cpu ne ""} {
+        set cpu [format %.2f [expr {$cpu - $begin_cpu}]]
+    } else {
+        set cpu null
+    }
+    set rss [peak_rss_kb]
+    if {$rss eq "" || (!$rss_reset && $measured > 0)} {
+        set rss null
+    }
+    emit stage_end [list stage [json_str $current] \
+        index [json_str [dict get $order $current]] status [json_str $status] \
+        wall_s $wall cpu_s $cpu peak_rss_kb $rss measured_by [json_str session]]
+    incr measured
+    set current ""
+}
+
+# End `stage`: write its checkpoint when requested, record its resources and,
+# with `next`, start measuring the stage after it. `stop` ends the flow here,
+# so its checkpoint must be written.
+proc rb::ckpt::stage_end {stage {then next}} {
+    variable done
+    variable wanted
+    variable order
+    variable strict
+    if {[lsearch -exact $done $stage] >= 0} {
+        return
+    }
+    lappend done $stage
+    if {[lsearch -exact $wanted $stage] >= 0} {
+        write_checkpoint [dict get $order $stage] $stage \
+            [expr {$strict || $then eq "stop"}]
+    }
+    end_stage ok
+    if {$then eq "next"} {
+        set stages [dict keys $order]
+        set next [lindex $stages [expr {[lsearch -exact $stages $stage] + 1}]]
+        if {$next ne ""} {
+            begin_stage $next
+        }
+    }
+}
+
+# Save the globals named in `state` as Tcl a later session sources.
+proc rb::ckpt::write_state {path} {
+    variable state
+    set fh [open $path w]
+    foreach name $state {
+        if {[info exists ::$name]} {
+            puts $fh [list set $name [set ::$name]]
+        }
+    }
+    close $fh
+}
+
 # One checkpoint: ODB (what a resume re-enters), DEF (what KLayout stream-out
-# reads, so `rb pnr-export --checkpoint` needs no OpenROAD), the SDC, and after
-# global routing the route guides and global-route segments. Guides alone do not
-# restore the parasitics `estimate_parasitics -global_routing` needs.
+# reads, so `rb pnr-export --checkpoint` needs no OpenROAD), the SDC, for the
+# stages in `routed` the route guides and global-route segments, in a staged
+# run the saved globals, and a copy of each of the stage's `reports` that it
+# wrote. Guides alone do not restore the parasitics
+# `estimate_parasitics -global_routing` needs.
 #
 # The `checkpoint` event is written after every file is on disk; a checkpoint
-# without one is incomplete.
-proc rb::ckpt::write_checkpoint {index stage} {
+# without one is incomplete. With `strict` a failed write is an error.
+proc rb::ckpt::write_checkpoint {index stage {strict 0}} {
     variable dir
-    global DESIGN
+    variable routed
+    variable state
+    variable reports
+    global DESIGN OUT_DIR
     set base [file join $dir "${index}_${stage}"]
     set files [list odb "$base.odb" def "$base.def" sdc "$base.sdc"]
-    if {$stage eq "global_route"} {
+    if {[lsearch -exact $routed $stage] >= 0} {
         lappend files guides "$base.guide" segments "$base.segments"
+    }
+    if {[llength $state] > 0} {
+        lappend files state "$base.state.tcl"
+    }
+    set copies {}
+    if {[dict exists $reports $stage]} {
+        foreach {kind name} [dict get $reports $stage] {
+            set report [file join $OUT_DIR $name]
+            if {[file exists $report]} {
+                set copy "$base.[file tail $name]"
+                lappend files $kind $copy
+                dict set copies $copy $report
+            }
+        }
     }
     puts ">>> Checkpoint ${index}_${stage}"
     emit checkpoint_begin [list stage [json_str $stage] index [json_str $index]]
@@ -134,15 +310,20 @@ proc rb::ckpt::write_checkpoint {index stage} {
             switch -- $kind {
                 odb      { write_db $path }
                 def      { write_def $path }
-                sdc      { write_sdc $path }
+                sdc      { write_sdc -no_timestamp -digits 9 $path }
                 guides   { write_guides $path }
                 segments { write_global_route_segments $path }
+                state    { write_state $path }
+                default  { file copy -force [dict get $copies $path] $path }
             }
         }
     } err]} {
         puts ">>> rb checkpoints: ${index}_${stage} not written: $err"
         emit checkpoint [list stage [json_str $stage] index [json_str $index] \
             status [json_str error] error [json_str $err]]
+        if {$strict} {
+            error "checkpoint ${index}_${stage} not written: $err"
+        }
         return
     }
     set encoded {}
@@ -154,12 +335,18 @@ proc rb::ckpt::write_checkpoint {index stage} {
         files "\{[join $encoded {, }]\}"]
 }
 
-# Arm progress and checkpoints. `steps` are the traced flow commands; `anchors`
-# maps each requested stage to {index command enter|leave}.
-proc rb::ckpt::arm {ckpt_dir progress_file steps stage_anchors} {
+# Arm progress, stage resources and checkpoints. `steps` are the traced flow
+# commands; `config` is a dict of the namespace variables above (anchors,
+# wanted, order, routed, reports, state, account, strict). A session that
+# measures its stages starts measuring the first one here.
+proc rb::ckpt::arm {ckpt_dir progress_file steps config} {
     variable dir $ckpt_dir
     variable progress $progress_file
-    variable anchors $stage_anchors
+    foreach key {anchors wanted order routed reports state account strict} {
+        if {[dict exists $config $key]} {
+            variable $key [dict get $config $key]
+        }
+    }
     file mkdir $dir
     set traced {}
     foreach cmd $steps {
@@ -170,7 +357,8 @@ proc rb::ckpt::arm {ckpt_dir progress_file steps stage_anchors} {
     }
     trace add execution exit enter rb::ckpt::on_exit
     set staged {}
-    dict for {stage spec} $anchors { lappend staged [json_str $stage] }
+    foreach stage $wanted { lappend staged [json_str $stage] }
     emit flow_begin [list steps "\[[join $traced {, }]\]" \
         checkpoints "\[[join $staged {, }]\]"]
+    begin_stage [lindex [dict keys $order] 0]
 }

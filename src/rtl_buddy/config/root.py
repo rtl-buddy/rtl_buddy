@@ -26,9 +26,14 @@ from .synth import (
     SynthEffortConfigFile,
     default_effort_config,
 )
-from .pdk import PdkConfig, PdkConfigFile
+from .pdk import PDK_SPEC, PdkConfig, PdkConfigFile
 from .pnr import PnrToolConfig, PnrToolConfigFile
-from .pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
+from .pnr_platform import PNR_PLATFORM_SPEC, PnrPlatformConfig, PnrPlatformConfigFile
+from .unknown_keys import (
+    find_unknown_entry_keys,
+    find_unknown_keys,
+    reject_unknown_keys,
+)
 from .power import PowerToolConfig, PowerToolConfigFile
 from .cdc import CdcToolConfig, CdcToolConfigFile
 from .fpga import FpgaToolConfig, FpgaToolConfigFile
@@ -41,7 +46,6 @@ from .dispatch import (
     DISPATCH_BLOCK,
     DispatchConfig,
     DispatchConfigFile,
-    unknown_block_key_errors,
 )
 from .env_file import apply_env_file
 from ..errors import FatalRtlBuddyError
@@ -360,14 +364,12 @@ class RootConfig:
                 text = file.read()
             reparsed = load_yaml(text, self.root_cfg_path)
             raw = reparsed if isinstance(reparsed, dict) else {}
-            errors = unknown_block_key_errors(
-                raw.get("cfg-dispatch"),
-                DISPATCH_BLOCK,
+            reject_unknown_keys(
+                find_unknown_keys(
+                    raw.get("cfg-dispatch"), DISPATCH_BLOCK, label="cfg-dispatch"
+                ),
                 path=self.root_cfg_path,
-                block="cfg-dispatch",
             )
-            if errors:
-                raise FatalRtlBuddyError("\n".join(errors))
             data = config_from_yaml(RootConfigFile, text, self.root_cfg_path)
 
         except Exception as e:
@@ -384,6 +386,17 @@ class RootConfig:
             ) from e
 
         if data is not None:
+            # Before the typed entries are built: pyserde drops an unknown key, and a misspelt one can surface as a different error.
+            reject_unknown_keys(
+                find_unknown_entry_keys(raw.get("cfg-pdks"), PDK_SPEC, kind="cfg-pdks")
+                + find_unknown_entry_keys(
+                    raw.get("cfg-pnr-platforms"),
+                    PNR_PLATFORM_SPEC,
+                    kind="cfg-pnr-platforms",
+                ),
+                path=self.root_cfg_path,
+            )
+
             # Anchor for relative tool path candidates.
             cfg_dir = os.path.dirname(self.root_cfg_path)
 

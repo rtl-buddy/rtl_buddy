@@ -14,8 +14,8 @@ from .dispatch import (
     RESOURCES_BLOCK,
     DispatchResourcesFile,
     validate_resources_block,
-    unknown_block_key_errors,
 )
+from .unknown_keys import find_unknown_keys, reject_unknown_keys
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -399,17 +399,15 @@ def _reject_unknown_elaboration_resources_keys(raw, path) -> None:
         for profile in model["elaborations"]:
             if not isinstance(profile, dict):
                 continue
-            found += unknown_block_key_errors(
+            found += find_unknown_keys(
                 profile.get("resources"),
                 RESOURCES_BLOCK,
-                path=path,
-                block=(
+                label=(
                     f"model {model.get('name')!r} elaboration "
                     f"{profile.get('name')!r} resources"
                 ),
             )
-    if found:
-        raise FatalRtlBuddyError("\n".join(found))
+    reject_unknown_keys(found, path=path)
 
 
 # TODO: Raise errors instead of killing things here

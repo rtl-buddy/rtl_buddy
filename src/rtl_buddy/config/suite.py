@@ -13,8 +13,8 @@ from .dispatch import (
     TESTBENCH_COMPILE_BLOCK,
     SuiteCompileFile,
     validate_compile_block,
-    unknown_block_key_errors,
 )
+from .unknown_keys import find_unknown_keys, reject_unknown_keys
 from .rtl import normalize_compile_opts, normalize_filelist_modes
 from .test import (
     TestbenchConfig,
@@ -55,9 +55,7 @@ def reject_unknown_reservation_keys(raw, path) -> None:
     """
     if not isinstance(raw, dict):
         return
-    found = unknown_block_key_errors(
-        raw.get("compile"), SUITE_COMPILE_BLOCK, path=path, block="compile"
-    )
+    found = find_unknown_keys(raw.get("compile"), SUITE_COMPILE_BLOCK, label="compile")
     for kind, section, blocks in (
         (
             "testbench",
@@ -74,11 +72,8 @@ def reject_unknown_reservation_keys(raw, path) -> None:
                 continue
             label = _entry_label(kind, entry, idx)
             for key, spec in blocks:
-                found += unknown_block_key_errors(
-                    entry.get(key), spec, path=path, block=f"{label} {key}"
-                )
-    if found:
-        raise FatalRtlBuddyError("\n".join(found))
+                found += find_unknown_keys(entry.get(key), spec, label=f"{label} {key}")
+    reject_unknown_keys(found, path=path)
 
 
 class SuiteConfig:
