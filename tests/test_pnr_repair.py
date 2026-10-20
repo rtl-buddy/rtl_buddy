@@ -2869,7 +2869,7 @@ def test_repair_steps_set_the_wire_rc_around_each_repair_design_and_repeat_it():
         'puts ">>> T: repair_design -slew_margin 20 (wire-rc: signal wire RC '
         '[rb::rc::describe])"',
         'puts ">>> T: repair_timing -hold (hold margin 0 ns, signal wire RC '
-        '[rb::rc::describe])"',
+        '[rb::rc::describe] for the nets it changes)"',
         'puts ">>> T: repair_design -slew_margin 20 after timing repair (wire-rc: '
         'signal wire RC [rb::rc::describe])"',
     ]
@@ -2989,7 +2989,8 @@ def test_the_log_names_the_signal_wire_rc_of_each_repair_step():
     assert printed == [
         ">>> T: repair_design (wire-rc: signal wire RC 0.06 kohm/um, 0.17 fF/um)",
         ">>> T: repair_timing -setup (setup margin 0 ns, signal wire RC "
-        "ss 0.003 kohm/um, 0.2 fF/um; ff 0.001 kohm/um, 0.1 fF/um)",
+        "ss 0.003 kohm/um, 0.2 fF/um; ff 0.001 kohm/um, 0.1 fF/um for the nets it "
+        "changes)",
     ]
 
 
@@ -3010,34 +3011,26 @@ def test_a_wire_rc_the_session_shadows_fails_the_session():
     assert result == "1 1"
 
 
+@pytest.mark.parametrize("where", ["platform", "run"])
 @pytest.mark.parametrize(
     "missing", ["sta::scenes", "est::set_h_wire_signal_rc_cmd"], ids=["scenes", "est"]
 )
 def test_wire_rc_fails_at_setup_without_scenes_or_est_rc_commands(
-    tmp_path, monkeypatch, missing
+    tmp_path, monkeypatch, missing, where
 ):
-    """An OpenROAD whose OpenSTA has corners rather than scenes, or no `est::` wire RC commands (before 26Q2), is refused at setup."""
-    from rtl_buddy.config.pnr import PnrFloorplan
-
-    pnr_cfg = MagicMock()
-    pnr_cfg.get_name.return_value = "demo"
-    pnr_cfg.get_mode.return_value = PnrMode.CLOSURE
-    pnr_cfg.get_floorplan.return_value = PnrFloorplan(
-        utilization=0.5, aspect=1.0, core_margin=2.0
+    """An OpenROAD whose OpenSTA has corners rather than scenes, or no `est::` wire RC commands (before 26Q2), is refused at setup, whether the platform or the run sets `wire-rc`."""
+    design = {"repair-design": {"wire-rc": {"layer": "M5"}}}
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**design, "hold-margin": 0.0}
+        if where == "platform"
+        else {"hold-margin": 0.0},
     )
-    pnr_cfg.get_checkpoints.return_value = None
-    platform = MagicMock()
-    platform.get_pdk.return_value.get_pdn_config.return_value = ""
-    platform.get_pdk.return_value.get_rcx_rules.return_value = ""
-    platform.get_post_route_repair.return_value = PostRouteRepair(
-        repair_design=RepairDesign(wire_rc=WireRc(layer="M5")), hold_margin=0.0
-    )
-    root_cfg = MagicMock()
-    root_cfg.get_pnr_platform_cfg.return_value = platform
-    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
-    backend = OpenRoadPnr("demo/openroad", pnr_cfg, str(tmp_path), root_cfg)
-    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
-    monkeypatch.setattr(backend, "_clear_stale_outputs", lambda **kw: None)
+    if where == "run":
+        backend.pnr_cfg = replace(
+            backend.pnr_cfg, post_route_repair=read_post_route_repair("run", design)
+        )
     monkeypatch.setattr(backend, "_has_tcl_command", lambda cmd: cmd != missing)
     launched = []
     monkeypatch.setattr(

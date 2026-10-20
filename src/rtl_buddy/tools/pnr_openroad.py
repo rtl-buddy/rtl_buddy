@@ -397,7 +397,7 @@ def _repair_steps_tcl(
 
     Between `repair_design` and `repair_timing` runs `legalize` (`_legalize_tcl`), as in ORFS: `repair_timing` on global-route parasitics builds buffer trees from the global routes, and the nets `repair_design` split have none until they are rerouted (RSZ-0074). `None` runs nothing there, for repairs that build them from Steiner trees. The caller legalizes after the timing repair.
 
-    A post-route `repair-design` may set `wire-rc`: each `repair_design` then runs at that signal wire RC and the `repair_timing` log lines name the session's (`wire_rc.tcl`). With `after-timing` it runs again after the timing repair.
+    A post-route `repair-design` may set `wire-rc`: each `repair_design` then runs at that signal wire RC and the `repair_timing` log lines name the session's, at which `repair_timing` estimates the nets it changes (`wire_rc.tcl`). The RC setters do not invalidate parasitics, so the nets `repair_design` changed keep their `wire-rc` estimate until OpenROAD estimates them again. With `after-timing` it runs again after the timing repair.
     """
     lines = []
     if design is not None:
@@ -428,7 +428,7 @@ def _repair_steps_tcl(
         if any(opt for opt, _ in options):
             note += f" in Liberty time unit {format_time_unit(ps_per_unit)}"
         if design is not None and design.wire_rc is not None:
-            note += ", signal wire RC [rb::rc::describe]"
+            note += ", signal wire RC [rb::rc::describe] for the nets it changes"
         lines += [f'puts ">>> {title}: {command} ({note})"', command]
     if design is not None and design.after_timing:
         lines += _repair_design_tcl(title, design, " after timing repair")
@@ -5010,38 +5010,6 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
-        # `repair-design.wire-rc` reads and sets RC per scene, which needs OpenSTA's scenes and `est::`.
-        post_route = (
-            platform.get_post_route_repair()
-            if self._mode is PnrMode.CLOSURE
-            else None
-        )
-        if (
-            post_route is not None
-            and post_route.repair_design is not None
-            and post_route.repair_design.wire_rc is not None
-            and not all(
-                self._has_tcl_command(command)
-                for command in ("sta::scenes", "est::set_h_wire_signal_rc_cmd")
-            )
-        ):
-            log_event(
-                logger,
-                logging.ERROR,
-                "pnr.wire_rc_unsupported",
-                pnr=self.pnr_cfg.get_name(),
-                exe=self.openroad_executable,
-            )
-            return PnrFailResults(
-                name=self.name + "/results",
-                desc=(
-                    "post-route-repair.repair-design.wire-rc needs OpenROAD's "
-                    "sta::scenes and est:: wire RC commands (26Q2 or newer); "
-                    "this OpenROAD has none"
-                ),
-                fail_stage="setup",
-            )
-
         # An abstract carries one corner's Liberty model, which a parent would read as the whole block.
         if self.pnr_cfg.get_harden() and platform.is_multi_corner():
             log_event(
@@ -5115,6 +5083,33 @@ class OpenRoadPnr:
                     f"post-route-repair needs rcx-rules on PDK "
                     f"'{platform.get_pdk_name()}': each round times the route on "
                     "extracted parasitics, and the PDK sets no rcx-rules"
+                ),
+                fail_stage="setup",
+            )
+
+        # `repair-design.wire-rc` reads and sets RC per scene, which needs OpenSTA's scenes and `est::`.
+        design = self._post_route.repair_design if self._post_route else None
+        if (
+            design is not None
+            and design.wire_rc is not None
+            and not all(
+                self._has_tcl_command(command)
+                for command in ("sta::scenes", "est::set_h_wire_signal_rc_cmd")
+            )
+        ):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.wire_rc_unsupported",
+                pnr=self.pnr_cfg.get_name(),
+                exe=self.openroad_executable,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    "post-route-repair.repair-design.wire-rc needs OpenROAD's "
+                    "sta::scenes and est:: wire RC commands (26Q2 or newer); "
+                    "this OpenROAD has none"
                 ),
                 fail_stage="setup",
             )
