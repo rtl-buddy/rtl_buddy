@@ -43,6 +43,15 @@ GLOBAL_ROUTE_REPAIR_ALL = {
     "hold-margin": 0.02,
     "reroute": "full",
 }
+GLOBAL_ROUTE_ALL = {
+    "congestion-iterations": 100,
+    "congestion-report-iter-step": 25,
+    "grid-origin": [3, 3],
+    "layer-adjustment": {"m1": 0.9, "m2": 0.8},
+    "allow-congestion": False,
+    "critical-nets-percentage": 30,
+    "resistance-aware": True,
+}
 POST_ROUTE_REPAIR_ALL = {
     "repair-design": dict(REPAIR_DESIGN_ALL),
     "setup-margin": 0.05,
@@ -144,6 +153,7 @@ RUN_SIZED = {
     "port-buffer": "buf2",
     "tapcell-tcl": "tap_run.tcl",
     "cts-clock-nets": ["clk", "clk_div[0]"],
+    "global-route": GLOBAL_ROUTE_ALL,
     "mode": "closure",
     "reglvl": 1000,
     "tool_overrides": {"any": 1},
@@ -224,6 +234,7 @@ PLATFORM_ONE_CORNER = {
     "placement": PLACEMENT_ALL,
     "dont-use-cells": ["y*"],
     "tapcell-tcl": "tap_platform.tcl",
+    "global-route": GLOBAL_ROUTE_ALL,
 }
 PLATFORM_CORNERS = {
     "name": "pl2",
@@ -305,7 +316,8 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "global-route-repair, post-route-repair, routing-layers, "
             "routing-layer-adjustment, cts-buffer, cts-latency-balancing, "
             "cts-repair-clock-nets, post-cts-setup-repair, global-route-hold-repair, "
-            "port-buffer, tapcell-tcl, cts-clock-nets, mode, reglvl, tool_overrides, "
+            "port-buffer, tapcell-tcl, cts-clock-nets, global-route, mode, reglvl, "
+            "tool_overrides, "
             "threads, resources, detailed-route-verbose, xfail, xfail_strict, "
             "xfail_match",
         ),
@@ -356,6 +368,13 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
         ),
         ("pnr run 'a': blocks[1]", ("blocks", 1), "name, pnr, pnr-path"),
         ("pnr run 'a': routing-layers", ("routing-layers",), "signal, clock"),
+        (
+            "pnr run 'a': global-route",
+            ("global-route",),
+            "congestion-iterations, congestion-report-iter-step, grid-origin, "
+            "layer-adjustment, allow-congestion, critical-nets-percentage, "
+            "resistance-aware",
+        ),
         (
             "pnr run 'a': global-route-repair",
             ("global-route-repair",),
@@ -634,7 +653,15 @@ cfg-pnr-platforms:
             "post-cts-setup-repair, global-route-hold-repair, global-route-repair, "
             "post-route-repair, routing-layer-adjustment, cts-apply-ndr, "
             "port-buffer, max-fanout, routing-layers, placement, dont-use-cells, "
-            "tapcell-tcl",
+            "tapcell-tcl, global-route",
+        ),
+        (
+            "platform",
+            ("global-route",),
+            "cfg-pnr-platforms 'pl1': global-route",
+            "congestion-iterations, congestion-report-iter-step, grid-origin, "
+            "layer-adjustment, allow-congestion, critical-nets-percentage, "
+            "resistance-aware",
         ),
         (
             "platform",

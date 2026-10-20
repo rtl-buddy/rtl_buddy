@@ -90,7 +90,7 @@ A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line, stops befo
 | `<top>.gds`, `<top>.png`, `klayout.*.log`, `def2stream.inputs.json` | Stream-out outputs, logs and the inputs it read |
 | `checkpoints/`, `abstract/` | [Stage checkpoints](#keep-stage-checkpoints) and a [hardened block's](#harden-a-block) views |
 
-When OpenROAD fails, the run removes the routed database so `rb power` never reads a stale one; `pnr.log`, `pnr.tcl` and `congestion.rpt` stay. A run that fails a later check (`routed_check`, `fail-on-electrical`, `export`, `abstract`) keeps its routed outputs for inspection.
+When OpenROAD fails, the run removes the routed database so `rb power` never reads a stale one; `pnr.log`, `pnr.tcl` and `congestion.rpt` stay. A failed global route also leaves its database as a [checkpoint](#keep-stage-checkpoints). A run that fails a later check (`routed_check`, `fail-on-electrical`, `export`, `abstract`) keeps its routed outputs for inspection.
 
 ## Follow a running flow
 
@@ -119,7 +119,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `PDN-0008 ... halo overlaps row` | A macro grid's `-halo` in `pdn-config` reaches into a row. Reduce it to the value the message suggests. |
 | `PDN-0233` on a turned macro or a block's grid | The power grid has no via for that macro. See [Place macros](#place-macros) and [Harden a block](#harden-a-block). |
 | `N macros do not fit the W x H um floorplan core` | Lower `utilization`, change `aspect`, or lower `placement.macro-halo`. The message gives the smallest core that fits. |
-| `GRT-0116`, global-route overflow | Too congested. See `congestion.rpt`; lower utilization or density, or try `placement.routability-driven`. |
+| `GRT-0116`, global-route overflow | Too congested. The description names the checkpoint that holds the failed route's database and a copy of `congestion.rpt`; open it with `rb pnr-export --checkpoint <run-id>/global_route` or `read_db` in OpenROAD. Lower utilization or density, try `placement.routability-driven`, or [tune global routing](#tune-global-routing). |
 | Large `drc_count` | Try `routing-layer-adjustment`, a lower density, or `post-route-repair` with several rounds. |
 | `RSZ-0090` at a slow corner | A macro with one Liberty limits that corner. Give it a Liberty per corner. |
 | `RSZ-0074` in a post-route repair round | Set `post-route-repair.reroute: full`. |
@@ -192,7 +192,7 @@ Process-dependent knobs live on the PDK, can be overridden on the platform, and 
 | Problem | Knob |
 | --- | --- |
 | Global route overflows | Lower `placement.density` (default 0.7) or `floorplan.utilization`; `placement.routability-driven: true` (add `routability-use-grt: true` for a slower, closer estimate); a fixed `placement.reference-hpwl` such as `446000000` spreads a large design further. |
-| DRCs left in congested areas | `routing-layer-adjustment` (0 to 1) withholds that fraction of each signal layer from the global router. |
+| DRCs left in congested areas | `routing-layer-adjustment` (0 to 1) withholds that fraction of each signal layer from the global router; `global-route.layer-adjustment` sets it per layer. See [Tune global routing](#tune-global-routing). |
 | Setup misses on long nets | `placement.timing-driven: true`. On OpenROAD 26Q4 it also buffers and resizes during placement, which grows area. Needs wire RC. |
 | Setup misses after CTS | `post-cts-setup-repair: true` |
 | Timing misses after routing | [`global-route-repair` or `post-route-repair`](#repair-timing-after-routing) |
@@ -207,6 +207,28 @@ Process-dependent knobs live on the PDK, can be overridden on the platform, and 
 | Tie cells too close to their loads | `placement.tie-separation` (µm, default 0) |
 
 A platform that ends up with `routability-use-grt` but not `routability-driven` fails to load.
+
+## Tune global routing
+
+The `global-route` block, on the platform or the run, sets `global_route` options; a run's block overrides the platform's field by field. Each key and the calls it reaches are in the [YAML reference](../reference/yaml.md#synthesis-and-physical-design-tools).
+
+```yaml
+global-route:
+  congestion-iterations: 100
+  congestion-report-iter-step: 25
+  grid-origin: [3, 3]                       # DBU
+  layer-adjustment: {met1: 0.9, met2: 0.8}
+```
+
+| Problem | Key |
+| --- | --- |
+| Overflow that more rip-up and reroute would clear | `congestion-iterations` (default 20), with `congestion-report-iter-step` to see how it falls |
+| Long wires low on the stack, or one layer congested | `layer-adjustment` per layer, applied after `routing-layer-adjustment` |
+| Boundary pins centred on a GCell edge fail detailed route (ASAP7 pins on a fine lattice) | `grid-origin`. OpenROAD drops the origin on every call, so rb passes it to each one, including the incremental routes of global-route and post-route repair, and rebuilds the GCell grid from the guides before detailed route |
+| Critical nets routed on resistive layers | `critical-nets-percentage`, `resistance-aware` |
+| Where a design overflows, without failing at global route | `allow-congestion: true` |
+
+`allow-congestion` is for diagnosis: global route keeps its overflow and the flow goes on to detailed route. The result is a `PASS` qualified `global-route.allow-congestion (diagnosis only)` with `allow_congestion: true` and `global_route_overflow`, never a clean pass. Such a run cannot be `harden: true`.
 
 ## Repair timing after routing
 
@@ -374,6 +396,8 @@ A run killed at a wall-time limit leaves only its log. `checkpoints: true` (or o
 | `post_route_repair` | The kept repair round (only with `post-route-repair`) |
 
 Look at a checkpoint in OpenROAD or with `rb pnr-export --checkpoint`. It is never a final result. Old run directories are not pruned.
+
+A global route that fails writes its database as the `global_route` checkpoint, marked `failed`, with a copy of `congestion.rpt` (`04_global_route.congestion.rpt`), whether or not the run sets `checkpoints`; a run without them gets a run directory for it. The run still fails. `rb pnr-export --checkpoint` opens it; no `--resume` starts from it.
 
 ## Run stages as separate sessions
 

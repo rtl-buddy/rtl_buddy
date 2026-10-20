@@ -13,6 +13,7 @@ Layout under the run's artefact directory::
         02_place.{odb,def,sdc}
         03_cts.{odb,def,sdc}
         04_global_route.{odb,def,sdc,guide,segments}
+        04_global_route.{odb,def,sdc,congestion.rpt}  # instead, when global route failed
         05_detailed_route.{odb,def,sdc}
         05_detailed_route.route.{drc.rpt,maze.log}  # the router's reports, when written
         06_post_route_repair.{odb,def,sdc}   # with post-route-repair set
@@ -23,12 +24,14 @@ A staged run (`stages: true`) adds each stage's session script and log, `NN_<sta
 - Checkpoints are never final outputs. They live below `checkpoints/`, out of reach of the up-front clear and of `rb power`'s `<top>.routed.odb` path.
 - Each run writes its own run-id directory, which later runs never overwrite or delete. Every `rb pnr` run removes `latest` first; a checkpointed run re-points it when it launches OpenROAD.
 - Python writes the manifest (input hashes, script hashes, OpenROAD version, requested stages) before OpenROAD starts and completes it after exit. Tcl only appends events, closing the file after each, so `progress.jsonl` is complete up to a kill.
+- A global route that fails leaves its database whether or not the run writes checkpoints (see `keep_failed_global_route`). It is a `global_route` checkpoint marked `failed`: `rb pnr-export --checkpoint` opens it, and no resume starts from it. A run without checkpoints gets a run-id directory for it.
 """
 
 import json
 import logging
 import os
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from importlib.metadata import version
@@ -47,6 +50,9 @@ MANIFEST_NAME = "manifest.json"
 PROGRESS_NAME = "progress.jsonl"
 #: Exports go inside the run directory so a pre-route layout never lands at a routed output's path.
 EXPORT_DIRNAME = "export"
+
+#: Where the flow writes the database a failed global route leaves, under the artefact directory (`flow.tcl.template`).
+FAILED_GLOBAL_ROUTE_DIRNAME = "global_route_failed"
 
 #: Bumped on an incompatible manifest or event change.
 CHECKPOINT_SCHEMA = 1
@@ -339,8 +345,55 @@ def record_checkpoint(
     )
 
 
+def keep_failed_global_route(
+    artefact_dir: str, run_dir: str, *, design: str | None
+) -> dict | None:
+    """File the database the flow wrote when global route failed as `run_dir`'s `global_route` checkpoint, marked `failed`, with a copy of the congestion report; return its `{kind: file name}`, or None when the flow wrote none."""
+    source = os.path.join(artefact_dir, FAILED_GLOBAL_ROUTE_DIRNAME)
+    if not os.path.isfile(os.path.join(source, "global_route.odb")):
+        return None
+    os.makedirs(run_dir, exist_ok=True)
+    base = f"{STAGE_INDEX['global_route']}_global_route"
+    files = {}
+    for kind in ("odb", "def", "sdc"):
+        path = os.path.join(source, f"global_route.{kind}")
+        if os.path.isfile(path):
+            os.replace(path, os.path.join(run_dir, f"{base}.{kind}"))
+            files[kind] = f"{base}.{kind}"
+    congestion = os.path.join(artefact_dir, "congestion.rpt")
+    if os.path.isfile(congestion):
+        shutil.copyfile(congestion, os.path.join(run_dir, f"{base}.congestion.rpt"))
+        files["congestion"] = f"{base}.congestion.rpt"
+    shutil.rmtree(source, ignore_errors=True)
+    _append_event(
+        run_dir,
+        "checkpoint",
+        stage="global_route",
+        index=STAGE_INDEX["global_route"],
+        status="ok",
+        failed=True,
+        design=design,
+        files=files,
+    )
+    return files
+
+
+def point_latest(artefact_dir: str, run_dir: str) -> None:
+    """Point `latest` at `run_dir`; a filesystem without symlinks loses only the pointer."""
+    try:
+        _point_latest(artefact_dir, run_dir)
+    except OSError as e:
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.checkpoint_latest_failed",
+            dir=run_dir,
+            error=str(e),
+        )
+
+
 def written_checkpoint(run_dir: str, stage: str) -> dict | None:
-    """Return `{kind: file name}` of `stage`'s checkpoint if this run's progress file records it complete."""
+    """Return `{kind: file name}` of `stage`'s checkpoint if this run's progress file records it complete and not failed."""
     event = _written_checkpoints(read_progress(run_dir)).get(stage)
     return dict(event.get("files") or {}) if event else None
 
@@ -383,12 +436,16 @@ def read_progress(run_dir: str) -> list[dict]:
     return events
 
 
-def _written_checkpoints(events: list[dict]) -> dict[str, dict]:
-    """Map stage to its `checkpoint` event for checkpoints that completed."""
+def _written_checkpoints(
+    events: list[dict], *, failed: bool = False
+) -> dict[str, dict]:
+    """Map stage to its `checkpoint` event for checkpoints that completed; `failed` also maps a failed global route's, which no resume may start from."""
     return {
         str(e.get("stage")): e
         for e in events
-        if e.get("event") == "checkpoint" and e.get("status") == "ok"
+        if e.get("event") == "checkpoint"
+        and e.get("status") == "ok"
+        and (failed or not e.get("failed"))
     }
 
 
@@ -552,7 +609,7 @@ def finish_run(
     Each checkpoint the Tcl side reported is listed with a fingerprint of each file. The summary carries `checkpoint_dir`, `checkpoint_stages` and `last_step`, for the result row and failure log.
     """
     events = read_progress(run_dir)
-    written = _written_checkpoints(events)
+    written = _written_checkpoints(events, failed=True)
     step = last_step(events)
     manifest = read_manifest(run_dir) or {}
     root = project_root_or_none(run_dir)
@@ -574,6 +631,7 @@ def finish_run(
             "written_at": event.get("t"),
             "files": entry_files,
             **checkpoint_label(stage),
+            **({"failed": True} if event.get("failed") else {}),
         }
     manifest["checkpoints"] = {
         stage: checkpoints[stage] for stage in PNR_STAGES if stage in checkpoints
@@ -606,6 +664,8 @@ class CheckpointRef:
     index: str
     def_path: str
     design: str | None
+    # A failed global route's database (see `keep_failed_global_route`).
+    failed: bool = False
 
     @property
     def name(self) -> str:
@@ -621,6 +681,7 @@ class CheckpointRef:
             "name": self.name,
             "manifest": _rel(os.path.join(self.run_dir, MANIFEST_NAME), root),
             **checkpoint_label(self.stage),
+            **({"failed": True} if self.failed else {}),
         }
 
 
@@ -697,7 +758,7 @@ def resolve_checkpoint(artefact_dir: str, spec: str) -> CheckpointRef | str:
             run_dir = os.path.join(checkpoints_root(artefact_dir), os.readlink(pointer))
     if not os.path.isdir(run_dir):
         return f"no checkpoint run directory at {run_dir}"
-    written = _written_checkpoints(read_progress(run_dir))
+    written = _written_checkpoints(read_progress(run_dir), failed=True)
     event = written.get(stage)
     index = STAGE_INDEX[stage]
     if event is None:
@@ -719,4 +780,5 @@ def resolve_checkpoint(artefact_dir: str, spec: str) -> CheckpointRef | str:
         index=index,
         def_path=os.path.join(run_dir, str(def_name)),
         design=event.get("design"),
+        failed=bool(event.get("failed")),
     )

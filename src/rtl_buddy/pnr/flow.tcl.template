@@ -146,9 +146,24 @@ rb::global_connect
 
 {{ @global_route }}# -verbose logs the per-layer usage table (GRT-0096) of every global route.
 puts ">>> Global route"
+# A global_route that fails in this stage writes the database before the run
+# ends; rb files it as a failed global_route checkpoint.
+proc rb::keep_failed_global_route {cmd_string code result op} {
+  if {$code != 1} { return }
+  global OUT_DIR
+  set dir [file join $OUT_DIR global_route_failed]
+  puts ">>> Global route failed: writing the database to $dir"
+  if {[catch {
+    file mkdir $dir
+    rb::global_connect
+    write_db [file join $dir global_route.odb]
+    write_def [file join $dir global_route.def]
+    write_sdc -no_timestamp -digits 9 [file join $dir global_route.sdc]
+  } err]} { puts ">>> rb: the failed global route's database was not written: $err" }
+}
+trace add execution global_route leave rb::keep_failed_global_route
 {{ @layers }}set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS
-{{ layer_adjustment }}{{ @/layers }}global_route -congestion_iterations 20 -congestion_report_file $CONGESTION_RPT -verbose
-{{ hook_after_global_route_block }}{{ global_route_repair }}rb::global_connect
+{{ layer_adjustment }}{{ @/layers }}{{ global_route_cmd }}{{ hook_after_global_route_block }}{{ global_route_repair }}rb::global_connect
 {{ @detailed_route }}{{ hook_before_detailed_route_block }}
 # Again for cells a before-detailed-route hook added.
 rb::global_connect

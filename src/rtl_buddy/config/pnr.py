@@ -25,6 +25,7 @@ from .dispatch import (
 )
 from .openroad_threads import validate_threads
 from .pdk import PLACEMENT_SPEC, PlacementFile, validate_placement
+from .pnr_global_route import GLOBAL_ROUTE_SPEC, PnrGlobalRouteFile
 from .pnr_platform import PnrRoutingLayersFile, PnrRunOverrides, read_run_overrides
 from .pnr_repair import (
     GLOBAL_ROUTE_REPAIR_SPEC,
@@ -1245,6 +1246,8 @@ class PnrConfigFile:
     tapcell_tcl: str | None = field(rename="tapcell-tcl", default=None)
     # `clock_tree_synthesis -clk_nets`: the clock nets CTS builds trees for; run only.
     cts_clock_nets: str | list | None = field(rename="cts-clock-nets", default=None)
+    # Over the platform's `global-route:` field by field. Read by `pnr_global_route`.
+    global_route: PnrGlobalRouteFile | None = field(rename="global-route", default=None)
     # `closure` (default) or `probe`: no timing repair, stop after global route.
     mode: str | None = None
     reglvl: int | dict | None = field(rename="reglvl", default=None)
@@ -1372,6 +1375,7 @@ class PnrConfigFile:
             port_buffer=self.port_buffer,
             tapcell_tcl=self.tapcell_tcl,
             config_dir=config_dir,
+            global_route=self.global_route,
         )
         post_route_repair = read_post_route_repair(
             f"pnr run '{self.name}'", self.post_route_repair
@@ -1539,6 +1543,7 @@ PNR_RUN_SPEC = KeySpec(
         "global-route-repair": GLOBAL_ROUTE_REPAIR_SPEC,
         "post-route-repair": POST_ROUTE_REPAIR_SPEC,
         "routing-layers": KeySpec(PnrRoutingLayersFile),
+        "global-route": GLOBAL_ROUTE_SPEC,
         "blocks": KeySpec(BlockRefFile, many=True),
         "resources": KeySpec(PnrResourcesFile, {"stages": _STAGE_RESOURCES_SPEC}),
     },
