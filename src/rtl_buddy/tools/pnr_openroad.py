@@ -1551,7 +1551,7 @@ def run_post_route_repair(
 
     `session(path, label)` runs OpenROAD on one script and returns its exit code, stderr, resources and log; `note(line)` appends a line of rb's own to the log and returns it. Each session's part of the log begins with `_SESSION_BEGIN_MARKER`.
 
-    Round 0 is the detailed route: its extraction session extracts it and times every corner. Round k from 1 repairs round k-1's database on that round's SPEF, routes, and writes the stage's checkpoint, which rb renames `06_post_route_repair.r<k>.*` (`_round_files`); its extraction session then times the result. Each round's DRC violations are counted from its router's report. A round becomes the best when it improves on the best (`_round_improves`), or when its route is clean and the best's is not. A round whose route has violations never stops the rounds, so the next one gets another detailed route on its database. The rounds stop when a clean round is the best and meets timing on every side they repair (setup with `setup-margin` set, hold with `hold-margin` set), when a clean round does not become the best, when a round's timing is not reported, when a session of a later round fails, or after the last round. The stage keeps the best round's database as its checkpoint (`_keep_round`); a round whose timing was not reported or whose session failed is never kept. When a round with violations has better timing than the clean round kept, the stop reason names both (`_passed_over`).
+    Round 0 is the detailed route: its extraction session extracts it and times every corner. Round k from 1 repairs round k-1's database on that round's SPEF, routes, and writes the stage's checkpoint, which rb renames `06_post_route_repair.r<k>.*` (`_round_files`); its extraction session then times the result. Each round's DRC violations are counted from its router's report. A round becomes the best when it improves on the best (`_round_improves`), or when its route is clean and the best's is not. A round whose route has violations never stops the rounds, so the next one gets another detailed route on its database. The rounds stop when a clean round is the best and meets timing on every side they repair (setup with `setup-margin` set, hold with `hold-margin` set), when a clean round does not become the best, when a round's timing is not reported, when a session of a later round fails, or after the last round. The stage keeps the best round's database as its checkpoint (`_keep_round`); a round from 1 whose timing was not reported or whose session failed is never kept. When a round with violations has better timing than the clean round kept, the stop reason names both (`_passed_over`).
 
     A failed session of round k from 1 is set aside: rb warns, notes it after the session's part of the log, whose `[ERROR` lines then do not fail the run (`_error_lines`), and the stage keeps the best round. Round 0's extraction failing fails the stage, as does a failed stage report: a `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint the stage kept.
     """
@@ -1930,7 +1930,7 @@ def run_stage(
 
     problem = None
     fail_stage = None
-    # The rounds stop at an `[ERROR` line, before the stage's checkpoint.
+    # Only round 0's extraction and the report session stop the stage on an `[ERROR` line, before its checkpoint.
     stopped_on_error = False
     if stage == POST_ROUTE_REPAIR_STAGE:
         post = run_post_route_repair(
