@@ -134,6 +134,7 @@ RUN_SIZED = {
     "gds-allow-empty": ["x*"],
     "checkpoints": ["floorplan"],
     "hooks": {"session": "hook.tcl"},
+    "inputs": ["helper.tcl"],
     "harden": True,
     "abstract": {"bloat": "occupied", "feedthrough-layers": ["m4"]},
     "buffer-ports": True,
@@ -278,6 +279,9 @@ def _assert_every_valid_key_is_used(entries, spec: KeySpec, extra=()) -> None:
 
 
 def _write_pnr(tmp_path: Path, *runs: dict) -> str:
+    for run in runs:
+        for name in run.get("inputs") or []:
+            (tmp_path / name).write_text("")
     path = tmp_path / "pnr.yaml"
     path.write_text(
         yaml.safe_dump(
@@ -316,8 +320,8 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             (),
             "name, desc, tool, synth, synth-path, constraints, pin-constraints, "
             "pdn-config, pdn, platform, floorplan, lef-paths, lib-paths, gds-paths, "
-            "gds-mode, gds-allow-empty, checkpoints, stages, hooks, harden, abstract, "
-            "buffer-ports, fail-on-electrical, blocks, placement, "
+            "gds-mode, gds-allow-empty, checkpoints, stages, hooks, inputs, harden, "
+            "abstract, buffer-ports, fail-on-electrical, blocks, placement, "
             "global-route-repair, post-route-repair, routing-layers, "
             "routing-layer-adjustment, cts-buffer, cts-latency-balancing, "
             "cts-repair-clock-nets, post-cts-setup-repair, global-route-hold-repair, "
