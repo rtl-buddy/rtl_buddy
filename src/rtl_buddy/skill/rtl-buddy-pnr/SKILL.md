@@ -12,7 +12,7 @@ Use `rb --machine`. Field definitions: `rb --machine docs show reference/yaml#pn
 ## Set up a run
 
 - A `pnr.yaml` run needs `name`, `desc`, `synth` + `synth-path` (that synthesis must have written its netlist), `constraints` (SDC) and `platform` (a `cfg-pnr-platforms` entry in `root_config.yaml`). Paths are relative to `pnr.yaml`.
-- Process files and defaults live on the `cfg-pdks` entry (`pdn-config`, `rcx-rules`, `layer-rc-tcl`, `placement.*`, `dont-use-cells`); the platform picks `corner` or `corners` and overrides knobs; the run overrides `placement:` and the repair blocks.
+- Process files and defaults live on the `cfg-pdks` entry (`pdn-config`, `rcx-rules`, `layer-rc-tcl`, `placement.*`, `dont-use-cells`); the platform picks `corner` or `corners` and overrides knobs; the run overrides `placement:`, the repair blocks and the routing, CTS and tap-cell knobs.
 - Copy an existing run in the project before writing one from scratch. Find names with `rb --machine pnr --list -c <pnr.yaml>`.
 - Put extra Tcl in `hooks:` (fixed flow points) or `pin-constraints`, never in an edited `pnr.tcl` or the SDC.
 - List files a hook or the SDC `source`s under `inputs:`, so `--resume` and hardened-block staleness see edits to them.
@@ -59,6 +59,7 @@ Frequent cases:
 - `fail_stage: dispatch`: the stage job was killed by Slurm; read `dispatch/<NN>_<stage>.slurm.log` and raise that stage's `resources:`.
 - `PDN-*` errors: macro halo, macro grid or a turned macro; `N macros do not fit`: lower `utilization`.
 - Global-route overflow or high `drc_count`: lower density or utilization, `placement.routability-driven`, `routing-layer-adjustment`.
+- Macro pins in `electrical.rpt`, such as SRAM inputs with a tight `max_transition`: `placement.macro-pin-limits`; `macro_pin_unmet_count` counts the pins it could not fix.
 - `RB-DONT-USE-VIOLATION`: the netlist uses an excluded cell; fix synthesis, not P&R.
 - Change one knob per rerun and compare the same fields.
 

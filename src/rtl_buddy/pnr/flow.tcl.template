@@ -123,14 +123,14 @@ repair_design
 {{ hook_after_repair_design_block }}
 puts ">>> Detail placement (legalize)"
 detailed_placement{{ dpl_options }}
-rb::global_connect
+{{ macro_pin_limits_block }}rb::global_connect
 
 {{ @cts }}puts ">>> Clock tree synthesis"
 {{ @clocks }}{{ propagated_clocks }}{{ @/clocks }}clock_tree_synthesis \
     -root_buf {{ cts_root_buf }} \
     -buf_list $CTS_BUF \
-    {{ cts_clustering_option }}{{ cts_ndr_option }}
-{{ hook_after_cts_block }}
+    {{ cts_clustering_option }}{{ cts_ndr_option }}{{ cts_clock_nets_option }}{{ cts_insertion_delay_option }}
+{{ cts_repair_clock_nets }}{{ hook_after_cts_block }}
 puts ">>> Detail placement (post-CTS)"
 detailed_placement{{ dpl_options }}
 {{ post_cts_repair }}

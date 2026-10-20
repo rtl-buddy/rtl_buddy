@@ -3058,6 +3058,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('max_fanout_violation_count')} max-fanout violator(s); "
                 f"{verdict}; see {fields.get('report')}"
             )
+        case "pnr.macro_pin_limits_unmet":
+            return (
+                f"pnr {fields.get('pnr')}: {fields.get('unmet')} macro pin(s) stayed "
+                "over their max-slew or max-capacitance limit less the "
+                "placement.macro-pin-limits margin with the strongest buffer "
+                "candidate (or had no free row site); add a stronger buffer, "
+                "lower placement.macro-cell-halo, or check the routed result in "
+                f"electrical.rpt; see the '>>> Macro pin limits' lines in {fields.get('log')}"
+            )
         case "pnr.dont_use_instantiated":
             shown = [
                 f"{inst} ({master})"
