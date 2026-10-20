@@ -55,7 +55,7 @@ DESIGN = "demo_top"
 # calls `global_connect`. `global_connect` and the database writers log a
 # `stub: ...` line, which orders them in the log;
 # `RB_STUB_DONE_EARLY=<cmd>` prints the flow's end marker in that command, which returns;
-# `RB_STUB_DRC=<n>` makes `detailed_route` report n DRC lines and write a maze log;
+# `RB_STUB_DRC=<n>` makes `detailed_route` report n DRC violations and write a maze log;
 # `RB_STUB_ERRLINE=<cmd>` prints an OpenROAD `[ERROR` line in that command, which returns.
 # `RB_STUB_CKPT_FAIL=<NN_stage>` makes `write_db` of that checkpoint fail without an `[ERROR` line.
 _HARNESS = r"""
@@ -105,7 +105,11 @@ proc detailed_route {args} {
     if {[info exists env(RB_STUB_DRC)]} {
         foreach {flag lines} [list -output_drc $env(RB_STUB_DRC) -output_maze 1] {
             set fh [open [lindex $args [expr {[lsearch -exact $args $flag] + 1}]] w]
-            for {set i 0} {$i < $lines} {incr i} { puts $fh "$flag $i" }
+            for {set i 0} {$i < $lines} {incr i} {
+                puts $fh [expr {$flag eq "-output_drc"
+                    ? "violation type: Short\n\tbbox = ($i.0, 0.0) - ($i.1, 0.1) on Layer M1"
+                    : "$flag $i"}]
+            }
             close $fh
         }
     }
