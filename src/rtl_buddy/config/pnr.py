@@ -25,6 +25,7 @@ from .dispatch import (
 )
 from .openroad_threads import validate_threads
 from .pdk import PLACEMENT_SPEC, PlacementFile, validate_placement
+from .pnr_global_route import GLOBAL_ROUTE_SPEC, PnrGlobalRouteFile
 from .pnr_platform import PnrRoutingLayersFile, PnrRunOverrides, read_run_overrides
 from .pnr_signoff import SIGNOFF_SPEC
 from .pnr_repair import (
@@ -867,6 +868,21 @@ def _normalise_hooks(run: str, value, config_dir: str) -> dict[str, tuple[str, .
     return hooks
 
 
+def _normalise_inputs(run: str, value, config_dir: str) -> tuple[str, ...]:
+    """Return the `inputs:` files with absolute paths, relative to `pnr.yaml`; null or an empty list is unset.
+
+    Whether each file exists is checked by `PnrConfig.check_inputs` when the run is about to run, so a hardened block whose input was deleted still loads and reports it as stale.
+    """
+    if value is None:
+        return ()
+    if not (isinstance(value, list) and all(isinstance(n, str) and n for n in value)):
+        raise FatalRtlBuddyError(
+            f"pnr run '{run}': inputs must be a list of non-empty file paths, "
+            f"got {value!r}"
+        )
+    return tuple(os.path.abspath(os.path.join(config_dir, n)) for n in value)
+
+
 #: `detailed_route -verbose` level when a run sets none: iteration and violation counts, no per-net detail.
 DEFAULT_DETAILED_ROUTE_VERBOSE = 1
 
@@ -1230,6 +1246,8 @@ class PnrConfigFile:
     stages: bool = False
     # Tcl files sourced at fixed flow points: point -> a path or a list of paths. Typed loosely so `initialise` names a bad value.
     hooks: Any = None
+    # Extra files the SDC or hooks source, fingerprinted with the run's other inputs. Typed loosely so `initialise` names a bad value.
+    inputs: Any = None
     # Publish a hard-macro abstract (LEF, Liberty, GDS, manifest) under `abstract/`; forces a strict GDS export.
     harden: bool = False
     # Obstruction style of a hardened run's abstract LEF; unset keeps `-bloat_occupied_layers`.
@@ -1269,6 +1287,8 @@ class PnrConfigFile:
     tapcell_tcl: str | None = field(rename="tapcell-tcl", default=None)
     # `clock_tree_synthesis -clk_nets`: the clock nets CTS builds trees for; run only.
     cts_clock_nets: str | list | None = field(rename="cts-clock-nets", default=None)
+    # Over the platform's `global-route:` field by field. Read by `pnr_global_route`.
+    global_route: PnrGlobalRouteFile | None = field(rename="global-route", default=None)
     # `closure` (default) or `probe`: no timing repair, stop after global route.
     mode: str | None = None
     # Overrides the platform's `signoff:` field by field; `null` turns it off. Read by `pnr_signoff`.
@@ -1399,6 +1419,7 @@ class PnrConfigFile:
             tapcell_tcl=self.tapcell_tcl,
             config_dir=config_dir,
             signoff=self.signoff,
+            global_route=self.global_route,
         )
         post_route_repair = read_post_route_repair(
             f"pnr run '{self.name}'", self.post_route_repair
@@ -1435,6 +1456,7 @@ class PnrConfigFile:
                 "checkpoint; remove 'checkpoints' or set it to true"
             )
         hooks = _normalise_hooks(self.name, self.hooks, config_dir)
+        inputs = _normalise_inputs(self.name, self.inputs, config_dir)
         if "macro-placement" in hooks:
             for key, is_default in (
                 ("floorplan.macro-placement", macro_placement is MacroPlacement.PACK),
@@ -1520,6 +1542,7 @@ class PnrConfigFile:
             checkpoints=CHECKPOINT_STAGES if self.stages else checkpoints,
             stages=bool(self.stages),
             hooks=hooks,
+            inputs=inputs,
             harden=bool(self.harden),
             abstract=_load_abstract(self.name, self.abstract, bool(self.harden)),
             buffer_ports=(
@@ -1562,6 +1585,7 @@ PNR_RUN_SPEC = KeySpec(
         "global-route-repair": GLOBAL_ROUTE_REPAIR_SPEC,
         "post-route-repair": POST_ROUTE_REPAIR_SPEC,
         "routing-layers": KeySpec(PnrRoutingLayersFile),
+        "global-route": GLOBAL_ROUTE_SPEC,
         "blocks": KeySpec(BlockRefFile, many=True),
         "resources": KeySpec(PnrResourcesFile, {"stages": _STAGE_RESOURCES_SPEC}),
         "signoff": SIGNOFF_SPEC,
@@ -1599,6 +1623,8 @@ class PnrConfig:
     stages: bool = False
     # Absolute paths by flow point, in flow order; only points with a file.
     hooks: dict[str, tuple[str, ...]] = dc_field(default_factory=dict)
+    # Absolute paths of the `inputs:` files, in the order written.
+    inputs: tuple[str, ...] = ()
     harden: bool = False
     abstract: PnrAbstract = dc_field(default_factory=PnrAbstract)
     # As written in pnr.yaml; `None` follows `harden`. Read it through `get_buffer_ports`.
@@ -1735,6 +1761,19 @@ class PnrConfig:
     def get_hooks(self) -> dict[str, tuple[str, ...]]:
         """The run's Tcl hook files by flow point, in flow order; empty when none."""
         return {point: tuple(paths) for point, paths in self.hooks.items()}
+
+    def get_inputs(self) -> tuple[str, ...]:
+        """The run's extra `inputs:` files, absolute; empty when none."""
+        return tuple(self.inputs)
+
+    def check_inputs(self) -> None:
+        """Raise naming every `inputs:` file that does not exist; called before the run starts."""
+        missing = [path for path in self.inputs if not os.path.isfile(path)]
+        if missing:
+            raise FatalRtlBuddyError(
+                f"pnr run '{self.name}': inputs names a file that does not exist: "
+                f"{', '.join(missing)}"
+            )
 
     def get_harden(self) -> bool:
         """Whether the run publishes a hard-macro abstract."""

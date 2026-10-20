@@ -48,6 +48,15 @@ GLOBAL_ROUTE_REPAIR_ALL = {
     "hold-margin": 0.02,
     "reroute": "full",
 }
+GLOBAL_ROUTE_ALL = {
+    "congestion-iterations": 100,
+    "congestion-report-iter-step": 25,
+    "grid-origin": [3, 3],
+    "layer-adjustment": {"m1": 0.9, "m2": 0.8},
+    "allow-congestion": False,
+    "critical-nets-percentage": 30,
+    "resistance-aware": True,
+}
 POST_ROUTE_REPAIR_ALL = {
     "repair-design": {
         **REPAIR_DESIGN_ALL,
@@ -134,6 +143,7 @@ RUN_SIZED = {
     "gds-allow-empty": ["x*"],
     "checkpoints": ["floorplan"],
     "hooks": {"session": "hook.tcl"},
+    "inputs": ["helper.tcl"],
     "harden": True,
     "abstract": {"bloat": "occupied", "feedthrough-layers": ["m4"]},
     "buffer-ports": True,
@@ -154,6 +164,7 @@ RUN_SIZED = {
     "port-buffer": "buf2",
     "tapcell-tcl": "tap_run.tcl",
     "cts-clock-nets": ["clk", "clk_div[0]"],
+    "global-route": GLOBAL_ROUTE_ALL,
     "mode": "closure",
     "signoff": {
         "setup-corners": ["ss"],
@@ -240,6 +251,7 @@ PLATFORM_ONE_CORNER = {
     "placement": PLACEMENT_ALL,
     "dont-use-cells": ["y*"],
     "tapcell-tcl": "tap_platform.tcl",
+    "global-route": GLOBAL_ROUTE_ALL,
     "signoff": {"setup-corners": ["typ"], "fail-on": ["timing"]},
 }
 PLATFORM_CORNERS = {
@@ -281,6 +293,9 @@ def _assert_every_valid_key_is_used(entries, spec: KeySpec, extra=()) -> None:
 
 
 def _write_pnr(tmp_path: Path, *runs: dict) -> str:
+    for run in runs:
+        for name in run.get("inputs") or []:
+            (tmp_path / name).write_text("")
     path = tmp_path / "pnr.yaml"
     path.write_text(
         yaml.safe_dump(
@@ -319,12 +334,13 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             (),
             "name, desc, tool, synth, synth-path, constraints, pin-constraints, "
             "pdn-config, pdn, platform, floorplan, lef-paths, lib-paths, gds-paths, "
-            "gds-mode, gds-allow-empty, checkpoints, stages, hooks, harden, abstract, "
-            "buffer-ports, fail-on-electrical, blocks, placement, "
+            "gds-mode, gds-allow-empty, checkpoints, stages, hooks, inputs, harden, "
+            "abstract, buffer-ports, fail-on-electrical, blocks, placement, "
             "global-route-repair, post-route-repair, routing-layers, "
             "routing-layer-adjustment, cts-buffer, cts-latency-balancing, "
             "cts-repair-clock-nets, post-cts-setup-repair, global-route-hold-repair, "
-            "port-buffer, tapcell-tcl, cts-clock-nets, mode, signoff, reglvl, "
+            "port-buffer, tapcell-tcl, cts-clock-nets, global-route, mode, signoff, "
+            "reglvl, "
             "tool_overrides, "
             "threads, resources, detailed-route-verbose, xfail, xfail_strict, "
             "xfail_match",
@@ -381,6 +397,13 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
         ),
         ("pnr run 'a': blocks[1]", ("blocks", 1), "name, pnr, pnr-path"),
         ("pnr run 'a': routing-layers", ("routing-layers",), "signal, clock"),
+        (
+            "pnr run 'a': global-route",
+            ("global-route",),
+            "congestion-iterations, congestion-report-iter-step, grid-origin, "
+            "layer-adjustment, allow-congestion, critical-nets-percentage, "
+            "resistance-aware",
+        ),
         (
             "pnr run 'a': global-route-repair",
             ("global-route-repair",),
@@ -686,7 +709,15 @@ cfg-pnr-platforms:
             "post-cts-setup-repair, global-route-hold-repair, global-route-repair, "
             "post-route-repair, routing-layer-adjustment, cts-apply-ndr, "
             "port-buffer, max-fanout, routing-layers, placement, dont-use-cells, "
-            "tapcell-tcl, signoff",
+            "tapcell-tcl, global-route, signoff",
+        ),
+        (
+            "platform",
+            ("global-route",),
+            "cfg-pnr-platforms 'pl1': global-route",
+            "congestion-iterations, congestion-report-iter-step, grid-origin, "
+            "layer-adjustment, allow-congestion, critical-nets-percentage, "
+            "resistance-aware",
         ),
         (
             "platform",

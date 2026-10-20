@@ -3120,8 +3120,9 @@ def test_pnr_flow_checks_dont_use_after_routing_before_fill_and_outputs(tmp_path
     assert text.index("repair_timing -hold") < check_at
     assert text.index("detailed_route") < check_at
     assert check_at < text.index("filler_placement")
-    assert check_at < text.index("write_def")
-    assert check_at < text.index("write_db")
+    # At the start of a line: the failed global route's keeper also writes them.
+    assert check_at < text.index("\nwrite_def")
+    assert check_at < text.index("\nwrite_db")
 
 
 _TCL_DONT_USE_STUBS = """
@@ -3618,7 +3619,8 @@ def test_pnr_flow_extracts_writes_and_times_on_the_routed_spef(tmp_path):
         'puts ">>> Final reports"',
         "read_spef $OUT_DIR/${DESIGN}.routed.spef",
         "report_worst_slack -max",
-        "write_db",
+        # At the start of a line: the failed global route's keeper also writes one.
+        "\nwrite_db",
     ]
     positions = [text.index(marker) for marker in order]
     assert positions == sorted(positions), order

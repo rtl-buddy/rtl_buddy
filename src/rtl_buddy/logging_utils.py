@@ -2317,6 +2317,30 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 + done
                 + (f" ({fields.get('error')})" if fields.get("error") else "")
             )
+        case "pnr.failed_global_route_kept":
+            return (
+                f'P&R "{fields.get("pnr")}": global route failed; its database is '
+                f"checkpoint {fields.get('checkpoint')} "
+                f"(rb pnr-export --checkpoint {fields.get('spec')})"
+            )
+        case "pnr.failed_global_route_not_kept":
+            return (
+                f'P&R "{fields.get("pnr")}": global route failed, but its database '
+                f"was not filed as a checkpoint ({fields.get('error')}); what the "
+                f"flow wrote is left in {fields.get('dir')} until the next run"
+            )
+        case "pnr.allow_congestion_harden":
+            return (
+                f'P&R "{fields.get("pnr")}": global-route.allow-congestion is for '
+                "diagnosis and publishes no abstract, so the run cannot be "
+                "harden: true; drop one of them"
+            )
+        case "pnr.allow_congestion":
+            return (
+                f'P&R "{fields.get("pnr")}" ran with global-route.allow-congestion '
+                f"(diagnosis only): global route overflow "
+                f"{fields.get('global_route_overflow') if fields.get('global_route_overflow') is not None else 'unknown'}"
+            )
         case "pnr.stopped":
             why = "mode: probe" if fields.get("mode") == "probe" else "--stop-after"
             return (

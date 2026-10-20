@@ -15,6 +15,7 @@ Use `rb --machine`. Field definitions: `rb --machine docs show reference/yaml#pn
 - Process files and defaults live on the `cfg-pdks` entry (`pdn-config`, `rcx-rules`, `layer-rc-tcl`, `placement.*`, `dont-use-cells`); the platform picks `corner` or `corners` and overrides knobs; the run overrides `placement:`, the repair blocks and the routing, CTS and tap-cell knobs.
 - Copy an existing run in the project before writing one from scratch. Find names with `rb --machine pnr --list -c <pnr.yaml>`.
 - Put extra Tcl in `hooks:` (fixed flow points) or `pin-constraints`, never in an edited `pnr.tcl` or the SDC.
+- List files a hook or the SDC `source`s under `inputs:`, so `--resume` and hardened-block staleness see edits to them.
 - Multi-corner (`corners:`): each corner is timed in its own SDC mode (OpenROAD 26Q4+). `constraints:` may map each corner to its SDC. An SDC command in a hook constrains only the primary (first) corner; put per-corner constraints in the SDCs.
 
 ## Run loop
@@ -59,7 +60,7 @@ Frequent cases:
 - `fail_stage: incomplete`: a sourced Tcl file called `exit`; remove it.
 - `fail_stage: dispatch`: the stage job was killed by Slurm; read `dispatch/<NN>_<stage>.slurm.log` and raise that stage's `resources:`.
 - `PDN-*` errors: macro halo, macro grid or a turned macro; `N macros do not fit`: lower `utilization`.
-- Global-route overflow or high `drc_count`: lower density or utilization, `placement.routability-driven`, `routing-layer-adjustment`.
+- Global-route overflow or high `drc_count`: lower density or utilization, `placement.routability-driven`, `routing-layer-adjustment`, `global-route:` options. A failed global route leaves its database as the checkpoint its `failed_global_route` field names; inspect it with `rb pnr-export --checkpoint <that value>`.
 - Macro pins in `electrical.rpt`, such as SRAM inputs with a tight `max_transition`: `placement.macro-pin-limits`; `macro_pin_unmet_count` counts the pins it could not fix.
 - `RB-DONT-USE-VIOLATION`: the netlist uses an excluded cell; fix synthesis, not P&R.
 - Change one knob per rerun and compare the same fields.

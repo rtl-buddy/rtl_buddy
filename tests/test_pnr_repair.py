@@ -28,6 +28,7 @@ from test_pnr_checkpoints import (
 
 from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
 from rtl_buddy.config.pnr import CHECKPOINT_STAGES, PNR_STAGES, PnrConfigFile
+from rtl_buddy.config.pnr_global_route import GlobalRoute
 from rtl_buddy.config.pnr_platform import (
     PnrPlatformConfig,
     PnrPlatformConfigFile,
@@ -53,6 +54,7 @@ from rtl_buddy.tools.pnr_openroad import (
     _DETAILED_ROUTE_CMD,
     _END_INCREMENTAL_CMD,
     _GLOBAL_ROUTE_CMD,
+    _global_route_cmd,
     OpenRoadPnr,
 )
 
@@ -440,7 +442,8 @@ def test_a_flow_without_repair_knobs_is_the_template_as_before(
 
 def test_the_template_runs_the_commands_a_repair_runs_again():
     template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
-    assert _GLOBAL_ROUTE_CMD in template
+    assert "{{ global_route_cmd }}" in template
+    assert _global_route_cmd(GlobalRoute()) == _GLOBAL_ROUTE_CMD
     assert _DETAILED_ROUTE_CMD in template
 
 

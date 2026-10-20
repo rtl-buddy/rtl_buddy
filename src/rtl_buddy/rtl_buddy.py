@@ -11034,6 +11034,8 @@ class RtlBuddy:
             "stopped_after",
             "mode",
             "global_route_overflow",
+            "allow_congestion",
+            "failed_global_route",
             "post_route_repair",
             "signoff",
             "resumed_from",
@@ -11603,6 +11605,10 @@ class RtlBuddy:
                 PlannedRun(suite_path=suite_path, cfg=run)
                 for run in suite_cfg.get_runs(pnr_name)
             ]
+
+        for planned in plan:
+            if _selected(planned.cfg):
+                planned.cfg.check_inputs()
 
         # Lock every tree here, on this thread, before any worker starts.
         for planned in plan:

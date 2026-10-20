@@ -469,6 +469,11 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 if isinstance(platform.get_routing_layer_adjustment(), float)
                 else {}
             ),
+            **(
+                {"global_route": digest}
+                if (digest := platform.get_global_route().digest())
+                else {}
+            ),
         },
         "cts_buffers": list(platform.get_cts_buffers()),
         "dont_use_cells": list(platform.get_dont_use_cells()),
@@ -530,6 +535,12 @@ def abstract_config(pnr_cfg, platform) -> dict:
         **(
             {"hooks": {k: [_rel(p) for p in v] for k, v in pnr_cfg.get_hooks().items()}}
             if pnr_cfg.get_hooks()
+            else {}
+        ),
+        # Emitted only when `inputs:` is set so existing digests do not change.
+        **(
+            {"inputs": [_rel(p) for p in pnr_cfg.get_inputs()]}
+            if pnr_cfg.get_inputs()
             else {}
         ),
         # Emitted only when non-default so existing digests do not change; a change regenerates.

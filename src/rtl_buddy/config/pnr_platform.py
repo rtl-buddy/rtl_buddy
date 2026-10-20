@@ -22,6 +22,12 @@ from .pdk import (
     merge_dont_use_cells,
     validate_placement,
 )
+from .pnr_global_route import (
+    GLOBAL_ROUTE_SPEC,
+    GlobalRoute,
+    PnrGlobalRouteFile,
+    read_global_route,
+)
 from .pnr_repair import (
     GLOBAL_ROUTE_REPAIR_SPEC,
     POST_ROUTE_REPAIR_SPEC,
@@ -169,6 +175,7 @@ class PnrRunOverrides:
     tapcell_tcl: str | None = None
     # The run's `signoff:` layer (see `pnr_signoff`): `UNSET` when absent, `None` when `null`.
     signoff: Any = UNSET
+    global_route: GlobalRoute = GlobalRoute()
 
     def is_empty(self) -> bool:
         return self == PnrRunOverrides()
@@ -188,6 +195,7 @@ def read_run_overrides(
     tapcell_tcl,
     config_dir: str,
     signoff=UNSET,
+    global_route: PnrGlobalRouteFile | None = None,
 ) -> PnrRunOverrides:
     """Validate a run's overrides of its platform's knobs; `where` names the run."""
     layers = routing_layers or PnrRoutingLayersFile()
@@ -213,6 +221,7 @@ def read_run_overrides(
         port_buffer=_validate_port_buffer(port_buffer, where),
         tapcell_tcl=_validate_tcl_path("tapcell-tcl", tapcell_tcl, where, config_dir),
         signoff=read_signoff(where, signoff),
+        global_route=read_global_route(where, global_route),
     )
 
 
@@ -258,6 +267,8 @@ class PnrPlatformConfigFile:
     dont_use_cells: list[str] = field(rename="dont-use-cells", default_factory=list)
     # Replaces the PDK's `tapcell-tcl`; relative to the root config.
     tapcell_tcl: str | None = field(rename="tapcell-tcl", default=None)
+    # `global_route` options; a run overrides them field by field. Read by `pnr_global_route`.
+    global_route: PnrGlobalRouteFile | None = field(rename="global-route", default=None)
     # Signoff corners and gates; a run overrides them field by field. Read by `pnr_signoff`.
     signoff: Any = UNSET
 
@@ -270,6 +281,7 @@ PNR_PLATFORM_SPEC = KeySpec(
         "placement": PLACEMENT_SPEC,
         "global-route-repair": GLOBAL_ROUTE_REPAIR_SPEC,
         "post-route-repair": POST_ROUTE_REPAIR_SPEC,
+        "global-route": GLOBAL_ROUTE_SPEC,
         "signoff": SIGNOFF_SPEC,
     },
 )
@@ -300,6 +312,9 @@ class PnrPlatformConfig:
         self._read_repairs(cfg)
         self._routing_layer_adjustment = _validate_layer_adjustment(
             cfg.routing_layer_adjustment, f"pnr platform '{self._name}'"
+        )
+        self._global_route = read_global_route(
+            f"pnr platform '{self._name}'", cfg.global_route
         )
         self._cts_apply_ndr = _validate_cts_apply_ndr(
             cfg.cts_apply_ndr, f"pnr platform '{self._name}'"
@@ -461,6 +476,7 @@ class PnrPlatformConfig:
         ):
             if value is not None:
                 setattr(resolved, attr, value)
+        resolved._global_route = o.global_route.over(self._global_route)
         return resolved
 
     def with_run_placement(
@@ -667,6 +683,10 @@ class PnrPlatformConfig:
     def get_routing_layer_adjustment(self) -> float | None:
         """Global-route capacity adjustment, 0 to 1, or `None` for the router's default."""
         return self._routing_layer_adjustment
+
+    def get_global_route(self) -> GlobalRoute:
+        """The `global-route:` options, run over platform; unset fields are `None`."""
+        return self._global_route
 
     def get_cts_apply_ndr(self) -> str | None:
         """The `clock_tree_synthesis -apply_ndr` value, or `None` for the tool's default."""

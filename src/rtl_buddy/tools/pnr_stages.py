@@ -264,6 +264,7 @@ _FLOORPLAN_INPUTS = (
     "pdn_config",
     "tracks_tcl",
     "tapcell_tcl",
+    "extra_inputs",
 )
 
 
@@ -453,7 +454,8 @@ def check_resume(
     for role, value in inputs.items():
         if not input_read_before(role, from_stage, stages):
             continue
-        if _content(old_inputs.get(role)) != _content(value):
+        with_path = role in _PATH_COMPARED_INPUTS
+        if _content(old_inputs.get(role), with_path) != _content(value, with_path):
             return (
                 f"input {role} differs from what {where} read: "
                 f"{_describe(old_inputs.get(role))} then, {_describe(value)} now"
@@ -485,12 +487,19 @@ def check_resume(
     )
 
 
-def _content(value):
-    """A manifest input as comparable content: each file's digest. Where a file is read from is in the scripts, which are compared apart."""
+#: Manifest input roles whose paths appear in no stage script, so a resume compares each file's resolved path as well as its digest.
+_PATH_COMPARED_INPUTS = ("extra_inputs",)
+
+
+def _content(value, with_path: bool = False):
+    """A manifest input as comparable content: each file's digest, with its resolved path when `with_path`. Where the other inputs are read from is in the scripts, which are compared apart."""
     if isinstance(value, list):
-        return [_content(v) for v in value]
+        return [_content(v, with_path) for v in value]
     if isinstance(value, dict):
-        return value.get("sha256")
+        if not with_path:
+            return value.get("sha256")
+        path = value.get("path")
+        return (path and os.path.realpath(path), value.get("sha256"))
     return value
 
 
