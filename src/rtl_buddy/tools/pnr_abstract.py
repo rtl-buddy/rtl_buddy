@@ -21,6 +21,7 @@ from ..config.pdk import (
     MacroPinLimitsFile,
 )
 from ..config.pnr_repair import GlobalRouteRepair
+from ..config.pnr_signoff import effective_gates
 from ..config.pnr import (
     ABSTRACT_BLOAT_OCCUPIED,
     BlockageLifetime,
@@ -483,6 +484,20 @@ def abstract_config(pnr_cfg, platform) -> dict:
             else {}
         ),
         **_repair_digest(platform),
+        # Emitted only when set so existing digests do not change: the corners the post-route rounds judge each side at decide the round kept. `fail_on` is the effective gates, so equivalent configs share a digest.
+        **(
+            {
+                "signoff": {
+                    "setup_corners": list(signoff.setup_corners),
+                    "hold_corners": list(signoff.hold_corners),
+                    "fail_on": list(
+                        effective_gates(signoff, pnr_cfg.get_fail_on_electrical())
+                    ),
+                }
+            }
+            if (signoff := platform.get_signoff()) is not None
+            else {}
+        ),
         # The CTS knobs below are emitted only when set so existing digests do not change.
         **(
             {"cts_clock_nets": list(platform.get_cts_clock_nets())}

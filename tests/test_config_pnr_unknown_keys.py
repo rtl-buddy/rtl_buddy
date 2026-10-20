@@ -168,6 +168,11 @@ RUN_SIZED = {
     "cts-clock-nets": ["clk", "clk_div[0]"],
     "global-route": GLOBAL_ROUTE_ALL,
     "mode": "closure",
+    "signoff": {
+        "setup-corners": ["ss"],
+        "hold-corners": ["ff"],
+        "fail-on": ["timing", "drc", "electrical"],
+    },
     "reglvl": 1000,
     "tool_overrides": {"any": 1},
     "threads": 2,
@@ -251,6 +256,7 @@ PLATFORM_ONE_CORNER = {
     "keep-sizing-vt": True,
     "tapcell-tcl": "tap_platform.tcl",
     "global-route": GLOBAL_ROUTE_ALL,
+    "signoff": {"setup-corners": ["typ"], "fail-on": ["timing"]},
 }
 PLATFORM_CORNERS = {
     "name": "pl2",
@@ -258,6 +264,7 @@ PLATFORM_CORNERS = {
     "corners": ["typ", "my-fast_1"],
     "global-route-hold-repair": True,
     "post-route-repair": {"repair-design": {"wire-rc": {"layer": "m5"}}},
+    "signoff": {"hold-corners": ["my-fast_1"], "fail-on": ["drc", "electrical"]},
 }
 
 
@@ -337,7 +344,7 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "routing-layer-adjustment, cts-buffer, cts-latency-balancing, "
             "cts-repair-clock-nets, post-cts-setup-repair, global-route-hold-repair, "
             "port-buffer, tapcell-tcl, cts-dont-use-cells, keep-sizing-vt, "
-            "cts-clock-nets, global-route, mode, reglvl, tool_overrides, "
+            "cts-clock-nets, global-route, mode, signoff, reglvl, tool_overrides, "
             "threads, resources, detailed-route-verbose, xfail, xfail_strict, "
             "xfail_match",
         ),
@@ -432,6 +439,11 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "slew-margin, cap-margin, max-wire-length",
         ),
         ("pnr run 'a': resources", ("resources",), "cpus, mem, time, stages"),
+        (
+            "pnr run 'a': signoff",
+            ("signoff",),
+            "setup-corners, hold-corners, fail-on",
+        ),
         (
             "pnr run 'a': resources.stages",
             ("resources", "stages"),
@@ -700,7 +712,7 @@ cfg-pnr-platforms:
             "post-cts-setup-repair, global-route-hold-repair, global-route-repair, "
             "post-route-repair, routing-layer-adjustment, cts-apply-ndr, "
             "port-buffer, max-fanout, routing-layers, placement, dont-use-cells, "
-            "cts-dont-use-cells, keep-sizing-vt, tapcell-tcl, global-route",
+            "cts-dont-use-cells, keep-sizing-vt, tapcell-tcl, global-route, signoff",
         ),
         (
             "platform",
@@ -709,6 +721,12 @@ cfg-pnr-platforms:
             "congestion-iterations, congestion-report-iter-step, grid-origin, "
             "layer-adjustment, allow-congestion, critical-nets-percentage, "
             "resistance-aware",
+        ),
+        (
+            "platform",
+            ("signoff",),
+            "cfg-pnr-platforms 'pl1': signoff",
+            "setup-corners, hold-corners, fail-on",
         ),
         (
             "platform",

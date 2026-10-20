@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -34,6 +35,7 @@ from ..config.pnr import (
     with_planner_files,
 )
 from ..config.pnr_global_route import GlobalRoute
+from ..config.pnr_signoff import Signoff, effective_gates
 from ..config.pnr_repair import (
     GlobalRouteRepair,
     PnrMode,
@@ -227,6 +229,14 @@ def _electrical_desc(fields: dict) -> str:
         if fields.get(key)
     ]
     return f"{', '.join(parts)} violator(s)" if parts else ""
+
+
+def _legacy_electrical_desc(violators: str) -> str:
+    """The description of a run failed by `fail-on-electrical`, for the `violators` phrase of `_electrical_desc`."""
+    return (
+        f"electrical violators in the routed design: {violators} "
+        "(fail-on-electrical; see electrical.rpt)"
+    )
 
 
 def _round_electrical_tcl(corners: list[str]) -> str:
@@ -1741,6 +1751,59 @@ def _timing_met(timing: dict, sides) -> bool | None:
     return all(slack >= 0 for slack in slacks)
 
 
+def _side_over_corners(
+    side: str,
+    corners,
+    per_corner: dict | None,
+    inf: dict,
+    overall: float | None,
+    unconstrained: bool,
+) -> dict:
+    """`side`'s (`setup` or `hold`) worst slack over `corners`, in ps, as `{"wns_ps", "worst_corner", "unconstrained"}`.
+
+    `per_corner` is each corner's timing (`openroad_corners.parse_corner_timing`), None on a single-corner platform, where the one corner's is `overall`; `inf` names each corner's sides printed as INF (`openroad_corners.parse_corner_unconstrained`); `unconstrained` says the design's worst slack of that side is INF. A side INF at every one of `corners` is unconstrained. `wns_ps` is None when the side is unconstrained or a corner's value is missing. A slack of `-0.0`, which the two-digit final reports print for a slack in (-5 ps, 0), is below `0.0`.
+    """
+    if unconstrained:
+        return {"wns_ps": None, "worst_corner": None, "unconstrained": True}
+    if per_corner is None:
+        return {
+            "wns_ps": overall,
+            "worst_corner": corners[0] if overall is not None else None,
+            "unconstrained": False,
+        }
+    key = f"wns_{side}_ps"
+    values = {c: per_corner[c][key] for c in corners if key in per_corner.get(c, {})}
+    if any(c not in values and side not in inf.get(c, ()) for c in corners):
+        return {"wns_ps": None, "worst_corner": None, "unconstrained": False}
+    if not values:
+        return {"wns_ps": None, "worst_corner": None, "unconstrained": True}
+    worst = min(values, key=lambda c: (values[c], math.copysign(1.0, values[c])))
+    return {"wns_ps": values[worst], "worst_corner": worst, "unconstrained": False}
+
+
+def _judged_timing(timing: dict, text: str, judged: dict) -> dict:
+    """A round's `timing` with each side's worst slack taken over the corners `judged` names for it (`signoff:`), and `unconstrained` to match. The other fields are the round's own."""
+    view = dict(timing)
+    inf = openroad_corners.parse_corner_unconstrained(
+        text, list(timing.get("corners", {}))
+    )
+    unconstrained = []
+    for side, corners in judged.items():
+        entry = _side_over_corners(
+            side,
+            corners,
+            timing.get("corners", {}),
+            inf,
+            None,
+            side in timing["unconstrained"],
+        )
+        view[f"wns_{side}_ps"] = entry["wns_ps"]
+        if entry["unconstrained"]:
+            unconstrained.append(side)
+    view["unconstrained"] = unconstrained
+    return view
+
+
 def _side_slack(timing: dict, side: str) -> float:
     """`side`'s worst slack over the corners in `timing`, in ps, with a met or unconstrained side at 0."""
     if side in timing["unconstrained"]:
@@ -1899,6 +1962,8 @@ def run_post_route_repair(
 
     Round 0 is the detailed route: its extraction session extracts it and times every corner. Round k from 1 repairs round k-1's database on that round's SPEF, routes, and writes the stage's checkpoint, which rb renames `06_post_route_repair.r<k>.*` (`_round_files`); its extraction session then times the result. Each round's DRC violations are counted from its router's report. A round becomes the best when it improves on the best (`_round_improves`), or when its route is clean and the best's is not. A round whose route has violations never stops the rounds, so the next one gets another detailed route on its database. The rounds stop when a clean round is the best and meets timing on every side they repair (setup with `setup-margin` set, hold with `hold-margin` set), when a clean round does not become the best, when a round's timing is not reported, when a session of a later round fails, or after the last round. The stage keeps the best round's database as its checkpoint (`_keep_round`); a round from 1 whose timing was not reported or whose session failed is never kept. When a round with violations has better timing than the clean round kept, the stop reason names both (`_passed_over`).
 
+    With `judged` in the plan (a multi-corner run that sets `signoff:`), the rounds judge each side's worst slack only over the corners it names for that side (`_judged_timing`): which sides are met, which round is the best and when they stop. Each round's event keeps every corner's timing and adds the judged worst slack as `signoff_timing`.
+
     On a run that gates on electrical violators (`gate_electrical` in the plan), a clean round without max-slew or max-capacitance violators also becomes the best over a clean one with some at timing as good (`_electrically_cleaner`), and the stop reason names that and the kept round's violators. With `electrical-repair` (`electrical` in the plan) one more round runs after the others when the best round has such violators: rb links the best round's checkpoint and SPEF as `POST_ROUTE_ELECTRICAL_SOURCE`, and the round's `repair_design` runs on them. It is timed and compared as any round; `electrical_round` in the done event says whether it was kept, not kept, skipped or failed, and why.
 
     A failed session of round k from 1 is set aside: rb warns, notes it after the session's part of the log, whose `[ERROR` lines then do not fail the run (`_error_lines`), and the stage keeps the best round. Round 0's extraction failing fails the stage, as does a failed stage report: a `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint the stage kept.
@@ -1963,6 +2028,11 @@ def run_post_route_repair(
     # A run that gates on electrical violators compares rounds on them too.
     gate = plan.get("gate_electrical", False)
     electrical = plan.get("electrical")
+    judged = plan.get("judged")
+
+    def _view(timing: dict, text: str) -> dict:
+        return _judged_timing(timing, text, judged) if judged else timing
+
     best = 0
     repaired = 0
     files: dict[int, dict | None] = {}
@@ -1970,7 +2040,7 @@ def run_post_route_repair(
     # Each round that became the best only for having no electrical violators, with the round it replaced.
     cleaner: dict[int, int] = {}
 
-    def _record(round_: int, drcs: int, timing: dict) -> None:
+    def _record(round_: int, drcs: int, timing: dict, view: dict) -> None:
         if electrical is not None and round_ == electrical["round"]:
             entry = {"electrical_round": True}
         else:
@@ -1983,6 +2053,15 @@ def run_post_route_repair(
             **({"electrical_round": True} if entry.get("electrical_round") else {}),
             "drc_count": drcs,
             **timing,
+            **(
+                {
+                    "signoff_timing": {
+                        f"wns_{side}_ps": view[f"wns_{side}_ps"] for side in judged
+                    }
+                }
+                if judged
+                else {}
+            ),
             "best_round": best,
         }
         log_event(logger, logging.INFO, "pnr.post_route_round", pnr=run_name, **fields)
@@ -2055,10 +2134,12 @@ def run_post_route_repair(
                 return _outcome(returncode, stderr, problem)
             stop = _set_aside(round_, "extraction", failure, section)
             break
-        timing = _round_timing(section.decode(errors="replace"), round_, plan)
-        met = _timing_met(timing, sides)
+        text = section.decode(errors="replace")
+        timing = _round_timing(text, round_, plan)
+        view = _view(timing, text)
+        met = _timing_met(view, sides)
         if met is None:
-            _record(round_, drcs, timing)
+            _record(round_, drcs, timing, view)
             stop = (
                 "timing_not_reported",
                 (
@@ -2068,7 +2149,7 @@ def run_post_route_repair(
                 ),
             )
             break
-        current = {"timing": timing, "drcs": drcs}
+        current = {"timing": view, "drcs": drcs}
         if round_ and _becomes_best(current):
             if not _round_improves(current, timed[best], sides) and (
                 drcs or not timed[best]["drcs"]
@@ -2076,7 +2157,7 @@ def run_post_route_repair(
                 cleaner[round_] = best
             best = round_
         timed[round_] = current
-        _record(round_, drcs, timing)
+        _record(round_, drcs, timing, view)
         if drcs:
             continue
         if best != round_:
@@ -2124,9 +2205,11 @@ def run_post_route_repair(
                     failed = _set_aside(e, "extraction", failure, section)
                     status, why = "failed", f"{had}; {failed[1]}"
                 else:
-                    timing = _round_timing(section.decode(errors="replace"), e, plan)
-                    current = {"timing": timing, "drcs": drcs}
-                    if _timing_met(timing, sides) is None:
+                    text = section.decode(errors="replace")
+                    timing = _round_timing(text, e, plan)
+                    view = _view(timing, text)
+                    current = {"timing": view, "drcs": drcs}
+                    if _timing_met(view, sides) is None:
                         status = "not_kept"
                         why = f"{had}; round {e}'s timing was not reported"
                     else:
@@ -2147,7 +2230,7 @@ def run_post_route_repair(
                                     ": electrical violators decide the kept round "
                                     "only on a run that gates on them"
                                 )
-                    _record(e, drcs, timing)
+                    _record(e, drcs, timing, view)
         electrical_round = {
             "round": e,
             "source_round": source,
@@ -2186,6 +2269,7 @@ def run_post_route_repair(
         "reason": reason,
         "passed_over_round": passed,
         **({"electrical_round": electrical_round} if electrical_round else {}),
+        **({"judged_corners": judged} if judged else {}),
     }
     log_event(
         logger, logging.INFO, "pnr.post_route_repair_done", pnr=run_name, **fields
@@ -2499,6 +2583,8 @@ class OpenRoadPnr:
         # Set from the resolved platform by `_configure_stages`: the run's stages, its post-route repair, and whether a one-session run continues in sessions after detailed route.
         self._stages: tuple[str, ...] = pnr_stages.TEMPLATE_STAGES
         self._post_route: PostRouteRepair | None = None
+        # The platform's `signoff:` under the run's, or None when neither sets it.
+        self._signoff: Signoff | None = None
         self._split = False
         # Whether a multi-corner platform gets an SDC mode per corner; `run` asks OpenROAD.
         self._sta_modes = True
@@ -2652,6 +2738,7 @@ class OpenRoadPnr:
         self._post_route = (
             platform.get_post_route_repair() if self._mode is PnrMode.CLOSURE else None
         )
+        self._signoff = platform.get_signoff()
         self._stages = pnr_stages.run_stages(self._post_route is not None)
         self._split = (
             self._post_route is not None
@@ -3159,9 +3246,22 @@ class OpenRoadPnr:
             return "".join(f"read_spef -corner {c} {path}\n" for c in self._corners)
         return f"read_spef {path}\n"
 
+    def _gates(self) -> tuple[str, ...]:
+        """The gates that fail a routed run, in `SIGNOFF_GATES` order: `signoff.fail-on`, with `electrical` for `fail-on-electrical: true`."""
+        return effective_gates(self._signoff, self.pnr_cfg.get_fail_on_electrical())
+
     def _gates_electrical(self) -> bool:
-        """Whether the run fails on electrical violators in its routed design (`fail-on-electrical`)."""
-        return self.pnr_cfg.get_fail_on_electrical()
+        """Whether the run fails on electrical violators in its routed design (`fail-on-electrical`, or `electrical` in `signoff.fail-on`)."""
+        return "electrical" in self._gates()
+
+    def _judged_corners(self) -> dict | None:
+        """The corners the post-route rounds judge each side at, `{"setup": [...], "hold": [...]}`, on a multi-corner run that sets `signoff:`; else None, and they judge every corner."""
+        if self._signoff is None or not self._corners:
+            return None
+        return {
+            "setup": list(self._signoff.setup_corners),
+            "hold": list(self._signoff.hold_corners),
+        }
 
     def _counts_electrical(self) -> bool:
         """Whether each post-route repair round counts its electrical violators: when the run gates on them or sets `electrical-repair`."""
@@ -3189,6 +3289,7 @@ class OpenRoadPnr:
             f'\nputs ">>> {title}: extraction"\n',
             self._extract_tcl(_post_route_file(f".r{round_}.spef")),
             f"rb::ckpt::timing_event {POST_ROUTE_REPAIR_STAGE} round extracted {round_}\n",
+            self._judged_note() if round_ == 0 else "",
             f'puts "{_ROUND_TIMING_MARKER}{round_}"\n',
             "set ::sta_report_default_digits 4\n",
             "report_worst_slack -max\n",
@@ -3204,6 +3305,16 @@ class OpenRoadPnr:
             self._session_substitutions(
                 POST_ROUTE_REPAIR_STAGE, run_dir, f"round {round_}: extraction"
             ),
+        )
+
+    def _judged_note(self) -> str:
+        """The line round 0's extraction prints naming the corners the rounds judge each side at, when `_judged_corners` restricts them; else "". It makes those corners part of the stage's script identity for `--resume`."""
+        judged = self._judged_corners()
+        if judged is None:
+            return ""
+        return (
+            'puts ">>> Post-route repair: the rounds judge setup at '
+            f'{" ".join(judged["setup"])}, hold at {" ".join(judged["hold"])}"\n'
         )
 
     def _post_route_repair_script(self, round_: int, run_dir: str) -> str:
@@ -3420,6 +3531,11 @@ class OpenRoadPnr:
                 else {}
             ),
             **({"gate_electrical": True} if self._gates_electrical() else {}),
+            **(
+                {"judged": judged}
+                if (judged := self._judged_corners()) is not None
+                else {}
+            ),
             "sides": list(repair.sides()),
             "report": report,
             "ps_per_unit": self._ps_per_unit,
@@ -3586,6 +3702,97 @@ class OpenRoadPnr:
                 per_corner, "wns_hold_ps"
             ),
         }
+
+    def _signoff_fields(
+        self, platform, text: str, metrics: dict, corner_fields: dict, *, gate: bool
+    ) -> tuple[dict, list[str]]:
+        """Return the `signoff` result field of a run that sets `signoff:`, and a phrase for each failure of a gate; `({}, [])` without the block.
+
+        Each gate has its values and a `verdict`: `pass`, `fail`, or `not_gated` when `signoff.fail-on` (or `fail-on-electrical`) does not name it or `gate` is false, as on a stopped run. `timing` holds `setup` and `hold`, each its worst slack over its signoff corners in ps (`wns_ps`), the corner it is at (`worst_corner`) and whether no path of that side is constrained there (`unconstrained`). A gate fails on a value that is out of bounds and on one it needs and does not have:
+
+        - `timing`: a side's worst slack is negative (`-0.0` is), or was not reported, or setup is unconstrained at every signoff corner. An unconstrained hold side passes.
+        - `drc`: the detailed route has violations, or wrote no DRC report (`count` is then None).
+        - `electrical`: a max-slew, max-capacitance or max-fanout violator remains, or a count was not reported. With `fail-on-electrical: true` the violators' phrase is the one of a run without the block (`_electrical_phrases`).
+        """
+        signoff = self._signoff
+        if signoff is None:
+            return {}, []
+        gates = self._gates() if gate else ()
+        per_corner = corner_fields.get("corners")
+        inf = (
+            openroad_corners.parse_corner_unconstrained(text, list(per_corner))
+            if per_corner is not None
+            else {}
+        )
+        failures = []
+
+        def _verdict(name: str, phrases: list[str]) -> str:
+            if name not in gates:
+                return "not_gated"
+            failures.extend(phrases)
+            return "fail" if phrases else "pass"
+
+        timing: dict = {}
+        problems = []
+        for side, kind in (("setup", "max"), ("hold", "min")):
+            corners = signoff.corners(side)
+            entry = _side_over_corners(
+                side,
+                corners,
+                per_corner,
+                inf,
+                metrics.get(f"wns_{side}_ps"),
+                _unconstrained(text, kind),
+            )
+            timing[side] = {"corners": list(corners), **entry}
+            if entry["unconstrained"]:
+                if side == "setup":
+                    problems.append(f"setup unconstrained at {', '.join(corners)}")
+            elif entry["wns_ps"] is None:
+                problems.append(f"{side} WNS not reported")
+            elif math.copysign(1.0, entry["wns_ps"]) < 0:
+                problems.append(
+                    f"{side} WNS {entry['wns_ps'] / 1000:.4f} ns at "
+                    f"{entry['worst_corner']}"
+                )
+        timing["verdict"] = _verdict(
+            "timing", [f"timing ({', '.join(problems)})"] if problems else []
+        )
+        reported = os.path.isfile(self._drc_report_path())
+        drcs = metrics.get("drc_count") if reported else None
+        phrases = []
+        if drcs:
+            phrases.append(f"drc ({drcs} violation(s))")
+        elif drcs is None:
+            phrases.append("drc (no DRC report written)")
+        drc = {"count": drcs, "verdict": _verdict("drc", phrases)}
+        electrical = {
+            **{key: metrics.get(key) for key, _word in _ELECTRICAL_FIELDS.values()},
+            "verdict": _verdict("electrical", self._electrical_phrases(metrics)),
+        }
+        return {
+            "signoff": {"timing": timing, "drc": drc, "electrical": electrical}
+        }, failures
+
+    def _electrical_phrases(self, metrics: dict) -> list[str]:
+        """The failure phrases of the electrical gate: one for the violators and one for the counts not reported.
+
+        With `fail-on-electrical: true` the violators' phrase is the description of a run without `signoff:`, so an `xfail_match` written against it still matches.
+        """
+        phrases = []
+        violators = _electrical_desc(metrics)
+        if violators and self.pnr_cfg.get_fail_on_electrical():
+            phrases.append(_legacy_electrical_desc(violators))
+        elif violators:
+            phrases.append(f"electrical ({violators}; see electrical.rpt)")
+        unreported = [
+            word
+            for key, word in _ELECTRICAL_FIELDS.values()
+            if metrics.get(key) is None
+        ]
+        if unreported:
+            phrases.append(f"electrical ({', '.join(unreported)} count not reported)")
+        return phrases
 
     def _check_corner_constraints(self, platform, version: str | None):
         """Check `constraints:` against the platform's corners and, on a multi-corner platform, whether OpenROAD can give each corner an SDC mode; return the setup failure, or None.
@@ -5689,6 +5896,9 @@ class OpenRoadPnr:
         if stage in pnr_checkpoints.DETAIL_ROUTED:
             metrics["drc_count"] = self._count_drcs()
         corner_fields = self._corner_fields(platform, report)
+        signoff_fields, _failures = self._signoff_fields(
+            platform, report, metrics, corner_fields, gate=False
+        )
         checkpoint = os.path.join(self._ckpt_run_dir, _checkpoint_name(stage))
         log_event(
             logger,
@@ -5719,6 +5929,7 @@ class OpenRoadPnr:
             fields={
                 **metrics,
                 **corner_fields,
+                **signoff_fields,
                 **self._blocks_fields(),
                 **self._post_route_fields(),
                 **self._threads_fields(),
@@ -5804,8 +6015,20 @@ class OpenRoadPnr:
                 desc=f"platform lookup failed: {e}",
                 fail_stage="setup",
             )
-        if not self.pnr_cfg.get_overrides().is_empty():
-            platform = platform.with_run_overrides(self.pnr_cfg.get_overrides())
+        try:
+            if not self.pnr_cfg.get_overrides().is_empty():
+                platform = platform.with_run_overrides(self.pnr_cfg.get_overrides())
+        except FatalRtlBuddyError as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.setup_invalid",
+                pnr=self.pnr_cfg.get_name(),
+                error=str(e),
+            )
+            return PnrFailResults(
+                name=self.name + "/results", desc=str(e), fail_stage="setup"
+            )
         if (
             platform.get_global_route().allow_congestion is True
             and self.pnr_cfg.get_harden()
@@ -6445,6 +6668,9 @@ class OpenRoadPnr:
             **self._macro_pin_limits_fields(log_text),
         }
         corner_fields = self._corner_fields(platform, final)
+        signoff_fields, signoff_failures = self._signoff_fields(
+            platform, final, metrics, corner_fields, gate=True
+        )
 
         mismatch = self._check_routed_placement(log_text)
         if mismatch is not None:
@@ -6457,6 +6683,7 @@ class OpenRoadPnr:
                 fields={
                     **metrics,
                     **corner_fields,
+                    **signoff_fields,
                     **self._blocks_fields(),
                     **self._post_route_fields(),
                     **self._threads_fields(),
@@ -6494,6 +6721,7 @@ class OpenRoadPnr:
                 fields={
                     **metrics,
                     **corner_fields,
+                    **signoff_fields,
                     **export.result_fields(),
                     **self._blocks_fields(),
                     **self._post_route_fields(),
@@ -6502,19 +6730,31 @@ class OpenRoadPnr:
                 },
             )
 
-        if electrical and self._gates_electrical():
+        legacy_gate = (
+            self._signoff is None and bool(electrical) and self._gates_electrical()
+        )
+        if signoff_failures or legacy_gate:
             # A verdict on the design, so no `fail_stage`: an `xfail:` may excuse it. The routed outputs stay for inspection; no abstract is published.
             pnr_abstract.clear_abstract(self.artefact_dir)
-            desc = (
-                f"electrical violators in the routed design: {electrical} "
-                "(fail-on-electrical; see electrical.rpt)"
-            )
+            if legacy_gate:
+                desc = _legacy_electrical_desc(electrical)
+            else:
+                desc = f"signoff failed: {'; '.join(signoff_failures)}"
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "pnr.signoff_failed",
+                    pnr=self.pnr_cfg.get_name(),
+                    desc=desc,
+                    **signoff_fields,
+                )
             return PnrFailResults(
                 name=self.name + "/results",
                 desc=desc,
                 fields={
                     **metrics,
                     **corner_fields,
+                    **signoff_fields,
                     **(export.result_fields() if export else {}),
                     **self._blocks_fields(),
                     **self._post_route_fields(),
@@ -6534,6 +6774,7 @@ class OpenRoadPnr:
                     fields={
                         **metrics,
                         **corner_fields,
+                        **signoff_fields,
                         **(export.result_fields() if export else {}),
                         **self._blocks_fields(),
                         **self._post_route_fields(),
@@ -6551,6 +6792,7 @@ class OpenRoadPnr:
             **metrics,
             worst_setup_corner=corner_fields.get("worst_setup_corner"),
             worst_hold_corner=corner_fields.get("worst_hold_corner"),
+            **signoff_fields,
             gds_status=export.status if export is not None else None,
             log=log_path,
         )
@@ -6572,6 +6814,7 @@ class OpenRoadPnr:
             fields={
                 **metrics,
                 **corner_fields,
+                **signoff_fields,
                 **(export.result_fields() if export else {}),
                 **abstract_fields,
                 **self._blocks_fields(),

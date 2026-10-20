@@ -40,6 +40,7 @@ from .pnr_repair import (
     resolve_global_route_repair,
     resolve_post_route_repair,
 )
+from .pnr_signoff import SIGNOFF_SPEC, Signoff, read_signoff, resolve_signoff
 from .unknown_keys import KeySpec
 
 logger = logging.getLogger(__name__)
@@ -169,7 +170,7 @@ class PnrRoutingLayersFile:
 
 @dataclass(frozen=True)
 class PnrRunOverrides:
-    """A P&R run's own values of its platform's routing, CTS, repair and tap-cell knobs; `None` keeps the platform's.
+    """A P&R run's own values of its platform's routing, CTS, repair, tap-cell and signoff knobs; `None` (`UNSET` for `signoff`) keeps the platform's.
 
     Apply them with `PnrPlatformConfig.with_run_overrides`. `cts_clock_nets` exists on runs only.
     """
@@ -186,6 +187,8 @@ class PnrRunOverrides:
     tapcell_tcl: str | None = None
     cts_dont_use_cells: tuple[str, ...] | None = None
     keep_sizing_vt: bool | None = None
+    # The run's `signoff:` layer (see `pnr_signoff`): `UNSET` when absent, `None` when `null`.
+    signoff: Any = UNSET
     global_route: GlobalRoute = GlobalRoute()
 
     def is_empty(self) -> bool:
@@ -207,6 +210,7 @@ def read_run_overrides(
     config_dir: str,
     cts_dont_use_cells=None,
     keep_sizing_vt: bool | None = None,
+    signoff=UNSET,
     global_route: PnrGlobalRouteFile | None = None,
 ) -> PnrRunOverrides:
     """Validate a run's overrides of its platform's knobs; `where` names the run."""
@@ -238,6 +242,7 @@ def read_run_overrides(
             else None
         ),
         keep_sizing_vt=keep_sizing_vt,
+        signoff=read_signoff(where, signoff),
         global_route=read_global_route(where, global_route),
     )
 
@@ -290,6 +295,8 @@ class PnrPlatformConfigFile:
     tapcell_tcl: str | None = field(rename="tapcell-tcl", default=None)
     # `global_route` options; a run overrides them field by field. Read by `pnr_global_route`.
     global_route: PnrGlobalRouteFile | None = field(rename="global-route", default=None)
+    # Signoff corners and gates; a run overrides them field by field. Read by `pnr_signoff`.
+    signoff: Any = UNSET
 
 
 #: The keys of one `cfg-pnr-platforms` entry, for the unknown-key check.
@@ -301,6 +308,7 @@ PNR_PLATFORM_SPEC = KeySpec(
         "global-route-repair": GLOBAL_ROUTE_REPAIR_SPEC,
         "post-route-repair": POST_ROUTE_REPAIR_SPEC,
         "global-route": GLOBAL_ROUTE_SPEC,
+        "signoff": SIGNOFF_SPEC,
     },
 )
 
@@ -314,6 +322,10 @@ class PnrPlatformConfig:
         self._pdk = pdk_lookup(cfg.pdk)
         self._sta_corners = self._resolve_sta_corners(cfg)
         self._sta_corner = self._sta_corners[0]
+        self._signoff_layer = read_signoff(f"pnr platform '{self._name}'", cfg.signoff)
+        self._signoff = resolve_signoff(
+            [self._signoff_layer], self._sta_corners, self._name
+        )
         self._cts_buffers = _as_cell_list(cfg.cts_buffer)
         self._cts_sink_clustering = cfg.cts_sink_clustering
         self._cts_latency_balancing = cfg.cts_latency_balancing
@@ -470,12 +482,16 @@ class PnrPlatformConfig:
     ) -> "PnrPlatformConfig":
         """Return this platform with a P&R run's routing, CTS, repair and tap-cell values over its own, field by field.
 
-        `overrides` must already be validated. Without any the platform itself is returned.
+        `overrides` must already be validated. Without any the platform itself is returned. A run's `signoff:` naming a corner the platform does not analyse raises.
         """
         if overrides is None or overrides.is_empty():
             return self
         resolved = copy.copy(self)
         o = overrides
+        if o.signoff is not UNSET:
+            resolved._signoff = resolve_signoff(
+                [self._signoff_layer, o.signoff], self._sta_corners, self._name
+            )
         for attr, value in (
             ("_signal_layers", o.signal_layers),
             ("_clock_layers", o.clock_layers),
@@ -687,6 +703,10 @@ class PnrPlatformConfig:
         if self._tapcell_tcl is not None:
             hooks["tapcell-tcl"] = self._tapcell_tcl
         return hooks
+
+    def get_signoff(self) -> Signoff | None:
+        """The signoff corners and gates, run over platform, or None when neither sets `signoff:`."""
+        return self._signoff
 
     def get_post_cts_setup_repair(self) -> bool:
         """Whether post-CTS repair fixes setup before hold."""

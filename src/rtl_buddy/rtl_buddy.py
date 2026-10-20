@@ -11037,6 +11037,7 @@ class RtlBuddy:
             "allow_congestion",
             "failed_global_route",
             "post_route_repair",
+            "signoff",
             "resumed_from",
             "checkpoint_dir",
             "checkpoint_stages",

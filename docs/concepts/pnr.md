@@ -45,7 +45,7 @@ Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previo
 
 ## Interpret results
 
-`PASS` means OpenROAD ran the flow to its end and wrote its outputs, or, for `mode: probe` and `--stop-after`, to the stage it stops after, with `routed: false` and no routed outputs. Check `routed` before treating a `PASS` as a routed result. It does not mean the design meets timing or routes clean. Judge the design on these fields:
+`PASS` means OpenROAD ran the flow to its end and wrote its outputs, or, for `mode: probe` and `--stop-after`, to the stage it stops after, with `routed: false` and no routed outputs. Check `routed` before treating a `PASS` as a routed result. It does not mean the design meets timing or routes clean unless [signoff gates](#gate-signoff) are set. Judge the design on these fields:
 
 | Field | Meaning |
 | --- | --- |
@@ -60,6 +60,7 @@ Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previo
 | `physical_cell_count` | Tap, endcap, spacer and fill cells. |
 | `worst_setup_corner`, `worst_hold_corner`, `corners` | Multi-corner platforms: the corner behind each WNS, and each corner's four timing values. |
 | `routed`, `mode`, `stopped_after`, `global_route_overflow` | `routed: false` means the run stopped early ([probe](#probe-a-floorplan) or `--stop-after`); its numbers are that stage's estimate, with the global-route overflow from `global_route` on. |
+| `signoff` | With [`signoff:`](#gate-signoff): each gate's values and verdict. |
 | `post_route_repair` | The rounds of [post-route repair](#repair-timing-after-routing): `kept_round`, `rounds`, `repaired_rounds`, `stop`, `reason`, `passed_over_round`, and with `electrical-repair` `electrical_round`. |
 | `openroad_threads` | Requested and effective [thread counts](#openroad-threads). |
 | `gds_status`, `gds_missing_cells` | [Stream-out](#stream-out-gds-and-png) outcome. |
@@ -72,7 +73,7 @@ Times are in picoseconds, converted from the Liberty `time_unit`. The final timi
 A passing run's description carries qualifiers worth reading:
 
 - `pnr.no_wire_rc`: placement and CTS ran without wire RC. See [Set wire RC](#set-wire-rc).
-- `electrical N max-slew, ... violator(s)`: set `fail-on-electrical: true` to fail such runs.
+- `electrical N max-slew, ... violator(s)`: set `fail-on-electrical: true` or `electrical` in `signoff.fail-on` to fail such runs.
 - `post-route repair ...`: a repair round was passed over or its session failed and was set aside.
 - `post-route electrical round N kept`, `not kept` or `failed`: the [electrical round](#repair-electrical-violators-after-routing) ran.
 - `GDS incomplete: ...`: cells with no layout in `preview` mode.
@@ -98,7 +99,7 @@ A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in 
 | `<top>.gds`, `<top>.png`, `klayout.*.log`, `def2stream.inputs.json` | Stream-out outputs, logs and the inputs it read |
 | `checkpoints/`, `abstract/` | [Stage checkpoints](#keep-stage-checkpoints) and a [hardened block's](#harden-a-block) views |
 
-When OpenROAD fails, the run removes the routed database so `rb power` never reads a stale one; `pnr.log`, `pnr.tcl` and the congestion reports stay. A failed global route also leaves its database as a [checkpoint](#keep-stage-checkpoints). A run that fails a later check (`routed_check`, `fail-on-electrical`, `export`, `abstract`) keeps its routed outputs for inspection.
+When OpenROAD fails, the run removes the routed database so `rb power` never reads a stale one; `pnr.log`, `pnr.tcl` and the congestion reports stay. A failed global route also leaves its database as a [checkpoint](#keep-stage-checkpoints). A run that fails a later check (`routed_check`, `fail-on-electrical`, a signoff gate, `export`, `abstract`) keeps its routed outputs for inspection.
 
 ## Follow a running flow
 
@@ -109,7 +110,7 @@ When OpenROAD fails, the run removes the routed database so `rb power` never rea
 
 ## Fix a failed run
 
-Read the row's description and `fail_stage` first, then `pnr.log`. A result with any `fail_stage` failed before or instead of a verdict on the design, so `xfail:` never excuses it. A failure without `fail_stage` (an OpenROAD error, a don't-use violation, `fail-on-electrical`) can be excused.
+Read the row's description and `fail_stage` first, then `pnr.log`. A result with any `fail_stage` failed before or instead of a verdict on the design, so `xfail:` never excuses it. A failure without `fail_stage` (an OpenROAD error, a don't-use violation, `fail-on-electrical`, a [signoff gate](#gate-signoff)) can be excused.
 
 | Symptom | Cause and fix |
 | --- | --- |
@@ -188,6 +189,27 @@ Each corner is timed in an OpenSTA SDC mode and scene of its own, named after th
 A mode per corner needs OpenROAD 26Q4 or newer; rb asks OpenROAD at setup. An older one times every corner in one mode and warns `pnr.corner_modes_unsupported`, and a per-corner `constraints:` fails setup. An OpenROAD that gives no answer twice fails setup with `pnr.corner_modes_probe_failed`. See [Known Issues](../known-issues.md#corners-share-one-sdc-mode-on-an-openroad-without-modes).
 
 A macro with a single Liberty keeps that file's timing at every corner and can fail a slow corner (`RSZ-0090`). Give it a Liberty per corner. A multi-corner platform cannot harden a block or consume hardened blocks.
+
+## Gate signoff
+
+A `signoff:` block on the platform or the run names the corners each timing side is signed off at and the checks that fail a routed run:
+
+```yaml
+    signoff:
+      setup-corners: [ss]                  # default: every corner
+      hold-corners: [ff]                   # default: every corner
+      fail-on: [timing, drc, electrical]   # default: none
+```
+
+- `timing` fails when setup WNS over `setup-corners` or hold WNS over `hold-corners` is negative or was not reported. The final reports print two digits, so a WNS of `-0.00` is negative and `0.00` passes. Setup with no constrained path at every one of its corners fails, since nothing was checked; hold in that case passes.
+- `drc` fails when `drc_count` is above 0, or when the detailed route wrote no DRC report (`drc.count` is then null). A clean route writes an empty report.
+- `electrical` fails on any max-slew, max-capacitance or max-fanout violator, or when one of the three counts was not reported. `fail-on-electrical: true` adds this gate to `fail-on`, with or without the block.
+
+A run's block overrides the platform's field by field, and `null` sets a key to its default or turns the block off. A corner the platform does not analyse fails the platform's load, or the run's setup.
+
+The result's `signoff` field gives each gate its values and a `verdict` of `pass`, `fail` or `not_gated`: `timing.setup` and `timing.hold` with `corners`, `wns_ps`, `worst_corner` and `unconstrained`, `drc.count`, and the three electrical violator counts. `wns_setup_ps` and `wns_hold_ps` stay the worst over every corner. A failed gate fails the run without `fail_stage`, so `xfail:` can excuse it, and the description names each gate, such as `signoff failed: timing (setup WNS -0.1200 ns at ss); drc (3 violation(s))`. When `fail-on-electrical: true` is set, the electrical failure keeps the description of a run without the block, `electrical violators in the routed design: ... (fail-on-electrical; see electrical.rpt)`, after the `signoff failed:` prefix. The routed outputs stay. A `--stop-after` or probe run reports the values its stage has and gates nothing.
+
+On a multi-corner platform the [post-route repair rounds](#repair-timing-after-routing) judge setup only at `setup-corners` and hold only at `hold-corners`. Without the block they judge every corner, and the result has no `signoff` field.
 
 ## Set wire RC
 
@@ -313,7 +335,8 @@ The stage keeps the best round, never worse than the detailed route:
 
 - A clean route always beats one with DRCs.
 - Otherwise a round wins when no repaired side's worst slack (setup if `setup-margin` is set, hold if `hold-margin` is set; 0 when met) is lower and one is higher, without more DRCs; or when it ties on timing with fewer DRCs.
-- On a run with `fail-on-electrical: true`, a clean round with no max-slew or max-capacitance violators also beats a clean round that has some, when its timing is as good on every repaired side. The stop reason names that case and the kept round's violators. Other runs ignore electrical violators here.
+- With [`signoff:`](#gate-signoff) on a multi-corner platform, each side's worst slack here, and in the stop conditions below, is taken over its signoff corners only. Each `pnr.post_route_round` event adds that judged slack as `signoff_timing`, and `pnr.post_route_repair_done` names the corners in `judged_corners`.
+- On a run that gates on electrical violators (`fail-on-electrical: true`, or `electrical` in `signoff.fail-on`), a clean round with no max-slew or max-capacitance violators also beats a clean round that has some, when its timing is as good on every repaired side. The stop reason names that case and the kept round's violators. Other runs ignore electrical violators here.
 
 Rounds stop (`post_route_repair.stop`) when the best round is clean and meets timing (`timing_met`), a clean round does not improve (`no_improvement`), timing is not reported (`timing_not_reported`), a session fails (`session_failed`) or `rounds` run out (`last_round`). `timing_met` and `no_improvement` need a clean route, so rounds with DRCs keep going. The first clean round that does not become the best ends the stage, so no later round starts from it and raising `rounds` does not change that. A failure extracting round 0 fails the run; a failed session of a later round does not: rb warns `pnr.post_route_round_failed`, keeps the best round and qualifies the `PASS`. `finish` continues from the kept round, whose DRC report becomes `route.drc.rpt`. `pnr.post_route_round` logs each round's slack and DRCs.
 
@@ -328,11 +351,11 @@ post-route-repair:
   electrical-repair: {slew-margin: 10, cap-margin: 10}   # percent; {} for OpenROAD's defaults
 ```
 
-- When the best round has max-slew or max-capacitance violators, the electrical round runs `repair_design` alone at these margins on that round's database and SPEF, at `repair-design.wire-rc` when that is set. It then legalizes, reroutes per `reroute`, extracts and times like any round, and becomes the kept round only if it [beats the best](#repair-timing-after-routing). On a run without `fail-on-electrical: true` that takes better timing or fewer DRCs.
+- When the best round has max-slew or max-capacitance violators, the electrical round runs `repair_design` alone at these margins on that round's database and SPEF, at `repair-design.wire-rc` when that is set. It then legalizes, reroutes per `reroute`, extracts and times like any round, and becomes the kept round only if it [beats the best](#repair-timing-after-routing). On a run that does not gate on electrical violators that takes better timing or fewer DRCs.
 - When the best round has no such violators, the round is skipped and `pnr.log` says so.
 - Its number is `rounds` + 1. `post_route_repair.electrical_round` gives the round it repaired (`source_round`), its `status` (`kept`, `not_kept`, `skipped` or `failed`) and `reason`. A failed session is set aside like a round's.
 
-With `electrical-repair` set or `fail-on-electrical: true`, each `pnr.post_route_round` event in `progress.jsonl` carries `max_slew_violation_count` and `max_capacitance_violation_count` over every corner and, on a multi-corner platform, each corner's in `corners`. Without either, the rounds count no violators and their scripts are unchanged.
+With `electrical-repair` set or an electrical gate, each `pnr.post_route_round` event in `progress.jsonl` carries `max_slew_violation_count` and `max_capacitance_violation_count` over every corner and, on a multi-corner platform, each corner's in `corners`. Without either, the rounds count no violators and their scripts are unchanged.
 
 ## Probe a floorplan
 

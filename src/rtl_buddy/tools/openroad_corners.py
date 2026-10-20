@@ -154,6 +154,21 @@ def parse_corner_timing(
     return found
 
 
+_CORNER_INF_RE = re.compile(
+    r"^corner (\S+) worst slack (max|min) INF\s*$", re.MULTILINE
+)
+
+
+def parse_corner_unconstrained(log_text: str, corners: list[str]) -> dict[str, set]:
+    """Return each of `corners` with the sides, `setup` and `hold`, whose per-corner worst slack `log_text` prints as INF: no path of that kind is constrained at that corner."""
+    found: dict[str, set] = {c: set() for c in corners}
+    for m in _CORNER_INF_RE.finditer(log_text):
+        corner, kind = m.groups()
+        if corner in found:
+            found[corner].add("setup" if kind == "max" else "hold")
+    return found
+
+
 def worst_corner(per_corner: dict[str, dict], key: str, *, highest=False) -> str | None:
     """Return the corner with the lowest (or `highest`) `key`, first on a tie, or None if no corner has it."""
     candidates = [(c, v[key]) for c, v in per_corner.items() if key in v]

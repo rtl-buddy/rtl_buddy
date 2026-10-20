@@ -44,6 +44,7 @@ rb --machine pnr-export <run> -c <pnr.yaml> --png        # GDS/PNG from a saved 
 - `routed: false` (probe, `--stop-after`) means the numbers are a stage estimate; never report them as routed results.
 - Read qualifiers in `desc`: `pnr.no_wire_rc` (timing before routing had no wire RC; set the PDK's `layer-rc-tcl`), electrical violators, a passed-over or failed post-route repair round, `GDS incomplete`, accepted stale abstracts.
 - Multi-corner: WNS fields are the worst over corners; `worst_setup_corner`, `worst_hold_corner` and `corners` give the breakdown. `max_fanout_violation_count` counts a pin once per corner. `<top>.<corner>.routed.sdc` is each corner's SDC for signoff STA.
+- To make the verdict judge timing, DRCs or electrical violators, set a `signoff:` block on the platform or run (`rb --machine docs show concepts/pnr#gate-signoff`); `signoff` in the result gives each gate's values and verdict. A gate that cannot be measured (setup unconstrained, no DRC report, an electrical count missing) fails.
 - `post_route_repair.kept_round`, `stop` and `reason` say what the repair rounds achieved.
 - Stream-out: `gds_status` and `gds_missing_cells`. In `gds-mode: preview` a missing cell layout only qualifies the `PASS`; in `strict`, and in `pnr-export`, an export not delivered is a `FAIL`.
 
