@@ -347,6 +347,7 @@ def _run(tmp_path, monkeypatch, threads, log):
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
     monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **k: nullcontext())
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     def _fake_run(cmd, **_kwargs):
         _kwargs["stdout"].write(log + ">>> DONE\n")
