@@ -1966,6 +1966,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "pdn-config, but neither the PDK nor the run sets pdn-config; "
                 "add one with the global connections and voltage domain"
             )
+        case "pnr.setup_invalid":
+            return f'P&R "{fields.get("pnr")}": {fields.get("error")}'
+        case "pnr.pins_incomplete" | "pnr.routed_check_failed":
+            return f'P&R "{fields.get("pnr")}": {fields.get("desc")}'
         case "pnr.blockages_unsupported":
             return (
                 f'P&R "{fields.get("pnr")}": floorplan.blockages needs '

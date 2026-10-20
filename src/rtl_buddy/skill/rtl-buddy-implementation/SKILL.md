@@ -62,7 +62,12 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   macros avoid the hard ones. `floorplan.macro-placement: rtl-mp` uses
   OpenROAD's RTL-MP instead of the packer and excludes `macro-anchor`.
   `floorplan.macros` fixes a macro's location (full hierarchical instance
-  name), sets its orientation or its own cell halo.
+  name), sets its orientation (any of eight) or its own cell halo.
+  `macros-file` / `pins-file` take a planner's YAML or JSON; `macro-snap:
+  false` / `pin-snap: false` keep exact coordinates; `pins-complete: true`
+  fails on a port placed twice or not at all. A blockage with `lifetime:
+  global-placement` exists only during global placement. A routed DEF that
+  moved a located macro or exact pin fails with `fail_stage: routed_check`.
   `floorplan.die-area` + `core-area` size the die exactly (not with
   `utilization`); `core-cutouts` makes an L/T core. A run's `pdn-config`
   replaces the PDK's; `pdn:` declares the core grid (ring, stripes) in YAML.

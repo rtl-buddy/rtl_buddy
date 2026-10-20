@@ -1,20 +1,24 @@
+import json
 import logging
 import math
 import os
 import pprint
 import re
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass, field as dc_field, replace
 from enum import StrEnum
 from typing import Any, Literal
 
+import yaml
 from serde import field, serde
-from .yaml_loader import config_from_yaml
+from serde.compat import SerdeError
+from .yaml_loader import config_from_yaml, load_yaml
 
 from ..errors import FatalRtlBuddyError
 from ..runner.xfail import compile_xfail_match
 from ..logging_utils import log_event
 from .blocks import BlockRef, BlockRefFile, load_block_refs
 from .openroad_threads import validate_threads
+from .pdk import PlacementFile, validate_placement
 from .synth import SynthSuiteConfig
 from .toolpath import resolve_tool_path
 
@@ -87,11 +91,22 @@ class BlockageType(StrEnum):
     PARTIAL = "partial"
 
 
+class BlockageLifetime(StrEnum):
+    """How long a placement blockage exists.
+
+    ``FLOW`` blockages are created after the floorplan and stay. ``GLOBAL_PLACEMENT`` ones are created immediately before `global_placement` and destroyed immediately after it.
+    """
+
+    FLOW = "flow"
+    GLOBAL_PLACEMENT = "global-placement"
+
+
 @serde
 class PnrBlockageFile:
     rect: list[float]
     type: str = BlockageType.HARD.value
     max_density: float | None = field(rename="max-density", default=None)
+    lifetime: str = BlockageLifetime.FLOW.value
 
 
 @dataclass(frozen=True)
@@ -101,6 +116,7 @@ class PnrBlockage:
     rect: tuple[float, float, float, float]
     type: BlockageType
     max_density: float | None = None
+    lifetime: BlockageLifetime = BlockageLifetime.FLOW
 
 
 class PinSide(StrEnum):
@@ -142,11 +158,16 @@ class PnrPin:
     location: tuple[float, float] | None = None
     layer: str | None = None
     size: tuple[float, float] | None = None
+    # Where the entry came from in `pnr.tcl` messages; `None` for an inline `floorplan.pins` entry.
+    label: str | None = None
+    # Coordinates are passed to OpenROAD at full precision instead of to the nanometre.
+    exact: bool = False
 
 
-#: Orientations `floorplan.macros` accepts: those that keep a macro's width, height and pin directions, so it stays on the site grid and the routing tracks.
-MACRO_ORIENTATIONS = ("R0", "R180", "MX", "MY")
-_ROTATED_ORIENTATIONS = ("R90", "R270", "MXR90", "MYR90")
+#: OpenDB orientations that turn a macro by 90 degrees, swapping its width and height.
+ROTATED_ORIENTATIONS = ("R90", "R270", "MXR90", "MYR90")
+#: Orientations `floorplan.macros` accepts: all eight OpenDB orientations.
+MACRO_ORIENTATIONS = ("R0", "R180", "MX", "MY", *ROTATED_ORIENTATIONS)
 
 
 @serde
@@ -169,6 +190,10 @@ class PnrMacro:
     location: tuple[float, float] | None = None
     orientation: str | None = None
     halo: tuple[float, float] | None = None
+    # Where the entry came from in `pnr.tcl` messages; `None` for an inline `floorplan.macros` entry.
+    label: str | None = None
+    # Coordinates are passed to OpenROAD at full precision instead of to the nanometre.
+    exact: bool = False
 
 
 #: `floorplan` sizing defaults when neither `die-area` nor `core-area` is set.
@@ -197,6 +222,12 @@ class PnrFloorplanFile:
     blockages: list[PnrBlockageFile] = field(default_factory=list)
     pins: list[PnrPinFile] = field(default_factory=list)
     macros: list[PnrMacroFile] = field(default_factory=list)
+    # Planner files, relative to pnr.yaml; read at run setup, not at load.
+    macros_file: str | None = field(rename="macros-file", default=None)
+    macro_snap: bool = field(rename="macro-snap", default=True)
+    pins_file: str | None = field(rename="pins-file", default=None)
+    pin_snap: bool = field(rename="pin-snap", default=True)
+    pins_complete: bool = field(rename="pins-complete", default=False)
 
 
 @dataclass
@@ -216,6 +247,25 @@ class PnrFloorplan:
     core_cutouts: list[tuple[float, float, float, float]] = dc_field(
         default_factory=list
     )
+    # Absolute planner-file paths; their entries join `macros` and `pins` at run setup (`with_planner_files`).
+    macros_file: str | None = None
+    pins_file: str | None = None
+    # False places located macros at the exact DBU given, off the site and row grid.
+    macro_snap: bool = True
+    # False places exact pins at their exact centre, without `-force_to_die_boundary`.
+    pin_snap: bool = True
+    # Every signal port must be covered by exactly one exact entry or region rule.
+    pins_complete: bool = False
+
+    def flow_blockages(self) -> list["PnrBlockage"]:
+        """The blockages that live for the whole flow."""
+        return [b for b in self.blockages if b.lifetime is BlockageLifetime.FLOW]
+
+    def global_placement_blockages(self) -> list["PnrBlockage"]:
+        """The blockages that exist only during `global_placement`."""
+        return [
+            b for b in self.blockages if b.lifetime is BlockageLifetime.GLOBAL_PLACEMENT
+        ]
 
     def ring_margin(self) -> float | None:
         """The narrowest core-to-die gap the floorplan asks for, in microns; None when only OpenROAD knows it."""
@@ -280,7 +330,16 @@ def _load_blockage(run: str, index: int, entry: PnrBlockageFile) -> PnrBlockage:
         raise FatalRtlBuddyError(
             f"{where}: max-density applies to partial blockages only, not {kind.value}"
         )
-    return PnrBlockage(rect=(x0, y0, x1, y1), type=kind, max_density=max_density)
+    try:
+        lifetime = BlockageLifetime(entry.lifetime)
+    except ValueError:
+        raise FatalRtlBuddyError(
+            f"{where}: unknown lifetime {entry.lifetime!r} "
+            f"(expected one of {', '.join(t.value for t in BlockageLifetime)})"
+        ) from None
+    return PnrBlockage(
+        rect=(x0, y0, x1, y1), type=kind, max_density=max_density, lifetime=lifetime
+    )
 
 
 def _finite_number(value) -> bool:
@@ -322,9 +381,8 @@ def _tcl_safe_names(where: str, key: str, value) -> tuple[str, ...]:
     return tuple(names)
 
 
-def _load_pin(run: str, index: int, entry: PnrPinFile) -> PnrPin:
-    """Validate one `floorplan.pins` entry at load time."""
-    where = f"pnr run '{run}': floorplan.pins[{index}]"
+def _load_pin(where: str, entry: PnrPinFile) -> PnrPin:
+    """Validate one `floorplan.pins` or pins-file entry; `where` names it in errors."""
     names = _tcl_safe_names(where, "names", entry.names)
     if entry.location is not None:
         extra = [
@@ -415,10 +473,9 @@ def _load_pin(run: str, index: int, entry: PnrPinFile) -> PnrPin:
 
 
 def _load_macro(
-    run: str, index: int, entry: PnrMacroFile, placement: "MacroPlacement"
+    where: str, entry: PnrMacroFile, placement: "MacroPlacement"
 ) -> PnrMacro:
-    """Validate one `floorplan.macros` entry at load time."""
-    where = f"pnr run '{run}': floorplan.macros[{index}]"
+    """Validate one `floorplan.macros` or macros-file entry; `where` names it in errors."""
     (instance,) = _tcl_safe_names(where, "instances", entry.instance)
     location = None
     if entry.location is not None:
@@ -430,13 +487,6 @@ def _load_macro(
             )
     orientation = entry.orientation
     if orientation is not None:
-        if orientation in _ROTATED_ORIENTATIONS:
-            raise FatalRtlBuddyError(
-                f"{where}: orientation {orientation} rotates the macro by 90 "
-                "degrees, which swaps its width and height off the site grid and "
-                "turns its pins across the routing tracks; use one of "
-                f"{', '.join(MACRO_ORIENTATIONS)}"
-            )
         if orientation not in MACRO_ORIENTATIONS:
             raise FatalRtlBuddyError(
                 f"{where}: unknown orientation {orientation!r} "
@@ -463,6 +513,138 @@ def _load_macro(
     return PnrMacro(
         instance=instance, location=location, orientation=orientation, halo=halo
     )
+
+
+_MACRO_FILE_KEYS = ("instance", "location", "orientation", "halo")
+_PIN_FILE_KEYS = (
+    "name",
+    "names",
+    "side",
+    "start",
+    "end",
+    "group",
+    "order",
+    "location",
+    "layer",
+    "size",
+)
+
+
+def _reject_duplicate_keys(pairs):
+    keys = [k for k, _ in pairs]
+    duplicated = sorted({k for k in keys if keys.count(k) > 1})
+    if duplicated:
+        raise ValueError(f"duplicate key {duplicated[0]!r}")
+    return dict(pairs)
+
+
+def _read_planner_file(where: str, path: str) -> list:
+    """Return the entry list a planner file holds; JSON is read directly, anything else as YAML."""
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError as e:
+        raise FatalRtlBuddyError(f"{where}: cannot read {path}: {e.strerror or e}")
+    data = None
+    if text.lstrip().startswith("["):
+        try:
+            data = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+        except ValueError:
+            data = None
+    if data is None:
+        try:
+            data = load_yaml(text, path, fast=True)
+        except FatalRtlBuddyError as e:
+            raise FatalRtlBuddyError(f"{where}: {e}") from None
+        except yaml.YAMLError as e:
+            raise FatalRtlBuddyError(
+                f"{where}: {path} is not valid YAML: {e}"
+            ) from None
+    if data is None:
+        return []
+    if not isinstance(data, list):
+        raise FatalRtlBuddyError(
+            f"{where}: {path} must hold a list of entries, got {type(data).__name__}"
+        )
+    return data
+
+
+def _file_entry_object(where: str, cls, entry: dict):
+    """Build `cls` from one planner-file entry, reporting a wrongly typed value against `where`."""
+    try:
+        return cls(**entry)
+    except SerdeError as e:
+        match = re.search(r"parameter (\w+)=", str(e))
+        key = match.group(1) if match else "an entry value"
+        raise FatalRtlBuddyError(
+            f"{where}: {key} has the wrong type, got {entry.get(key)!r}"
+        ) from None
+
+
+def _file_entry(where: str, entry, keys: tuple[str, ...]) -> dict:
+    if not isinstance(entry, dict):
+        raise FatalRtlBuddyError(f"{where}: an entry must be a mapping, got {entry!r}")
+    unknown = [k for k in entry if k not in keys]
+    if unknown:
+        raise FatalRtlBuddyError(
+            f"{where}: unknown key {unknown[0]!r} (expected {', '.join(keys)})"
+        )
+    return entry
+
+
+def _load_macros_file(
+    run: str, path: str, placement: "MacroPlacement"
+) -> list[PnrMacro]:
+    """Read and validate a `floorplan.macros-file`: entries with the `floorplan.macros` keys."""
+    entries = _read_planner_file(f"pnr run '{run}': floorplan.macros-file", path)
+    macros = []
+    for i, raw in enumerate(entries):
+        where = f"pnr run '{run}': floorplan.macros-file {path} [{i}]"
+        entry = _file_entry(where, raw, _MACRO_FILE_KEYS)
+        if "instance" not in entry:
+            raise FatalRtlBuddyError(f"{where}: instance is required")
+        macro = _load_macro(
+            where, _file_entry_object(where, PnrMacroFile, entry), placement
+        )
+        macros.append(replace(macro, label=f"floorplan.macros-file[{i}]", exact=True))
+    return macros
+
+
+def _load_pins_file(run: str, path: str) -> list[PnrPin]:
+    """Read and validate a `floorplan.pins-file`: exact `{name, location, layer, size}` pins and `floorplan.pins` entries."""
+    entries = _read_planner_file(f"pnr run '{run}': floorplan.pins-file", path)
+    pins = []
+    for i, raw in enumerate(entries):
+        where = f"pnr run '{run}': floorplan.pins-file {path} [{i}]"
+        entry = dict(_file_entry(where, raw, _PIN_FILE_KEYS))
+        if "name" in entry:
+            if "names" in entry:
+                raise FatalRtlBuddyError(f"{where}: give name or names, not both")
+            if entry.get("location") is None:
+                raise FatalRtlBuddyError(
+                    f"{where}: name places one pin exactly and needs a location; "
+                    "use names for a side or group rule"
+                )
+            entry["names"] = entry.pop("name")
+        if "names" not in entry:
+            raise FatalRtlBuddyError(f"{where}: name or names is required")
+        pin = _load_pin(where, _file_entry_object(where, PnrPinFile, entry))
+        pins.append(replace(pin, label=f"floorplan.pins-file[{i}]", exact=True))
+    return pins
+
+
+def with_planner_files(run: str, fp: PnrFloorplan) -> PnrFloorplan:
+    """Return `fp` with its `macros-file` and `pins-file` entries after the inline ones.
+
+    Read at run setup, not when `pnr.yaml` loads. Raises FatalRtlBuddyError naming the file and entry index.
+    """
+    macros = list(fp.macros)
+    pins = list(fp.pins)
+    if fp.macros_file is not None:
+        macros += _load_macros_file(run, fp.macros_file, fp.macro_placement)
+    if fp.pins_file is not None:
+        pins += _load_pins_file(run, fp.pins_file)
+    return replace(fp, macros=macros, pins=pins)
 
 
 #: Stages `checkpoints:` can name, in flow order. Each is written when its stage finishes; none is detail-routed.
@@ -916,6 +1098,8 @@ class PnrConfigFile:
     fail_on_electrical: bool = field(rename="fail-on-electrical", default=False)
     # Hardened blocks instanced as hard macros, each a `harden: true` run's abstract.
     blocks: list[BlockRefFile] = field(default_factory=list)
+    # Overrides the platform's `placement:` keys field by field.
+    placement: PlacementFile | None = None
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
     # OpenROAD threads: a positive integer or `auto`; unset means single-threaded.
@@ -992,13 +1176,33 @@ class PnrConfigFile:
             for i, entry in enumerate(self.floorplan.blockages)
         ]
         pins = [
-            _load_pin(self.name, i, entry)
+            _load_pin(f"pnr run '{self.name}': floorplan.pins[{i}]", entry)
             for i, entry in enumerate(self.floorplan.pins)
         ]
         macros = [
-            _load_macro(self.name, i, entry, macro_placement)
+            _load_macro(
+                f"pnr run '{self.name}': floorplan.macros[{i}]", entry, macro_placement
+            )
             for i, entry in enumerate(self.floorplan.macros)
         ]
+        planner_files = {}
+        for key, value in (
+            ("macros-file", self.floorplan.macros_file),
+            ("pins-file", self.floorplan.pins_file),
+        ):
+            if value is None:
+                continue
+            if not isinstance(value, str) or not value:
+                raise FatalRtlBuddyError(
+                    f"pnr run '{self.name}': floorplan.{key} must be a path to a "
+                    f"YAML or JSON file, got {value!r}"
+                )
+            planner_files[key] = os.path.abspath(os.path.join(config_dir, value))
+        placement = (
+            validate_placement(self.placement, f"pnr run '{self.name}'")
+            if self.placement is not None
+            else None
+        )
         shape = _load_floorplan_shape(self.name, self.floorplan)
         if self.pdn_config is not None and not self.pdn_config:
             raise FatalRtlBuddyError(
@@ -1085,7 +1289,13 @@ class PnrConfigFile:
                 macro_placement=macro_placement,
                 pins=pins,
                 macros=macros,
+                macros_file=planner_files.get("macros-file"),
+                pins_file=planner_files.get("pins-file"),
+                macro_snap=self.floorplan.macro_snap,
+                pin_snap=self.floorplan.pin_snap,
+                pins_complete=self.floorplan.pins_complete,
             ),
+            placement=placement,
             lef_paths=lef_paths,
             lib_paths=lib_paths,
             gds_paths=gds_paths,
@@ -1142,6 +1352,8 @@ class PnrConfig:
     buffer_ports: bool | None = None
     fail_on_electrical: bool = False
     blocks: list[BlockRef] = dc_field(default_factory=list)
+    # The run's validated `placement:` block, applied over the platform's; None when unset.
+    placement: PlacementFile | None = None
     xfail: bool = False
     xfail_strict: bool = False
     xfail_match: str | None = None
@@ -1242,6 +1454,10 @@ class PnrConfig:
     def get_blocks(self) -> list[BlockRef]:
         """The hardened blocks this run instances."""
         return list(self.blocks)
+
+    def get_placement(self) -> PlacementFile | None:
+        """The run's `placement:` overrides, or None; apply them with `PnrPlatformConfig.with_run_placement`."""
+        return self.placement
 
     def get_reglvl(self, tool_name: str) -> int:
         match self._reglvl:

@@ -41,6 +41,7 @@ from test_pnr_checkpoints import (
     _tcl_command,
 )
 
+from rtl_buddy.config.pdk import PlacementFile
 from rtl_buddy.config.pnr import (
     HOOK_POINTS,
     PnrConfigFile,
@@ -160,7 +161,7 @@ def test_hooks_must_be_a_mapping(tmp_path, hooks):
 # Flow positions
 
 
-def _full_platform(tmp_path):
+def _full_platform(tmp_path, **placement):
     """A platform whose flow renders every block a hook point sits next to."""
     pdk = _make_pdk_cfg(
         tmp_path,
@@ -169,6 +170,7 @@ def _full_platform(tmp_path):
         tapcell_tcl="pdk/tapcell.tcl",
         rcx_rules="pdk/rcx.rules",
         dont_use_cells=["AND2_X1"],
+        **({"placement": PlacementFile(**placement)} if placement else {}),
     )
     return _flow_platform(
         pdk, cts_buffer="BUF_X4", max_fanout=8, global_route_hold_repair=True
@@ -240,8 +242,11 @@ def test_every_point_renders_at_its_flow_position(tmp_path):
 
 
 def test_a_run_without_hooks_renders_the_flow_unchanged(tmp_path):
-    """Setting every point adds only its blocks; the macro-placement block replaces the packer."""
-    platform = _full_platform(tmp_path)
+    """Setting every point adds only its blocks; the macro-placement block replaces the packer.
+
+    A hook before global placement also arms `placement.rotated-macro-footprint`, which is off here.
+    """
+    platform = _full_platform(tmp_path, rotated_macro_footprint="none")
     unset = _render_flow(tmp_path, platform, suite_dir=tmp_path / "a")
     paths = _hook_files(tmp_path)
     hooked = _render_flow(

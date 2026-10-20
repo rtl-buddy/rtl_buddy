@@ -7,6 +7,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field as dc_field, replace
 from datetime import datetime
+from decimal import Decimal
 from importlib.metadata import version
 from importlib.resources import files
 from pathlib import Path
@@ -14,14 +15,19 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
+from ..config.pdk import RotatedMacroFootprint
 from ..config.pnr import (
+    ROTATED_ORIENTATIONS,
     BlockageType,
     GdsMode,
     MacroAnchor,
     MacroPlacement,
+    PnrBlockage,
     PnrConfig,
     PnrFloorplan,
+    with_planner_files,
 )
+from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
 from ..pnr.klayout.def2stream import REPORT_SCHEMA
 from ..runner.pnr_results import PnrFailResults, PnrPassResults, PnrResults
@@ -32,7 +38,7 @@ from .artifact_paths import (
     project_relative,
     project_root_or_none,
 )
-from . import block_params, pnr_abstract, pnr_checkpoints
+from . import block_params, pnr_abstract, pnr_checkpoints, pnr_placement_check
 from .synth_yosys import probe_block_parameters
 from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps
 
@@ -48,6 +54,8 @@ _PDN_GRID_FILE = "pdn_grid.tcl"
 _MACROS_FILE = "macros.tcl"
 # `floorplan.pins` checks and commands; see `_floorplan_pins_block`.
 _PINS_FILE = "pins.tcl"
+# The OpenROAD#11735 workaround for macros turned by 90 degrees; see `_global_placement_blocks`.
+_ROTATED_MACROS_FILE = "rotated_macros.tcl"
 # Ties `blocks:` supply pins and joins top-layer ones to the parent's straps; see `_block_power_tcl`.
 _BLOCK_POWER_FILE = "block_power.tcl"
 # Sources the run's `hooks:` files; see `_hook_procs_block`.
@@ -259,10 +267,10 @@ def _buffer_ports_tcl(enabled: bool, buffer_cell: str | None) -> str:
     return f'\nputs ">>> Port buffers"\nbuffer_ports -inputs -outputs{cell}\n'
 
 
-def _global_route_hold_repair_tcl(platform) -> str:
+def _global_route_hold_repair_tcl(platform, dpl_options: str = "") -> str:
     """Return the post-global-route hold repair, as ORFS runs it, or `""` when the platform leaves it off.
 
-    The global-route estimate includes the wires that post-CTS repair (on placement parasitics) could not see. The resizer reroutes the nets it changes; the cells it adds are legalized and their nets rerouted incrementally before detail route. The incremental route ends `-verbose`, so the log repeats the congestion table after the repair.
+    The global-route estimate includes the wires that post-CTS repair (on placement parasitics) could not see. The resizer reroutes the nets it changes; the cells it adds are legalized and their nets rerouted incrementally before detail route. The incremental route ends `-verbose`, so the log repeats the congestion table after the repair. `dpl_options` follows its `detailed_placement`, as it does the flow's others.
     """
     if not platform.get_global_route_hold_repair():
         return ""
@@ -271,7 +279,7 @@ def _global_route_hold_repair_tcl(platform) -> str:
         "estimate_parasitics -global_routing\n"
         "repair_timing -hold\n"
         "global_route -start_incremental\n"
-        "detailed_placement\n"
+        f"detailed_placement{dpl_options}\n"
         "global_route -end_incremental -congestion_report_file $CONGESTION_RPT -verbose\n"
         "check_placement -verbose\n"
     )
@@ -472,10 +480,27 @@ def _tcl_microns(value: float) -> str:
     return f"{value:.3f}".rstrip("0").rstrip(".")
 
 
+def _tcl_exact(value: float) -> str:
+    """Format a micron coordinate as a Tcl number at full precision, without an exponent, so OpenROAD rounds it once, to the DBU."""
+    text = f"{Decimal(repr(float(value))):f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def _blockage_command(blockage: PnrBlockage) -> str:
+    """The `create_blockage` command for one `floorplan.blockages` entry."""
+    region = "{" + " ".join(_tcl_microns(v) for v in blockage.rect) + "}"
+    command = f"create_blockage -region {region}"
+    if blockage.type is BlockageType.SOFT:
+        return f"{command} -soft"
+    if blockage.type is BlockageType.PARTIAL:
+        return f"{command} -max_density {blockage.max_density * 100:.6g}"
+    return command
+
+
 def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
     """Return `(blockages_block, macro_pack_directives)` for `floorplan.blockages` and `floorplan.macro-anchor`.
 
-    Both are empty when the floorplan sets neither key. The blockages block runs right after the floorplan. Hard blockages also become `MACRO_KEEPOUTS`, which the packer keeps macros out of, and the rows under them are cut, so the later tap insertion leaves them empty (rtl_buddy#773); soft and partial ones only thin standard cells. The directives are the anchor and keep-outs appended to the `rb::macro_pack::solve` call.
+    Both are empty when the floorplan sets neither key. Blockages with `lifetime: global-placement` are left to `_global_placement_blocks`. The blockages block runs right after the floorplan. Hard blockages also become `MACRO_KEEPOUTS`, which the packer keeps macros out of, and the rows under them are cut, so the later tap insertion leaves them empty (rtl_buddy#773); soft and partial ones only thin standard cells. The directives are the anchor and keep-outs appended to the `rb::macro_pack::solve` call.
     """
     lines = []
     has_keepouts = False
@@ -496,9 +521,9 @@ def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
             "lappend MACRO_KEEPOUTS "
             "[list [$blockage_box xMin] [$blockage_box yMin] [$blockage_box xMax] [$blockage_box yMax]]"
         )
-    for blockage in fp.blockages:
-        region = "{" + " ".join(_tcl_microns(v) for v in blockage.rect) + "}"
-        command = f"create_blockage -region {region}"
+    blockages = fp.flow_blockages()
+    for blockage in blockages:
+        command = _blockage_command(blockage)
         if blockage.type is BlockageType.HARD:
             has_keepouts = True
             lines.append(f"set blockage_box [[{command}] getBBox]")
@@ -506,16 +531,13 @@ def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
                 "lappend MACRO_KEEPOUTS "
                 "[list [$blockage_box xMin] [$blockage_box yMin] [$blockage_box xMax] [$blockage_box yMax]]"
             )
-        elif blockage.type is BlockageType.SOFT:
-            lines.append(f"{command} -soft")
         else:
-            density = f"{blockage.max_density * 100:.6g}"
-            lines.append(f"{command} -max_density {density}")
+            lines.append(command)
     blockages_block = ""
     if lines:
         header = [
             'puts ">>> Placement blockages"'
-            if fp.blockages
+            if blockages
             else 'puts ">>> Core cut-outs"'
         ]
         if has_keepouts:
@@ -597,48 +619,57 @@ def _tcl_list(items) -> str:
 
 
 def _floorplan_pins_block(fp: PnrFloorplan) -> str:
-    """Return the `floorplan.pins` Tcl run just before `place_pins`, or "" without entries.
+    """Return the `floorplan.pins` and pins-file Tcl run just before `place_pins`, or "" without entries or `pins-complete`.
 
-    Exact pins go first, so a side constraint that also matches one leaves it where it is: `place_pins` keeps a FIRM pin.
+    Exact pins go first, inline entries before the file's, so a side constraint that also matches one leaves it where it is: `place_pins` keeps a FIRM pin. Under `pins-complete` the block records which entries cover each port and ends with the coverage check.
     """
-    if not fp.pins:
+    if not fp.pins and not fp.pins_complete:
         return ""
     lines = [
         'puts ">>> Pin constraints (floorplan.pins)"',
         files(_TEMPLATE_PACKAGE).joinpath(_PINS_FILE).read_text().rstrip("\n"),
     ]
+    if fp.pins_complete:
+        lines.append("set rb::pins::track 1")
+    if any(pin.location is not None for pin in fp.pins):
+        lines.append(
+            f'puts "{pnr_placement_check.DBU_TAG} '
+            '[[ord::get_db_block] getDbUnitsPerMicron]"'
+        )
+    snap = "" if fp.pin_snap else " 0"
     ordered = sorted(enumerate(fp.pins), key=lambda item: item[1].location is None)
     for index, pin in ordered:
-        where = f"{{floorplan.pins[{index}]}}"
+        where = f"{{{pin.label or f'floorplan.pins[{index}]'}}}"
+        number = _tcl_exact if pin.exact else _tcl_microns
         if pin.location is not None:
-            x, y = (_tcl_microns(v) for v in pin.location)
+            x, y = (number(v) for v in pin.location)
             size = (
-                _tcl_list(_tcl_microns(v) for v in pin.size)
-                if pin.size is not None
-                else "{}"
+                _tcl_list(number(v) for v in pin.size) if pin.size is not None else "{}"
             )
             lines.append(
                 f"rb::pins::place {where} {{{pin.names[0]}}} {x} {y} "
-                f"{{{pin.layer or ''}}} {size}"
+                f"{{{pin.layer or ''}}} {size}{snap}"
             )
             continue
         region = ""
         if pin.side is not None:
-            start = _tcl_microns(pin.start) if pin.start is not None else "*"
-            end = _tcl_microns(pin.end) if pin.end is not None else "*"
+            start = number(pin.start) if pin.start is not None else "*"
+            end = number(pin.end) if pin.end is not None else "*"
             interval = "*" if start == end == "*" else f"{start}-{end}"
             region = f"{pin.side.value}:{interval}"
         lines.append(
             f"rb::pins::constrain {where} {_tcl_list(pin.names)} {{{region}}} "
             f"{int(pin.group)} {int(pin.order)}"
         )
+    if fp.pins_complete:
+        lines.append("rb::pins::check_complete")
     return "\n".join(lines) + "\n"
 
 
 def _macro_directives_block(fp: PnrFloorplan) -> str:
-    """Return the `floorplan.macros` Tcl that opens the macro branch, or "" without directives.
+    """Return the `floorplan.macros` and macros-file Tcl that opens the macro branch, or "" without directives.
 
-    It leaves the macros still to place in `rb_movable_macros`; located ones are LOCKED and, for the packer, keep-outs.
+    Inline entries come first. It leaves the macros still to place in `rb_movable_macros`; located ones are LOCKED and, for the packer, keep-outs.
     """
     if not fp.macros:
         return ""
@@ -648,24 +679,47 @@ def _macro_directives_block(fp: PnrFloorplan) -> str:
         "  set MACRO_DIRECTIVES {}",
     ]
     for index, macro in enumerate(fp.macros):
+        number = _tcl_exact if macro.exact else _tcl_microns
         fields = [
-            f"{{floorplan.macros[{index}]}}",
+            f"{{{macro.label or f'floorplan.macros[{index}]'}}}",
             f"{{{macro.instance}}}",
-            _tcl_list(_tcl_microns(v) for v in macro.location)
+            _tcl_list(number(v) for v in macro.location)
             if macro.location is not None
             else "{}",
             macro.orientation or "{}",
-            _tcl_list(_tcl_microns(v) for v in macro.halo)
+            _tcl_list(number(v) for v in macro.halo)
             if macro.halo is not None
             else "{}",
         ]
         lines.append(f"  lappend MACRO_DIRECTIVES [list {' '.join(fields)}]")
+    snap = "" if fp.macro_snap else " 0"
     lines.append(
         "  set rb_movable_macros [rb::macros::apply $block $macros $MACRO_DIRECTIVES "
         "$site_grid_dbu [expr {int(round([ord::microns_to_dbu $MACRO_HALO]))}] "
-        "$dbu_per_micron]"
+        f"$dbu_per_micron{snap}]"
     )
     return "\n".join(lines) + "\n"
+
+
+def _no_macros_block(fp: PnrFloorplan) -> str:
+    """Return the `else` of the macro branch that fails the run when entries locate macros but the netlist has none, or "" when no entry has a location.
+
+    It names up to three located entries.
+    """
+    located = [
+        f"{macro.label or f'floorplan.macros[{index}]'} ({macro.instance})"
+        for index, macro in enumerate(fp.macros)
+        if macro.location is not None
+    ]
+    if not located:
+        return ""
+    more = f", +{len(located) - 3} more" if len(located) > 3 else ""
+    entries = "1 entry gives" if len(located) == 1 else f"{len(located)} entries give"
+    message = (
+        f"floorplan.macros: the netlist has no hard macros, but {entries} a macro "
+        f"location: {', '.join(located[:3])}{more}"
+    )
+    return f" else {{\n  error {{{message}}}\n}}"
 
 
 _PACK_PLACEMENT = """\
@@ -673,9 +727,7 @@ _PACK_PLACEMENT = """\
   set halo_dbu [expr {{int(round([ord::microns_to_dbu $MACRO_HALO]))}}]
   set footprints {{}}
   foreach inst {packed} {{
-    set master [$inst getMaster]
-    lappend footprints [list [$inst getName] [$master getWidth] [$master getHeight]]
-  }}
+{footprint}  }}
   set placement [rb::macro_pack::solve \\
       [list [$core xMin] [$core yMin] [$core xMax] [$core yMax]] \\
       $footprints $halo_dbu $site_grid_dbu $dbu_per_micron{directives}]
@@ -685,6 +737,17 @@ _PACK_PLACEMENT = """\
     $inst setPlacementStatus FIRM
     puts ">>>   placed [$inst getName] at ($x, $y) DBU"
   }}
+"""
+
+# A macro the packer places at its master's size, as every macro is R0 before `floorplan.macros` orients one.
+_MASTER_FOOTPRINT = """\
+    set master [$inst getMaster]
+    lappend footprints [list [$inst getName] [$master getWidth] [$master getHeight]]
+"""
+# A macro the packer places at its oriented size: an R90 macro is its master's height wide.
+_ORIENTED_FOOTPRINT = """\
+    set bbox [$inst getBBox]
+    lappend footprints [list [$inst getName] [$bbox getDX] [$bbox getDY]]
 """
 
 # OpenROAD RTL-MP. The halo option spelling depends on the OpenROAD version, so both are emitted.
@@ -712,12 +775,106 @@ def _macro_place_block(fp: PnrFloorplan, directives: str) -> str:
     if fp.macro_placement is MacroPlacement.RTL_MP:
         return _RTL_MP_PLACEMENT
     if not fp.macros:
-        return _PACK_PLACEMENT.format(directives=directives, packed="$macros")
+        return _PACK_PLACEMENT.format(
+            directives=directives, packed="$macros", footprint=_MASTER_FOOTPRINT
+        )
     if not directives.endswith("$MACRO_KEEPOUTS"):
         anchor = f" \\\n      {fp.macro_anchor.value}"
         directives = f"{anchor} $MACRO_KEEPOUTS"
-    body = _PACK_PLACEMENT.format(directives=directives, packed="$rb_movable_macros")
+    body = _PACK_PLACEMENT.format(
+        directives=directives,
+        packed="$rb_movable_macros",
+        footprint=_ORIENTED_FOOTPRINT,
+    )
     return f"  if {{[llength $rb_movable_macros] > 0}} {{\n{body}  }}\n"
+
+
+@dataclass(frozen=True)
+class GlobalPlacementBlocks:
+    """The Tcl around `global_placement`: `create` before it, `destroy` right after it, and `dpl_options` after every `detailed_placement`.
+
+    All three are empty when the run has no global-placement-only blockage and no macro can end up rotated, so the template renders byte-identically.
+    """
+
+    create: str = ""
+    destroy: str = ""
+    dpl_options: str = ""
+
+
+#: Run hook points before global placement, where a hook may turn a macro.
+_HOOKS_BEFORE_GLOBAL_PLACEMENT = (
+    "session",
+    "after-floorplan",
+    "macro-placement",
+    "after-pdn",
+    "after-pins",
+)
+
+
+def _may_rotate(fp: PnrFloorplan, hooks: dict) -> bool:
+    """Whether a macro may be turned by 90 degrees before global placement: by a `floorplan.macros` or macros-file entry, or by a run hook; RTL-MP only flips macros."""
+    return any(macro.orientation in ROTATED_ORIENTATIONS for macro in fp.macros) or any(
+        point in hooks for point in _HOOKS_BEFORE_GLOBAL_PLACEMENT
+    )
+
+
+def _global_placement_blocks(
+    fp: PnrFloorplan, footprint: str, hooks: dict, *, checkpoints: bool
+) -> GlobalPlacementBlocks:
+    """Return the Tcl for `lifetime: global-placement` blockages and `placement.rotated-macro-footprint`.
+
+    The blockages are created immediately before `global_placement` and destroyed immediately after by the handles the flow created, so no checkpoint, row cut, packer keep-out or RTL-MP run sees them. With checkpoints, the floorplan checkpoint is written before they exist. `footprint` acts only when a macro is rotated at run time: `block` adds a hard blockage over each rotated macro's unrotated footprint (see `rotated_macros.tcl`), `diamond-legalizer` passes `-use_diamond_legalizer` to every `detailed_placement`.
+    """
+    blockages = fp.global_placement_blockages()
+    rotated = _may_rotate(fp, hooks) and footprint != RotatedMacroFootprint.NONE
+    block_rotated = rotated and footprint == RotatedMacroFootprint.BLOCK
+    diamond = rotated and footprint == RotatedMacroFootprint.DIAMOND_LEGALIZER
+    if not blockages and not rotated:
+        return GlobalPlacementBlocks()
+    lines = []
+    if checkpoints and (blockages or block_rotated):
+        lines.append("rb::ckpt::checkpoint_for global_placement enter")
+    if rotated:
+        lines.append(
+            files(_TEMPLATE_PACKAGE)
+            .joinpath(_ROTATED_MACROS_FILE)
+            .read_text()
+            .rstrip("\n")
+        )
+        lines.append("set rb_rotated_macros [rb::rotated::macros $macros]")
+    destroy = ""
+    if blockages or block_rotated:
+        lines.append("set RB_GP_BLOCKAGES {}")
+        if blockages:
+            lines.append('puts ">>> Global-placement-only blockages"')
+        for blockage in blockages:
+            lines.append(f"lappend RB_GP_BLOCKAGES [{_blockage_command(blockage)}]")
+        if block_rotated:
+            lines.append(
+                "lappend RB_GP_BLOCKAGES "
+                "{*}[rb::rotated::block_footprints $block $rb_rotated_macros $site_grid_dbu]"
+            )
+        destroy = (
+            "foreach rb_blockage $RB_GP_BLOCKAGES { odb::dbBlockage_destroy $rb_blockage }\n"
+            "if {[llength $RB_GP_BLOCKAGES] > 0} {\n"
+            '  puts ">>>   removed [llength $RB_GP_BLOCKAGES] global-placement-only '
+            'blockage(s)"\n'
+            "}\n"
+        )
+    dpl_options = ""
+    if diamond:
+        lines += [
+            "set RB_DPL_OPTIONS {}",
+            "if {[llength $rb_rotated_macros] > 0} {",
+            "  set RB_DPL_OPTIONS -use_diamond_legalizer",
+            '  puts ">>>   [llength $rb_rotated_macros] rotated macro(s): '
+            'detailed_placement -use_diamond_legalizer"',
+            "}",
+        ]
+        dpl_options = " {*}$RB_DPL_OPTIONS"
+    return GlobalPlacementBlocks(
+        create="\n".join(lines) + "\n", destroy=destroy, dpl_options=dpl_options
+    )
 
 
 class OpenRoadPnr:
@@ -914,6 +1071,12 @@ class OpenRoadPnr:
         threads_block = f'\nputs ">>> Threads"\n{threads_tcl}\n' if threads_tcl else ""
 
         blockages_block, macro_pack_directives = _floorplan_directives(fp)
+        gp_blocks = _global_placement_blocks(
+            fp,
+            platform.get_placement_rotated_macro_footprint(),
+            self.pnr_cfg.get_hooks(),
+            checkpoints=self._ckpt_run_dir is not None,
+        )
         # With `rcx-rules`, extract after fill and time the final reports on the SPEF; otherwise they use the global-route estimate.
         rcx_rules = pdk.get_rcx_rules()
         if rcx_rules:
@@ -992,6 +1155,7 @@ class OpenRoadPnr:
                 if "macro-placement" in hooks
                 else _macro_place_block(fp, macro_pack_directives)
             ),
+            "no_macros_block": _no_macros_block(fp),
             "blockages_block": blockages_block,
             "dont_use_block": dont_use_block,
             "dont_use_check_block": dont_use_check_block,
@@ -1040,7 +1204,12 @@ class OpenRoadPnr:
                 "repair_timing -setup\n" if platform.get_post_cts_setup_repair() else ""
             ),
             "layer_adjustment": _layer_adjustment_tcl(platform),
-            "global_route_hold_repair": _global_route_hold_repair_tcl(platform),
+            "global_route_hold_repair": _global_route_hold_repair_tcl(
+                platform, gp_blocks.dpl_options
+            ),
+            "gp_blockages_create": gp_blocks.create,
+            "gp_blockages_destroy": gp_blocks.destroy,
+            "dpl_options": gp_blocks.dpl_options,
             "detailed_route_verbose": str(self.pnr_cfg.get_detailed_route_verbose()),
             "cell_count_tag": _CELL_COUNT_TAG,
             "electrical_tag": _ELECTRICAL_TAG,
@@ -2051,21 +2220,71 @@ class OpenRoadPnr:
             f"({', '.join(causes)}); see {_NO_WIRE_RC_DOCS}"
         )
 
-    def _fail_after_openroad(self, desc: str) -> PnrFailResults:
+    def _fail_after_openroad(
+        self, desc: str, fail_stage: str | None = None
+    ) -> PnrFailResults:
         """Return a FAIL for a run that already invoked OpenROAD, after removing its outputs.
 
-        OpenROAD may leave a partial `<top>.routed.odb`, which `rb power` would accept by existence. Every post-OpenROAD failure return must go through here.
+        OpenROAD may leave a partial `<top>.routed.odb`, which `rb power` would accept by existence. Every post-OpenROAD failure return must go through here. `fail_stage` marks a failure that is not a verdict on the design, so `xfail:` does not excuse it.
         """
         self._clear_stale_outputs()
         return PnrFailResults(
             name=self.name + "/results",
             desc=desc,
+            fail_stage=fail_stage,
             fields={
                 **self._blocks_fields(),
                 **self._threads_fields(),
                 **(self._close_checkpoints("FAIL", desc, announce=True) or {}),
             },
         )
+
+    def _check_routed_placement(self, log_text: str) -> str | None:
+        """Compare the routed DEF with the macros and pins the floorplan fixed; return the failure description, or None when they agree.
+
+        The flow tags each located macro and exact pin as placed (see `pnr_placement_check`); a run without either has nothing to compare.
+        """
+        fp = self.pnr_cfg.get_floorplan()
+        located = sum(1 for m in fp.macros if m.location is not None)
+        exact = any(p.location is not None for p in fp.pins)
+        if not located and not exact:
+            return None
+        tags = pnr_placement_check.parse_tags(log_text)
+        design = self.pnr_cfg.resolve_synth_cfg().get_top()
+        def_path = os.path.join(self.artefact_dir, f"{design}.def")
+        if len(tags.macros) != located or (exact and not tags.pins):
+            problems = [
+                f"pnr.log reports {len(tags.macros)} of {located} located macro(s) and "
+                f"{len(tags.pins)} exact pin(s); expected every one"
+            ]
+        else:
+            try:
+                problems = pnr_placement_check.check_routed_def(tags, def_path)
+            except (OSError, ValueError, IndexError) as e:
+                problems = [f"cannot read {def_path}: {e}"]
+        if not problems:
+            log_event(
+                logger,
+                logging.INFO,
+                "pnr.routed_check_passed",
+                pnr=self.pnr_cfg.get_name(),
+                macros=len(tags.macros),
+                pins=len(tags.pins),
+                def_path=def_path,
+            )
+            return None
+        desc = pnr_placement_check.describe(problems)
+        log_event(
+            logger,
+            logging.ERROR,
+            "pnr.routed_check_failed",
+            pnr=self.pnr_cfg.get_name(),
+            count=len(problems),
+            problems=problems,
+            desc=desc,
+            def_path=def_path,
+        )
+        return desc
 
     def _checkpoint_inputs(self, platform, script_path: str) -> dict:
         """Return fingerprints of the files the generated script reads, for the checkpoint manifest.
@@ -2102,6 +2321,7 @@ class OpenRoadPnr:
                 )
             ],
             "pin_constraints": _file_fingerprint(self.pnr_cfg.pin_constraints),
+            **self._planner_files(_file_fingerprint),
             "pdn_config": _file_fingerprint(self._pdn_config(pdk)),
             **{
                 key.replace("-", "_"): _file_fingerprint(path)
@@ -2273,6 +2493,18 @@ class OpenRoadPnr:
             return {}
         return {"blocks": [b.result_row() for b in self._blocks]}
 
+    def _planner_files(self, record) -> dict:
+        """`macros_file` and `pins_file`, each through `record`, only when set, so other runs' records keep their roles."""
+        fp = self.pnr_cfg.get_floorplan()
+        return {
+            role: record(path)
+            for role, path in (
+                ("macros_file", fp.macros_file),
+                ("pins_file", fp.pins_file),
+            )
+            if path is not None
+        }
+
     def abstract_inputs(self, platform) -> dict:
         """Return every input file a hardened result was made from, by role.
 
@@ -2294,6 +2526,7 @@ class OpenRoadPnr:
                 [pdk.get_tech_lef(), pdk.get_macro_lef(), *self.pnr_cfg.get_lef_paths()]
             ),
             "pin_constraints": self.pnr_cfg.pin_constraints,
+            **self._planner_files(lambda path: path),
             "pdn_config": self._pdn_config(pdk) or None,
             # Only the configured hooks, so an abstract hardened without any records no extra roles.
             **{
@@ -2610,6 +2843,30 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
+        # Before OpenROAD, so a bad planner file or placement override fails in seconds.
+        try:
+            if self.pnr_cfg.get_placement() is not None:
+                platform = platform.with_run_placement(
+                    self.pnr_cfg.get_placement(), self.pnr_cfg.get_name()
+                )
+            fp = self.pnr_cfg.get_floorplan()
+            if fp.macros_file is not None or fp.pins_file is not None:
+                self.pnr_cfg = replace(
+                    self.pnr_cfg,
+                    floorplan=with_planner_files(self.pnr_cfg.get_name(), fp),
+                )
+        except FatalRtlBuddyError as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.setup_invalid",
+                pnr=self.pnr_cfg.get_name(),
+                error=str(e),
+            )
+            return PnrFailResults(
+                name=self.name + "/results", desc=str(e), fail_stage="setup"
+            )
+
         blocks_failure = self._resolve_blocks(platform)
         if blocks_failure is not None:
             return blocks_failure
@@ -2823,6 +3080,21 @@ class OpenRoadPnr:
                 f"block power: {block_power_errors[0]}{more}"
             )
 
+        incomplete = pnr_placement_check.parse_pins_complete(log_text)
+        if incomplete:
+            desc = pnr_placement_check.describe_pins_complete(incomplete)
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.pins_incomplete",
+                pnr=self.pnr_cfg.get_name(),
+                classes={cls: count for cls, count, _ in incomplete},
+                desc=desc,
+                log=log_path,
+            )
+            # `fail_stage` keeps an `xfail:` from excusing pin entries that do not cover the ports.
+            return self._fail_after_openroad(desc, fail_stage="pins_complete")
+
         if result.returncode != 0:
             log_event(
                 logger,
@@ -2871,6 +3143,23 @@ class OpenRoadPnr:
             **self._parse_electrical(log_text),
         }
         corner_fields = self._corner_fields(platform, final)
+
+        mismatch = self._check_routed_placement(log_text)
+        if mismatch is not None:
+            # `fail_stage` keeps an `xfail:` from excusing a floorplan the flow did not keep. The routed outputs stay for inspection.
+            pnr_abstract.clear_abstract(self.artefact_dir)
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=mismatch,
+                fail_stage="routed_check",
+                fields={
+                    **metrics,
+                    **corner_fields,
+                    **self._blocks_fields(),
+                    **self._threads_fields(),
+                    **(self._close_checkpoints("FAIL", mismatch) or {}),
+                },
+            )
         # Logged whether or not it fails the run, so a pass with violators never reads as clean.
         electrical = self._describe_electrical(metrics)
         if electrical:
