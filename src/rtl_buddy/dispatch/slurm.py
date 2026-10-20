@@ -1641,8 +1641,9 @@ class SlurmDispatchBackend(DispatchBackend):
 
     def _scancel(
         self, ids_by_cluster: dict[str | None, list[str]], *, cwd, timeout_s=None
-    ) -> list[tuple[str | None, list[str], subprocess.CompletedProcess]]:
-        """One ``scancel`` per cluster; returns the results for the caller to report.
+    ) -> list[tuple[str | None, list[str], subprocess.CompletedProcess, bool]]:
+        """One ``scancel`` per cluster; returns ``(cluster, ids, result, timed out)``
+        for the caller to report.
 
         Ids accepted on another cluster need the matching ``-M``. ``timeout_s`` bounds
         each ``scancel``; one that times out or cannot be run has a non-zero
@@ -1651,20 +1652,24 @@ class SlurmDispatchBackend(DispatchBackend):
         results = []
         for cluster, ids in ids_by_cluster.items():
             argv = ["scancel", *(["-M", cluster] if cluster else []), *ids]
+            timed_out = False
             try:
                 proc = subprocess.run(
                     argv, capture_output=True, text=True, cwd=cwd, timeout=timeout_s
                 )
             except subprocess.TimeoutExpired:
+                timed_out = True
                 proc = subprocess.CompletedProcess(
                     argv, -1, "", f"scancel did not answer within {timeout_s:g}s"
                 )
             except OSError as e:
                 proc = subprocess.CompletedProcess(argv, -1, "", str(e))
-            results.append((cluster, ids, proc))
+            results.append((cluster, ids, proc, timed_out))
         return results
 
-    def _reap_never_satisfied(self, lines, *, cwd, cluster=None) -> list[dict]:
+    def _reap_never_satisfied(
+        self, lines, *, cwd, cluster=None, timeout_s=None
+    ) -> list[dict]:
         """Split queued jobs into those still coming and those already dead.
 
         Jobs pending with reason ``DependencyNeverSatisfied`` are cancelled. This is the
@@ -1672,6 +1677,10 @@ class SlurmDispatchBackend(DispatchBackend):
         it (see :meth:`_dependency_argv`). Returns the surviving squeue records (see
         :func:`_parse_squeue_line`), not ids, because the progress line needs their
         state and elapsed time.
+
+        ``timeout_s`` bounds the ``scancel``, :data:`CANCEL_TIMEOUT_S` when ``None``.
+        Jobs whose ``scancel`` timed out stay among the survivors, so a later poll
+        cancels them again.
         """
         remaining, doomed = [], []
         for line in lines:
@@ -1681,7 +1690,7 @@ class SlurmDispatchBackend(DispatchBackend):
             # Substring match on the reason column alone, so a job named after the
             # reason is not reaped.
             if _NEVER_SATISFIED in record["reason"]:
-                doomed.append(record["id"])
+                doomed.append(record)
             else:
                 remaining.append(record)
         if doomed:
@@ -1690,16 +1699,22 @@ class SlurmDispatchBackend(DispatchBackend):
                 logging.WARNING,
                 "dispatch.dependency_never_satisfied",
                 backend=self.name,
-                jobs=doomed,
+                jobs=[r["id"] for r in doomed],
                 cluster=cluster,
             )
             # Cancel by base id, on the cluster the ids came from.
-            base_ids = list(dict.fromkeys(j.split("_")[0] for j in doomed))
-            for cluster, ids, proc in self._scancel({cluster: base_ids}, cwd=cwd):
+            base_ids = list(dict.fromkeys(r["id"].split("_")[0] for r in doomed))
+            for cluster, ids, proc, timed_out in self._scancel(
+                {cluster: base_ids},
+                cwd=cwd,
+                timeout_s=CANCEL_TIMEOUT_S if timeout_s is None else timeout_s,
+            ):
                 if proc.returncode == 0:
                     continue
-                # Already out of `remaining`, so a failed cancel leaves them queued
-                # after the run.
+                if timed_out:
+                    remaining.extend(doomed)
+                # Jobs whose cancel was refused are out of `remaining`, so they stay
+                # queued after the run.
                 log_event(
                     logger,
                     logging.WARNING,
@@ -1997,7 +2012,9 @@ class SlurmDispatchBackend(DispatchBackend):
                 continue
             if status == "unknown":
                 return None
-            records = self._reap_never_satisfied(lines, cwd=cwd, cluster=cluster)
+            records = self._reap_never_satisfied(
+                lines, cwd=cwd, cluster=cluster, timeout_s=timeout_s
+            )
             cluster_states, _ = self._outstanding(records, handles, cluster=cluster)
             states.update(cluster_states)
         return states
@@ -2019,8 +2036,12 @@ class SlurmDispatchBackend(DispatchBackend):
         results = self._scancel(
             by_cluster, cwd=self._cwd_of(handles), timeout_s=timeout_s
         )
-        refused = {cluster for cluster, _ids, proc in results if proc.returncode != 0}
-        for cluster, ids, proc in results:
+        refused = {
+            cluster
+            for cluster, _ids, proc, _timed_out in results
+            if proc.returncode != 0
+        }
+        for cluster, ids, proc, _timed_out in results:
             if cluster in refused:
                 log_event(
                     logger,
