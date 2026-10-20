@@ -18,6 +18,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from ..config.dispatch import JobResources
+from ..config.lib_paths import corner_lib_file, fit_lib_paths
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
 from ..config.pdk import MacroPinLimitsFile
 from ..config.pdk import RotatedMacroFootprint
@@ -2782,14 +2783,17 @@ class OpenRoadPnr:
             )
             corner_reports = ""
 
-        extra_lines = []
-        for lib in self.pnr_cfg.get_lib_paths():
-            if multi_corner and not modes:
-                extra_lines.extend(
-                    f"read_liberty -corner {c} {lib}" for c in corner_libs
-                )
-            else:
-                extra_lines.append(f"read_liberty {lib}")
+        macro_libs = self.pnr_cfg.get_lib_path_entries()
+        if multi_corner and not modes:
+            extra_lines = openroad_corners.macro_corner_liberty_tcl(
+                list(corner_libs), macro_libs
+            )
+        elif multi_corner:
+            extra_lines = openroad_corners.macro_mode_liberty_tcl(macro_libs)
+        else:
+            extra_lines = [
+                f"read_liberty {corner_lib_file(lib, corners[0])}" for lib in macro_libs
+            ]
         for lef in [
             *pdk.get_macro_lef_paths()[1:],
             *self.pnr_cfg.get_lef_paths(),
@@ -2799,11 +2803,7 @@ class OpenRoadPnr:
         if modes:
             scenes_block = (
                 '\nputs ">>> An SDC mode and a scene per corner"\n'
-                + "\n".join(
-                    openroad_corners.scenes_tcl(
-                        corner_libs, self.pnr_cfg.get_lib_paths()
-                    )
-                )
+                + "\n".join(openroad_corners.scenes_tcl(corner_libs, macro_libs))
                 + "\n"
                 + _mode_checkpoint_sdc_tcl(corners)
             )
@@ -3795,13 +3795,32 @@ class OpenRoadPnr:
         return phrases
 
     def _check_corner_constraints(self, platform, version: str | None):
-        """Check `constraints:` against the platform's corners and, on a multi-corner platform, whether OpenROAD can give each corner an SDC mode; return the setup failure, or None.
+        """Check `constraints:` and `lib-paths` against the platform's corners and, on a multi-corner platform, whether OpenROAD can give each corner an SDC mode; return the setup failure, or None.
 
-        A per-corner mapping must name each corner and no other; on a single-corner platform it is the one path from here on. Without modes every corner shares one SDC mode, with a warning, and a per-corner mapping fails. A probe that gives no answer is tried once more, then fails setup.
+        A per-corner mapping must name each corner and no other; on a single-corner platform it is the one path from here on, and on several a `lib-paths` mapping is in `corners:` order. Without modes every corner shares one SDC mode, with a warning, and a per-corner `constraints:` mapping fails. A probe that gives no answer is tried once more, then fails setup.
         """
         name = self.pnr_cfg.get_name()
         constraints = self.pnr_cfg.get_constraints()
         corners = platform.get_sta_corners()
+        lib_problem = self.pnr_cfg.lib_paths_problem(corners)
+        if lib_problem is not None:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.lib_paths_corners",
+                pnr=name,
+                platform=self.pnr_cfg.get_platform(),
+                problem=lib_problem,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=lib_problem,
+                fail_stage="setup",
+            )
+        self.pnr_cfg = replace(
+            self.pnr_cfg,
+            lib_paths=fit_lib_paths(self.pnr_cfg.get_lib_path_entries(), corners),
+        )
         problem = self.pnr_cfg.constraints_problem(corners)
         if problem is not None:
             log_event(
@@ -5098,7 +5117,10 @@ class OpenRoadPnr:
         self.pnr_cfg = replace(
             self.pnr_cfg,
             lef_paths=[*self.pnr_cfg.get_lef_paths(), *(b.lef for b in resolved)],
-            lib_paths=[*self.pnr_cfg.get_lib_paths(), *(b.lib for b in resolved)],
+            lib_paths=[
+                *self.pnr_cfg.get_lib_path_entries(),
+                *(b.lib for b in resolved),
+            ],
             gds_paths=[
                 *self.pnr_cfg.get_gds_paths(),
                 *(b.gds for b in resolved if b.gds),

@@ -2043,6 +2043,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "pnr.constraints_corners":
             return f'P&R "{fields.get("pnr")}": constraints: {fields.get("problem")}'
+        case "pnr.lib_paths_corners":
+            return (
+                f'P&R "{fields.get("pnr")}": {fields.get("problem")}; a per-corner '
+                f"lib-paths mapping names each corner of platform "
+                f'"{fields.get("platform")}" and no other'
+            )
         case "pnr.corner_constraints_unsupported":
             return (
                 f'P&R "{fields.get("pnr")}": constraints: a per-corner SDC needs '
@@ -2466,6 +2472,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         # A macro library the configuration named but the disk lacks, and a macro no
         # library covered.
+        case "power.lib_paths_corners":
+            return (
+                f'power run "{fields.get("power")}": {fields.get("problem")}; a '
+                "per-corner lib-paths mapping, here or on the run this one reads, "
+                f'names each corner of platform "{fields.get("platform")}" and no other'
+            )
         case "power.missing_macro_inputs":
             missing = fields.get("missing") or []
             return (

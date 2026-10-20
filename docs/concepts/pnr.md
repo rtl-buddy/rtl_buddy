@@ -131,7 +131,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `N macros do not fit the W x H um floorplan core` | Lower `utilization`, change `aspect`, or lower `placement.macro-halo`. The message gives the smallest core that fits. |
 | `GRT-0116`, global-route overflow | Too congested. The result's `failed_global_route` names the checkpoint (`<run-id>/global_route`) that holds the failed route's database and a copy of `congestion.rpt`; open it with `rb pnr-export --checkpoint` or `read_db` in OpenROAD. Lower utilization or density, try `placement.routability-driven`, or [tune global routing](#tune-global-routing). |
 | Large `drc_count` | Try `routing-layer-adjustment`, a lower density, or `post-route-repair` with several rounds. |
-| `RSZ-0090` at a slow corner | A macro with one Liberty limits that corner. Give it a Liberty per corner. |
+| `RSZ-0090` at a slow corner | A macro with one Liberty limits that corner. Map each corner to the macro's Liberty for it in `lib-paths`; see [Sign off at several corners](#sign-off-at-several-corners). |
 | Macro pins in `electrical.rpt`, or `pnr.macro_pin_limits_unmet` | Set `placement.macro-pin-limits`, add a stronger buffer to it, or lower the macro's `macro-cell-halo`. See [Tune placement](#tune-placement-clock-tree-and-repair). |
 | `RSZ-0074` in a post-route repair round | Set `post-route-repair.reroute: full`. |
 | `CTS-0080 Sink not found` | Set `cts-sink-clustering: false`. |
@@ -188,7 +188,16 @@ Each corner is timed in an OpenSTA SDC mode and scene of its own, named after th
 
 A mode per corner needs OpenROAD 26Q4 or newer; rb asks OpenROAD at setup. An older one times every corner in one mode and warns `pnr.corner_modes_unsupported`, and a per-corner `constraints:` fails setup. An OpenROAD that gives no answer twice fails setup with `pnr.corner_modes_probe_failed`. See [Known Issues](../known-issues.md#corners-share-one-sdc-mode-on-an-openroad-without-modes).
 
-A macro with a single Liberty keeps that file's timing at every corner and can fail a slow corner (`RSZ-0090`). Give it a Liberty per corner. A multi-corner platform cannot harden a block or consume hardened blocks.
+A `lib-paths` entry that is one path is timed at every corner, so a macro keeps that file's timing at every corner and can fail a slow corner (`RSZ-0090`). An entry can instead map each corner to the macro's Liberty for it:
+
+```yaml
+    lib-paths:
+      - {tt: macros/sram_tt.lib, ss: macros/sram_ss.lib, ff: macros/sram_ff.lib}
+```
+
+Each file is timed at its corner only. A map must name every corner of the platform and no other, or setup fails with `pnr.lib_paths_corners`; on a single-corner platform it names that one corner. The Liberty time-unit check reads every file, and `--resume` refuses a checkpoint made with another map. `rb power` reads a map the same way, inherited from the P&R run or in its own `lib-paths`.
+
+A multi-corner platform cannot harden a block or consume hardened blocks.
 
 ## Gate signoff
 
