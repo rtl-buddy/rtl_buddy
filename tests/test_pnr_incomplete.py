@@ -435,6 +435,7 @@ def test_the_last_step_is_the_last_announced_line():
             ">>>   placed u_ram at (1, 2) DBU",
             ">>> rb: log of inherited stage floorplan not readable: x",
             "[INFO GPL-0001] noise",
+            ">>> rb checkpoints: cannot append progress event: disk full",
         ]
     )
 
