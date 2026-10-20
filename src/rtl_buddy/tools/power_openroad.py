@@ -13,6 +13,7 @@ _SNAPSHOT_ATTEMPTS = 3
 
 from .liberty_units import open_liberty
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
+from ..config.pnr_repair import PnrMode
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
 from ..phys import reports
@@ -705,10 +706,17 @@ class OpenRoadPower(BasePower):
             )
         if source == "pnr":
             if not os.path.isfile(odb):
+                pnr_cfg = self.power_cfg.resolve_pnr_cfg()
+                why = (
+                    f"pnr run '{pnr_cfg.get_name()}' is a probe (mode: probe), "
+                    "which stops after global route and writes no routed ODB; "
+                    "run it with mode: closure"
+                    if pnr_cfg.get_mode() is PnrMode.PROBE
+                    else "re-run `rb pnr` (older runs predate the .routed.odb artefact)"
+                )
                 raise RuntimeError(
                     f"power run '{self.power_cfg.get_name()}': "
-                    f"routed ODB not found at {odb} — re-run `rb pnr` "
-                    "(older runs predate the .routed.odb artefact)"
+                    f"routed ODB not found at {odb} — {why}"
                 )
         else:
             if not os.path.isfile(netlist):

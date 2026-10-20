@@ -8,6 +8,7 @@ from importlib.resources import files
 
 import pytest
 from test_pnr_checkpoints import _backend, _events, _pnr_cfg, _runs
+from test_pnr_repair import _PR, _repair_backend
 
 from rtl_buddy.runner.xfail import xfail_refusal
 from rtl_buddy.tools import pnr_openroad, pnr_stages
@@ -270,6 +271,93 @@ def test_a_stopped_run_that_ends_early_names_the_last_step(
         ),
     }
     assert res.results["desc"] == expected[stages]
+
+
+#: A post-route repair block whose one round repairs while setup misses its margin.
+_ROUND = {"post_route": {**_PR, "rounds": 1}}
+
+
+@pytest.mark.parametrize("stages", [False, True])
+@pytest.mark.parametrize(
+    ("command", "session", "step"),
+    [
+        ("extract_parasitics", "round 1 extraction", "round 1: extraction"),
+        ("remove_fillers", "round 1 repair", "round 1 of 1: repair"),
+    ],
+)
+def test_a_post_route_repair_session_that_ends_early_names_it(
+    tmp_path, monkeypatch, stages, command, session, step
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        stages=stages,
+        env={"RB_STUB_SETUP": "-0.2", "RB_STUB_EXIT": command},
+        **_ROUND,
+    )
+    harness = tmp_path / "harness.tcl"
+    harness.write_text(
+        "proc extract_parasitics {args} { rb_stub extract_parasitics }\n"
+        + harness.read_text()
+    )
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "incomplete"
+    assert res.results["desc"].startswith(
+        "stage 06_post_route_repair: the flow did not finish: OpenROAD exited with "
+        f"code 0 before the end of {session} "
+        f"('>>> End of post-route repair {session}' is not in the log); "
+        f"the last step in the log is 'Post-route repair {step}"
+    )
+    (run_dir,) = _runs(artefacts)
+    assert not (run_dir / "07_finish.log").exists()
+
+
+@pytest.mark.parametrize("stages", [False, True])
+def test_finish_after_post_route_repair_that_ends_early_names_its_stage(
+    tmp_path, monkeypatch, stages
+):
+    backend, _ = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        stages=stages,
+        env={"RB_STUB_SETUP": "-0.2", "RB_STUB_EXIT": "filler_placement"},
+        **_ROUND,
+    )
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "incomplete"
+    assert res.results["desc"] == (
+        "stage 07_finish: the flow did not finish: OpenROAD exited with code 0 "
+        "before the end of the flow ('>>> DONE' is not in the log); the last step in "
+        "the log is 'Fill insertion' (last command: filler_placement, running)"
+    )
+
+
+def test_a_one_session_run_with_post_route_repair_that_ends_before_its_rounds(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        env={"RB_STUB_SETUP": "-0.2", "RB_STUB_EXIT": "clock_tree_synthesis"},
+        **_ROUND,
+    )
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "incomplete"
+    desc = res.results["desc"]
+    assert desc.startswith(
+        "stage 05_detailed_route: the flow did not finish: OpenROAD exited with code "
+        "0 before the end of the stage ('>>> End of stage 05_detailed_route' is not "
+        "in the log); the last step in the log is "
+    )
+    assert desc.endswith("(last command: clock_tree_synthesis, running)")
+    (run_dir,) = _runs(artefacts)
+    assert not (run_dir / "06_post_route_repair.r1.extract.log").exists()
 
 
 @pytest.mark.parametrize("stop_after", [None, "cts"])

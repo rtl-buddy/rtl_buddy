@@ -1,6 +1,7 @@
 import os
 import signal
 import subprocess
+import sys
 import time
 
 import pytest
@@ -415,3 +416,56 @@ def test_rusage_reap_tolerates_a_reaper_that_won():
 
     assert result.returncode == 3
     assert result.rusage is None
+
+
+def test_a_sweep_from_a_signal_handler_does_not_wait_on_its_own_thread():
+    # The handler runs in the main thread while that thread holds the registry lock,
+    # as it does inside `_register_live_process`.
+    script = """
+import os, signal
+from rtl_buddy import process_utils
+
+def _handler(signum, frame):
+    process_utils.terminate_live_managed_processes()
+    raise KeyboardInterrupt
+
+signal.signal(signal.SIGINT, _handler)
+try:
+    with process_utils._live_processes_lock:
+        os.kill(os.getpid(), signal.SIGINT)
+        for _ in range(1000):
+            pass
+except KeyboardInterrupt:
+    print("interrupted")
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
+    )
+
+    assert proc.stdout.strip() == "interrupted", proc.stderr
+
+
+@pytest.mark.skipif(not hasattr(os, "wait4"), reason="needs os.wait4")
+def test_a_signal_during_a_rusage_reap_stops_the_run(tmp_path):
+    """The signal handler waits on the child in the thread that is reaping it; it must not deadlock on Popen's lock."""
+    script = tmp_path / "child.py"
+    script.write_text(
+        "import subprocess, sys\n"
+        "from rtl_buddy import process_utils\n"
+        "print('started', flush=True)\n"
+        "process_utils.run_managed_process(\n"
+        "    ['sleep', '60'], stdout=subprocess.DEVNULL, rusage=True, kill_timeout=0.5\n"
+        ")\n"
+    )
+    child = subprocess.Popen(
+        [sys.executable, str(script)], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert child.stdout.readline() == "started\n"
+        time.sleep(1.0)
+        child.send_signal(signal.SIGTERM)
+        assert child.wait(timeout=20) == 128 + signal.SIGTERM
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()

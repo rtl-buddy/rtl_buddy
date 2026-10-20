@@ -42,6 +42,7 @@ from rtl_buddy.config.pnr_platform import (
 )
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.tools import pnr_checkpoints
+from rtl_buddy.tools.pnr_stages import TEMPLATE_STAGES
 
 DESIGN = "demo_top"
 
@@ -436,7 +437,7 @@ def test_successful_run_writes_every_checkpoint_and_a_complete_manifest(
     (run_dir,) = _runs(artefacts)
     assert os.readlink(artefacts / "checkpoints" / "latest") == run_dir.name
     assert res.results["checkpoint_dir"] == str(run_dir)
-    assert res.results["checkpoint_stages"] == list(CHECKPOINT_STAGES)
+    assert res.results["checkpoint_stages"] == list(TEMPLATE_STAGES[:-1])
     names = sorted(p.name for p in run_dir.iterdir())
     assert names == sorted(
         [
@@ -512,7 +513,7 @@ def test_failure_before_detailed_routing_leaves_labelled_pre_route_checkpoints(
     res = backend.run()
 
     assert res.results["result"] == "FAIL"
-    assert res.results["checkpoint_stages"] == list(CHECKPOINT_STAGES[:-1])
+    assert res.results["checkpoint_stages"] == list(TEMPLATE_STAGES[:-2])
     assert res.results["last_step"]["step"] == "detailed_route"
     assert res.results["last_step"]["status"] == "error"
     for name in _ROUTED:
