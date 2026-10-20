@@ -4514,7 +4514,7 @@ class OpenRoadPnr:
     def _checkpoint_inputs(self, platform, script_path: str | None) -> dict:
         """Return fingerprints of the files the generated script reads, for the checkpoint manifest.
 
-        Files those files source themselves are not followed. `netlist` is the file OpenROAD reads; when that is the `blocks:`-stripped copy, `synth_netlist` records the synth netlist it was made from. `script` is left out without `script_path`.
+        Files those files source themselves are not followed unless the run lists them under `inputs:`, recorded as `extra_inputs`. `netlist` is the file OpenROAD reads; when that is the `blocks:`-stripped copy, `synth_netlist` records the synth netlist it was made from. `script` is left out without `script_path`.
         """
         pdk = platform.get_pdk()
         stripped = (
@@ -4572,6 +4572,11 @@ class OpenRoadPnr:
                 _hook_role(point): [_file_fingerprint(p) for p in paths]
                 for point, paths in self.pnr_cfg.get_hooks().items()
             },
+            **(
+                {"extra_inputs": [_file_fingerprint(p) for p in extra]}
+                if (extra := self.pnr_cfg.get_inputs())
+                else {}
+            ),
             **({"script": _file_fingerprint(script_path)} if script_path else {}),
         }
 
@@ -4864,6 +4869,11 @@ class OpenRoadPnr:
                 _hook_role(point): list(paths)
                 for point, paths in self.pnr_cfg.get_hooks().items()
             },
+            **(
+                {"extra_inputs": list(extra)}
+                if (extra := self.pnr_cfg.get_inputs())
+                else {}
+            ),
         }
 
     def _record_block_parameters(self, staging: str, design: str) -> None:
