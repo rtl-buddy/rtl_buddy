@@ -2182,6 +2182,32 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "jobs asked for, so they are taken to have ended; remove "
                 f"{fields.get('clear')} to stop this warning"
             )
+        case "pnr.stage_submission_unanswered":
+            files = " ".join(map(str, fields.get("files") or []))
+            clear = " ".join(map(str, fields.get("clear") or []))
+            return (
+                f"P&R: sbatch has not answered stage job submission(s) {files} of an "
+                f"earlier dispatched run in {fields.get('artefact_dir')}; not "
+                "starting; once the submission is known to have died, remove "
+                f"{clear} to run without it"
+            )
+        case "pnr.stage_submission_presumed_failed":
+            return (
+                f"P&R: stage job submission {fields.get('file')} of the earlier "
+                f"dispatched run {fields.get('run_dir')} has had no answer from "
+                f"sbatch for {_format_elapsed(fields.get('age_s'))}, more than the "
+                f"{_format_elapsed(fields.get('after_s'))} a submission is given, "
+                "so it is taken to have failed"
+            )
+        case "pnr.stage_jobs_unaccounted":
+            ids = " ".join(map(str, fields.get("job_ids") or []))
+            stages = ", ".join(map(str, fields.get("stages") or []))
+            backend = _BACKEND_NAMES.get(fields.get("backend"), fields.get("backend"))
+            return (
+                f'P&R "{fields.get("pnr")}": {backend} accounting has no end state '
+                f"for stage job(s) {ids}, so the results of {stages} are taken as "
+                "the jobs wrote them"
+            )
         case "pnr.dispatch_resources_default":
             return (
                 f'P&R "{fields.get("pnr")}" has no resources: block, so every stage '

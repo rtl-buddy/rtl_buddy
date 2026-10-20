@@ -199,6 +199,9 @@ class PnrStageJobSpec:
 #: How long rb waits for each scheduler command while it cancels jobs, so a wedged controller cannot hold an interrupt off for long.
 CANCEL_TIMEOUT_S = 10.0
 
+#: How long a P&R stage submission may wait on the scheduler before it is stopped and fails (`submit_pnr_stage`).
+SUBMIT_TIMEOUT_S = 600.0
+
 
 class SubmissionAbandoned(FatalRtlBuddyError):
     """A submission given up before the scheduler answered; any job it submits is cancelled."""
@@ -322,7 +325,8 @@ class DispatchBackend(ABC):
         failed predecessor removes this job. ``abandon`` is polled while the scheduler
         has not answered; once it returns true, or an exception such as an interrupt
         reaches the call, the submission is given up (:class:`SubmissionAbandoned`)
-        and any job it goes on to submit is cancelled.
+        and any job it goes on to submit is cancelled. A submission the scheduler has
+        not answered within :data:`SUBMIT_TIMEOUT_S` is stopped and fails.
         """
         raise NotImplementedError(
             f"the {self.name} backend does not run P&R stages as jobs"

@@ -75,7 +75,14 @@ class _GuardedSbatch:
         assert argv[:2] == ["/bin/sh", "-c"] and argv[3] == "rb-sbatch"
         self.slurm = slurm
         self.answer, self.marker, self.cluster = argv[4], argv[5], argv[6]
-        self.cmd = argv[7:]
+        # sbatch runs under `timeout`, so the script files an answer in bounded time.
+        assert argv[7:11] == [
+            "timeout",
+            "-k",
+            "10",
+            f"{slurm_module.SUBMIT_TIMEOUT_S:g}",
+        ]
+        self.cmd = argv[11:]
         self.waits = slurm.sbatch_waits
         self.returncode = None
 
@@ -695,6 +702,65 @@ def test_accounting_that_still_reads_running_is_asked_again(tmp_path, monkeypatc
     assert slurm.sacct_calls == 3
 
 
+@pytest.mark.parametrize(
+    ("stage", "state"),
+    [("finish", "TIMEOUT"), ("cts", "CANCELLED"), ("place", "FAILED")],
+)
+def test_a_stage_whose_job_did_not_complete_fails_though_it_wrote_its_result(
+    tmp_path, monkeypatch, stage, state
+):
+    # The job wrote a successful result, then Slurm ended it before it exited.
+    slurm = _FakeSlurm(monkeypatch, state_of={stage: state})
+    backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+
+    res = backend.run()
+
+    run_dir = _only_run(artefacts)
+    assert pnr_dispatch.read_result(str(run_dir), stage)["ok"] is True
+    jobs = {_stage_of(j): j for j in slurm.submitted()}
+    log = pnr_dispatch.job_file(str(run_dir), stage, "slurm.log")
+    assert res.results["result"] == "FAIL"
+    # The stage whose job did not complete, not the one held behind it.
+    assert res.results["desc"] == (
+        f"stage {_NAMES[stage]}: Slurm job {jobs[stage]['id']} ended {state} after "
+        f"the stage succeeded and wrote its result (see {log})"
+    )
+    assert res.results["fail_stage"] == "dispatch"
+    later = PNR_STAGES[PNR_STAGES.index(stage) + 1 :]
+    assert [jobs[s]["state"] for s in later] == ["CANCELLED"] * len(later)
+    apply_xfail(res)
+    assert res.results["result"] == "FAIL"
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["outcome"]["result"] == "FAIL"
+
+
+def test_a_result_is_taken_as_written_when_accounting_has_no_state(
+    tmp_path, monkeypatch, caplog
+):
+    slurm = _FakeSlurm(monkeypatch, state_of={"finish": "TIMEOUT"})
+    slurm.sacct_rc = 1
+    backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+
+    with caplog.at_level("WARNING"):
+        res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert slurm.sacct_calls == pnr_dispatch._STATE_ATTEMPTS
+    (warning,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "pnr.stage_jobs_unaccounted"
+    ]
+    ids = [j["id"] for j in slurm.submitted()]
+    assert warning.rtl_fields["job_ids"] == ids
+    assert warning.rtl_fields["stages"] == [_NAMES[s] for s in PNR_STAGES]
+    assert warning.getMessage() == (
+        f'P&R "demo_pnr": Slurm accounting has no end state for stage job(s) '
+        f"{' '.join(ids)}, so the results of "
+        f"{', '.join(_NAMES[s] for s in PNR_STAGES)} are taken as the jobs wrote them"
+    )
+
+
 def test_a_job_that_ended_its_stage_without_a_result_says_so(tmp_path, monkeypatch):
     slurm = _FakeSlurm(monkeypatch, died_after={"cts": "TIMEOUT"})
     backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
@@ -1156,6 +1222,52 @@ def test_max_wait_does_not_bound_a_running_stage_job(tmp_path, monkeypatch):
     assert slurm.cancelled == []
 
 
+def test_a_queue_poll_that_hangs_counts_as_the_queue_not_answering(
+    tmp_path, monkeypatch
+):
+    slurm = _FakeSlurm(monkeypatch, max_wait=600.0)
+    monkeypatch.setattr(pnr_dispatch, "_clock", _Clock(100))
+    backend, artefacts, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+    real = slurm._squeue
+    bounds = []
+
+    def _hung(argv):
+        if slurm.hold:
+            return real(argv)
+        (_, timeout) = slurm.calls[-1]
+        bounds.append(timeout)
+        if timeout is None:
+            pytest.fail("a poll of the wait has no timeout, so a hung squeue holds it")
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    slurm._squeue = _hung
+    real_cancel = slurm._scancel
+
+    def _scancel(argv):
+        slurm.hold = True
+        return real_cancel(argv)
+
+    slurm._scancel = _scancel
+
+    res = backend.run()
+
+    # Every poll gave up at its timeout, so max-wait still ran out.
+    assert res.results["fail_stage"] == "dispatch"
+    first = slurm.submitted()[0]["id"]
+    assert re.fullmatch(
+        rf"dispatch: stage 01_floorplan: Slurm job {first} waited \d+s in the "
+        r"queue without starting, longer than cfg-dispatch.max-wait \(600s\); "
+        rf"`squeue -j {first}` gives the reason it is held",
+        res.results["desc"],
+    )
+    # The wait's polls, then the cancel's.
+    assert len(bounds) > 1
+    assert bounds == [pnr_dispatch._WAIT_POLL_TIMEOUT_S] * (len(bounds) - 1) + [
+        CANCEL_TIMEOUT_S
+    ]
+    assert sorted(slurm.cancelled) == sorted(j["id"] for j in slurm.submitted())
+
+
 def test_a_dispatch_failure_is_prefixed_once():
     assert pnr_dispatch.failure_desc("sbatch failed") == "dispatch: sbatch failed"
     assert (
@@ -1349,6 +1461,115 @@ def test_a_job_accepted_after_its_head_died_is_found(tmp_path, monkeypatch, answ
     assert "stage job(s) 777 of earlier" in res.results["desc"]
 
 
+def _leave_unanswered(artefacts, *suffixes):
+    """Make the dispatched run in `artefacts` look as if its head was killed before sbatch answered its first submission: no job recorded, and an empty `01_floorplan.<suffix>` for each of `suffixes`."""
+    run_dir = _only_run(artefacts)
+    dispatch = run_dir / "dispatch"
+    (dispatch / "jobs.json").unlink()
+    for answer in dispatch.glob("*.sbatch"):
+        answer.unlink()
+    for suffix in suffixes:
+        (dispatch / f"01_floorplan.{suffix}").write_text("")
+    return run_dir
+
+
+def _without_squeue(monkeypatch):
+    which = pnr_openroad.shutil.which
+    monkeypatch.setattr(
+        pnr_openroad.shutil,
+        "which",
+        lambda cmd, *a, **k: None if cmd == "squeue" else which(cmd, *a, **k),
+    )
+
+
+# `.sbatch.tmp`: the guard still waits on sbatch; `.sbatch.cancel`: the head gave the
+# submission up, and the guard cancels the job once sbatch answers.
+@pytest.mark.parametrize(
+    ("suffixes", "dispatched"),
+    [
+        (("sbatch.tmp",), True),
+        (("sbatch.cancel",), True),
+        (("sbatch.tmp", "sbatch.cancel"), True),
+        (("sbatch.tmp",), False),
+    ],
+)
+def test_a_submission_sbatch_has_not_answered_blocks_a_later_run(
+    tmp_path, monkeypatch, suffixes, dispatched
+):
+    first, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
+    assert first.run().results["result"] == "PASS"
+    run_dir = _leave_unanswered(artefacts, *suffixes)
+    log = (artefacts / "pnr.log").read_bytes()
+    slurm.calls.clear()
+    if dispatched:
+        again, _, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+    else:
+        # No job id to look up, so no scheduler client is needed to refuse.
+        again, _ = _backend(tmp_path, monkeypatch, stages=True)
+        _without_squeue(monkeypatch)
+
+    res = again.run()
+
+    assert res.results["result"] == "FAIL"
+    assert res.results["fail_stage"] == "dispatch"
+    named = run_dir / "dispatch" / f"01_floorplan.{suffixes[0]}"
+    assert res.results["desc"] == (
+        f"dispatch: stage job submission(s) {named} of earlier dispatched run(s) "
+        f"{run_dir.name} have no answer from sbatch yet, and a job sbatch accepts "
+        "would write into this run's outputs; run rb pnr again once sbatch has "
+        "answered (a submission without an answer for 660s is taken to have "
+        "failed), or once the submission is known to have died remove "
+        f"{run_dir / 'dispatch'} to run without it"
+    )
+    # Nothing was cleared, started or asked of Slurm.
+    assert _runs(artefacts) == [run_dir]
+    assert (artefacts / "pnr.log").read_bytes() == log
+    assert slurm.calls == []
+    if not dispatched:
+        return
+
+    # sbatch answers with a job that has already ended.
+    (run_dir / "dispatch" / "01_floorplan.sbatch.tmp").unlink(missing_ok=True)
+    (run_dir / "dispatch" / "01_floorplan.sbatch").write_text(
+        f"{slurm.submitted()[0]['id']}\n"
+    )
+    assert again.run().results["result"] == "PASS"
+    recorded = json.loads((run_dir / "dispatch" / "jobs.json").read_text())
+    assert recorded["drained"] is True
+
+
+def test_a_submission_without_an_answer_for_long_is_taken_to_have_failed(
+    tmp_path, monkeypatch, caplog
+):
+    first, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
+    assert first.run().results["result"] == "PASS"
+    run_dir = _leave_unanswered(artefacts, "sbatch.tmp")
+    unanswered = run_dir / "dispatch" / "01_floorplan.sbatch.tmp"
+    then = time.time() - pnr_dispatch._UNRESOLVED_AFTER_S - 5
+    os.utime(unanswered, (then, then))
+    again, _, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+
+    with caplog.at_level("WARNING"):
+        assert again.run().results["result"] == "PASS"
+
+    (warning,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "pnr.stage_submission_presumed_failed"
+    ]
+    assert warning.rtl_fields["file"] == str(unanswered)
+    assert re.fullmatch(
+        rf"P&R: stage job submission {re.escape(str(unanswered))} of the earlier "
+        rf"dispatched run {re.escape(str(run_dir))} has had no answer from sbatch "
+        r"for 11m0\ds, more than the 11m00s a submission is given, so it is taken "
+        r"to have failed",
+        warning.getMessage(),
+    ), warning.getMessage()
+    # Recorded as drained, so the next run does not warn again.
+    recorded = json.loads((run_dir / "dispatch" / "jobs.json").read_text())
+    assert recorded["drained"] is True
+
+
 def test_the_orphan_lookup_asks_only_for_this_users_jobs(tmp_path, monkeypatch):
     first, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
     assert first.run().results["result"] == "PASS"
@@ -1454,7 +1675,10 @@ def test_cancelling_bounds_each_scheduler_command(tmp_path, monkeypatch):
     first_cancel = commands.index(("scancel", CANCEL_TIMEOUT_S))
     # The handler cancels without asking the queue first: the command before is the
     # wait's own poll. Every later command is bounded too.
-    assert commands[first_cancel - 1] == ("squeue", None)
+    assert commands[first_cancel - 1] == (
+        "squeue",
+        pnr_dispatch._WAIT_POLL_TIMEOUT_S,
+    )
     assert [t for c, t in commands[first_cancel:] if c in ("squeue", "scancel")]
     assert all(
         t is not None for c, t in commands[first_cancel:] if c in ("squeue", "scancel")
@@ -1821,6 +2045,24 @@ def test_a_given_up_sbatch_returns_at_once_and_its_job_is_cancelled(
     while not log.exists() and time.monotonic() < deadline:
         threading.Event().wait(0.05)
     assert log.read_text() == "-M c2 4242\n"
+
+
+def test_an_sbatch_that_does_not_answer_is_stopped_and_fails(tmp_path, monkeypatch):
+    backend, spec = _guard_backend(tmp_path, monkeypatch, "sleep 30\necho 4242\n")
+    monkeypatch.setattr(slurm_module, "SUBMIT_TIMEOUT_S", 1.0)
+    start = time.monotonic()
+
+    with pytest.raises(
+        FatalRtlBuddyError,
+        match=r"^sbatch failed for pnr:blk:cts \(rc=124\): sbatch did not answer "
+        r"within 1s$",
+    ):
+        backend.submit_pnr_stage(spec)
+
+    assert time.monotonic() - start < 10
+    # The guard filed an empty answer, so the submission is resolved as failed.
+    assert (tmp_path / "03_cts.sbatch").read_text() == ""
+    assert not (tmp_path / "03_cts.sbatch.tmp").exists()
 
 
 def test_submit_pnr_stage_argv(monkeypatch):
