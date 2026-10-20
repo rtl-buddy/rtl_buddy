@@ -3127,9 +3127,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"pnr {fields.get('pnr')}: {fields.get('desc')}"
         case "pnr.electrical_violators":
             verdict = (
-                "the run fails (fail-on-electrical)"
+                "the run fails (the electrical gate is on)"
                 if fields.get("fail_on_electrical")
-                else "the run still passes; set fail-on-electrical: true to fail it"
+                else "the run still passes; to fail it, set fail-on-electrical: "
+                "true or add electrical to signoff.fail-on"
             )
             return (
                 f"pnr {fields.get('pnr')}: the routed design has "

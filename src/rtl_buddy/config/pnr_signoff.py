@@ -73,6 +73,16 @@ def _names(where: str, key: str, value, what: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def effective_gates(
+    signoff: "Signoff | None", fail_on_electrical: bool
+) -> tuple[str, ...]:
+    """The gates that fail a routed run, in `SIGNOFF_GATES` order: `signoff.fail-on`, with `electrical` added by `fail-on-electrical: true`."""
+    gates = set(signoff.fail_on) if signoff else set()
+    if fail_on_electrical:
+        gates.add("electrical")
+    return tuple(g for g in SIGNOFF_GATES if g in gates)
+
+
 def read_signoff(where: str, raw):
     """Return one level's `signoff:` as a layer: `UNSET` when absent, `None` when `null`, else a `SignoffLayer` of the keys it writes, validated. `where` names the level."""
     if raw is UNSET:

@@ -195,7 +195,7 @@ RB-ELECTRICAL: max_fanout 0
 
 
 def _backend(tmp_path, monkeypatch, platform, log, *, drcs=0, **cfg):
-    """A backend whose OpenROAD writes `log` and a detailed-route DRC report of `drcs` violations, and whose routed DEF and database exist."""
+    """A backend whose OpenROAD writes `log` and a detailed-route DRC report of `drcs` violations (none when `drcs` is None), and whose routed DEF and database exist."""
     (tmp_path / "models.yaml").write_text(
         dedent("""\
         rtl-buddy-filetype: model_config
@@ -235,9 +235,10 @@ def _backend(tmp_path, monkeypatch, platform, log, *, drcs=0, **cfg):
     def _fake_run(cmd, **kwargs):
         kwargs["stdout"].write(log + ">>> DONE\n")
         artefacts = Path(backend.artefact_dir)
-        (artefacts / "route.drc.rpt").write_text(
-            "".join(f"violation type: Short\n\tbbox {i}\n" for i in range(drcs))
-        )
+        if drcs is not None:
+            (artefacts / "route.drc.rpt").write_text(
+                "".join(f"violation type: Short\n\tbbox {i}\n" for i in range(drcs))
+            )
         for name in ("demo_top.def", "demo_top.routed.odb"):
             (artefacts / name).write_text("routed\n")
         return MagicMock(returncode=0, stderr="")
@@ -346,20 +347,64 @@ def test_the_timing_gate_on_a_single_corner_platform(tmp_path, monkeypatch):
     assert res.results["signoff"]["timing"]["hold"]["wns_ps"] == pytest.approx(100.0)
 
 
-def test_an_unconstrained_side_passes_and_an_unreported_one_fails(
+def _typ(tmp_path):
+    return _platform(_make_pdk_cfg(tmp_path), sta_corner="typ")
+
+
+def test_an_unconstrained_hold_passes_and_an_unreported_one_fails(
     tmp_path, monkeypatch
 ):
-    platform = _platform(_make_pdk_cfg(tmp_path), sta_corner="typ")
-    log = "worst slack max INF\n"
+    log = "worst slack max 0.20\nworst slack min INF\n"
     res = _signoff_run(
-        tmp_path, monkeypatch, {"fail-on": ["timing"]}, log, platform=platform
+        tmp_path, monkeypatch, {"fail-on": ["timing"]}, log, platform=_typ(tmp_path)
+    ).run()
+
+    timing = res.results["signoff"]["timing"]
+    assert timing["hold"]["unconstrained"] is True
+    assert timing["hold"]["wns_ps"] is None
+    assert res.results["result"] == "PASS"
+
+    res = _signoff_run(
+        tmp_path / "b",
+        monkeypatch,
+        {"fail-on": ["timing"]},
+        "worst slack max 0.20\n",
+        platform=_typ(tmp_path),
+    ).run()
+    assert res.results["desc"] == "signoff failed: timing (hold WNS not reported)"
+
+
+def test_an_unconstrained_setup_fails_the_timing_gate(tmp_path, monkeypatch):
+    log = "worst slack max INF\nworst slack min 0.10\n"
+    res = _signoff_run(
+        tmp_path, monkeypatch, {"fail-on": ["timing"]}, log, platform=_typ(tmp_path)
     ).run()
 
     timing = res.results["signoff"]["timing"]
     assert timing["setup"]["unconstrained"] is True
-    assert timing["setup"]["wns_ps"] is None
-    assert timing["hold"]["unconstrained"] is False
-    assert res.results["desc"] == "signoff failed: timing (hold WNS not reported)"
+    assert timing["verdict"] == "fail"
+    assert res.results["desc"] == "signoff failed: timing (setup unconstrained at typ)"
+
+
+def test_setup_inf_at_every_judged_corner_fails_and_at_one_passes(
+    tmp_path, monkeypatch
+):
+    inf_ss = _MC_LOG.replace(
+        "corner ss worst slack max -0.12", "corner ss worst slack max INF"
+    ).replace("worst slack max -0.12", "worst slack max 0.30")
+    inf_ss_tt = inf_ss.replace(
+        "corner tt worst slack max 0.30", "corner tt worst slack max INF"
+    )
+    block = {"setup-corners": ["tt", "ss"], "hold-corners": ["tt"], "fail-on": ["timing"]}
+
+    res = _signoff_run(tmp_path / "a", monkeypatch, block, inf_ss).run()
+    assert res.results["result"] == "PASS"
+    assert res.results["signoff"]["timing"]["setup"]["worst_corner"] == "tt"
+
+    res = _signoff_run(tmp_path / "b", monkeypatch, block, inf_ss_tt).run()
+    assert res.results["desc"] == (
+        "signoff failed: timing (setup unconstrained at tt, ss)"
+    )
 
 
 def test_a_side_inf_at_its_corners_is_unconstrained(tmp_path, monkeypatch):
@@ -375,6 +420,57 @@ def test_a_side_inf_at_its_corners_is_unconstrained(tmp_path, monkeypatch):
 
     assert res.results["result"] == "PASS"
     assert res.results["signoff"]["timing"]["hold"]["unconstrained"] is True
+
+
+@pytest.mark.parametrize(
+    ("setup", "hold", "verdict", "desc"),
+    [
+        ("0.00", "0.00", "pass", None),
+        ("0.01", "0.02", "pass", None),
+        (
+            "-0.00",
+            "0.00",
+            "fail",
+            "signoff failed: timing (setup WNS -0.0000 ns at typ)",
+        ),
+        (
+            "0.00",
+            "-0.00",
+            "fail",
+            "signoff failed: timing (hold WNS -0.0000 ns at typ)",
+        ),
+    ],
+    ids=["zero", "positive", "negative-zero-setup", "negative-zero-hold"],
+)
+def test_a_wns_of_negative_zero_fails_the_timing_gate(
+    tmp_path, monkeypatch, setup, hold, verdict, desc
+):
+    """The final reports print two digits, so a slack in (-5 ps, 0) reads `-0.00`."""
+    log = f"worst slack max {setup}\nworst slack min {hold}\n"
+    res = _signoff_run(
+        tmp_path, monkeypatch, {"fail-on": ["timing"]}, log, platform=_typ(tmp_path)
+    ).run()
+
+    assert res.results["signoff"]["timing"]["verdict"] == verdict
+    if desc is None:
+        assert res.results["result"] == "PASS"
+    else:
+        assert res.results["desc"] == desc
+
+
+def test_negative_zero_at_a_later_corner_is_the_worst(tmp_path, monkeypatch):
+    log = _MC_LOG.replace(
+        "corner tt worst slack max 0.30", "corner tt worst slack max 0.00"
+    ).replace("corner ss worst slack max -0.12", "corner ss worst slack max -0.00")
+    res = _signoff_run(
+        tmp_path,
+        monkeypatch,
+        {"setup-corners": ["tt", "ss"], "hold-corners": ["tt"], "fail-on": ["timing"]},
+        log,
+    ).run()
+
+    assert res.results["signoff"]["timing"]["setup"]["worst_corner"] == "ss"
+    assert res.results["desc"] == "signoff failed: timing (setup WNS -0.0000 ns at ss)"
 
 
 @pytest.mark.parametrize(("drcs", "verdict"), [(0, "pass"), (3, "fail")])
