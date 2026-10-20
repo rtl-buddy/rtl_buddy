@@ -59,7 +59,7 @@ Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previo
 | `physical_cell_count` | Tap, endcap, spacer and fill cells. |
 | `worst_setup_corner`, `worst_hold_corner`, `corners` | Multi-corner platforms: the corner behind each WNS, and each corner's four timing values. |
 | `routed`, `mode`, `stopped_after`, `global_route_overflow` | `routed: false` means the run stopped early ([probe](#probe-a-floorplan) or `--stop-after`); its numbers are that stage's estimate, with the global-route overflow from `global_route` on. |
-| `post_route_repair` | The rounds of [post-route repair](#repair-timing-after-routing): `kept_round`, `rounds`, `repaired_rounds`, `stop`, `reason`, `passed_over_round`. |
+| `post_route_repair` | The rounds of [post-route repair](#repair-timing-after-routing): `kept_round`, `rounds`, `repaired_rounds`, `stop`, `reason`, `passed_over_round`, and with `electrical-repair` `electrical_round`. |
 | `openroad_threads` | Requested and effective [thread counts](#openroad-threads). |
 | `gds_status`, `gds_missing_cells` | [Stream-out](#stream-out-gds-and-png) outcome. |
 | `checkpoint_dir`, `checkpoint_stages`, `last_step` | With [checkpoints](#keep-stage-checkpoints): where they are, which stages were written, and the last step reached. |
@@ -71,6 +71,7 @@ A passing run's description carries qualifiers worth reading:
 - `pnr.no_wire_rc`: placement and CTS ran without wire RC. See [Set wire RC](#set-wire-rc).
 - `electrical N max-slew, ... violator(s)`: set `fail-on-electrical: true` to fail such runs.
 - `post-route repair ...`: a repair round was passed over or its session failed and was set aside.
+- `post-route electrical round N kept`, `not kept` or `failed`: the [electrical round](#repair-electrical-violators-after-routing) ran.
 - `GDS incomplete: ...`: cells with no layout in `preview` mode.
 - `stale block abstract(s) accepted: ...`: run with `--accept-stale`.
 
@@ -246,8 +247,26 @@ The stage keeps the best round, never worse than the detailed route:
 
 - A clean route always beats one with DRCs.
 - Otherwise a round wins when no repaired side's worst slack (setup if `setup-margin` is set, hold if `hold-margin` is set; 0 when met) is lower and one is higher, without more DRCs; or when it ties on timing with fewer DRCs.
+- On a run with `fail-on-electrical: true`, a clean round with no max-slew or max-capacitance violators also beats a clean round that has some, when its timing is as good on every repaired side. The stop reason names that case and the kept round's violators. Other runs ignore electrical violators here.
 
 Rounds stop (`post_route_repair.stop`) when the best round is clean and meets timing (`timing_met`), a clean round does not improve (`no_improvement`), timing is not reported (`timing_not_reported`), a session fails (`session_failed`) or `rounds` run out (`last_round`). `timing_met` and `no_improvement` need a clean route, so rounds with DRCs keep going. The first clean round that does not become the best ends the stage, so no later round starts from it and raising `rounds` does not change that. A failure extracting round 0 fails the run; a failed session of a later round does not: rb warns `pnr.post_route_round_failed`, keeps the best round and qualifies the `PASS`. `finish` continues from the kept round, whose DRC report becomes `route.drc.rpt`. `pnr.post_route_round` logs each round's slack and DRCs.
+
+### Repair electrical violators after routing
+
+A round's reroute can leave nets over their max-slew or max-capacitance limit. `electrical-repair` adds one round after the others:
+
+```yaml
+post-route-repair:
+  repair-design: {slew-margin: 20, cap-margin: 20}
+  setup-margin: 0.05
+  electrical-repair: {slew-margin: 10, cap-margin: 10}   # percent; {} for OpenROAD's defaults
+```
+
+- When the best round has max-slew or max-capacitance violators, the electrical round runs `repair_design` alone at these margins on that round's database and SPEF, at `repair-design.wire-rc` when that is set. It then legalizes, reroutes per `reroute`, extracts and times like any round, and becomes the kept round only if it [beats the best](#repair-timing-after-routing). On a run without `fail-on-electrical: true` that takes better timing or fewer DRCs.
+- When the best round has no such violators, the round is skipped and `pnr.log` says so.
+- Its number is `rounds` + 1. `post_route_repair.electrical_round` gives the round it repaired (`source_round`), its `status` (`kept`, `not_kept`, `skipped` or `failed`) and `reason`. A failed session is set aside like a round's.
+
+With `electrical-repair` set or `fail-on-electrical: true`, each `pnr.post_route_round` event in `progress.jsonl` carries `max_slew_violation_count` and `max_capacitance_violation_count` over every corner and, on a multi-corner platform, each corner's in `corners`. Without either, the rounds count no violators and their scripts are unchanged.
 
 ## Probe a floorplan
 

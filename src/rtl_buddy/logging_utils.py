@@ -2273,6 +2273,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             round_ = fields.get("round")
             if not round_:
                 repair = "the detailed route"
+            elif fields.get("electrical_round"):
+                repair = "electrical, repair_design only"
             else:
                 repair = ", ".join(
                     f"{kind} margin {fields.get(f'{kind}_margin_ns'):g} ns"
@@ -2289,10 +2291,18 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 )
             else:
                 timing = "not timed"
+            electrical = ""
+            if "max_slew_violation_count" in fields:
+                electrical = (
+                    f", {fields.get('max_slew_violation_count')} max-slew and "
+                    f"{fields.get('max_capacitance_violation_count')} "
+                    "max-capacitance violator(s)"
+                )
             return (
-                f'P&R "{fields.get("pnr")}" post-route repair round '
-                f"{round_}/{fields.get('rounds')} ({repair}): {timing}, "
-                f"{fields.get('drc_count')} DRC violation(s); "
+                f'P&R "{fields.get("pnr")}" post-route repair round {round_}'
+                + ("" if fields.get("electrical_round") else f"/{fields.get('rounds')}")
+                + f" ({repair}): {timing}, "
+                f"{fields.get('drc_count')} DRC violation(s){electrical}; "
                 f"best round {fields.get('best_round')}"
             )
         case "pnr.post_route_round_failed":
@@ -2309,6 +2319,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 + (" (the detailed route)" if kept == 0 else "")
                 + f"; {fields.get('repaired_rounds')} of {fields.get('rounds')} "
                 f"round(s) repaired; stopped: {fields.get('reason')}"
+                + (
+                    f"; electrical round {electrical.get('round')} "
+                    f"{electrical.get('status', '').replace('_', ' ')}: "
+                    f"{electrical.get('reason')}"
+                    if (electrical := fields.get("electrical_round"))
+                    else ""
+                )
             )
         case "pnr.post_route_repair_without_rcx":
             return (

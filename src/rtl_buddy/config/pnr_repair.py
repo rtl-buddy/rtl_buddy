@@ -70,6 +70,12 @@ class PostRouteRepairDesignFile:
 
 
 @serde
+class ElectricalRepairFile:
+    slew_margin: Any = field(rename="slew-margin", default=UNSET)
+    cap_margin: Any = field(rename="cap-margin", default=UNSET)
+
+
+@serde
 class GlobalRouteRepairFile:
     repair_design: Any = field(rename="repair-design", default=UNSET)
     setup_margin: Any = field(rename="setup-margin", default=UNSET)
@@ -85,6 +91,7 @@ class PostRouteRepairFile:
     rounds: Any = UNSET
     margin_step: Any = field(rename="margin-step", default=UNSET)
     reroute: Any = UNSET
+    electrical_repair: Any = field(rename="electrical-repair", default=UNSET)
 
 
 #: The keys of each block, for the unknown-key check.
@@ -96,7 +103,8 @@ POST_ROUTE_REPAIR_SPEC = KeySpec(
     {
         "repair-design": KeySpec(
             PostRouteRepairDesignFile, {"wire-rc": KeySpec(WireRcFile)}
-        )
+        ),
+        "electrical-repair": KeySpec(ElectricalRepairFile),
     },
 )
 
@@ -145,7 +153,7 @@ class GlobalRouteRepair:
 
 @dataclass(frozen=True)
 class PostRouteRepair:
-    """The repair rounds after detailed route, on extracted parasitics. Margins are in ns; `None` skips that repair."""
+    """The repair rounds after detailed route, on extracted parasitics. Margins are in ns; `None` skips that repair. `electrical_repair` holds the `slew-margin` and `cap-margin` of the electrical round, or None when it does not run."""
 
     repair_design: RepairDesign | None = None
     setup_margin: float | None = None
@@ -153,6 +161,7 @@ class PostRouteRepair:
     rounds: int = 1
     margin_step: float = 0.0
     reroute: PostRouteReroute = PostRouteReroute.ECO
+    electrical_repair: RepairDesign | None = None
 
     def sides(self) -> tuple[str, ...]:
         """The timing sides the rounds repair, `setup` and `hold`, in that order: each whose margin is set."""
@@ -163,6 +172,17 @@ class PostRouteRepair:
                 ("hold", self.hold_margin),
             )
             if margin is not None
+        )
+
+    def electrical_design(self) -> RepairDesign | None:
+        """The electrical round's `repair_design`: its margins, at `repair-design.wire-rc` when that is set."""
+        if self.electrical_repair is None:
+            return None
+        wire_rc = self.repair_design.wire_rc if self.repair_design else None
+        return RepairDesign(
+            slew_margin=self.electrical_repair.slew_margin,
+            cap_margin=self.electrical_repair.cap_margin,
+            wire_rc=wire_rc,
         )
 
     def margins(self, round_: int) -> tuple[float | None, float | None]:
@@ -224,6 +244,12 @@ _REPAIR_DESIGN_KEYS = {
     "slew-margin": "slew_margin",
     "cap-margin": "cap_margin",
     "max-wire-length": "max_wire_length",
+}
+
+
+_ELECTRICAL_REPAIR_KEYS = {
+    "slew-margin": "slew_margin",
+    "cap-margin": "cap_margin",
 }
 
 
@@ -324,6 +350,7 @@ _POST_ROUTE_KEYS = {
     "rounds": "rounds",
     "margin-step": "margin_step",
     "reroute": "reroute",
+    "electrical-repair": "electrical_repair",
 }
 
 
@@ -380,11 +407,17 @@ def read_post_route_repair(where: str, raw):
             where, "margin-step", step, low=0.0, nullable=False
         )
     _read_reroute(where, block, layer, PostRouteReroute)
+    if block["electrical_repair"] is not UNSET:
+        layer["electrical_repair"] = _read_repair_design(
+            f"{where}.electrical-repair",
+            block["electrical_repair"],
+            _ELECTRICAL_REPAIR_KEYS,
+        )
     return layer
 
 
 def _merge(layers) -> dict | None:
-    """Merge layers, lowest first: a `None` layer turns the block off, a later layer's keys win field by field, `repair_design` merging the same way."""
+    """Merge layers, lowest first: a `None` layer turns the block off, a later layer's keys win field by field, `repair_design` and `electrical_repair` merging the same way."""
     merged = None
     for layer in layers:
         if layer is UNSET:
@@ -394,8 +427,8 @@ def _merge(layers) -> dict | None:
             continue
         merged = dict(merged or {})
         for attr, value in layer.items():
-            if attr == "repair_design" and value is not None:
-                value = {**(merged.get("repair_design") or {}), **value}
+            if attr in ("repair_design", "electrical_repair") and value is not None:
+                value = {**(merged.get(attr) or {}), **value}
             merged[attr] = value
     return merged
 
@@ -448,6 +481,11 @@ def resolve_post_route_repair(where: str, layers) -> PostRouteRepair | None:
         rounds=merged.get("rounds", 1),
         margin_step=merged.get("margin_step", 0.0),
         reroute=merged.get("reroute", PostRouteReroute.ECO),
+        electrical_repair=(
+            None
+            if merged.get("electrical_repair") is None
+            else RepairDesign(**merged["electrical_repair"])
+        ),
     )
     design = repair.repair_design
     if design is not None and design.after_timing and not repair.sides():
