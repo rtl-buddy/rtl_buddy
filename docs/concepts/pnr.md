@@ -775,6 +775,7 @@ The input files are those the [checkpoint manifest](#keep-stage-checkpoints) fin
 
 A stage script is compared up to its end-of-stage line, without:
 
+- whole-line comments;
 - the two lines that name run directories (`RB_RUN_DIR` and `RB_PRED_DIR`);
 - the thread count (`set_thread_count`); and
 - each `set NAME value` line of the header at the top of the script whose variable the rest of that stage's script does not read, as `$NAME`, `${NAME}`, `$::NAME` or `${::NAME}`, itself or through another header line it keeps.
