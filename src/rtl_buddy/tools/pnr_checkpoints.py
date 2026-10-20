@@ -10,6 +10,7 @@ Layout under the run's artefact directory::
         manifest.json                     # inputs + tool identity (Python)
         progress.jsonl                    # step / stage / checkpoint / timing events
         01_floorplan.{odb,def,sdc}
+        01_floorplan.<corner>.sdc         # each corner's SDC mode, with a mode per corner
         02_place.{odb,def,sdc}
         03_cts.{odb,def,sdc}
         04_global_route.{odb,def,sdc,guide,segments}
@@ -175,8 +176,9 @@ def _arm_config(
     state=(),
     corners: tuple[str, ...] = (),
     scenes: bool = False,
+    modes: tuple[str, ...] = (),
 ) -> str:
-    """Return the braced Tcl dict `rb::ckpt::arm` takes; every name in it is a plain identifier except a corner, which is quoted. `order` is the run's stages; only their reports are listed. `corners` are the corners each stage end is timed on, STA scenes when `scenes` (see `render_tcl_block`)."""
+    """Return the braced Tcl dict `rb::ckpt::arm` takes; every name in it is a plain identifier except a corner, which is quoted. `order` is the run's stages; only their reports are listed. `corners` are the corners each stage end is timed on, STA scenes when `scenes` (see `render_tcl_block`). `modes` is listed only when there are any, so a single-mode run's block does not list it."""
     return (
         "{"
         + " ".join(
@@ -210,6 +212,7 @@ def _arm_config(
                 + "}",
                 f"corners {{{' '.join(_tcl_quote(c) for c in corners)}}}",
                 f"scenes {int(scenes)}",
+                *([f"modes {{{' '.join(modes)}}}"] if modes else []),
             ]
         )
         + "}"
@@ -229,10 +232,11 @@ def render_tcl_block(
     state: tuple[str, ...] = (),
     corners: tuple[str, ...] = (),
     scenes: bool = False,
+    modes: tuple[str, ...] = (),
 ) -> str:
     """Return the Tcl block the flow template splices in when checkpoints are on, for a one-session run.
 
-    `order` is the run's stages; `state` names the flow globals each checkpoint saves for a later session. `corners` are the platform's corners, which every stage end is timed on; `scenes` is set for a multi-corner platform, whose corners are STA scenes. Every stage boundary is armed, so each stage's resources are recorded; only `stages`, and the `stop_after` stage, write a checkpoint. The `stop_after` stage is ended by the flow's explicit stop, not by its anchor, so its checkpoint is strict and no later stage starts. The block carries its own leading newline so a run without checkpoints renders the template byte-identically.
+    `order` is the run's stages; `state` names the flow globals each checkpoint saves for a later session. `corners` are the platform's corners, which every stage end is timed on; `scenes` is set for a multi-corner platform, whose corners are STA scenes. `modes` are the corners whose SDC modes each checkpoint also writes alone, `NN_<stage>.<corner>.sdc`. Every stage boundary is armed, so each stage's resources are recorded; only `stages`, and the `stop_after` stage, write a checkpoint. The `stop_after` stage is ended by the flow's explicit stop, not by its anchor, so its checkpoint is strict and no later stage starts. The block carries its own leading newline so a run without checkpoints renders the template byte-identically.
     """
     wanted = [
         s for s in order if s in CHECKPOINT_STAGES and (s in stages or s == stop_after)
@@ -251,6 +255,7 @@ def render_tcl_block(
         state=state,
         corners=corners,
         scenes=scenes,
+        modes=modes,
     )
     return (
         f'\nputs ">>> Stage checkpoints (#653)"\n{_procs()}\n'
@@ -273,8 +278,9 @@ def render_staged_block(
     session: str = "staged run",
     corners: tuple[str, ...] = (),
     scenes: bool = False,
+    modes: tuple[str, ...] = (),
 ) -> str:
-    """Return the checkpoint block of one staged session; `session` names the session in its first log line.
+    """Return the checkpoint block of one staged session; `session` names the session in its first log line, and `modes` are as `render_tcl_block`'s.
 
     `RB_RUN_DIR` is where the session writes its checkpoint and events; `RB_PRED_DIR` holds the checkpoint it starts from. They are the only run-specific lines, so two runs' scripts of a stage compare equal apart from them (see `RUN_BINDING_RE`). A checkpoint that cannot be written fails the session. Only `post_route_repair`'s own sessions list it among the stages, so the other stages' scripts are the same whether a run repairs after routing or not.
     """
@@ -296,6 +302,7 @@ def render_staged_block(
         state=SESSION_STATE,
         corners=corners,
         scenes=scenes,
+        modes=modes,
     )
     lines += [
         _procs().rstrip("\n"),

@@ -15,6 +15,7 @@ Use `rb --machine`. Field definitions: `rb --machine docs show reference/yaml#pn
 - Process files and defaults live on the `cfg-pdks` entry (`pdn-config`, `rcx-rules`, `layer-rc-tcl`, `placement.*`, `dont-use-cells`); the platform picks `corner` or `corners` and overrides knobs; the run overrides `placement:` and the repair blocks.
 - Copy an existing run in the project before writing one from scratch. Find names with `rb --machine pnr --list -c <pnr.yaml>`.
 - Put extra Tcl in `hooks:` (fixed flow points) or `pin-constraints`, never in an edited `pnr.tcl` or the SDC.
+- Multi-corner (`corners:`): each corner is timed in its own SDC mode (OpenROAD 26Q4+). `constraints:` may map each corner to its SDC. An SDC command in a hook constrains only the primary (first) corner; put per-corner constraints in the SDCs.
 
 ## Run loop
 
@@ -41,7 +42,7 @@ rb --machine pnr-export <run> -c <pnr.yaml> --png        # GDS/PNG from a saved 
 - Compare experiments on `routed_cell_count`, not `cell_count` (the input netlist).
 - `routed: false` (probe, `--stop-after`) means the numbers are a stage estimate; never report them as routed results.
 - Read qualifiers in `desc`: `pnr.no_wire_rc` (timing before routing had no wire RC; set the PDK's `layer-rc-tcl`), electrical violators, a passed-over or failed post-route repair round, `GDS incomplete`, accepted stale abstracts.
-- Multi-corner: WNS fields are the worst over corners; `worst_setup_corner`, `worst_hold_corner` and `corners` give the breakdown.
+- Multi-corner: WNS fields are the worst over corners; `worst_setup_corner`, `worst_hold_corner` and `corners` give the breakdown. `max_fanout_violation_count` counts a pin once per corner. `<top>.<corner>.routed.sdc` is each corner's SDC for signoff STA.
 - `post_route_repair.kept_round`, `stop` and `reason` say what the repair rounds achieved.
 - Stream-out: `gds_status` and `gds_missing_cells`. In `gds-mode: preview` a missing cell layout only qualifies the `PASS`; in `strict`, and in `pnr-export`, an export not delivered is a `FAIL`.
 
