@@ -58,8 +58,6 @@ The generated `pnr.tcl` runs these steps in order:
 
 A tie port the PDK leaves unset gets neither tie step.
 
-The run's [`hooks:`](#run-tcl-hooks) are sourced between these steps, each at the boundary its name gives; `macro-placement` replaces the macro placement of step 3.
-
 ## Interpret results
 
 The summary reports cell count, design area, setup and hold WNS, and the number of non-empty DRC report lines. Positive slack meets timing and zero DRC lines indicate a clean route. `wns_setup_ps`, `wns_hold_ps`, `tns_ps` (setup) and `tns_hold_ps` are converted to picoseconds from the Liberty `time_unit`; see [Synthesis: Configure tools and the PDK](synthesis.md#configure-tools-and-the-pdk).
@@ -224,46 +222,6 @@ cfg-pdks:
 - A configured file missing from disk fails the run at `setup`, naming the key.
 - `rb power` sources `platform-tcl` before its Liberty reads. The layer RC is session state that the routed ODB does not keep, so a [`netlist-source: pnr` power run](power.md#extracted-parasitics) also sources `layer-rc-tcl` after `read_sdc`.
 - The hooks are inputs to stage checkpoints and to a [hardened block's](#harden-a-block) abstract, so changing one makes the abstract stale.
-
-## Run Tcl hooks
-
-A block that needs a step the generated flow does not have, such as its own macro placement, a density screen, an extra repair or a report, names Tcl files under `hooks:` on its run, and `rb pnr` sources them at fixed points of the flow. No edit of the generated `pnr.tcl` is needed. Each point takes one path or a list, relative to `pnr.yaml`:
-
-```yaml
-runs:
-  - name: demo_pnr_nangate45
-    # ...
-    hooks:
-      session: [wire_rc.tcl]
-      macro-placement: [macros.tcl]
-      after-cts: [io_latency.tcl, clock_report.tcl]
-```
-
-| Point | Sourced |
-| --- | --- |
-| `session` | After `read_sdc`, `max-fanout`, `layer-rc-tcl` and the don't-use cells, before the floorplan |
-| `after-floorplan` | After the floorplan, tracks, blockages, cut-outs and tie cells, before macro placement |
-| `macro-placement` | In place of rb's macro placement (the packer or RTL-MP), inside the macro branch |
-| `after-pdn` | After the tap cells and the power grid, before IO pin placement |
-| `after-pins` | Right after `place_pins`, before `buffer_ports` |
-| `after-global-placement` | Right after `global_placement`, before `repair_tie_fanout` |
-| `after-repair-design` | Right after `repair_design`, before the legalizing `detailed_placement` |
-| `after-cts` | Right after `clock_tree_synthesis`, before the post-CTS legalization and the setup and hold repair, so the repair sees what the hook sets |
-| `after-global-route` | Right after `global_route`, before the global-route hold repair |
-| `before-detailed-route` | Immediately before `detailed_route` |
-| `before-reports` | After fill insertion and parasitic extraction, before the final reports |
-
-- The files of a point are sourced in list order at Tcl global scope, so the flow's variables are visible to them: `$OUT_DIR` and `$DESIGN` throughout, `$block` and `$macros` from macro placement on. A variable one file sets is still set in the next. `pnr.log` announces each file as `>>> Hook <point>: <path>`.
-- OpenROAD runs in the directory `rb` was started from, so a hook reaches files next to itself through `[file dirname [info script]]`.
-- `session` is for state the saved database does not keep, such as `set_wire_rc` on a run's own layers or extra `set_dont_use` cells. The PDK's `layer-rc-tcl` stays the wire RC rb knows about: the [no-wire-RC qualifier](#set-wire-rc) and a [`netlist-source: pnr` power run](power.md#extracted-parasitics) read only that. The post-route don't-use check covers only the configured cells, not ones a hook adds.
-- `macro-placement` runs inside the flow's macro branch, so it does not run when the netlist has no macros. The [`floorplan.macros`](#place-individual-macros) directives still apply before it, and the cell-halo blockages around every macro are still created after it. `$rb_movable_macros` lists the macros the directives leave unlocated, or every macro when there are no directives. Setting `floorplan.macro-placement` or `floorplan.macro-anchor` together with the hook is a config error, since neither would have an effect.
-- Results come from the final reports: a report a hook prints earlier does not change the result's area, slack or TNS.
-- `after-pdn` runs whether or not the run has a pdn-config.
-- `pin-constraints` is unchanged: it is sourced just before `place_pins`, and `after-pins` runs after it.
-- A hook that raises a Tcl error fails the run, and the error names the point and file: `Hook after-cts (<path>): <message>`. OpenROAD stops there. An OpenROAD `[ERROR ...]` line a hook catches still fails the run, as anywhere in the flow. `exit`, a top-level `break` or `continue`, and a `return` that reaches past the hook file are such errors too, since each would end the flow unfinished.
-- A configured file missing from disk fails the run at `setup`, naming `hooks.<point>[<index>]`, before OpenROAD starts.
-- Every hook file is an input to [stage checkpoints](#keep-stage-checkpoints) and to a [hardened block's](#harden-a-block) abstract, so editing one makes the abstract stale. `hooks` is part of the block's configuration only when set.
-- Commands a hook runs report their progress like the flow's own, but they do not move a stage checkpoint: a `global_placement` inside a hook leaves the `floorplan` checkpoint to the flow's own `global_placement`.
 
 ## Set wire RC
 
@@ -533,7 +491,6 @@ runs:
 `true` keeps all four stages; a name or list keeps some; `[]` keeps only the progress file. Unset or `false` disables the feature. Each stage writes `<NN>_<stage>.odb`, `.def` and `.sdc` into `artefacts/<run>/checkpoints/<timestamp>-<pid>/`, and `checkpoints/latest` points at the newest run.
 
 - `tail -f artefacts/<run>/checkpoints/latest/progress.jsonl` follows a running flow. After a kill, the last `step_begin` with no `step_end` is the step the run was in.
-- With [`hooks:`](#run-tcl-hooks) set, `hook_begin` and `hook_end` events bracket each hook file and name its point and path. `hook_end` adds the status, the elapsed seconds and, on failure, the error. A `hook_begin` with no `hook_end` is the hook the run was in; rb's retained-checkpoints message names it as the step `hook <point>`.
 - A checkpoint is never final. `rb power` and a plain `rb pnr-export` never read it.
 - Old run directories are not pruned. Delete the ones you no longer need.
 

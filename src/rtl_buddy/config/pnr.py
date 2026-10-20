@@ -5,7 +5,7 @@ import pprint
 import re
 from dataclasses import dataclass, field as dc_field
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Literal
 
 from serde import field, serde
 from .yaml_loader import config_from_yaml
@@ -489,63 +489,6 @@ def _normalise_checkpoints(run: str, value) -> tuple[str, ...] | None:
     return tuple(s for s in CHECKPOINT_STAGES if s in names)
 
 
-#: Flow points `hooks:` can name, in flow order.
-HOOK_POINTS = (
-    "session",
-    "after-floorplan",
-    "macro-placement",
-    "after-pdn",
-    "after-pins",
-    "after-global-placement",
-    "after-repair-design",
-    "after-cts",
-    "after-global-route",
-    "before-detailed-route",
-    "before-reports",
-)
-
-
-def _normalise_hooks(run: str, value, config_dir: str) -> dict[str, tuple[str, ...]]:
-    """Return the `hooks:` files by point, in flow order with absolute paths; a point with no file is dropped.
-
-    A point takes one path or a list of paths, relative to `pnr.yaml`; null or an empty list is unset.
-    """
-    where = f"pnr run '{run}': hooks"
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise FatalRtlBuddyError(
-            f"{where} must map a flow point to a Tcl file or a list of Tcl files "
-            f"(points: {', '.join(HOOK_POINTS)}), got {value!r}"
-        )
-    unknown = [k for k in value if k not in HOOK_POINTS]
-    if unknown:
-        raise FatalRtlBuddyError(
-            f"{where} has unknown point(s) {', '.join(repr(k) for k in unknown)} "
-            f"(valid points: {', '.join(HOOK_POINTS)})"
-        )
-    hooks: dict[str, tuple[str, ...]] = {}
-    for point in HOOK_POINTS:
-        if point not in value:
-            continue
-        entry = value[point]
-        if entry is None:
-            continue
-        names = [entry] if isinstance(entry, str) else entry
-        if not (
-            isinstance(names, list) and all(isinstance(n, str) and n for n in names)
-        ):
-            raise FatalRtlBuddyError(
-                f"{where}.{point} must be a Tcl file path or a list of non-empty "
-                f"paths, got {entry!r}"
-            )
-        if names:
-            hooks[point] = tuple(
-                os.path.abspath(os.path.join(config_dir, n)) for n in names
-            )
-    return hooks
-
-
 #: `detailed_route -verbose` level when a run sets none: iteration and violation counts, no per-net detail.
 DEFAULT_DETAILED_ROUTE_VERBOSE = 1
 
@@ -904,8 +847,6 @@ class PnrConfigFile:
     gds_allow_empty: list[str] = field(rename="gds-allow-empty", default_factory=list)
     # `str` precedes the list so a single stage name is not read as characters.
     checkpoints: bool | str | list[str] = False
-    # Tcl files sourced at fixed flow points: point -> a path or a list of paths. Typed loosely so `initialise` names a bad value.
-    hooks: Any = None
     # Publish a hard-macro abstract (LEF, Liberty, GDS, manifest) under `abstract/`; forces a strict GDS export.
     harden: bool = False
     # Obstruction style of a hardened run's abstract LEF; unset keeps `-bloat_occupied_layers`.
@@ -1014,18 +955,6 @@ class PnrConfigFile:
             else None
         )
         checkpoints = _normalise_checkpoints(self.name, self.checkpoints)
-        hooks = _normalise_hooks(self.name, self.hooks, config_dir)
-        if "macro-placement" in hooks:
-            for key, is_default in (
-                ("floorplan.macro-placement", macro_placement is MacroPlacement.PACK),
-                ("floorplan.macro-anchor", macro_anchor is MacroAnchor.LOWER_LEFT),
-            ):
-                if not is_default:
-                    raise FatalRtlBuddyError(
-                        f"pnr run '{self.name}': '{key}' steers rb's macro placement "
-                        "and has no effect with a 'macro-placement' hook — remove "
-                        "one of them"
-                    )
 
         blocks = load_block_refs(
             f"pnr run '{self.name}'",
@@ -1092,7 +1021,6 @@ class PnrConfigFile:
             gds_mode=gds_mode,
             gds_allow_empty=list(self.gds_allow_empty),
             checkpoints=checkpoints,
-            hooks=hooks,
             harden=bool(self.harden),
             abstract=_load_abstract(self.name, self.abstract, bool(self.harden)),
             buffer_ports=(
@@ -1134,8 +1062,6 @@ class PnrConfig:
     threads: int | str | None = None
     detailed_route_verbose: int = DEFAULT_DETAILED_ROUTE_VERBOSE
     checkpoints: tuple[str, ...] | None = None
-    # Absolute paths by flow point, in flow order; only points with a file.
-    hooks: dict[str, tuple[str, ...]] = dc_field(default_factory=dict)
     harden: bool = False
     abstract: PnrAbstract = dc_field(default_factory=PnrAbstract)
     # As written in pnr.yaml; `None` follows `harden`. Read it through `get_buffer_ports`.
@@ -1215,10 +1141,6 @@ class PnrConfig:
     def get_checkpoints(self) -> tuple[str, ...] | None:
         """The stages to checkpoint, in flow order; ``None`` when off."""
         return self.checkpoints
-
-    def get_hooks(self) -> dict[str, tuple[str, ...]]:
-        """The run's Tcl hook files by flow point, in flow order; empty when none."""
-        return {point: tuple(paths) for point, paths in self.hooks.items()}
 
     def get_harden(self) -> bool:
         """Whether the run publishes a hard-macro abstract."""

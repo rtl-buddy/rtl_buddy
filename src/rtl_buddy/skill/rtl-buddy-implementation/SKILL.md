@@ -37,10 +37,6 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   running or killed flow is in. A checkpoint is never a routed or final result:
   report it as the stage it names. `pnr-export --checkpoint <stage>` labels its
   layout `checkpoint_final: false`.
-- **Run hooks.** Extra steps go in `hooks:` of the `pnr.yaml` run: Tcl files
-  sourced at fixed flow points (`session`, `after-cts`, `macro-placement`, ...),
-  never in an edited `pnr.tcl`. A failing hook names its point and file. See
-  `rb docs show concepts/pnr#run-tcl-hooks`.
 - **Route progress.** `pnr.log` is written live. Before calling a long route
   hung, check its detailed-route iterations and violation counts (`DRT-0195`,
   level set by `detailed-route-verbose:`, default 1) and the global-route

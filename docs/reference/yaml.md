@@ -820,7 +820,6 @@ runs:
 | `synth-path` | Required | Upstream `synth.yaml`, relative to `pnr.yaml` |
 | `constraints` | Required | SDC path relative to `pnr.yaml` |
 | `pin-constraints` | Optional | Tcl file relative to `pnr.yaml`, sourced immediately before pin placement, which runs after macro placement, the PDN and `floorplan.pins`. A missing file fails the run |
-| `hooks` | Optional | Tcl files sourced at fixed points of the flow: a mapping of point to one path or a list of paths, relative to `pnr.yaml`. Points: `session`, `after-floorplan`, `macro-placement`, `after-pdn`, `after-pins`, `after-global-placement`, `after-repair-design`, `after-cts`, `after-global-route`, `before-detailed-route`, `before-reports`. An unknown point or a malformed value is a config error; null or an empty list is unset. A `macro-placement` hook may not be combined with `floorplan.macro-placement` or `floorplan.macro-anchor`. A missing file fails the run at setup. Part of a hardened block's config digest only when set. See [Run Tcl hooks](../concepts/pnr.md#run-tcl-hooks) |
 | `platform` | Required | `cfg-pnr-platforms` entry |
 | `pdn-config` | Optional | Tcl file relative to `pnr.yaml` that replaces the PDK's `pdn-config` for this run. A missing file fails the run at setup |
 | `pdn` | Optional | Declarative core power grid that replaces the core grid of the pdn-config in effect. See below |

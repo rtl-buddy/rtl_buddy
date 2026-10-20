@@ -113,9 +113,9 @@ def allocate_run_dir(artefact_dir: str, *, now: datetime | None = None) -> str:
 
 
 def _tcl_quote(value: str) -> str:
-    """Return a Tcl double-quoted word with substitutions suppressed, also safe inside a braced body."""
+    """Return a Tcl double-quoted word with substitutions suppressed."""
     escaped = value.replace("\\", "\\\\")
-    for char in ("$", "[", "]", '"', "{", "}"):
+    for char in ("$", "[", "]", '"'):
         escaped = escaped.replace(char, "\\" + char)
     return f'"{escaped}"'
 
@@ -181,30 +181,22 @@ def _written_checkpoints(events: list[dict]) -> dict[str, dict]:
 def last_step(events: list[dict]) -> dict | None:
     """Return `{"step", "status"}` for the step a run was in when its events stop.
 
-    `status` is `running`, `ok` or `error`; a begin with no end is `running`. A run hook counts as the step `hook <point>`, and a run stopped inside one names the hook, not the command it was running.
+    `status` is `running`, `ok` or `error`; a begin with no end is `running`.
     """
     open_steps: list[str] = []
     last: dict | None = None
     for e in events:
-        kind = e.get("event")
-        step = (
-            f"hook {e.get('point')}"
-            if kind in ("hook_begin", "hook_end")
-            else e.get("step")
-        )
-        if kind in ("step_begin", "hook_begin"):
-            open_steps.append(str(step))
-            last = {"step": step, "status": "running"}
-        elif kind in ("step_end", "hook_end"):
-            if str(step) in open_steps:
-                open_steps.remove(str(step))
-            last = {"step": step, "status": e.get("status")}
+        if e.get("event") == "step_begin":
+            open_steps.append(str(e.get("step")))
+            last = {"step": e.get("step"), "status": "running"}
+        elif e.get("event") == "step_end":
+            if str(e.get("step")) in open_steps:
+                open_steps.remove(str(e.get("step")))
+            last = {"step": e.get("step"), "status": e.get("status")}
             if e.get("error"):
                 last["error"] = e.get("error")
     if open_steps:
-        # A command a hook runs belongs to the hook.
-        hooks = [s for s in open_steps if s.startswith("hook ")]
-        return {"step": (hooks or open_steps)[-1], "status": "running"}
+        return {"step": open_steps[-1], "status": "running"}
     return last
 
 
