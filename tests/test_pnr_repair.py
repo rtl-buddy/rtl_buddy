@@ -45,6 +45,7 @@ from rtl_buddy.config.pnr_repair import (
 )
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.logging_utils import _human_message
+from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools import pnr_openroad
 from rtl_buddy.tools.pnr_openroad import (
     _DETAILED_ROUTE_CMD,
@@ -772,6 +773,8 @@ def test_rounds_repair_until_timing_is_met(tmp_path, monkeypatch, stages):
         "stop": "timing_met",
         "reason": "timing met",
     }
+    row = RtlBuddy._pnr_result_row(None, {"pnr_name": "demo", "results": res})
+    assert row["post_route_repair"] == res.results["post_route_repair"]
     assert res.results["desc"] is None or "post-route" not in res.results["desc"]
     assert (run_dir / "06_post_route_repair.r2.repair.log").is_file()
     assert not (run_dir / "06_post_route_repair.r3.repair.log").exists()
