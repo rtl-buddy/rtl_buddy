@@ -3552,7 +3552,7 @@ def test_an_ungated_run_compares_rounds_without_electrical_violators(
     assert [r["best_round"] for r in rounds] == [0, 0]
     assert _done(run_dir)["reason"] == "round 1 did not improve timing"
     plan = json.loads((run_dir / "06_post_route_repair.plan.json").read_text())
-    assert plan["electrical"] is None and plan["gate_electrical"] is False
+    assert "electrical" not in plan and "gate_electrical" not in plan
     for name in os.listdir(run_dir):
         if name.endswith(".tcl"):
             text = (run_dir / name).read_text()

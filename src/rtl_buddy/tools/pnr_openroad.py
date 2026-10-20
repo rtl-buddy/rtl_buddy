@@ -3093,16 +3093,19 @@ class OpenRoadPnr:
         return {
             "extract": _post_route_file(".r0.extract.tcl"),
             "rounds": rounds,
-            "electrical": (
-                None
-                if electrical is None
-                else {
-                    "round": electrical,
-                    "repair": _post_route_file(f".r{electrical}.repair.tcl"),
-                    "extract": _post_route_file(f".r{electrical}.extract.tcl"),
+            # Each only when set, so a plan without them is as before.
+            **(
+                {
+                    "electrical": {
+                        "round": electrical,
+                        "repair": _post_route_file(f".r{electrical}.repair.tcl"),
+                        "extract": _post_route_file(f".r{electrical}.extract.tcl"),
+                    }
                 }
+                if electrical is not None
+                else {}
             ),
-            "gate_electrical": self._gates_electrical(),
+            **({"gate_electrical": True} if self._gates_electrical() else {}),
             "sides": list(repair.sides()),
             "report": report,
             "ps_per_unit": self._ps_per_unit,
