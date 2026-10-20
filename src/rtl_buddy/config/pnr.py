@@ -40,6 +40,7 @@ from .pnr_repair import (
 )
 from .synth import SynthSuiteConfig
 from .toolpath import resolve_tool_path
+from .lib_paths import LibPath, lib_files, lib_paths_problem, load_lib_paths
 from .unknown_keys import KeySpec, find_unknown_entry_keys, reject_unknown_keys
 
 logger = logging.getLogger(__name__)
@@ -1241,7 +1242,8 @@ class PnrConfigFile:
     platform: str = ""
     floorplan: PnrFloorplanFile = field(default_factory=PnrFloorplanFile)
     lef_paths: list[str] = field(rename="lef-paths", default_factory=list)
-    lib_paths: list[str] = field(rename="lib-paths", default_factory=list)
+    # Each a Liberty path or a mapping of corner to Liberty path; typed loosely so `initialise` names a bad entry.
+    lib_paths: list[str | dict] = field(rename="lib-paths", default_factory=list)
     # Layout for the `lef-paths` macros; used by KLayout stream-out only.
     gds_paths: list[str] = field(rename="gds-paths", default_factory=list)
     # `gds-allow-empty`: cells allowed to have no layout; names or case-sensitive fnmatch globs.
@@ -1502,9 +1504,7 @@ class PnrConfigFile:
         lef_paths = [
             os.path.normpath(os.path.join(config_dir, p)) for p in self.lef_paths
         ]
-        lib_paths = [
-            os.path.normpath(os.path.join(config_dir, p)) for p in self.lib_paths
-        ]
+        lib_paths = load_lib_paths(f"pnr run '{self.name}'", self.lib_paths, config_dir)
         gds_paths = [
             os.path.normpath(os.path.join(config_dir, p)) for p in self.gds_paths
         ]
@@ -1622,7 +1622,8 @@ class PnrConfig:
     pdn_config: str | None = None
     pdn: PnrPdn | None = None
     lef_paths: list[str] = dc_field(default_factory=list)
-    lib_paths: list[str] = dc_field(default_factory=list)
+    # Each a Liberty path, or corner name -> Liberty path; absolute.
+    lib_paths: list[LibPath] = dc_field(default_factory=list)
     gds_paths: list[str] = dc_field(default_factory=list)
     gds_mode: GdsMode = GdsMode.PREVIEW
     gds_allow_empty: list[str] = dc_field(default_factory=list)
@@ -1724,7 +1725,16 @@ class PnrConfig:
         return list(self.lef_paths)
 
     def get_lib_paths(self) -> list[str]:
+        """Every macro Liberty file, a per-corner mapping's included."""
+        return lib_files(self.lib_paths)
+
+    def get_lib_path_entries(self) -> list[LibPath]:
+        """The `lib-paths` entries: a path read into every corner, or corner name -> path."""
         return list(self.lib_paths)
+
+    def lib_paths_problem(self, corners: list[str]) -> str | None:
+        """Why a per-corner `lib-paths` mapping does not fit a platform of `corners`, or None."""
+        return lib_paths_problem(self.lib_paths, corners)
 
     def get_gds_paths(self) -> list[str]:
         return list(self.gds_paths)
