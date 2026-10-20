@@ -3895,7 +3895,7 @@ class OpenRoadPnr:
 
         A diagnosis run: it is never reported as a clean pass, whatever the overflow.
         """
-        if not platform.get_global_route().allow_congestion:
+        if platform.get_global_route().allow_congestion is not True:
             return ""
         overflow = self._parse_gr_overflow(log_text)
         log_event(
@@ -3913,7 +3913,7 @@ class OpenRoadPnr:
 
     def _allow_congestion_fields(self, platform, log_text: str) -> dict:
         """`allow_congestion` and the final `global_route_overflow` of a run with `global-route.allow-congestion`, else nothing."""
-        if not platform.get_global_route().allow_congestion:
+        if platform.get_global_route().allow_congestion is not True:
             return {}
         return {
             "allow_congestion": True,
@@ -3927,17 +3927,16 @@ class OpenRoadPnr:
 
         OpenROAD may leave a partial `<top>.routed.odb`, which `rb power` would accept by existence. Every post-OpenROAD failure return must go through here. `fail_stage` marks a failure that is not a verdict on the design, so `xfail:` does not excuse it.
 
-        A database a failed global route left is filed as a checkpoint first, and `desc` says where.
+        A database a failed global route left is filed as a checkpoint first; `failed_global_route` names it.
         """
         kept = self._keep_failed_global_route()
-        if kept:
-            desc = f"{desc}; {kept}"
         self._clear_stale_outputs()
         return PnrFailResults(
             name=self.name + "/results",
             desc=desc,
             fail_stage=fail_stage,
             fields={
+                **({"failed_global_route": kept} if kept else {}),
                 **self._blocks_fields(),
                 **self._post_route_fields(),
                 **self._threads_fields(),
@@ -3946,7 +3945,7 @@ class OpenRoadPnr:
         )
 
     def _keep_failed_global_route(self) -> str:
-        """File the database a failed global route wrote as this run's `global_route` checkpoint, marked failed, and return where it is, or `""` when there is none.
+        """File the database a failed global route wrote as this run's `global_route` checkpoint, marked failed, and return its `<run-id>/global_route`, or `""` when there is none.
 
         A run without checkpoints gets a checkpoint directory for it, and `latest` points there.
         """
@@ -3982,20 +3981,17 @@ class OpenRoadPnr:
             return ""
         if not files:
             return ""
-        name = _checkpoint_name("global_route")
+        spec = f"{os.path.basename(run_dir)}/global_route"
         log_event(
             logger,
             logging.WARNING,
             "pnr.failed_global_route_kept",
             pnr=self.pnr_cfg.get_name(),
-            checkpoint=os.path.join(run_dir, name),
+            checkpoint=os.path.join(run_dir, _checkpoint_name("global_route")),
+            spec=spec,
             files=sorted(files),
         )
-        run_id = os.path.basename(run_dir)
-        return (
-            f"global route failed; its database is checkpoint {name} of run {run_id} "
-            f"(rb pnr-export --checkpoint {run_id}/global_route)"
-        )
+        return spec
 
     def _check_routed_placement(self, log_text: str) -> str | None:
         """Compare the routed DEF with the macros and pins the floorplan fixed; return the failure description, or None when they agree.
@@ -5043,7 +5039,10 @@ class OpenRoadPnr:
             )
         if not self.pnr_cfg.get_overrides().is_empty():
             platform = platform.with_run_overrides(self.pnr_cfg.get_overrides())
-        if platform.get_global_route().allow_congestion and self.pnr_cfg.get_harden():
+        if (
+            platform.get_global_route().allow_congestion is True
+            and self.pnr_cfg.get_harden()
+        ):
             log_event(
                 logger,
                 logging.ERROR,

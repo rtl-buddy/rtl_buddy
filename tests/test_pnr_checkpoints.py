@@ -16,6 +16,7 @@ Pinned behaviour:
 """
 
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -413,7 +414,10 @@ def test_flow_without_checkpoints_renders_the_template_unchanged(tmp_path):
     assert '}\n\nputs ">>> Reading Liberty + LEF"' in text
     assert "rb::ckpt" not in text
     assert "progress.jsonl" not in text
-    assert "trace add" not in text
+    # The only trace is the one that keeps a failed global route's database.
+    assert re.findall(r"trace add .*", text) == [
+        "trace add execution global_route leave rb::keep_failed_global_route"
+    ]
 
 
 def test_flow_with_checkpoints_arms_only_the_requested_stages(tmp_path):
@@ -543,12 +547,22 @@ def test_failure_during_global_route_keeps_the_cts_checkpoint(tmp_path, monkeypa
     res = backend.run()
 
     assert res.results["result"] == "FAIL"
-    assert res.results["checkpoint_stages"] == ["floorplan", "place", "cts"]
+    assert res.results["checkpoint_stages"] == [
+        "floorplan",
+        "place",
+        "cts",
+        "global_route",
+    ]
     (run_dir,) = _runs(artefacts)
     assert (run_dir / "03_cts.odb").is_file()
     assert (run_dir / "03_cts.sdc").is_file()
-    # A router that failed is not a routed checkpoint.
-    assert not list(run_dir.glob("04_*"))
+    # A router that failed leaves its database, as a failed checkpoint no resume starts from.
+    assert sorted(p.name for p in run_dir.glob("04_*")) == [
+        "04_global_route.def",
+        "04_global_route.odb",
+        "04_global_route.sdc",
+    ]
+    assert pnr_checkpoints.written_checkpoint(str(run_dir), "global_route") is None
     for name in _ROUTED:
         assert not (artefacts / name).exists()
 
@@ -597,7 +611,9 @@ def test_a_second_run_never_overwrites_the_first_runs_checkpoints(
     (first,) = _runs(artefacts)
     before = {p.name: p.read_bytes() for p in first.iterdir()}
 
-    again, _ = _backend(tmp_path, monkeypatch, env={"RB_STUB_FAIL": "global_route"})
+    again, _ = _backend(
+        tmp_path, monkeypatch, env={"RB_STUB_FAIL": "clock_tree_synthesis"}
+    )
     again.run()
 
     runs = _runs(artefacts)
@@ -775,7 +791,7 @@ def test_export_refuses_a_stage_the_run_never_reached(tmp_path, monkeypatch):
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
     backend, artefacts = _backend(
-        tmp_path, monkeypatch, env={"RB_STUB_FAIL": "global_route"}
+        tmp_path, monkeypatch, env={"RB_STUB_FAIL": "clock_tree_synthesis"}
     )
     backend.run()
     exporter = OpenRoadPnr(
@@ -817,7 +833,8 @@ def test_a_failed_run_logs_where_it_stopped_and_what_it_kept(tmp_path, monkeypat
     )
     assert level == logging.WARNING
     assert fields["step"] == "global_route" and fields["step_status"] == "error"
-    assert fields["stages"] == ["floorplan", "place", "cts"]
+    # The failed global route's database is kept as its checkpoint.
+    assert fields["stages"] == ["floorplan", "place", "cts", "global_route"]
     (run_dir,) = _runs(artefacts)
     assert fields["dir"] == str(run_dir)
 

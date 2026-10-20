@@ -11020,6 +11020,8 @@ class RtlBuddy:
             "stopped_after",
             "mode",
             "global_route_overflow",
+            "allow_congestion",
+            "failed_global_route",
             "post_route_repair",
             "resumed_from",
             "checkpoint_dir",

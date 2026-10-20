@@ -19,6 +19,7 @@ from rtl_buddy.config.pnr_global_route import (
 )
 from rtl_buddy.config.pnr_platform import PnrRunOverrides
 from rtl_buddy.errors import FatalRtlBuddyError
+from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools import pnr_abstract, pnr_checkpoints
 from rtl_buddy.tools.pnr_openroad import _GLOBAL_ROUTE_CMD, OpenRoadPnr
 
@@ -406,12 +407,10 @@ def _failing(tmp_path, monkeypatch, **kw):
 
 def _assert_kept(artefacts: Path, run_dir: Path, res) -> None:
     assert res.results["result"] == "FAIL"
-    desc = res.results["desc"]
     run_id = run_dir.name
-    assert (
-        f"global route failed; its database is checkpoint 04_global_route of run "
-        f"{run_id} (rb pnr-export --checkpoint {run_id}/global_route)"
-    ) in desc
+    assert res.results["failed_global_route"] == f"{run_id}/global_route"
+    row = RtlBuddy._pnr_result_row(None, {"pnr_name": "r", "results": res})
+    assert row["failed_global_route"] == f"{run_id}/global_route"
     for ext in ("odb", "def", "sdc"):
         assert (run_dir / f"04_global_route.{ext}").is_file()
     assert not (artefacts / "global_route_failed").exists()
@@ -472,7 +471,7 @@ def test_a_failure_elsewhere_files_nothing(tmp_path, monkeypatch):
     res = backend.run()
 
     assert res.results["result"] == "FAIL"
-    assert "global route failed" not in res.results["desc"]
+    assert "failed_global_route" not in res.results
     run_dir = backend._ckpt_run_dir
     assert pnr_checkpoints.written_checkpoint(run_dir, "global_route") is not None
     assert not any(e.get("failed") for e in _events(run_dir))
@@ -575,6 +574,9 @@ def test_an_allow_congestion_run_passes_qualified(tmp_path, monkeypatch):
         "global-route.allow-congestion (diagnosis only): global route overflow 7"
         in res.results["desc"]
     )
+    row = RtlBuddy._pnr_result_row(None, {"pnr_name": "r", "results": res})
+    assert row["allow_congestion"] is True
+    assert row["global_route_overflow"] == 7
 
 
 def test_an_allow_congestion_run_without_overflow_is_still_qualified(

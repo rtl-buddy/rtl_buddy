@@ -63,6 +63,8 @@ Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previo
 | `openroad_threads` | Requested and effective [thread counts](#openroad-threads). |
 | `gds_status`, `gds_missing_cells` | [Stream-out](#stream-out-gds-and-png) outcome. |
 | `checkpoint_dir`, `checkpoint_stages`, `last_step` | With [checkpoints](#keep-stage-checkpoints): where they are, which stages were written, and the last step reached. |
+| `failed_global_route` | `<run-id>/global_route`: the checkpoint holding a failed global route's database, for `rb pnr-export --checkpoint`. |
+| `allow_congestion` | `true` on a [diagnosis run](#tune-global-routing) that let global route keep its overflow; `global_route_overflow` is then the final overflow. |
 
 Times are in picoseconds, converted from the Liberty `time_unit`. The final timing uses extracted parasitics when the PDK sets `rcx-rules`, else the global-route estimate. A field rb could not read is left out.
 
@@ -73,6 +75,7 @@ A passing run's description carries qualifiers worth reading:
 - `post-route repair ...`: a repair round was passed over or its session failed and was set aside.
 - `GDS incomplete: ...`: cells with no layout in `preview` mode.
 - `stale block abstract(s) accepted: ...`: run with `--accept-stale`.
+- `global-route.allow-congestion (diagnosis only): global route overflow N`: global route was allowed to keep its overflow. See [Tune global routing](#tune-global-routing).
 
 A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line, stops before the end of its flow, or a check below fails. It is `SKIP` when `-l` filters it out or `tool:` is not `openroad`.
 
@@ -119,7 +122,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `PDN-0008 ... halo overlaps row` | A macro grid's `-halo` in `pdn-config` reaches into a row. Reduce it to the value the message suggests. |
 | `PDN-0233` on a turned macro or a block's grid | The power grid has no via for that macro. See [Place macros](#place-macros) and [Harden a block](#harden-a-block). |
 | `N macros do not fit the W x H um floorplan core` | Lower `utilization`, change `aspect`, or lower `placement.macro-halo`. The message gives the smallest core that fits. |
-| `GRT-0116`, global-route overflow | Too congested. The description names the checkpoint that holds the failed route's database and a copy of `congestion.rpt`; open it with `rb pnr-export --checkpoint <run-id>/global_route` or `read_db` in OpenROAD. Lower utilization or density, try `placement.routability-driven`, or [tune global routing](#tune-global-routing). |
+| `GRT-0116`, global-route overflow | Too congested. The result's `failed_global_route` names the checkpoint (`<run-id>/global_route`) that holds the failed route's database and a copy of `congestion.rpt`; open it with `rb pnr-export --checkpoint` or `read_db` in OpenROAD. Lower utilization or density, try `placement.routability-driven`, or [tune global routing](#tune-global-routing). |
 | Large `drc_count` | Try `routing-layer-adjustment`, a lower density, or `post-route-repair` with several rounds. |
 | `RSZ-0090` at a slow corner | A macro with one Liberty limits that corner. Give it a Liberty per corner. |
 | `RSZ-0074` in a post-route repair round | Set `post-route-repair.reroute: full`. |
@@ -397,7 +400,7 @@ A run killed at a wall-time limit leaves only its log. `checkpoints: true` (or o
 
 Look at a checkpoint in OpenROAD or with `rb pnr-export --checkpoint`. It is never a final result. Old run directories are not pruned.
 
-A global route that fails writes its database as the `global_route` checkpoint, marked `failed`, with a copy of `congestion.rpt` (`04_global_route.congestion.rpt`), whether or not the run sets `checkpoints`; a run without them gets a run directory for it. The run still fails. `rb pnr-export --checkpoint` opens it; no `--resume` starts from it.
+A global route that fails writes its database as the `global_route` checkpoint, marked `failed`, with a copy of `congestion.rpt` (`04_global_route.congestion.rpt`), whether or not the run sets `checkpoints`; a run without them gets a run directory for it. The run still fails, and its `failed_global_route` field names the checkpoint as `<run-id>/global_route`. `rb pnr-export --checkpoint` opens it; no `--resume` starts from it.
 
 ## Run stages as separate sessions
 
