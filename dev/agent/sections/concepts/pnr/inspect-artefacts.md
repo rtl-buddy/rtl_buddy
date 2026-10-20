@@ -14,7 +14,7 @@ Outputs land under `<pnr-dir>/artefacts/<run>/`.
 | `congestion.rpt` | Overflowing global-route tiles; written only when global routing overflows |
 | `<top>.gds`, `<top>.png`, `klayout.*.log` | Optional KLayout outputs and logs |
 | `export.provenance.json` | What the last `rb pnr-export` read and produced |
-| `checkpoints/`, `abstract/` | Optional [stage checkpoints](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#keep-stage-checkpoints) and [hardened-block abstract](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#harden-a-block) |
+| `checkpoints/`, `abstract/` | Optional [stage checkpoints](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#keep-stage-checkpoints), with a [staged run's](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-stages-as-separate-sessions) stage scripts and logs, and [hardened-block abstract](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#harden-a-block) |
 
 Each run deletes the previous run's outputs first, and a run that fails after writing the routed database removes it again, so `rb power` never reads a stale one. `pnr.log`, `pnr.tcl` and `congestion.rpt` are kept from a failed run.
 

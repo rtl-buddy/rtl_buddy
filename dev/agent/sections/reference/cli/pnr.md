@@ -44,6 +44,41 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 │                                               so a top built from blocks: is         │
 │                                               synthesized after its blocks are       │
 │                                               hardened                               │
+│ --stop-after            STAGE                 end the run after STAGE (floorplan,    │
+│                                               place, cts, global_route,              │
+│                                               detailed_route, or post_route_repair   │
+│                                               when the run sets post-route-repair):  │
+│                                               write its checkpoint and a stage       │
+│                                               report; the result is a PASS with      │
+│                                               routed: false, and no routed outputs   │
+│                                               or abstract. Needs a single named run  │
+│                                               [default: (run to the end)]            │
+│ --resume                RUN                   resume a staged run (stages: true) in  │
+│                                               a new checkpoint run directory:        │
+│                                               latest, a run id under the run's       │
+│                                               checkpoints/, or a checkpoint run      │
+│                                               directory. Needs --from and a single   │
+│                                               named run; refused when the scripts,   │
+│                                               input files or OpenROAD of the stages  │
+│                                               before --from have changed. Files that │
+│                                               hooks, platform-tcl, a pdn-config or   │
+│                                               the SDC source themselves, and         │
+│                                               environment variables, are not checked │
+│ --from                  STAGE                 the first stage a --resume runs        │
+│                                               (place, cts, global_route,             │
+│                                               detailed_route, post_route_repair when │
+│                                               the run sets post-route-repair,        │
+│                                               finish); it starts from the resumed    │
+│                                               run's checkpoint of the stage before   │
+│ --dispatch              BACKEND               slurm: run each stage as its own job,  │
+│                                               each held until the one before         │
+│                                               succeeds, sized by the run's           │
+│                                               resources: block over                  │
+│                                               cfg-dispatch.resources; implies        │
+│                                               stages: true. Blocks until the last    │
+│                                               stage ends; Ctrl-C, SIGTERM or SIGHUP  │
+│                                               cancels the jobs. local runs here      │
+│                                               [default: (local)]                     │
 │ --help                                        Show this message and exit.            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

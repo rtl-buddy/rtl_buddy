@@ -25,4 +25,16 @@ Two optional `floorplan` keys steer where macros and standard cells may go.
 
 A row cut rounds outward to whole sites, so the remnants stay on the site grid. A remnant narrower than twice the row height is dropped. The power grid's followpins follow the cut rows.
 
+**Global-placement-only blockages.** `lifetime: global-placement` on an entry of any type (default `flow`) makes it a screen for global placement alone:
+
+```yaml
+      blockages:
+        - rect: [400, 300, 520, 420]
+          type: partial
+          max-density: 0.35
+          lifetime: global-placement
+```
+
+It is created immediately before `global_placement` and removed immediately after, by the handle the flow created, so legalization, repair and routing never see it. No row is cut under it, the packer and RTL-MP do not avoid it, and no [checkpoint](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#keep-stage-checkpoints) holds it.
+
 Blockages need OpenROAD 26Q1 or newer; on an older build the run fails at setup. A malformed rectangle (`x0 >= x1`, `y0 >= y1`, a side under 0.001 µm, a negative coordinate, or not four numbers), an unknown type, or `max-density` on anything but `partial` fails when `pnr.yaml` loads.

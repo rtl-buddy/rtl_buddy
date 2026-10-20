@@ -1193,10 +1193,28 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/source-platform-tcl-hooks.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-tcl-hooks",
+          "slug": "run-tcl-hooks",
+          "title": "Run Tcl hooks",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/run-tcl-hooks.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#set-wire-rc",
           "slug": "set-wire-rc",
           "title": "Set wire RC",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/set-wire-rc.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#repair-timing-after-routing",
+          "slug": "repair-timing-after-routing",
+          "title": "Repair timing after routing",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/repair-timing-after-routing.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#probe-without-timing-repair",
+          "slug": "probe-without-timing-repair",
+          "title": "Probe without timing repair",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/probe-without-timing-repair.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#macro-placement",
@@ -1221,6 +1239,18 @@
           "slug": "place-individual-macros",
           "title": "Place individual macros",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/place-individual-macros.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#rotate-a-macro",
+          "slug": "rotate-a-macro",
+          "title": "Rotate a macro",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/rotate-a-macro.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#read-macros-and-pins-from-planner-files",
+          "slug": "read-macros-and-pins-from-planner-files",
+          "title": "Read macros and pins from planner files",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/read-macros-and-pins-from-planner-files.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#size-the-die-and-core",
@@ -1263,6 +1293,12 @@
           "slug": "keep-stage-checkpoints",
           "title": "Keep stage checkpoints",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/keep-stage-checkpoints.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-stages-as-separate-sessions",
+          "slug": "run-stages-as-separate-sessions",
+          "title": "Run stages as separate sessions",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/run-stages-as-separate-sessions.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#stream-out-inputs",
@@ -2687,6 +2723,54 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/prefix-adders-off-the-critical-path-ripple-under-abc-script-default.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint",
+          "slug": "openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint",
+          "title": "OpenROAD's legalizer blocks a rotated macro's unrotated footprint",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#session-state-does-not-cross-a-pr-stage-boundary",
+          "slug": "session-state-does-not-cross-a-pr-stage-boundary",
+          "title": "Session state does not cross a P&R stage boundary",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/session-state-does-not-cross-a-pr-stage-boundary.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#a-staged-pr-run-can-differ-from-a-one-session-run",
+          "slug": "a-staged-pr-run-can-differ-from-a-one-session-run",
+          "title": "A staged P&R run can differ from a one-session run",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/a-staged-pr-run-can-differ-from-a-one-session-run.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#post-route-repair-rounds-work-around-openroad-routing-failures",
+          "slug": "post-route-repair-rounds-work-around-openroad-routing-failures",
+          "title": "Post-route repair rounds work around OpenROAD routing failures",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/post-route-repair-rounds-work-around-openroad-routing-failures.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#eco-post-route-repair-overrides-an-openroad-procedure",
+          "slug": "eco-post-route-repair-overrides-an-openroad-procedure",
+          "title": "Eco post-route repair overrides an OpenROAD procedure",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/eco-post-route-repair-overrides-an-openroad-procedure.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#post-route-repair-keeps-the-last-repaired-round",
+          "slug": "post-route-repair-keeps-the-last-repaired-round",
+          "title": "Post-route repair keeps the last repaired round",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/post-route-repair-keeps-the-last-repaired-round.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#post-route-repair-rounds-and-the-final-report-can-disagree-on-a-multi-corner-platform",
+          "slug": "post-route-repair-rounds-and-the-final-report-can-disagree-on-a-multi-corner-platform",
+          "title": "Post-route repair rounds and the final report can disagree on a multi-corner platform",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/post-route-repair-rounds-and-the-final-report-can-disagree-on-a-multi-corner-platform.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#an-unconfirmed-dispatched-pr-run-blocks-later-runs",
+          "slug": "an-unconfirmed-dispatched-pr-run-blocks-later-runs",
+          "title": "An unconfirmed dispatched P&R run blocks later runs",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/an-unconfirmed-dispatched-pr-run-blocks-later-runs.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#rb-phys-module-reports-no-power-for-an-rtl-module",
           "slug": "rb-phys-module-reports-no-power-for-an-rtl-module",
           "title": "`rb phys module` reports no power for an RTL module",
@@ -2826,6 +2910,12 @@
           "slug": "v5-to-v6",
           "title": "v5 to v6",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/migrations/v5-to-v6.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/migrations/#v6-to-v7",
+          "slug": "v6-to-v7",
+          "title": "v6 to v7",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/migrations/v6-to-v7.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/migrations/#submodule-to-uv",

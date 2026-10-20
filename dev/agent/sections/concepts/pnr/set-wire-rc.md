@@ -18,4 +18,4 @@ set_wire_rc -signal -layer met2
 set_wire_rc -clock -layer met5
 ```
 
-To also catch hold growth from wire lengths before detail route, set `global-route-hold-repair: true` on the platform. It runs `repair_timing -hold` on the global-route estimate, then legalizes the added buffers and reroutes their nets incrementally. It is off by default because it changes QoR. A `global_route` [checkpoint](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#keep-stage-checkpoints) holds the route before this repair.
+To also catch hold growth from wire lengths before detail route, set `global-route-hold-repair: true` on the platform. It runs `repair_timing -hold` on the global-route estimate, then legalizes the added buffers and reroutes their nets incrementally. It is off by default because it changes QoR. A `global_route` [checkpoint](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#keep-stage-checkpoints) holds the route after this repair. [Repair timing after routing](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#repair-timing-after-routing) sets margins, setup and electrical repair, and repair after detailed route.

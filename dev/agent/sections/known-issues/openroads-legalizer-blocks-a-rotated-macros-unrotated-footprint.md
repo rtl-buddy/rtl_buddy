@@ -1,0 +1,3 @@
+## OpenROAD's legalizer blocks a rotated macro's unrotated footprint
+
+OpenROAD's default `detailed_placement` legalizer treats a fixed macro turned by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) as covering its master's unrotated width and height from its lower-left corner (OpenROAD#11735). Cells that global placement put in that footprint outside the macro are moved out, some far, and the area stays empty. `rb pnr` blocks the footprint during global placement by default; `placement.rotated-macro-footprint` selects the diamond legalizer instead, or neither. See [Rotate a macro](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#rotate-a-macro).
