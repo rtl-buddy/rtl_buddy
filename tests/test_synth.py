@@ -7170,7 +7170,7 @@ def test_clean_stat_json_leaves_a_clean_or_unparseable_file_alone(tmp_path):
 # Timing repair before the synthesis STA (#703)
 
 
-def _effort_repair(repair=True):
+def _effort_repair(repair=True, pre_sta_tcl=""):
     from rtl_buddy.config.synth import (
         SynthEffortConfig,
         SynthEffortConfigFile,
@@ -7179,7 +7179,8 @@ def _effort_repair(repair=True):
 
     return SynthEffortConfig(
         SynthEffortConfigFile(
-            name="repair", openroad=SynthEffortOpenroadFile(repair=repair)
+            name="repair",
+            openroad=SynthEffortOpenroadFile(repair=repair, pre_sta_tcl=pre_sta_tcl),
         )
     )
 
@@ -7204,7 +7205,9 @@ class _FakeRootCfgORWithRc(_FakeRootCfgOR):
         )
 
 
-def _repair_openroad(tmp_path, *, repair, layer_rc_tcl="", sdc=True, strategy=""):
+def _repair_openroad(
+    tmp_path, *, repair, layer_rc_tcl="", sdc=True, strategy="", pre_sta_tcl=""
+):
     lib = tmp_path / "cells.lib"
     lib.write_text("")
     lef = tmp_path / "cells.lef"
@@ -7224,7 +7227,7 @@ def _repair_openroad(tmp_path, *, repair, layer_rc_tcl="", sdc=True, strategy=""
         tool_cfg=_make_or_tool_cfg(strategy=strategy),
         root_cfg=_FakeRootCfgORWithRc(str(lib), str(lef), layer_rc_tcl),
     )
-    or_synth.effort_cfg = _effort_repair(repair)
+    or_synth.effort_cfg = _effort_repair(repair, pre_sta_tcl)
     return or_synth, lib, lef
 
 
@@ -7242,9 +7245,13 @@ def test_openroad_repair_runs_after_resynthesis_and_before_the_reports(tmp_path)
     )
     lines = _or_script_lines(or_synth, lib, lef)
     start = lines.index("resynth_annealing")
-    assert lines[start : start + 4] == [
+    assert lines[start : start + 8] == [
         "resynth_annealing",
-        "repair_design",
+        "if {[string match *-pre_placement* [info body repair_design]]} {",
+        "  repair_design -pre_placement",
+        "} else {",
+        "  repair_design",
+        "}",
         "repair_timing -setup",
         "report_design_area",
     ]
@@ -7257,9 +7264,22 @@ def test_openroad_repair_without_layer_rc_or_constraints(tmp_path):
     or_synth, lib, lef = _repair_openroad(tmp_path, repair=True, sdc=False)
     lines = _or_script_lines(or_synth, lib, lef)
     # No clock to repair setup against, and no PDK wire RC to source.
-    assert "repair_design" in lines
+    assert "  repair_design -pre_placement" in lines
     assert "repair_timing -setup" not in lines
     assert not any(line.startswith("source ") for line in lines)
+
+
+def test_openroad_repair_after_a_pre_sta_placement_runs_plain(tmp_path):
+    or_synth, lib, lef = _repair_openroad(
+        tmp_path,
+        repair=True,
+        pre_sta_tcl="initialize_floorplan -utilization 50\nglobal_placement\n",
+    )
+    lines = _or_script_lines(or_synth, lib, lef)
+    start = lines.index("global_placement")
+    assert lines[start + 1 : start + 3] == ["repair_design", "repair_timing -setup"]
+    assert not any("-pre_placement" in line for line in lines)
+    assert "pre_placement" not in or_synth._phys_options()["map"]
 
 
 def test_openroad_without_repair_times_the_yosys_netlist_as_is(tmp_path):
@@ -7331,6 +7351,9 @@ def test_openroad_repair_moves_the_digest_and_off_keeps_it(tmp_path):
     # Repair off adds no key, so existing runs keep their digest.
     or_synth, _, _ = _repair_openroad(tmp_path, repair=False, layer_rc_tcl=str(rc))
     assert "repair" not in or_synth._phys_options()["map"]
+    assert "pre_placement" not in or_synth._phys_options()["map"]
+    or_synth, _, _ = _repair_openroad(tmp_path, repair=True, layer_rc_tcl=str(rc))
+    assert or_synth._phys_options()["map"]["pre_placement"] is True
     # The wire RC the repair estimates with is part of the experiment.
     assert _digest(True, "set_wire_rc -signal -layer met3\n") != on
 

@@ -6,6 +6,16 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+#: `repair_design` on an unplaced netlist: `-pre_placement` builds buffer trees, plain only resizes (#856).
+#: An OpenROAD whose `repair_design` lacks the flag (before 25Q2) runs it plain.
+PRE_PLACEMENT_REPAIR = (
+    "if {[string match *-pre_placement* [info body repair_design]]} {\n"
+    "  repair_design -pre_placement\n"
+    "} else {\n"
+    "  repair_design\n"
+    "}"
+)
+
 from . import block_params
 from .artifact_paths import clear_stale_artefacts
 from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps, open_liberty
@@ -657,6 +667,13 @@ class OpenRoadSynth:
             return ""
         return self.root_cfg.get_synth_platform_cfg(platform).get_layer_rc_tcl()
 
+    def _repair_pre_placement(self) -> bool:
+        """Whether `openroad.repair` repairs an unplaced netlist: the effort's `pre-sta-tcl` runs no `global_placement`."""
+        return (
+            self.effort_cfg.get_openroad_repair()
+            and "global_placement" not in self.effort_cfg.get_openroad_pre_sta_tcl()
+        )
+
     def _timing_repaired(self) -> bool | None:
         """Whether the reported WNS/TNS follow timing repair; None when the run reports no timing."""
         if not self.synth_cfg.get_constraints():
@@ -710,7 +727,11 @@ class OpenRoadSynth:
         # Effort `openroad.repair`: buffer and resize before the reports, as `rb pnr` does after
         # placement. Without it the reports time Yosys' unbuffered netlist (#703).
         if repair:
-            lines.append("repair_design")
+            lines.append(
+                PRE_PLACEMENT_REPAIR
+                if self._repair_pre_placement()
+                else "repair_design"
+            )
             if constraints:
                 lines.append("repair_timing -setup")
 
@@ -855,8 +876,9 @@ class OpenRoadSynth:
           absent at the default.
         - `map`: `resynth` (from `_resynth_cmd`), the sha256 of the effort's pre-STA Tcl (stripped as
           the script writer strips it), and the resolved `lefs`. With the effort's `openroad.repair`
-          on, also `repair: true` and the sha256 of the `layer-rc-tcl` it sources; both are absent
-          with repair off, so a run without repair keeps its digest.
+          on, also `repair: true`, `pre_placement: true` when it repairs the unplaced netlist, and the
+          sha256 of the `layer-rc-tcl` it sources; all are absent with repair off, so a run without
+          repair keeps its digest.
         - `params` and `defines`: the elaboration values. `defines` is the merged table given to the
           frontend (:func:`elaboration_defines`), not `synth.yaml`'s field alone.
         - `libs`: the resolved Liberty set (:func:`library_fingerprint`), which both stages read. It
@@ -872,6 +894,8 @@ class OpenRoadSynth:
         }
         if self.effort_cfg.get_openroad_repair():
             map_options["repair"] = True
+            if self._repair_pre_placement():
+                map_options["pre_placement"] = True
             map_options["layer_rc_tcl_sha256"] = sha256_of(self._layer_rc_tcl() or None)
         return {
             "tool": self.tool_cfg.get_name(),
