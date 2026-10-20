@@ -99,6 +99,7 @@ def test_the_script_rewrites_a_design_file(tmp_path):
         check=True,
     )
     assert run.stdout == f"icg_split: top {ICG}: 33 loads over 3 cells\n"
+    assert not source.exists()
     cells = json.loads(target.read_text())["modules"]["top"]["cells"]
     assert sorted(name for name in cells if name.startswith(ICG)) == [
         ICG,

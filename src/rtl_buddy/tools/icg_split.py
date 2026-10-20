@@ -4,7 +4,7 @@ A Yosys script runs this file between ``write_json`` and ``read_json`` after ``c
 
     python -I icg_split.py <in.json> <out.json> <max_flops>
 
-An ICG is a cell ``clockgate`` named (``$auto$clockgate.cc:...``). One whose gated clock drives n > max cell input pins becomes ceil(n/max) cells: the original and copies of it with the same type, parameters, attributes and input connections, each driving its own net. Loads are dealt in order of (cell name, port, bit), the first n mod k cells taking one more than the rest, so the result is deterministic. Each split prints one line to stdout, which Yosys logs.
+An ICG is a cell ``clockgate`` named (``$auto$clockgate.cc:...``). One whose gated clock drives n > max cell input pins becomes ceil(n/max) cells: the original and copies of it with the same type, parameters, attributes and input connections, each driving its own net. Loads are dealt in order of (cell name, port, bit), the first n mod k cells taking one more than the rest, so the result is deterministic. Each split prints one line to stdout, which Yosys logs. The input file is removed once read.
 
 The module is stdlib-only, so it runs under ``-I`` without the package on the path.
 """
@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import os
 import sys
 
 ICG_PREFIX = "$auto$clockgate.cc:"
@@ -100,6 +101,7 @@ def main(argv: list[str]) -> int:
         return 2
     with open(source) as f:
         design = json.load(f)
+    os.remove(source)
     for module_name in sorted(design.get("modules") or {}):
         module = design["modules"][module_name]
         for icg, count, parts in split_module(module, max_flops):

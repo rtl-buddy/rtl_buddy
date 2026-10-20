@@ -363,7 +363,7 @@ cfg-synth-efforts:
 `clock-gating-max-flops` bounds the other side, as commercial flows do (8 to 16 flops is typical). It is set where `clock-gating-min-flops` is, `0` (the default) is no limit, and it must not be below `clock-gating-min-flops`:
 
 - A set of n flops above the limit gets ceil(n/max) ICGs: the one `clockgate` inserted and copies of it on the same clock, enable and tie inputs. The flops are dealt in cell-name order in near-equal shares.
-- After `clockgate`, the Yosys script writes the design to `yosys-tmp/clockgate.json`, rtl_buddy's `icg_split` helper rewrites it to `clockgate_split.json`, and `read_json` loads it in place of the old design. `synth.log` has one `icg_split:` line per split ICG; mapping, `stat` and the netlist include the copies.
+- After `clockgate`, the Yosys script writes the design to `yosys-tmp/clockgate.json`, rtl_buddy's `icg_split` helper rewrites it to `yosys-tmp/clockgate_split.json` and removes the input, and `read_json` loads the result in place of the old design. `synth.log` has one `icg_split:` line per split ICG; mapping, `stat` and the netlist include the copies.
 - It applies only to ICGs `clockgate` inserted, not to clock-gating cells instantiated in the RTL.
 
 ## Run ABC in batch mode
