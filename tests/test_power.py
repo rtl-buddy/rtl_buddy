@@ -660,8 +660,10 @@ class _FakePdk:
     def get_tech_lef(self):
         return self._tech_lef
 
-    def get_macro_lef(self):
-        return self._macro_lef
+    def get_macro_lef_paths(self):
+        if isinstance(self._macro_lef, list):
+            return list(self._macro_lef)
+        return [self._macro_lef] if self._macro_lef else []
 
     def get_layer_rc_tcl(self):
         return self._layer_rc_tcl
@@ -2271,6 +2273,22 @@ def test_a_platform_without_macro_lef_lists_only_what_the_script_reads(tmp_path)
         "/pdk/fake/nangate45_typ.lib",
         "/pdk/fake/tech.lef",
     ]
+
+
+def test_the_power_script_reads_every_cell_lef_in_order(tmp_path):
+    lefs = ["/pdk/fake/cells_r.lef", "/pdk/fake/cells_l.lef"]
+    backend = _make_power_backend(
+        tmp_path,
+        platform=_FakePlatform(pdk=_FakePdk("/pdk/fake/tech.lef", lefs)),
+    )
+    script = Path(backend._write_script()).read_text()
+
+    assert [line for line in script.splitlines() if line.startswith("read_lef")] == [
+        "read_lef /pdk/fake/tech.lef",
+        "read_lef /pdk/fake/cells_r.lef",
+        "read_lef /pdk/fake/cells_l.lef",
+    ]
+    assert backend._phys_technology()[-2:] == lefs
 
 
 _STAT_JSON = (

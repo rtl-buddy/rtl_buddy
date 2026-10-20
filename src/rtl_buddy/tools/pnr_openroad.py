@@ -2603,7 +2603,10 @@ class OpenRoadPnr:
                 )
             else:
                 extra_lines.append(f"read_liberty {lib}")
-        for lef in self.pnr_cfg.get_lef_paths():
+        for lef in [
+            *pdk.get_macro_lef_paths()[1:],
+            *self.pnr_cfg.get_lef_paths(),
+        ]:
             extra_lines.append(f"read_lef     {lef}")
         extra_libs_lefs = "\n".join(extra_lines)
         if modes:
@@ -2767,7 +2770,8 @@ class OpenRoadPnr:
             "routed_corner_sdcs": routed_corner_sdcs,
             "corner_reports": corner_reports,
             "tech_lef": pdk.get_tech_lef(),
-            "macro_lef": pdk.get_macro_lef(),
+            # The template reads the first; `extra_libs_lefs` reads the rest, in order.
+            "macro_lef": next(iter(pdk.get_macro_lef_paths()), ""),
             "site": pdk.get_site(),
             "util_pct": f"{fp.utilization * 100:.2f}",
             "aspect": f"{fp.aspect:.2f}",
@@ -3641,7 +3645,7 @@ class OpenRoadPnr:
         lef = _dedup_paths(
             [
                 pdk.get_tech_lef(),
-                pdk.get_macro_lef(),
+                *pdk.get_macro_lef_paths(),
                 *self.pnr_cfg.get_lef_paths(),
             ]
         )
@@ -4541,7 +4545,7 @@ class OpenRoadPnr:
                 for p in _dedup_paths(
                     [
                         pdk.get_tech_lef(),
-                        pdk.get_macro_lef(),
+                        *pdk.get_macro_lef_paths(),
                         *self.pnr_cfg.get_lef_paths(),
                     ]
                 )
@@ -4818,7 +4822,11 @@ class OpenRoadPnr:
             "sdc": self.pnr_cfg.get_constraints(),
             "liberty": [*platform.get_sta_lib_paths(), *self.pnr_cfg.get_lib_paths()],
             "lef": _dedup_paths(
-                [pdk.get_tech_lef(), pdk.get_macro_lef(), *self.pnr_cfg.get_lef_paths()]
+                [
+                    pdk.get_tech_lef(),
+                    *pdk.get_macro_lef_paths(),
+                    *self.pnr_cfg.get_lef_paths(),
+                ]
             ),
             "pin_constraints": self.pnr_cfg.pin_constraints,
             **self._planner_files(lambda path: path),

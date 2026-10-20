@@ -11,7 +11,7 @@
      "warnings": [{"kind": "include_unsupported", "line": 1,
                    "included": "shared/clocks.sdc"}]}
 
-With ``script_path``, ``[info script]`` returns it, the child gets a path-only ``file`` command, and ``source`` reads and evaluates the named file (relative to the sourcing file's directory, then the working directory) in the same interp: commands carry ``"file"``, and an unreadable include is a ``source_unreadable`` warning. With ``query_names``, the object queries (``get_ports`` ...) return their name arguments as a Tcl list instead of their source form, so a loop over a query's result runs.
+With ``script_path``, ``[info script]`` returns it, the child gets a path-only ``file`` command, and ``source`` reads and evaluates the named file (relative to the sourcing file's directory, then the working directory) in the same interp: commands carry ``"file"``, and an unreadable include is a ``source_unreadable`` warning. With ``query_names``, the object queries (``get_ports`` ...) and the name accessors (``get_full_name`` ...) return their name arguments as a Tcl list instead of their source form, so a loop over a query's result runs, and ``error`` returns instead of raising, so a check the stubs cannot answer (``[get_property $p direction] ne "input"``) does not stop the read; each skipped ``error`` is a ``check_skipped`` warning.
 
     {"ok": false, "kind": "tcl_error"|"resource_limit"|"unavailable",
      "error": "...", "line": 12, "warnings": [...]}
@@ -58,7 +58,7 @@ proc file args {
 }
 """
 
-#: The child's `source` under ``script_path``: the parent reads and evaluates the file in this interp.
+#: The child's `source` under ``script_path``: the parent reads and evaluates the file in this interp. It raises with `return -code error`, which the lenient `error` (`_ERROR_PROC`) cannot skip.
 _SOURCE_PROC = r"""
 proc source args {
     if {[catch {dict get [info frame -1] line} __rb_line]} {
@@ -67,9 +67,20 @@ proc source args {
     set __rb_result [__rb_source $__rb_line {*}$args]
     set __rb_error [__rb_source_error]
     if {$__rb_error ne ""} {
-        error $__rb_error
+        return -code error $__rb_error
     }
     return $__rb_result
+}
+"""
+
+#: The child's `error` under ``query_names``: the check is recorded and the script carries on.
+_ERROR_PROC = r"""
+proc error args {
+    if {[catch {dict get [info frame -1] line} __rb_line]} {
+        set __rb_line {}
+    }
+    __rb_check $__rb_line {*}$args
+    return
 }
 """
 
@@ -91,6 +102,8 @@ _QUERY_COMMANDS = frozenset(
         "all_registers",
     }
 )
+#: Accessors that answer an object's name; under ``query_names`` an object is its name.
+_NAME_COMMANDS = frozenset({"get_full_name", "get_name", "get_object_name"})
 #: Query flags that take a value, which is not a name.
 _QUERY_VALUE_FLAGS = frozenset({"-filter", "-of_objects", "-hsc", "-regexp_filter"})
 #: Deepest ``source`` nesting followed before the read fails (a file sourcing itself).
@@ -249,10 +262,21 @@ def _evaluate(
                 }
             )
         _append(name, rest, line_no)
-        if query_names and name in _QUERY_COMMANDS:
+        if query_names and (name in _QUERY_COMMANDS or name in _NAME_COMMANDS):
             return _tcl_list(_query_names(words[1:]))
         # Return the command's source form so nested `[get_pins [get_cells u_a]/C]` matches the tokenizer.
         return "[" + " ".join([name, *rest]) + "]"
+
+    def check_skipped(line: str, *words: str) -> str:
+        warning = {
+            "kind": "check_skipped",
+            "line": _line(line),
+            "message": words[0] if words else "",
+        }
+        if scripts:
+            warning["file"] = scripts[-1]
+        warnings.append(warning)
+        return ""
 
     def file_command(line: str, *words: str) -> str:
         if len(words) >= 2 and words[0] in _PATH_SUBCOMMANDS:
@@ -328,6 +352,10 @@ def _evaluate(
                 pass  # already absent from a safe interp
         app.call("interp", "alias", _CHILD, "__rb_record", "", "__rb_record_impl")
         app.call(_CHILD, "eval", _UNKNOWN_PROC)
+        if query_names:
+            app.createcommand("__rb_check_impl", check_skipped)
+            app.call("interp", "alias", _CHILD, "__rb_check", "", "__rb_check_impl")
+            app.call(_CHILD, "eval", _ERROR_PROC)
         if scripts:
             for alias, impl in (
                 ("__rb_file", file_command),
@@ -385,6 +413,7 @@ def _evaluate(
         for cleanup in (
             lambda: app.call("interp", "delete", _CHILD),
             lambda: app.deletecommand("__rb_record_impl"),
+            lambda: app.deletecommand("__rb_check_impl"),
             lambda: app.deletecommand("__rb_file_impl"),
             lambda: app.deletecommand("__rb_source_impl"),
             lambda: app.deletecommand("__rb_source_error_impl"),

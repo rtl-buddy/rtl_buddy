@@ -112,8 +112,8 @@ class _Pdk:
     def get_tech_lef(self):
         return ""
 
-    def get_macro_lef(self):
-        return ""
+    def get_macro_lef_paths(self):
+        return []
 
     def get_layer_rc_tcl(self):
         return ""
