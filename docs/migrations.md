@@ -100,7 +100,7 @@ Remove the key or correct its spelling. A `pnr.yaml` error stops `rb pnr`. A `cf
 
 ### The routed DEF must keep located macros and exact pins
 
-A run with a located macro or an exact pin compares them with the routed DEF and fails with `fail_stage: routed_check` when one moved; `xfail:` does not excuse it. In v6 nothing compared them, so a run whose `pin-constraints` file or platform hook moved a located macro or an exact pin passed. Remove the conflicting placement or the floorplan entry. See [Check the routed floorplan](concepts/pnr.md#check-the-routed-floorplan).
+A run with a located macro or an exact pin compares them with the routed DEF and fails with `fail_stage: routed_check` when one moved; `xfail:` does not excuse it. In v6 nothing compared them, so a run whose `pin-constraints` file or platform hook moved a located macro or an exact pin passed. Remove the conflicting placement or the floorplan entry. See [Place IO pins](concepts/pnr.md#place-io-pins).
 
 ### A flow that ends early is a failure
 
@@ -108,7 +108,7 @@ A run whose OpenROAD session exits 0 before its flow's end marker fails with `fa
 
 ### Supply pins of added cells are connected
 
-The flow applies the PDK's global connections again (`global_connect`) at the end of every stage, before detailed routing, after fill and before the final outputs. In v6 only the cells present when `pdngen` ran had their supply pins connected; the buffers, tie cells and fill added later kept them unconnected in the routed ODB, DEF and every checkpoint. The generated `pnr.tcl` of every run gains the call, and the routed DEF of a run with a `pdn-config` lists the added cells in its power and ground nets. Detailed routing now starts from a design with connected supply pins, so a run's route and slack can differ slightly. No `pnr.yaml` change is needed. See [Tune the process-dependent steps](concepts/pnr.md#tune-the-process-dependent-steps).
+The flow applies the PDK's global connections again (`global_connect`) at the end of every stage, before detailed routing, after fill and before the final outputs. In v6 only the cells present when `pdngen` ran had their supply pins connected; the buffers, tie cells and fill added later kept them unconnected in the routed ODB, DEF and every checkpoint. The generated `pnr.tcl` of every run gains the call, and the routed DEF of a run with a `pdn-config` lists the added cells in its power and ground nets. Detailed routing now starts from a design with connected supply pins, so a run's route and slack can differ slightly. No `pnr.yaml` change is needed. See [Plan the power grid](concepts/pnr.md#plan-the-power-grid).
 
 ### Exact pins leave side and group rules
 
