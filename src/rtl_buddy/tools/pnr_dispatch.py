@@ -300,23 +300,26 @@ class StageChain:
         return handle
 
     def _cancel_answered(self, spec) -> None:
-        """Add the job a submission's recorded answer names to the chain and cancel it, when an exception left the chain without its handle."""
+        """Add the job a submission's recorded answer names to the chain and cancel it, when an exception left the chain without its handle.
+
+        An answer that names no cluster names a job of the cluster the backend selects, as the handle the backend returns does.
+        """
         path = getattr(spec, "submission_path", None)
         if path is None:
             return
-        try:
-            text = Path(path).read_text(errors="replace")
-        except OSError:
+        accepted = _answered_job(Path(path))
+        if accepted is None:
             return
-        job_id, _, cluster = text.strip().partition(";")
+        job_id, cluster = accepted
+        handle = JobHandle(
+            job_id=job_id,
+            spec=spec,
+            cluster=cluster or getattr(self.backend, "cluster", None),
+        )
         with self._lock:
-            if not job_id.strip() or job_id.strip() in {h.job_id for h in self.handles}:
+            if _job_key(handle) in {_job_key(h) for h in self.handles}:
                 return
-            self.handles.append(
-                JobHandle(
-                    job_id=job_id.strip(), spec=spec, cluster=cluster.strip() or None
-                )
-            )
+            self.handles.append(handle)
         self.cancel()
 
     def wait(self) -> None:
@@ -486,6 +489,11 @@ class StageChain:
         return records
 
 
+def _job_key(handle: JobHandle) -> tuple[str | None, str]:
+    """`(cluster, job id)` of a job: ids are unique only within a cluster, so a job of another cluster with the same id is another job."""
+    return handle.cluster or None, handle.job_id
+
+
 def _end_state(records: dict, handle: JobHandle) -> str:
     """A job's state in accounting `records`, or "" without one."""
     return normalise_scheduler_state(
@@ -652,7 +660,7 @@ def settle_cancelled_chain(
     live = chain.drain() if chain.handles else []
     see_job_writes(run_dir, log_path)
     recorded = _recorded_jobs(run_dir) or {}
-    unrecorded = set(recorded) - {h.job_id for h in chain.handles}
+    unrecorded = set(recorded) - {_job_key(h) for h in chain.handles}
     # A submission given up before sbatch answered may still have its job accepted.
     unanswered = _unresolved_submissions(run_dir, time.time())
     try:
@@ -750,10 +758,10 @@ def record_jobs(run_dir: str, chain: StageChain, *, drained: bool = False) -> No
     os.replace(path + ".tmp", path)
 
 
-def _recorded_jobs(run_dir: str) -> dict | None:
-    """The jobs a run directory's `dispatch/` records and still counts as queued, by job id, as `(cluster, stage)`; None once `jobs.json` records them drained.
+def _recorded_jobs(run_dir: str) -> dict[tuple[str | None, str], str] | None:
+    """The jobs a run directory's `dispatch/` records and still counts as queued, as `{(cluster, job id): stage}`; None once `jobs.json` records them drained.
 
-    Besides `jobs.json`, each `NN_<stage>.sbatch` answer counts, so a job accepted after its head died is found too, and so does one the submission guard was stopped before it filed (`NN_<stage>.sbatch.tmp`).
+    Besides `jobs.json`, each `NN_<stage>.sbatch` answer counts, so a job accepted after its head died is found too, and so does one the submission guard was stopped before it filed (`NN_<stage>.sbatch.tmp`). An answer naming no cluster, for a stage `jobs.json` records with the same job id, is that job: `jobs.json` names the cluster the backend selected.
     """
     try:
         document = json.loads(Path(jobs_dir(run_dir), JOBS_NAME).read_text())
@@ -763,18 +771,21 @@ def _recorded_jobs(run_dir: str) -> dict | None:
         document = {}
     if document.get("drained"):
         return None
-    jobs: dict = {}
+    jobs: dict[tuple[str | None, str], str] = {}
     for job in document.get("jobs") or []:
         if isinstance(job, dict) and job.get("job_id"):
-            jobs[str(job["job_id"])] = (job.get("cluster"), job.get("stage"))
+            jobs[(job.get("cluster") or None, str(job["job_id"]))] = job.get("stage")
+    stage_ids = {(stage, job_id) for (_cluster, job_id), stage in jobs.items()}
     answers = Path(jobs_dir(run_dir))
     for answer in sorted([*answers.glob("*.sbatch"), *answers.glob("*.sbatch.tmp")]):
         accepted = _answered_job(answer)
-        if accepted is not None:
-            job_id, cluster = accepted
-            jobs.setdefault(
-                job_id, (cluster, answer.name.split(".")[0].partition("_")[2])
-            )
+        if accepted is None:
+            continue
+        job_id, cluster = accepted
+        stage = answer.name.split(".")[0].partition("_")[2]
+        if cluster is None and (stage, job_id) in stage_ids:
+            continue
+        jobs.setdefault((cluster, job_id), stage)
     return jobs
 
 
@@ -926,7 +937,7 @@ def live_orphans(artefact_dir: str, backend_factory) -> Orphans | None:
     handles = {
         run_dir: [
             JobHandle(job_id=job_id, spec=_OrphanSpec(artefact_dir), cluster=cluster)
-            for job_id, (cluster, _stage) in recorded.items()
+            for cluster, job_id in recorded
         ]
         for run_dir, recorded in found.items()
     }
@@ -1049,7 +1060,7 @@ def _chain_time_s(run_dir: str, recorded: dict) -> int | None:
         document = {}
     jobs = document.get("jobs") if isinstance(document, dict) else None
     asked = {
-        str(job.get("job_id")): job.get("time")
+        (job.get("cluster") or None, str(job.get("job_id"))): job.get("time")
         for job in jobs or []
         if isinstance(job, dict)
     }
@@ -1057,9 +1068,9 @@ def _chain_time_s(run_dir: str, recorded: dict) -> int | None:
         (pnr_checkpoints.read_manifest(run_dir) or {}).get("dispatch") or {}
     ).get("stages") or {}
     total = 0
-    for job_id, (_cluster, stage) in recorded.items():
+    for key, stage in recorded.items():
         seconds = time_to_seconds(
-            asked.get(job_id) or (planned.get(stage) or {}).get("time")
+            asked.get(key) or (planned.get(stage) or {}).get("time")
         )
         if seconds is None:
             return None

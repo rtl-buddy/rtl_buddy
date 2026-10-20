@@ -1598,6 +1598,150 @@ def test_a_job_accepted_after_its_head_died_is_found(tmp_path, monkeypatch, answ
     assert "stage job(s) 777 of earlier" in res.results["desc"]
 
 
+# Two stages' jobs have id 900 on two clusters, and the first one still runs. A job
+# without a cluster ran on the local cluster.
+@pytest.mark.parametrize("clusters", [("east", "west"), (None, "west")])
+def test_a_run_waits_for_a_job_whose_id_another_cluster_also_gave(
+    tmp_path, monkeypatch, clusters
+):
+    first, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
+    assert first.run().results["result"] == "PASS"
+    run_dir = _only_run(artefacts)
+    dispatch = run_dir / "dispatch"
+    recorded = json.loads((dispatch / "jobs.json").read_text())
+    recorded["drained"] = False
+    for job, cluster in zip(recorded["jobs"], clusters):
+        job.update(job_id="900", cluster=cluster)
+        (dispatch / f"{_NAMES[job['stage']]}.sbatch").write_text(
+            "900" + (f";{cluster}" if cluster else "") + "\n"
+        )
+    (dispatch / "jobs.json").write_text(json.dumps(recorded))
+    live = clusters[0]
+
+    def _squeue(argv):
+        cluster = argv[argv.index("-M") + 1] if "-M" in argv else None
+        running = cluster == live and "900" in argv[argv.index("--jobs") + 1].split(",")
+        return _done(stdout="900|None|RUNNING|0:00|rb\n" if running else "")
+
+    slurm._squeue = _squeue
+    log = (artefacts / "pnr.log").read_bytes()
+    again, _, _ = _dispatched(tmp_path, monkeypatch, slurm=slurm)
+
+    res = again.run()
+
+    scancel = "scancel " + (f"-M {live} " if live else "") + "900"
+    assert res.results["desc"] == (
+        f"dispatch: stage job(s) 900 of earlier dispatched run(s) {run_dir.name} "
+        "are still queued or running and would write into this run's outputs; "
+        f"wait for them to end or cancel them with `{scancel}`"
+    )
+    assert _runs(artefacts) == [run_dir]
+    assert (artefacts / "pnr.log").read_bytes() == log
+
+
+def test_recorded_jobs_keep_the_cluster_of_each_job(tmp_path):
+    dispatch = tmp_path / "dispatch"
+    dispatch.mkdir()
+    jobs = [
+        ("floorplan", "900", "east", "01:00:00"),
+        ("place", "900", "west", "00:30:00"),
+        ("cts", "900", None, "00:10:00"),
+        ("global_route", "903", "east", "00:20:00"),
+    ]
+    (dispatch / "jobs.json").write_text(
+        json.dumps(
+            {
+                "drained": False,
+                "jobs": [
+                    {"stage": s, "job_id": i, "cluster": c, "time": t}
+                    for s, i, c, t in jobs
+                ],
+            }
+        )
+    )
+    # sbatch named no cluster; jobs.json has the one the backend selected.
+    (dispatch / "04_global_route.sbatch").write_text("903\n")
+    # A job jobs.json never recorded.
+    (dispatch / "05_detailed_route.sbatch").write_text("902\n")
+
+    recorded = pnr_dispatch._recorded_jobs(str(tmp_path))
+
+    assert recorded == {
+        **{(c, i): s for s, i, c, _t in jobs},
+        (None, "902"): "detailed_route",
+    }
+    del recorded[(None, "902")]
+    assert pnr_dispatch._chain_time_s(str(tmp_path), recorded) == 7200
+
+
+def test_a_cancelled_chain_is_not_drained_while_a_job_with_its_id_is_unaccounted(
+    tmp_path,
+):
+    class _Backend:
+        name = "slurm"
+
+        def queue_states(self, handles, **_):
+            return {}
+
+        def cancel_all(self, handles, **_):
+            return True
+
+    run_dir = tmp_path / "run"
+    (run_dir / "dispatch").mkdir(parents=True)
+    resources = JobResources(cpus=1, mem=None, time=None)
+    chain = pnr_dispatch.StageChain(_Backend())
+    chain.handles.append(
+        JobHandle(
+            job_id="900",
+            spec=SimpleNamespace(stage="place", resources=resources),
+            cluster="west",
+        )
+    )
+    # An answer for a job the chain does not hold, with the same id on another cluster.
+    (run_dir / "dispatch" / "01_floorplan.sbatch").write_text("900;east\n")
+
+    pnr_dispatch.settle_cancelled_chain(
+        str(run_dir),
+        chain,
+        log_path=str(tmp_path / "pnr.log"),
+        error=FatalRtlBuddyError("dispatch: given up"),
+    )
+
+    recorded = json.loads((run_dir / "dispatch" / "jobs.json").read_text())
+    assert recorded["drained"] is False
+
+
+def test_a_job_the_chain_lacks_is_cancelled_on_its_own_cluster(tmp_path):
+    cancelled = []
+
+    class _Backend:
+        name = "slurm"
+        cluster = "east"
+
+        def submit_pnr_stage(self, spec, **_):
+            # sbatch answered without naming the cluster, then the head was interrupted.
+            spec.submission_path.write_text("900\n")
+            raise KeyboardInterrupt
+
+        def queue_states(self, handles, **_):
+            return None
+
+        def cancel_all(self, handles, **_):
+            cancelled.append([(h.cluster, h.job_id) for h in handles])
+            return True
+
+    chain = pnr_dispatch.StageChain(_Backend())
+    chain.handles.append(
+        JobHandle(job_id="900", spec=SimpleNamespace(stage="floorplan"), cluster="west")
+    )
+    spec = SimpleNamespace(stage="place", submission_path=tmp_path / "02_place.sbatch")
+
+    with pytest.raises(KeyboardInterrupt):
+        chain.submit(spec)
+
+    assert cancelled == [[("west", "900"), ("east", "900")]]
+
+
 def _leave_unanswered(artefacts, *suffixes):
     """Make the dispatched run in `artefacts` look as if its head was killed before sbatch answered its first submission: no job recorded, and an empty `01_floorplan.<suffix>` for each of `suffixes`."""
     run_dir = _only_run(artefacts)
