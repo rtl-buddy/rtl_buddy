@@ -224,7 +224,7 @@ A pattern that matches no Liberty cell excludes nothing. OpenROAD reports `STA-0
 
 ## Extract parasitics with rcx-rules
 
-`rcx-rules` is a path, resolved like `pdn-config`, to an OpenRCX extraction-rules file (ORFS `RCX_RULES`). Its `LayerCount` must match the technology LEF's routing stack.
+`rcx-rules` is a path, resolved like `pdn-config`, to an OpenRCX extraction-rules file (ORFS `RCX_RULES`). Its `LayerCount` must match the technology LEF's routing stack. It is an input of a [hardened block's](#harden-a-block) abstract when set, so editing it makes the abstract stale.
 
 With it set, the flow extracts parasitics after fill insertion, writes `<top>.routed.spef`, and times the final reports on that SPEF instead of the global-route estimate. The summary's WNS and TNS come from the extracted parasitics, and a [`netlist-source: pnr` power run](power.md#extracted-parasitics) reads the same SPEF. With the key unset there is no extraction.
 
