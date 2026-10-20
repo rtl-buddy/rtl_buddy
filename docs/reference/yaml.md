@@ -182,7 +182,7 @@ P&R keys, all optional. `placement.*` keys are set on the PDK, overridden by the
 | `dont-use-cells` | PDK, synth and P&R platforms | Cell names or globs (`*`, `?`), one per entry. Empty by default |
 | `pdn-config` | PDK | Tcl that declares the power grid; the flow calls `pdngen`. Unset means no grid |
 | `rcx-rules` | PDK | OpenRCX rules. Enables extraction, `<top>.routed.spef` and `post-route-repair` |
-| `layer-rc-tcl` | PDK | `set_layer_rc` / `set_wire_rc` script, sourced after `read_sdc` by `rb pnr`, `rb power` and a synthesis effort with `openroad.repair`. Unset warns `pnr.no_wire_rc` |
+| `layer-rc-tcl` | PDK | `set_layer_rc` / `set_wire_rc` script, sourced after `read_sdc` by `rb pnr`, a `netlist-source: pnr` power run and a synthesis effort with `openroad.repair`. Unset warns `pnr.no_wire_rc` |
 | `platform-tcl` | PDK | Sourced before the Liberty reads of `rb pnr` and `rb power` |
 | `tracks-tcl` | PDK | `make_tracks` script, replacing the bare `make_tracks` |
 | `tapcell-tcl` | PDK | Tap and endcap insertion, after macro placement |
@@ -852,20 +852,20 @@ runs:
 | `abstract` | — | Needs `harden`. `bloat`: `occupied` (default) or a number; `feedthrough-layers`: layers written with real shapes |
 | `buffer-ports` | Value of `harden` | `true` buffers every input and output port after pin placement |
 | `blocks` | — | Hardened blocks: `name` (module), `pnr` (a `harden: true` run), `pnr-path` (default this file). Needs a single-corner platform. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
-| `floorplan.utilization` | 0.55 | Core utilization, 0 to 1 |
+| `floorplan.utilization` | 0.55 | Fraction of the core area the cells fill |
 | `floorplan.aspect` | 1.0 | Die aspect ratio |
 | `floorplan.core-margin` | 2.0 | Core-to-die margin in µm |
 | `floorplan.die-area`, `floorplan.core-area` | — | `[x0, y0, x1, y1]` in µm, set together, core inside die. Exclude the three keys above |
 | `floorplan.core-cutouts` | — | Rectangles removed from the core |
 | `floorplan.blockages` | — | Placement blockages; see below |
 | `floorplan.macro-placement` | `pack` | `pack` (rb's packer) or `rtl-mp` (OpenROAD's RTL-MP) |
-| `floorplan.macro-anchor` | `lower-left` | Core corner the packer starts from. Not with `rtl-mp` |
+| `floorplan.macro-anchor` | `lower-left` | Core corner the packer starts from. Another corner is an error with `rtl-mp` or a `macro-placement` hook |
 | `floorplan.macros`, `floorplan.macros-file` | — | Per-macro directives, inline or from a YAML or JSON file; see below |
 | `floorplan.macro-snap` | `true` | `false` keeps macro locations off the site and row grid |
 | `floorplan.pins`, `floorplan.pins-file` | — | Pin constraints, inline or from a YAML or JSON file; see below |
 | `floorplan.pin-snap` | `true` | `false` keeps exact pin centres instead of moving them to the die edge and a track |
-| `floorplan.pins-complete` | `false` | `true` fails the run unless every signal port has exactly one pin entry |
-| `reglvl` | 0 | Regression level |
+| `floorplan.pins-complete` | `false` | `true` fails the run when a signal port has no entry, more than one exact pin, or no exact pin and several side or group rules |
+| `reglvl` | 0 | Regression level: an integer, or a map of tool name to level with an optional `default` |
 | `xfail`, `xfail_strict`, `xfail_match` | — | [Expected failures](../concepts/expected-failures.md) |
 | `tool_overrides` | — | Accepted, unused |
 

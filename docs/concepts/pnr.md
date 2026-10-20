@@ -58,11 +58,11 @@ Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previo
 | `cell_count` | Instances of the input netlist (the summary's Cells column). |
 | `physical_cell_count` | Tap, endcap, spacer and fill cells. |
 | `worst_setup_corner`, `worst_hold_corner`, `corners` | Multi-corner platforms: the corner behind each WNS, and each corner's four timing values. |
-| `routed`, `mode`, `stopped_after` | `routed: false` means the run stopped early ([probe](#probe-a-floorplan) or `--stop-after`); its numbers are that stage's estimate. |
+| `routed`, `mode`, `stopped_after`, `global_route_overflow` | `routed: false` means the run stopped early ([probe](#probe-a-floorplan) or `--stop-after`); its numbers are that stage's estimate, with the global-route overflow from `global_route` on. |
 | `post_route_repair` | The rounds of [post-route repair](#repair-timing-after-routing): `kept_round`, `rounds`, `repaired_rounds`, `stop`, `reason`, `passed_over_round`. |
 | `openroad_threads` | Requested and effective [thread counts](#openroad-threads). |
 | `gds_status`, `gds_missing_cells` | [Stream-out](#stream-out-gds-and-png) outcome. |
-| `checkpoint_dir`, `checkpoint_stages`, `last_step` | On a failed run with [checkpoints](#keep-stage-checkpoints): where they are and the last step reached. |
+| `checkpoint_dir`, `checkpoint_stages`, `last_step` | With [checkpoints](#keep-stage-checkpoints): where they are, which stages were written, and the last step reached. |
 
 Times are in picoseconds, converted from the Liberty `time_unit`. The final timing uses extracted parasitics when the PDK sets `rcx-rules`, else the global-route estimate. A field rb could not read is left out.
 
@@ -90,7 +90,7 @@ A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line, stops befo
 | `<top>.gds`, `<top>.png`, `klayout.*.log`, `def2stream.inputs.json` | Stream-out outputs, logs and the inputs it read |
 | `checkpoints/`, `abstract/` | [Stage checkpoints](#keep-stage-checkpoints) and a [hardened block's](#harden-a-block) views |
 
-A failed run keeps `pnr.log`, `pnr.tcl` and `congestion.rpt` and removes the routed database, so `rb power` never reads a stale one.
+When OpenROAD fails, the run removes the routed database so `rb power` never reads a stale one; `pnr.log`, `pnr.tcl` and `congestion.rpt` stay. A run that fails a later check (`routed_check`, `fail-on-electrical`, `export`, `abstract`) keeps its routed outputs for inspection.
 
 ## Follow a running flow
 
@@ -108,7 +108,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `fail_stage: setup` | Configuration or input problem found before OpenROAD started: a missing file (`pdn-config`, `rcx-rules`, a hook, a planner file), a bad planner-file entry, `post-route-repair` without `rcx-rules`, blockages on OpenROAD older than 26Q1. The description names it. |
 | `fail_stage: incomplete`, `the flow did not finish` | A Tcl file the flow sources (PDK Tcl, `pdn-config`, `pin-constraints`, a hook) called `exit` or `return -level 2`, ending OpenROAD with code 0. The description names the last step reached; remove the exit from the file that step sources. |
 | `fail_stage: routed_check` | A located macro or exact pin moved between floorplan and the routed DEF, usually because a `pin-constraints` file or hook moved it. |
-| `fail_stage: pins_complete` | `pins-complete: true` found a port with no pin entry or with several. Add or remove entries. |
+| `fail_stage: pins_complete` | `pins-complete: true` found a port with no pin entry, or with conflicting entries. Add or remove entries. |
 | `fail_stage: checkpoint` | A checkpoint could not be written (disk full; see the `checkpoint` event in `progress.jsonl`), or a hook wrapped `global_placement`, `clock_tree_synthesis`, `global_route` or `detailed_route` with `rename` in a one-session run. Free space, or remove the wrapper or set `stages: true`. |
 | `fail_stage: resume` | `--resume` refused: a stage script, input file, checkpoint or OpenROAD version differs. Rerun from an earlier stage. |
 | `fail_stage: dispatch` | A Slurm stage job ended `OUT_OF_MEMORY`, `TIMEOUT`, `CANCELLED` or similar, never started, or was refused. Read `dispatch/<NN>_<stage>.slurm.log`; raise that stage's `resources:`. See [Dispatch](#dispatch-the-stages-to-slurm). |
@@ -233,7 +233,7 @@ The stage keeps the best round, never worse than the detailed route:
 - A clean route always beats one with DRCs.
 - Otherwise a round wins when no repaired side's worst slack (setup if `setup-margin` is set, hold if `hold-margin` is set; 0 when met) is lower and one is higher, without more DRCs; or when it ties on timing with fewer DRCs.
 
-Rounds stop (`post_route_repair.stop`) when the best round is clean and meets timing (`timing_met`), a clean round does not improve (`no_improvement`), timing is not reported (`timing_not_reported`), a session fails (`session_failed`) or `rounds` run out (`last_round`). A round whose route has DRCs never stops the rounds early. A failed round session does not fail the run: rb warns `pnr.post_route_round_failed` and qualifies the `PASS`. `finish` continues from the kept round, whose DRC report becomes `route.drc.rpt`. `pnr.post_route_round` logs each round's slack and DRCs.
+Rounds stop (`post_route_repair.stop`) when the best round is clean and meets timing (`timing_met`), a clean round does not improve (`no_improvement`), timing is not reported (`timing_not_reported`), a session fails (`session_failed`) or `rounds` run out (`last_round`). `timing_met` and `no_improvement` need a clean route, so rounds with DRCs keep going. A failure extracting round 0 fails the run; a failed session of a later round does not: rb warns `pnr.post_route_round_failed`, keeps the best round and qualifies the `PASS`. `finish` continues from the kept round, whose DRC report becomes `route.drc.rpt`. `pnr.post_route_round` logs each round's slack and DRCs.
 
 ## Probe a floorplan
 
@@ -261,7 +261,7 @@ By default the die is sized from the netlist's cell area by `floorplan.utilizati
 
 ## Place macros
 
-A netlist with hard macros (SRAMs, hardened blocks) gets them placed before the power grid. By default rb's packer puts them in rows from the core's lower-left corner, tallest first, `placement.macro-halo` (default 20 µm) apart and from the core edge, on the site grid. `floorplan.macro-anchor` starts from another corner, keeping the opposite edges free for pins. `floorplan.macro-placement: rtl-mp` uses OpenROAD's RTL-MP instead, which places by connectivity and may mirror macros; it keeps out of every blockage type and excludes `macro-anchor`.
+A netlist with hard macros (SRAMs, hardened blocks) gets them placed before the power grid. By default rb's packer puts them in rows from the core's lower-left corner, tallest first, `placement.macro-halo` (default 20 µm) apart and from the core edge, on the site grid. `floorplan.macro-anchor` starts from another corner, keeping the opposite edges free for pins. `floorplan.macro-placement: rtl-mp` uses OpenROAD's RTL-MP instead, which places by connectivity and may mirror macros; it keeps out of every blockage type and cannot take a `macro-anchor`.
 
 `floorplan.macros` fixes, orients or haloes individual macros:
 
@@ -300,7 +300,7 @@ A floorplanner can hand over macros as a YAML or JSON list of the same entries i
 - Exact pins are placed first; side and group rules skip them. When every signal port has an exact pin, `place_pins` is skipped.
 - A name that matches no port fails the run.
 - `pins-file` takes a planner's YAML or JSON list of exact pins and `floorplan.pins` entries.
-- `pins-complete: true` fails the run (`fail_stage: pins_complete`) unless every signal port has exactly one entry.
+- `pins-complete: true` fails the run (`fail_stage: pins_complete`) when a signal port has no matching entry, more than one exact pin, or no exact pin and several side or group rules.
 
 For other pin Tcl, such as `-mirrored_pins` or `exclude_io_pin_region`, set `pin-constraints: pins.tcl` on the run. It is sourced just before pin placement. Do not constrain a port that has an exact pin there (`PPL-0107`), and do not put pin commands in the SDC, which is read before the die exists.
 
@@ -338,7 +338,7 @@ By default each stripe layer connects to the next; `connect: [[met1, met4], ...]
 | --- | --- |
 | `session` | At the start of every OpenROAD session, after the SDC, before the floorplan |
 | `after-floorplan` | After floorplan, tracks, blockages and tie cells |
-| `macro-placement` | Instead of rb's macro placement; only when the netlist has macros. `$rb_movable_macros` lists the unlocated ones. Excludes `macro-placement` and `macro-anchor`. |
+| `macro-placement` | Instead of rb's macro placement; only when the netlist has macros. `$rb_movable_macros` lists the unlocated ones. Not with `macro-placement: rtl-mp` or a non-default `macro-anchor`. |
 | `after-pdn` | After taps and the power grid |
 | `after-pins` | After pin placement, before port buffering. A hook that buffers ports needs `buffer-ports: false`. |
 | `after-global-placement` | After `global_placement` |
@@ -435,7 +435,7 @@ rb pnr-export alu_pnr -c pnr/alu/pnr.yaml --png-only --lyp dark.lyp
 
 ## Harden a block
 
-`harden: true` publishes a routed block as a hard macro for a larger design: `abstract/<top>.lef`, `<top>.lib` (timing only), `<top>.gds`, `<top>.params.json` and `abstract.manifest.json`, all or nothing (`fail_stage: abstract`).
+`harden: true` publishes a routed block as a hard macro for a larger design: `abstract/<top>.lef`, `<top>.lib` (timing only), `<top>.gds` and `abstract.manifest.json`, all or nothing (`fail_stage: abstract`). `<top>.params.json` records the block's parameter values; it is left out, with the warning `pnr.block_params_unrecorded`, when Yosys cannot elaborate the top.
 
 ```yaml
 runs:
