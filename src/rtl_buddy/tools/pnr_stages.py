@@ -1,6 +1,6 @@
 """Stages of the `rb pnr` flow: the flow template split at its stage boundaries, staged-session identity, and the checks a resume must pass.
 
-`flow.tcl.template` carries `{{ @name }}` markers. A stage marker (`floorplan`, `place`, `cts`, `global_route`, `detailed_route`, `finish`) starts that stage's part of the flow. A piece marker (`load`, `session`, `design`, `clocks`, `layers`) starts text that a staged session's prelude repeats, and `{{ @/name }}` ends a piece inside a stage. A one-session run renders every marker as nothing, so its script is the flow as written; a staged session is a prelude rb generates from those pieces, followed by its stage's part of the flow.
+`flow.tcl.template` carries `{{ @name }}` markers. A stage marker (`floorplan`, `place`, `cts`, `global_route`, `detailed_route`, `finish`) starts that stage's part of the flow. `post_route_repair` has no marker: rb runs its rounds as sessions of their own. A piece marker (`load`, `session`, `design`, `clocks`, `layers`) starts text that a staged session's prelude repeats, and `{{ @/name }}` ends a piece inside a stage. A one-session run renders every marker as nothing, so its script is the flow as written; a staged session is a prelude rb generates from those pieces, followed by its stage's part of the flow.
 """
 
 import hashlib
@@ -8,7 +8,8 @@ import os
 import re
 from dataclasses import dataclass
 
-from ..config.pnr import CHECKPOINT_STAGES, PNR_STAGES
+from ..config.pnr import CHECKPOINT_STAGES, PNR_STAGES, POST_ROUTE_REPAIR_STAGE
+from ..config.pnr_repair import PnrMode
 from . import pnr_checkpoints
 from .artifact_paths import project_root_or_none
 
@@ -16,6 +17,14 @@ _MARKER_RE = re.compile(r"\{\{ @(/?\w+) \}\}")
 
 #: Template pieces a staged prelude repeats.
 PIECES = ("load", "session", "design", "clocks", "layers")
+
+#: The stages the flow template marks: every stage but `post_route_repair`.
+TEMPLATE_STAGES = tuple(s for s in PNR_STAGES if s != POST_ROUTE_REPAIR_STAGE)
+
+
+def run_stages(post_route_repair: bool) -> tuple[str, ...]:
+    """A run's stages in order: `post_route_repair` only when the run repairs after detailed route."""
+    return PNR_STAGES if post_route_repair else TEMPLATE_STAGES
 
 
 @dataclass(frozen=True)
@@ -34,9 +43,11 @@ class FlowTemplate:
         self.segments = [Segment("", parts[0])] + [
             Segment(marker, text) for marker, text in zip(parts[1::2], parts[2::2])
         ]
-        stages = [s.marker for s in self.segments if s.marker in PNR_STAGES]
-        if stages != list(PNR_STAGES):
-            raise ValueError(f"flow template stage markers {stages} != {PNR_STAGES}")
+        stages = [s.marker for s in self.segments if s.marker in TEMPLATE_STAGES]
+        if stages != list(TEMPLATE_STAGES):
+            raise ValueError(
+                f"flow template stage markers {stages} != {TEMPLATE_STAGES}"
+            )
         names = [s.marker for s in self.segments]
         missing = [p for p in PIECES if names.count(p) != 1]
         if missing:
@@ -57,7 +68,7 @@ class FlowTemplate:
         out = []
         inside = False
         for segment in self.segments:
-            if segment.marker in PNR_STAGES:
+            if segment.marker in TEMPLATE_STAGES:
                 if inside:
                     break
                 inside = segment.marker == stage
@@ -73,7 +84,7 @@ class FlowTemplate:
 
     def through(self, stage: str, marker_text=lambda _marker: "") -> str:
         """The one-session flow up to the end of `stage`, as `whole` renders it."""
-        stop = PNR_STAGES[PNR_STAGES.index(stage) + 1]
+        stop = TEMPLATE_STAGES[TEMPLATE_STAGES.index(stage) + 1]
         out = []
         for s in self.segments:
             if s.marker == stop:
@@ -107,10 +118,31 @@ def option_error(
     return None
 
 
-def predecessor(stage: str) -> str | None:
-    """The stage before `stage`, or None for the first."""
-    index = PNR_STAGES.index(stage)
-    return PNR_STAGES[index - 1] if index else None
+def run_option_error(
+    stages: tuple[str, ...],
+    mode: PnrMode,
+    stop_after: str | None,
+    resume_from: str | None,
+) -> str | None:
+    """Return why `--stop-after` or `--from` names a stage this run does not reach, or None.
+
+    `stages` are the run's stages (see `run_stages`); a probe ends after `global_route`.
+    """
+    for flag, stage in (("--stop-after", stop_after), ("--from", resume_from)):
+        if stage is not None and mode is PnrMode.PROBE and after(stage, "global_route"):
+            return f"{flag} {stage}: a probe (mode: probe) ends after global_route"
+        if stage is not None and stage not in stages:
+            return (
+                f"{flag} {stage}: this run has no {stage} stage; it runs only "
+                "with post-route-repair set"
+            )
+    return None
+
+
+def predecessor(stage: str, stages: tuple[str, ...]) -> str | None:
+    """The stage before `stage` among a run's `stages`, or None for the first."""
+    index = stages.index(stage)
+    return stages[index - 1] if index else None
 
 
 def after(stage: str, other: str) -> bool:
@@ -155,6 +187,11 @@ def _header_and_rest(text: str) -> tuple[list[tuple[str, str]], str]:
             end = index
             break
     return header, "".join(lines[end:])
+
+
+def session_body(text: str) -> str:
+    """A session script without its shared header's `set` lines and its threads block: what a record of one stage's several sessions repeats of each after the first."""
+    return _THREADS_RE.sub("", _header_and_rest(text)[1], count=1)
 
 
 def _identity_text(text: str) -> str:
@@ -328,6 +365,8 @@ def check_resume(
     run_dir: str,
     from_stage: str,
     *,
+    stages: tuple[str, ...],
+    mode: PnrMode,
     openroad_version: str | None,
     scripts: dict[str, str],
     inputs: dict,
@@ -335,7 +374,7 @@ def check_resume(
 ) -> ResumeSource | str:
     """Return the run to resume from `from_stage`, or why it cannot be.
 
-    The run must be staged and its stage before `from_stage` must have finished with its checkpoint written and unchanged since. Every stage before `from_stage` must regenerate the same script today (`scripts`, stage -> text) and read the same input files (`inputs`, the manifest roles, project-relative), and OpenROAD must be the same version. `fingerprint` hashes a file the way the manifest does.
+    `stages` are the resuming run's stages and `mode` its mode. The run must be staged, must not be a probe when the resuming run is a closure, and its stage before `from_stage` must have finished with its checkpoint written and unchanged since. Every stage before `from_stage` must regenerate the same script today (`scripts`, stage -> text) and read the same input files (`inputs`, the manifest roles, project-relative), and OpenROAD must be the same version. `fingerprint` hashes a file the way the manifest does.
     """
     run_id = os.path.basename(run_dir)
     where = f"run {run_id} ({run_dir})"
@@ -346,7 +385,12 @@ def check_resume(
         return (
             f"{where} was not a staged run; only a run with stages: true can be resumed"
         )
-    pred = predecessor(from_stage)
+    if manifest.get("mode") == PnrMode.PROBE and mode is PnrMode.CLOSURE:
+        return (
+            f"{where} is a probe (mode: probe), which skips timing repair; a probe "
+            "cannot be resumed into a closure run. Run the closure from the start"
+        )
+    pred = predecessor(from_stage, stages)
     if pred is None:
         return "--from floorplan starts from the netlist; run without --resume"
     root = project_root_or_none(run_dir)
@@ -372,7 +416,7 @@ def check_resume(
             f"{old_version or 'an unknown version'}"
         )
 
-    inherited = PNR_STAGES[: PNR_STAGES.index(from_stage)]
+    inherited = stages[: stages.index(from_stage)]
     for stage in inherited:
         entry = chain.get(stage)
         if entry is None:
