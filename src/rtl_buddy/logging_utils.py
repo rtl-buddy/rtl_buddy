@@ -2001,6 +2001,29 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"platform, and '{fields.get('platform')}' declares corners — "
                 "an abstract carries one corner's timing model"
             )
+        case "pnr.constraints_corners":
+            return f'P&R "{fields.get("pnr")}": constraints: {fields.get("problem")}'
+        case "pnr.corner_constraints_unsupported":
+            return (
+                f'P&R "{fields.get("pnr")}": constraints: a per-corner SDC needs '
+                f"an SDC mode per corner, and {fields.get('exe')} "
+                f"({fields.get('version') or 'version unknown'}) cannot switch "
+                "between SDC modes; upgrade OpenROAD or give one SDC path"
+            )
+        case "pnr.corner_modes_probe_failed":
+            return (
+                f'P&R "{fields.get("pnr")}": could not tell whether '
+                f"{fields.get('exe')} can give each corner an SDC mode: "
+                f"{fields.get('problem')}"
+            )
+        case "pnr.corner_modes_unsupported":
+            return (
+                f'P&R "{fields.get("pnr")}": {fields.get("exe")} '
+                f"({fields.get('version') or 'version unknown'}) cannot switch "
+                f"between SDC modes, so every corner of '{fields.get('platform')}' "
+                "is timed in one mode, where a generated clock's source latency "
+                "comes from one corner; upgrade OpenROAD for a mode per corner"
+            )
         case "pnr.block_unresolved" | "synth.block_unresolved":
             flow = "P&R" if event.startswith("pnr") else "synthesis"
             run = fields.get("pnr") or fields.get("synth")

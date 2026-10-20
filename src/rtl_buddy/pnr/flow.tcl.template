@@ -54,15 +54,14 @@ puts ">>> Reading Liberty + LEF"
 {{ read_liberty }}
 read_lef     $TECH_LEF
 read_lef     $MACRO_LEF
-{{ extra_libs_lefs }}
+{{ extra_libs_lefs }}{{ scenes_block }}
 
 {{ @load }}puts ">>> Reading netlist"
 read_verilog $NETLIST
 link_design  $DESIGN
 
 puts ">>> Reading SDC"
-read_sdc $SDC_FILE
-{{ @session }}{{ max_fanout_block }}{{ layer_rc_block }}{{ dont_use_block }}{{ hook_session_block }}
+{{ read_sdc }}{{ @session }}{{ max_fanout_block }}{{ layer_rc_block }}{{ dont_use_block }}{{ hook_session_block }}
 {{ @floorplan }}puts ">>> Initializing floorplan"
 {{ initialize_floorplan }}
 {{ make_tracks }}
@@ -127,8 +126,7 @@ detailed_placement{{ dpl_options }}
 {{ macro_pin_limits_block }}rb::global_connect
 
 {{ @cts }}puts ">>> Clock tree synthesis"
-{{ @clocks }}set_propagated_clock [all_clocks]
-{{ @/clocks }}clock_tree_synthesis \
+{{ @clocks }}{{ propagated_clocks }}{{ @/clocks }}clock_tree_synthesis \
     -root_buf {{ cts_root_buf }} \
     -buf_list $CTS_BUF \
     {{ cts_clustering_option }}{{ cts_ndr_option }}
@@ -211,7 +209,7 @@ puts ">>> Write outputs"
 write_def     $OUT_DIR/${DESIGN}.def
 write_verilog $OUT_DIR/${DESIGN}.routed.v
 write_sdc     $OUT_DIR/${DESIGN}.routed.sdc
-# OpenROAD binary DB: placement, routing and parasitic annotations, so
+{{ routed_corner_sdcs }}# OpenROAD binary DB: placement, routing and parasitic annotations, so
 # downstream tools (rb power with netlist-source: pnr) can re-enter at the
 # post-route state.
 #

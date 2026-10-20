@@ -829,7 +829,7 @@ runs:
 | `name` | Required | Run name and artefact directory |
 | `desc` | Required | Description |
 | `synth`, `synth-path` | Required | Upstream synthesis entry and its `synth.yaml`. The run reads `artefacts/<synth>/synth_netlist.v` |
-| `constraints` | Required | SDC file |
+| `constraints` | Required | SDC file, or on a multi-corner platform a map of each corner to its SDC file. A map that misses a corner or names another fails setup. See [Sign off at several corners](../concepts/pnr.md#sign-off-at-several-corners) |
 | `platform` | Required | `cfg-pnr-platforms` entry |
 | `tool` | `openroad` | Only `openroad` runs; anything else is `SKIP` |
 | `lef-paths`, `lib-paths` | — | Extra macro LEF and Liberty |
@@ -932,7 +932,7 @@ runs:
 | `synth`, `synth-path` | Required for synth source | Upstream synthesis entry and YAML path |
 | `pnr`, `pnr-path` | Required for P&R source | Upstream P&R entry and YAML path |
 | `phys-run` | Optional, synth source only | Synthesis run in `synth-path` whose artefact directory receives this run's `phys-model.json`. A run name, never a path |
-| `constraints` | Required for synth source | SDC path. For P&R source it defaults to the routed SDC |
+| `constraints` | Required for synth source | SDC path. For P&R source it defaults to the routed SDC, the primary corner's on a multi-corner platform |
 | `platform` | Required | `cfg-pnr-platforms` entry |
 | `lib-paths` | Optional | Extra macro Liberty files relative to `power.yaml`, appended after what the referenced run declares |
 | `threads` | Default unset (1) | OpenROAD worker threads, as in `pnr.yaml`. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
