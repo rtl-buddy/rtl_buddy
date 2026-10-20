@@ -207,8 +207,8 @@ class PdkConfigFile:
     # Each corner is one Liberty path or a list of them (cell libraries split across files).
     corners: dict[str, str | list[str]] = field(default_factory=dict)
     tech_lef: str = field(rename="tech-lef", default="")
-    macro_lef: str = field(rename="macro-lef", default="")
-    # One path or a list of paths.
+    # Each is one path or a list of paths, read in order.
+    macro_lef: str | list[str] = field(rename="macro-lef", default="")
     cell_gds: str | list[str] = field(rename="cell-gds", default="")
     klayout_tech: str = field(rename="klayout-tech", default="")
     klayout_props: str = field(rename="klayout-props", default="")
@@ -258,7 +258,7 @@ class PdkConfig:
                     f"PDK '{cfg.name}': corner '{corner}' names no Liberty file"
                 )
         self._tech_lef = _resolve(cfg.tech_lef)
-        self._macro_lef = _resolve(cfg.macro_lef)
+        self._macro_lefs = [_resolve(p) for p in _as_path_list(cfg.macro_lef)]
         self._cell_gds = [_resolve(p) for p in _as_path_list(cfg.cell_gds)]
         self._klayout_tech = _resolve(cfg.klayout_tech)
         self._klayout_props = _resolve(cfg.klayout_props)
@@ -307,8 +307,9 @@ class PdkConfig:
     def get_tech_lef(self) -> str:
         return self._tech_lef
 
-    def get_macro_lef(self) -> str:
-        return self._macro_lef
+    def get_macro_lef_paths(self) -> list[str]:
+        """Every configured cell LEF, resolved, in config order."""
+        return list(self._macro_lefs)
 
     def get_cell_gds(self) -> str:
         """The first configured cell GDS, or `""`; use :meth:`get_cell_gds_paths` to stream layout."""

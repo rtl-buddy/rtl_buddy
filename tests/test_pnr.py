@@ -67,7 +67,7 @@ def _make_stream_pdk(tmp_path, **overrides):
     _touch(
         pdk.get_klayout_tech(),
         pdk.get_tech_lef(),
-        pdk.get_macro_lef(),
+        pdk.get_macro_lef_paths()[0],
         *pdk.get_cell_gds_paths(),
     )
     return pdk
@@ -1175,6 +1175,52 @@ def test_pdk_cell_gds_accepts_a_list_resolved_entry_by_entry(tmp_path):
     assert pdk.get_cell_gds() == str(tmp_path / "pdk" / "gds" / "cells.gds")
 
 
+def test_pdk_macro_lef_accepts_one_path_or_a_list(tmp_path):
+    from serde.yaml import from_yaml
+
+    root = str(tmp_path / "root_config.yaml")
+    one = from_yaml(PdkConfigFile, "name: asap7\nmacro-lef: lef/r.lef\n")
+    many = from_yaml(PdkConfigFile, "name: asap7\nmacro-lef: [lef/r.lef, lef/l.lef]\n")
+    unset = from_yaml(PdkConfigFile, "name: asap7\n")
+    assert PdkConfig(one, root).get_macro_lef_paths() == [str(tmp_path / "lef/r.lef")]
+    assert PdkConfig(many, root).get_macro_lef_paths() == [
+        str(tmp_path / "lef/r.lef"),
+        str(tmp_path / "lef/l.lef"),
+    ]
+    assert PdkConfig(unset, root).get_macro_lef_paths() == []
+
+
+def test_every_macro_lef_is_read_in_order_and_is_an_input(tmp_path):
+    lefs = ["pdk/lef/cells_R.lef", "pdk/lef/cells_L.lef"]
+    pdk = _make_pdk_cfg(tmp_path, macro_lef=lefs)
+    _touch(pdk.get_tech_lef(), *pdk.get_macro_lef_paths())
+    platform = _platform(pdk, cts_buffer="BUF_X4")
+    r_lef, l_lef = (str(tmp_path / p) for p in lefs)
+
+    text = _render_flow(tmp_path, platform)
+    assert f"set MACRO_LEF       {r_lef}\n" in text
+    reads = [line for line in text.splitlines() if line.startswith("read_lef")]
+    assert reads[:3] == [
+        "read_lef     $TECH_LEF",
+        "read_lef     $MACRO_LEF",
+        f"read_lef     {l_lef}",
+    ]
+
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    pnr_cfg = _make_pnr_cfg(tmp_path)
+    pnr_cfg.resolve_synth_cfg = MagicMock(
+        return_value=MagicMock(get_top=lambda: "t", get_name=lambda: "s")
+    )
+    backend = OpenRoadPnr("demo/openroad", pnr_cfg, str(tmp_path), MagicMock())
+    expected = [pdk.get_tech_lef(), r_lef, l_lef]
+    assert backend.abstract_inputs(platform)["lef"] == expected
+    assert [
+        entry["path"] for entry in backend._checkpoint_inputs(platform, None)["lef"]
+    ] == expected
+    assert backend.gather_def2stream_inputs(platform).lef == expected
+
+
 def test_pdk_cell_gds_path_with_spaces_is_one_path(tmp_path):
     pdk = _make_pdk_cfg(tmp_path, cell_gds=["pdk/gds lib/std cells.gds"])
     assert pdk.get_cell_gds_paths() == [
@@ -1253,7 +1299,7 @@ def test_def2stream_inputs_are_ordered_and_deduplicated(tmp_path):
         pnr_cfg=_make_pnr_cfg(
             tmp_path,
             # The PDK's macro LEF repeated on purpose, and one of its GDS.
-            lef_paths=[sram_lef, pdk.get_macro_lef()],
+            lef_paths=[sram_lef, pdk.get_macro_lef_paths()[0]],
             gds_paths=[sram_gds, str(tmp_path / "pdk" / "gds" / "fill.gds")],
         ),
         suite_dir=str(tmp_path),
@@ -1271,7 +1317,7 @@ def test_def2stream_inputs_are_ordered_and_deduplicated(tmp_path):
     ]
     assert inputs.lef == [
         pdk.get_tech_lef(),
-        pdk.get_macro_lef(),
+        pdk.get_macro_lef_paths()[0],
         sram_lef,
     ]
     assert inputs.missing == []
@@ -1381,7 +1427,7 @@ def test_def2stream_hands_klayout_a_json_manifest_that_survives_spaces(
         str(tmp_path / "pdk" / "gds lib" / "std cells.gds"),
         sram_gds,
     ]
-    assert inputs["lef"] == [pdk.get_tech_lef(), pdk.get_macro_lef(), sram_lef]
+    assert inputs["lef"] == [pdk.get_tech_lef(), pdk.get_macro_lef_paths()[0], sram_lef]
 
 
 def test_merge_lef_files_appends_after_the_technologys_own(tmp_path):
