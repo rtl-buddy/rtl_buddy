@@ -1796,7 +1796,9 @@ def test_parse_clock_period_ps_reads_a_variable_period_beside_a_validating_proc(
     ys = _make_yosys(tmp_path)
     with caplog.at_level(logging.WARNING):
         got = ys._parse_clock_period_ps(str(sdc))
-    assert not caplog.records
+    assert [(r.rtl_event, r.rtl_fields) for r in caplog.records] == [
+        ("constraints.tcl_checks_skipped", {"source": str(sdc), "count": 2})
+    ]
     assert got == 2000
 
 
