@@ -1192,7 +1192,7 @@ def _checkpoint_name(stage: str) -> str:
     return f"{pnr_checkpoints.STAGE_INDEX[stage]}_{stage}"
 
 
-_LOGGED_STEP_RE = re.compile(r"^>>> (?! )(?!rb: )(.+)$", re.MULTILINE)
+_LOGGED_STEP_RE = re.compile(r"^>>> (?! )(?!rb[: ])(.+)$", re.MULTILINE)
 
 
 def _last_logged_step(log_text: str) -> str | None:
