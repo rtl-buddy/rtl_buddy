@@ -422,8 +422,9 @@ def _global_route_repair_tcl(
     mode: PnrMode,
     ps_per_unit: float | None,
     dpl_options: str = "",
+    timing: bool = False,
 ) -> str:
-    """Return the repair on global-route parasitics, as ORFS runs it, or `""` when the platform and run leave it off. A probe skips it.
+    """Return the repair on global-route parasitics, as ORFS runs it, or `""` when the platform and run leave it off. A probe skips it. With `timing` (checkpoints armed) the repair starts by timing the router's result, the stage's `before_repair` event.
 
     The global-route estimate includes the wires that post-CTS repair (on placement parasitics) could not see. The resizer reroutes the nets it changes; the cells it adds are legalized, then `reroute: incremental` reroutes their nets incrementally and `full` runs the flow's global route again. The closing route is `-verbose`, so the log repeats the congestion table after the repair. `dpl_options` follows its `detailed_placement`, as it does the flow's others.
 
@@ -433,9 +434,10 @@ def _global_route_repair_tcl(
         return ""
     if mode is PnrMode.PROBE:
         return 'puts ">>> Global-route repair: skipped (mode: probe)"\n'
+    before = "rb::ckpt::stage_timing global_route before_repair\n" if timing else ""
     if repair == GlobalRouteRepair(hold_margin=0.0):
         return (
-            'puts ">>> Post-global-route hold repair"\n'
+            before + 'puts ">>> Post-global-route hold repair"\n'
             "estimate_parasitics -global_routing\n"
             "repair_timing -hold\n"
             "global_route -start_incremental\n"
@@ -454,7 +456,7 @@ def _global_route_repair_tcl(
         legalize,
     )
     head = (
-        f'puts ">>> {title} (reroute {repair.reroute.value})"\n'
+        before + f'puts ">>> {title} (reroute {repair.reroute.value})"\n'
         "estimate_parasitics -global_routing\n"
     )
     if repair.reroute is Reroute.FULL:
@@ -1182,13 +1184,12 @@ _DETAILED_ROUTE_CMD = (
     "    -verbose {{ detailed_route_verbose }}\n"
 )
 
-#: The parasitics a stopped run's stage report times on: none before placement, the placement estimate until global routing, then the global-route estimate. After post-route repair the report session extracts them instead (see `_post_route_report_script`).
+#: The parasitics a stopped run's stage report times on, the ones the stage's end is timed on (`pnr_checkpoints.STAGE_TIMING`): none before placement, the placement estimate until global routing, then the global-route estimate. After post-route repair the report session extracts them instead (see `_post_route_report_script`).
 _STAGE_PARASITICS = {
-    "floorplan": "",
-    "place": "estimate_parasitics -placement\n",
-    "cts": "estimate_parasitics -placement\n",
-    "global_route": "estimate_parasitics -global_routing\n",
-    "detailed_route": "estimate_parasitics -global_routing\n",
+    **{
+        stage: f"{command}\n" if command else ""
+        for stage, (_source, command) in pnr_checkpoints.STAGE_TIMING.items()
+    },
     "post_route_repair": "",
 }
 
@@ -1731,6 +1732,7 @@ def run_post_route_repair(
                 "; more `rounds` give the detailed router more passes at the violations"
             )
     _keep_round(run_dir, plan, best, files.get(best))
+    pnr_checkpoints.record_kept_round_timing(run_dir, POST_ROUTE_REPAIR_STAGE, best)
     fields = {
         "kept_round": best,
         "repaired_rounds": repaired,
@@ -2301,6 +2303,8 @@ class OpenRoadPnr:
         rcx_rules = pdk.get_rcx_rules()
         self._rcx_rules = rcx_rules
         self._corners = list(corner_libs)
+        # A stage end is timed on every corner; a single-corner platform's is one default scene.
+        self._timing_corners = tuple(corner_libs) or (platform.get_sta_corner(),)
         if rcx_rules:
             rcx_block = (
                 '\nputs ">>> Parasitic extraction (OpenRCX)"\n'
@@ -2312,6 +2316,12 @@ class OpenRoadPnr:
         else:
             rcx_block = ""
             final_parasitics = "estimate_parasitics -global_routing"
+        final_timing = (
+            "rb::ckpt::timing_event finish stage_end "
+            f"{'extracted' if rcx_rules else 'global_route'}\n"
+            if self._ckpt_run_dir is not None
+            else ""
+        )
 
         tie_ports = [
             ("TIEHI_CELL_PORT", pdk.get_tie_hi()),
@@ -2420,6 +2430,7 @@ class OpenRoadPnr:
             "rcx_block": rcx_block,
             "supply_ports_block": _supply_ports_block(),
             "final_parasitics": final_parasitics,
+            "final_timing_block": final_timing,
             "harden_block": (
                 pnr_abstract.harden_tcl(self.pnr_cfg.get_abstract())
                 if self.pnr_cfg.get_harden()
@@ -2432,6 +2443,7 @@ class OpenRoadPnr:
                 self._mode,
                 self._ps_per_unit,
                 gp_blocks.dpl_options,
+                timing=self._ckpt_run_dir is not None,
             ),
             "gp_blockages_create": gp_blocks.create,
             "gp_blockages_destroy": gp_blocks.destroy,
@@ -2462,6 +2474,8 @@ class OpenRoadPnr:
                     order=self._stages,
                     stop_after="detailed_route" if self._split else self.stop_after,
                     state=pnr_checkpoints.SESSION_STATE if self._split else (),
+                    corners=self._timing_corners,
+                    scenes=multi_corner,
                 )
                 if self._ckpt_run_dir is not None and not self._staged
                 else ""
@@ -2522,7 +2536,12 @@ class OpenRoadPnr:
         substitutions = {
             **self._substitutions,
             "checkpoint_block": pnr_checkpoints.render_staged_block(
-                stage, run_dir, self._pred_dir(stage, run_dir), session=session
+                stage,
+                run_dir,
+                self._pred_dir(stage, run_dir),
+                session=session,
+                corners=self._timing_corners,
+                scenes=bool(self._corners),
             ),
         }
         if self._dispatch is not None:
@@ -2612,6 +2631,7 @@ class OpenRoadPnr:
         parts += [
             f'\nputs ">>> {title}: extraction"\n',
             self._extract_tcl(_post_route_file(f".r{round_}.spef")),
+            f"rb::ckpt::timing_event {POST_ROUTE_REPAIR_STAGE} round extracted {round_}\n",
             f'puts "{_ROUND_TIMING_MARKER}{round_}"\n',
             "set ::sta_report_default_digits 4\n",
             "report_worst_slack -max\n",

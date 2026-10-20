@@ -188,7 +188,8 @@ def test_stage_scripts_are_the_one_session_flow_split_at_its_markers(tmp_path):
 
 def test_unbroken_render_is_unchanged_but_for_the_checkpoint_block(tmp_path):
     """With `checkpoints:` the flow differs from a plain render only by the
-    checkpoint block and the global-route stage end after hold repair.
+    checkpoint block, the global-route stage end after hold repair and the
+    final timing event.
     """
     (tmp_path / "plain").mkdir()
     (tmp_path / "armed").mkdir()
@@ -198,6 +199,9 @@ def test_unbroken_render_is_unchanged_but_for_the_checkpoint_block(tmp_path):
     block_end = armed.index("\n", armed.index("\nrb::ckpt::arm ") + 1) + 1
     without = armed[:block_start] + armed[block_end:]
     without = without.replace("rb::ckpt::stage_end global_route\n", "", 1)
+    without = without.replace(
+        "rb::ckpt::timing_event finish stage_end global_route\n", "", 1
+    )
     assert without.replace(str(tmp_path / "armed"), "X") == plain.replace(
         str(tmp_path / "plain"), "X"
     )

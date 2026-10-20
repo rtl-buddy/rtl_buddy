@@ -410,9 +410,15 @@ def test_a_flow_without_repair_knobs_is_the_template_as_before(
             template = _base_template(backend._load_template())
             monkeypatch.setattr(backend, "_load_template", lambda: template)
             render = backend._render
+            # The repair starts with the stage's timing event wherever checkpoints are armed.
+            timing = "rb::ckpt::stage_timing global_route before_repair\n"
             filled = {
                 "setup_repair": "repair_timing -setup\n" if setup_repair else "",
-                "global_route_hold_repair": _BASE_HOLD_REPAIR if hold_shorthand else "",
+                "global_route_hold_repair": (
+                    (timing if kind != "one session" else "") + _BASE_HOLD_REPAIR
+                    if hold_shorthand
+                    else ""
+                ),
             }
             monkeypatch.setattr(
                 backend, "_render", lambda text, subs: render(text, {**subs, **filled})
