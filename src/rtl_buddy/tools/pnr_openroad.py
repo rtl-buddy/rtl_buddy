@@ -514,8 +514,8 @@ def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
             "set rb_core [[ord::get_db_block] getCoreArea]\n"
             "if {[$blockage_box xMin] >= [$rb_core xMax] || [$blockage_box yMin] >= [$rb_core yMax]"
             " || [$blockage_box xMax] <= [$rb_core xMin] || [$blockage_box yMax] <= [$rb_core yMin]} "
-            f"{{ error {{floorplan.core-cutouts[{index}] {region} um does not overlap "
-            "the core; a cut-out is carved out of the core} }"
+            f'{{ error "floorplan.core-cutouts[{index}] {region} um does not overlap '
+            'the core; a cut-out is carved out of the core" }'
         )
         lines.append(
             "lappend MACRO_KEEPOUTS "
