@@ -30,8 +30,8 @@ class _DuplicateKey(Exception):
         self.second_line = second_line
 
 
-class _UniqueKeys:
-    """Constructor mixin that refuses a mapping with the same key written twice."""
+class UniqueKeySafeLoader(yaml.SafeLoader):
+    """``yaml.SafeLoader`` that refuses a mapping with the same key written twice."""
 
     def construct_mapping(self, node, deep=False):
         if isinstance(node, yaml.MappingNode):
@@ -58,28 +58,13 @@ class _UniqueKeys:
         return super().construct_mapping(node, deep=deep)
 
 
-class UniqueKeySafeLoader(_UniqueKeys, yaml.SafeLoader):
-    """``yaml.SafeLoader`` that refuses a mapping with the same key written twice."""
-
-
-# libyaml's parser, when PyYAML was built with it: several times faster on large generated files.
-_FastUniqueKeySafeLoader = (
-    type("_FastUniqueKeySafeLoader", (_UniqueKeys, yaml.CSafeLoader), {})
-    if hasattr(yaml, "CSafeLoader")
-    else UniqueKeySafeLoader
-)
-
-
-def load_yaml(
-    text: Any, path: str | PathLike | None = None, *, fast: bool = False
-) -> Any:
+def load_yaml(text: Any, path: str | PathLike | None = None) -> Any:
     """``yaml.safe_load`` of `text` (a string or stream) that rejects duplicate mapping keys.
 
     Raises FatalRtlBuddyError naming `path`, the key and both line numbers on a duplicate;
-    other YAML errors propagate as ``yaml.YAMLError``. `fast` parses with libyaml when
-    available, for large machine-written files.
+    other YAML errors propagate as ``yaml.YAMLError``.
     """
-    loader = (_FastUniqueKeySafeLoader if fast else UniqueKeySafeLoader)(text)
+    loader = UniqueKeySafeLoader(text)
     try:
         return loader.get_single_data()
     except _DuplicateKey as dup:
@@ -92,16 +77,11 @@ def load_yaml(
         loader.dispose()
 
 
-def config_from_data(cls: Any, data: Any) -> Any:
-    """``serde.from_dict(cls, data)`` with the options every config file loads with."""
+def config_from_yaml(cls: Any, text: str, path: str | PathLike | None = None) -> Any:
+    """``serde.yaml.from_yaml(cls, text)`` parsed through :func:`load_yaml`."""
     return from_dict(
         cls,
-        data,
+        load_yaml(text, path),
         reuse_instances=False,
         deserialize_numbers=deserialize_yaml_numbers,
     )
-
-
-def config_from_yaml(cls: Any, text: str, path: str | PathLike | None = None) -> Any:
-    """``serde.yaml.from_yaml(cls, text)`` parsed through :func:`load_yaml`."""
-    return config_from_data(cls, load_yaml(text, path))

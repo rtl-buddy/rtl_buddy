@@ -31,19 +31,12 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   allocation). A count above the Slurm or affinity allocation is clamped with
   `openroad.threads_capped`. Quote `openroad_threads.effective`, not the
   configured value.
-- **Checkpoints.** For a long or failing P&R, set `checkpoints: true` (or
-  `stages: true`, one session per stage) in `pnr.yaml`. A `FAIL` row then
-  carries `checkpoint_dir`, `checkpoint_stages` and `last_step`;
-  `checkpoints/latest/progress.jsonl` shows the current step. A checkpoint
-  is never routed or final: report it as its stage, as for a `--stop-after`
-  or `mode: probe` `PASS` (`routed: false`). `--resume <run> --from <stage>`
-  retries later stages of a staged run; `--dispatch slurm` makes each stage
-  a Slurm job.
-- **Run hooks.** Extra steps go in `hooks:` of the `pnr.yaml` run: Tcl files
-  sourced at fixed flow points (`session`, `after-cts`, `macro-placement`, ...),
-  never in an edited `pnr.tcl`. A failing hook names its point and file.
-  `pnr.hook_commands_not_kept` means use `session`. See
-  `rb docs show concepts/pnr#run-tcl-hooks`.
+- **Checkpoints.** For a long or failing P&R, set `checkpoints: true` in
+  `pnr.yaml`. A `FAIL` row then carries `checkpoint_dir`, `checkpoint_stages`
+  and `last_step`, and `checkpoints/latest/progress.jsonl` shows the step a
+  running or killed flow is in. A checkpoint is never a routed or final result:
+  report it as the stage it names. `pnr-export --checkpoint <stage>` labels its
+  layout `checkpoint_final: false`.
 - **Route progress.** `pnr.log` is written live. Before calling a long route
   hung, check its detailed-route iterations and violation counts (`DRT-0195`,
   level set by `detailed-route-verbose:`, default 1) and the global-route
@@ -65,12 +58,7 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   macros avoid the hard ones. `floorplan.macro-placement: rtl-mp` uses
   OpenROAD's RTL-MP instead of the packer and excludes `macro-anchor`.
   `floorplan.macros` fixes a macro's location (full hierarchical instance
-  name), sets its orientation (any of eight) or its own cell halo.
-  `macros-file` / `pins-file` take a planner's YAML or JSON; `macro-snap:
-  false` / `pin-snap: false` keep exact coordinates; `pins-complete: true`
-  fails on a port placed twice or not at all. A blockage with `lifetime:
-  global-placement` exists only during global placement. A routed DEF that
-  moved a located macro or exact pin fails with `fail_stage: routed_check`.
+  name), sets its orientation or its own cell halo.
   `floorplan.die-area` + `core-area` size the die exactly (not with
   `utilization`); `core-cutouts` makes an L/T core. A run's `pdn-config`
   replaces the PDK's; `pdn:` declares the core grid (ring, stripes) in YAML.

@@ -8,6 +8,7 @@ Reservations resolve field by field (test, testbench, ``cfg-dispatch``), then th
 See docs/concepts/dispatch.md.
 """
 
+import dataclasses
 import difflib
 import logging
 import math
@@ -19,7 +20,6 @@ from serde import field, serde
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
-from .unknown_keys import serde_keys
 
 logger = logging.getLogger(__name__)
 
@@ -733,6 +733,13 @@ class DispatchConfigFile:
         )
 
 
+def _serde_keys(cls) -> tuple[str, ...]:
+    """The YAML keys a serde class reads: each field's ``rename``, else its name."""
+    return tuple(
+        f.metadata.get("serde_rename", f.name) for f in dataclasses.fields(cls)
+    )
+
+
 # Nested reservation blocks checked by warn_unknown_block_keys: key -> (class, its own nested blocks).
 _VERILATE_BLOCK = {"verilate": (CompileVerilateFile, {})}
 RESOURCES_BLOCK = (DispatchResourcesFile, {})
@@ -763,7 +770,7 @@ def warn_unknown_block_keys(raw, spec, *, path, block) -> list[str]:
     if not isinstance(raw, dict):
         return []
     cls, nested = spec
-    known = serde_keys(cls)
+    known = _serde_keys(cls)
     found = []
     for key in raw:
         if key in known:
@@ -854,23 +861,15 @@ def resolve_resources(
     if test_cfg is not None:
         blocks.append(getattr(test_cfg.get_testbench(), "resources", None))
         blocks.append(getattr(test_cfg, "resources", None))
-    return apply_resource_layers(
-        list(blocks) + [mode_override(block, builder_mode) for block in blocks]
-    )
-
-
-def apply_resource_layers(layers) -> JobResources:
-    """Resolve reservation blocks field by field, least specific first, over the built-in defaults.
-
-    Each layer is a block with ``cpus``, ``mem`` and ``time`` (``None`` inherits), or ``None``. Raw serde values are validated as they are applied, which rejects the YAML sexagesimal trap.
-    """
     resolved = JobResources()
+    layers = list(blocks) + [mode_override(block, builder_mode) for block in blocks]
     for layer in layers:
         if layer is None:
             continue
         if layer.cpus is not None:
             resolved.cpus = layer.cpus
         if layer.mem is not None:
+            # Raw serde may carry the YAML sexagesimal/int trap; validate as applied.
             resolved.mem = _validate_mem(layer.mem)
         if layer.time is not None:
             resolved.time = _validate_time(layer.time)
@@ -884,16 +883,24 @@ def resolve_coverage_resources(dispatch_cfg, *, builder_mode=None) -> JobResourc
     ``builder_mode`` then layers each block's ``modes.<builder_mode>`` over the result, least specific first, as :func:`resolve_resources` does.
     The tail exists only for a coverage run, so ``modes.cov`` is the usual place to size it.
     """
+    resolved = JobResources()
     blocks = []
     if dispatch_cfg is not None:
         blocks = [(dispatch_cfg.resources, False), (dispatch_cfg.coverage, True)]
-    return apply_resource_layers(
-        [block for block, _ in blocks]
-        + [
-            mode_override(block, builder_mode, compile_block=is_coverage)
-            for block, is_coverage in blocks
-        ]
-    )
+    layers = [block for block, _ in blocks] + [
+        mode_override(block, builder_mode, compile_block=is_coverage)
+        for block, is_coverage in blocks
+    ]
+    for layer in layers:
+        if layer is None:
+            continue
+        if layer.cpus is not None:
+            resolved.cpus = layer.cpus
+        if layer.mem is not None:
+            resolved.mem = _validate_mem(layer.mem)
+        if layer.time is not None:
+            resolved.time = _validate_time(layer.time)
+    return resolved
 
 
 def mode_governed_fields(dispatch_cfg, test_cfg=None, *, builder_mode=None) -> dict:

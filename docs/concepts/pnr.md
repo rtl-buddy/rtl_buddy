@@ -4,7 +4,7 @@ description: Run OpenROAD place-and-route from a mapped synthesis result, config
 
 # Place-and-Route
 
-`rb pnr` takes a technology-mapped `rb synth` result, runs OpenROAD placement, clock-tree synthesis and routing, and reports area, timing and DRCs. It can also stream the layout to GDS and PNG with KLayout, harden a block for reuse in a larger design, keep stage checkpoints, and run each stage as its own OpenROAD session that a later run can resume.
+`rb pnr` takes a technology-mapped `rb synth` result, runs OpenROAD placement, clock-tree synthesis and routing, and reports area, timing and DRCs. It can also stream the layout to GDS and PNG with KLayout, harden a block for reuse in a larger design, and keep stage checkpoints.
 
 ## Install the tools
 
@@ -43,7 +43,7 @@ rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml -l 1000
 rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --png --gds-mode strict
 ```
 
-`--png` and `--gds-mode` imply `--gds`. `--stop-after`, `--resume` and `--from` end a run early or resume a staged one; see [Run stages as separate sessions](#run-stages-as-separate-sessions). KLayout runs after a successful OpenROAD run. In the default `preview` mode a KLayout failure logs a warning and leaves the P&R verdict unchanged. In `strict` mode an undelivered export fails the run; see [Stream-out completeness](#stream-out-completeness).
+`--png` and `--gds-mode` imply `--gds`. KLayout runs after a successful OpenROAD run. In the default `preview` mode a KLayout failure logs a warning and leaves the P&R verdict unchanged. In `strict` mode an undelivered export fails the run; see [Stream-out completeness](#stream-out-completeness).
 
 ## Flow steps
 
@@ -51,19 +51,16 @@ The generated `pnr.tcl` runs these steps in order:
 
 1. Source `platform-tcl` when set, read Liberty, LEF, the synthesis netlist and the SDC, set the design's max fanout when `max-fanout` is set, then source `layer-rc-tcl` when set.
 2. Initialize the floorplan, create routing tracks and run `insert_tiecells` for the PDK's `tie-hi` and `tie-lo` ports, one tie cell per constant net.
-3. Place macros, insert tap and endcap cells when `tapcell-tcl` is set, build the power grid and place the IO pins, checking [`pins-complete`](#check-that-every-port-is-placed) when set, then run `buffer_ports -inputs -outputs` when the run buffers its ports (`buffer-ports`, on by default for `harden: true`; see [Harden a block](#harden-a-block)).
-4. Create the [`lifetime: global-placement`](#floorplan-controls) blockages and the [rotated-macro](#rotate-a-macro) blockages, run global placement, with `-reference_hpwl` when `placement.reference-hpwl` is set and `-routability_driven` / `-routability_use_grt` when `placement.routability-driven` / `placement.routability-use-grt` are `true`, and remove those blockages again. Then run `repair_tie_fanout` for each tie port, which gives every constant-driven load its own tie cell `placement.tie-separation` microns away (default 0).
-5. Run `repair_design`, legalization, clock-tree synthesis (with `-apply_ndr` when `cts-apply-ndr` is set), setup repair when `post-cts-setup-repair` is set, hold repair and a final legalization. A [probe](#probe-without-timing-repair) skips the setup and hold repair.
-6. Route globally with `-verbose` and a congestion report, after `set_global_routing_layer_adjustment` when `routing-layer-adjustment` is set, run the [global-route repair](#repair-on-the-global-route) when `global-route-repair` or `global-route-hold-repair` is set, route in detail at the run's `detailed-route-verbose` level, run the [post-route repair](#repair-on-the-detailed-route) rounds when `post-route-repair` is set, insert fill, extract parasitics when `rcx-rules` is set, then write reports and outputs. A probe stops after global route.
-7. After OpenROAD exits, compare the routed DEF with every macro the floorplan located and every pin it placed exactly; see [Check the routed floorplan](#check-the-routed-floorplan).
+3. Place macros, insert tap and endcap cells when `tapcell-tcl` is set, build the power grid and place the IO pins, then run `buffer_ports -inputs -outputs` when the run buffers its ports (`buffer-ports`, on by default for `harden: true`; see [Harden a block](#harden-a-block)).
+4. Run global placement, with `-reference_hpwl` when `placement.reference-hpwl` is set and `-routability_driven` / `-routability_use_grt` when `placement.routability-driven` / `placement.routability-use-grt` are `true`, then `repair_tie_fanout` for each tie port, which gives every constant-driven load its own tie cell `placement.tie-separation` microns away (default 0).
+5. Run `repair_design`, legalization, clock-tree synthesis (with `-apply_ndr` when `cts-apply-ndr` is set), setup repair when `post-cts-setup-repair` is set, hold repair and a final legalization.
+6. Route globally with `-verbose` and a congestion report, after `set_global_routing_layer_adjustment` when `routing-layer-adjustment` is set, repair hold on the global-route parasitics when `global-route-hold-repair` is set, route in detail at the run's `detailed-route-verbose` level, insert fill, extract parasitics when `rcx-rules` is set, then write reports and outputs.
 
 A tie port the PDK leaves unset gets neither tie step.
 
-The run's [`hooks:`](#run-tcl-hooks) are sourced between these steps, each at the boundary its name gives; `macro-placement` replaces the macro placement of step 3.
-
 ## Interpret results
 
-The summary reports cell count, design area, setup and hold WNS, and `drc_count`, the number of violations in `route.drc.rpt`, which lists each as a `violation type:` line and its detail lines. Positive slack meets timing and zero DRC violations indicate a clean route. `wns_setup_ps`, `wns_hold_ps`, `tns_ps` (setup) and `tns_hold_ps` are converted to picoseconds from the Liberty `time_unit`; see [Synthesis: Configure tools and the PDK](synthesis.md#configure-tools-and-the-pdk).
+The summary reports cell count, design area, setup and hold WNS, and the number of non-empty DRC report lines. Positive slack meets timing and zero DRC lines indicate a clean route. `wns_setup_ps`, `wns_hold_ps`, `tns_ps` (setup) and `tns_hold_ps` are converted to picoseconds from the Liberty `time_unit`; see [Synthesis: Configure tools and the PDK](synthesis.md#configure-tools-and-the-pdk).
 
 Three result fields count cells; compare experiments on `routed_cell_count`:
 
@@ -75,11 +72,9 @@ The flow prints the last two after `>>> Final reports` as `RB-CELL-COUNT: routed
 
 A pass is qualified with `pnr.no_wire_rc` when the pre-route steps had no wire RC; see [Set wire RC](#set-wire-rc).
 
-Every run that reached the end of the flow carries `routed: true`. A run ended by [`--stop-after`](#stop-after-a-stage) or by [`mode: probe`](#probe-without-timing-repair) carries `routed: false` and `stopped_after`, and its numbers come from a stage report, not from a routed design. Every result carries the run's `mode`.
-
 `max_slew_violation_count`, `max_capacitance_violation_count` and `max_fanout_violation_count` count the routed design's pins that break a Liberty or SDC max-slew, max-capacitance or max-fanout limit, over every corner, as ORFS's `report_metrics` counts them. The summary shows them as the Slew/Cap/Fanout column, `pnr.log` prints them as `RB-ELECTRICAL: max_<check> <n>` after `>>> Final reports`, and `electrical.rpt` lists the violating pins. A pass with any violator is qualified `electrical N max-slew, ... violator(s)` and logs the warning `pnr.electrical_violators`. A count OpenROAD cannot report is left out.
 
-A run passes when OpenROAD exits 0 with no `[ERROR ...]` line, the routed DEF keeps every located macro and exact pin where the floorplan put it, and, under `gds-mode: strict`, the requested export was delivered complete. With `fail-on-electrical: true` a run with any electrical violator also fails, with no `fail_stage`, so `xfail:` can excuse it; it keeps its routed outputs and publishes no abstract. It skips when `reglvl` filters it out or `tool:` is unsupported. A `PASS` says the flow ran to the end and wrote its outputs; it does not say the design meets timing or routes clean, even after [post-route repair](#repair-on-the-detailed-route) rounds. `wns_setup_ps`, `wns_hold_ps`, `tns_ps` and `tns_hold_ps` are the timing verdict and the DRC count the routing one; gate signoff on them in your project.
+A run passes when OpenROAD exits 0 with no `[ERROR ...]` line and, under `gds-mode: strict`, the requested export was delivered complete. With `fail-on-electrical: true` a run with any electrical violator also fails, with no `fail_stage`, so `xfail:` can excuse it; it keeps its routed outputs and publishes no abstract. It skips when `reglvl` filters it out or `tool:` is unsupported. Timing violations and DRC counts are metrics only; gate signoff on them in your project.
 
 On a multi-corner platform, `wns_setup_ps`, `wns_hold_ps`, `tns_ps` and `tns_hold_ps` are the worst across corners. The result also names the `worst_setup_corner` and `worst_hold_corner` and lists each corner's own four values under `corners`, so setup at the slow corner and hold at the fast corner can be read separately; `pnr.log` has them after `>>> Per-corner timing`.
 
@@ -99,7 +94,7 @@ Outputs land under `<pnr-dir>/artefacts/<run>/`.
 | `congestion.rpt` | Overflowing global-route tiles; written only when global routing overflows |
 | `<top>.gds`, `<top>.png`, `klayout.*.log` | Optional KLayout outputs and logs |
 | `export.provenance.json` | What the last `rb pnr-export` read and produced |
-| `checkpoints/`, `abstract/` | Optional [stage checkpoints](#keep-stage-checkpoints), with a [staged run's](#run-stages-as-separate-sessions) stage scripts and logs, and [hardened-block abstract](#harden-a-block) |
+| `checkpoints/`, `abstract/` | Optional [stage checkpoints](#keep-stage-checkpoints) and [hardened-block abstract](#harden-a-block) |
 
 Each run deletes the previous run's outputs first, and a run that fails after writing the routed database removes it again, so `rb power` never reads a stale one. `pnr.log`, `pnr.tcl` and `congestion.rpt` are kept from a failed run.
 
@@ -172,25 +167,14 @@ cfg-pnr-platforms:
 - **`placement.macro-cell-halo`** (default 1.0 µm) keeps standard cells off macros with a hard blockage. Without it, the router can report a Metal Spacing violation at a pin on a hardened block's edge. `0` disables it.
 - **`placement.tie-separation`** (default 0 µm) is how far from its load each per-load tie cell is placed; see [Flow steps](#flow-steps).
 - **`placement.reference-hpwl`** (positive number, unset by default) passes `-reference_hpwl` to `global_placement`. Unset, the placer's density-penalty controller derives its reference HPWL from the design size, which on a large design spreads cells less and ends routability inflation early, so global route can overflow. A fixed value such as `446000000` spreads cells further and can clear the overflow.
-- **`placement.rotated-macro-footprint`** (`block`, `diamond-legalizer` or `none`; default `block`) works around OpenROAD's legalizer for macros turned by 90 degrees; see [Rotate a macro](#rotate-a-macro).
 - **`placement.routability-driven`** (default `false`) adds `-routability_driven` to `global_placement`: the placer estimates congestion, inflates cells in congested regions and re-spreads them. Turn it on for a congested block whose global route overflows. **`placement.routability-use-grt`** (default `false`) adds `-routability_use_grt`, which estimates that congestion with the global router instead of RUDY; slower, closer to the real route. It takes effect only in routability mode, so a platform whose resolved settings enable it without `routability-driven` fails to load. Like the other `placement.*` keys, each is set on the PDK and overridden per platform.
 - **`cts-buffer`** takes a name or a list. With a list, the first entry is the root buffer.
-- A run may set its own `placement:` block in `pnr.yaml` with any of these keys. It overrides the platform, which overrides the PDK, field by field, and the `routability-use-grt` rule applies to the resolved values:
-
-  ```yaml
-  runs:
-    - name: blk_pnr
-      # ...
-      placement:
-        density: 0.25
-        rotated-macro-footprint: diamond-legalizer
-  ```
 - **`port-buffer`** (unset by default) is the cell `buffer_ports` inserts on each port of a run with `buffer-ports` on, passed as `-buffer_cell`; unset lets OpenROAD choose. See [Harden a block](#harden-a-block).
 - **`cts-sink-clustering`** (default `true`) passes `-sink_clustering_enable` to CTS. Set it to `false` when CTS fails with `CTS-0080 Sink not found`, as it can on coincident clock pins or a large ASAP7 clock tree.
 - **`cts-apply-ndr`** (unset by default) passes `-apply_ndr` (`none`, `root_only`, `half` or `full`) to CTS; unset keeps OpenROAD's default, `half`. Set `none` when the global router detours clock nets that carry non-default rules to several times their Manhattan length, which shows as large hold violations and `GRT-0273 Disabled NDR` in the log.
 - **`max-fanout`** (positive integer, unset by default) adds `set_max_fanout <n> [current_design]` after each `read_sdc` in `rb pnr` and `rb power`, replacing a design-level limit from the SDC. When neither the Liberty nor the SDC sets a limit, `repair_design` uses 50 and buffers every larger net; on a library without one, such as SKY130 HD, that costs setup timing. A large value such as `100000` stops repair buffering for fanout alone.
 - **`post-cts-setup-repair`** (default `false`) runs `repair_timing -setup` after CTS, before hold repair. Turn it on when the post-CTS netlist misses setup; it adds buffers and resizes cells, so QoR changes.
-- **`global-route-repair`** and **`post-route-repair`** (unset by default) repair timing again on the global route and on the detailed route; see [Repair timing after routing](#repair-timing-after-routing). **`global-route-hold-repair: true`** (default `false`) is shorthand for `global-route-repair: {hold-margin: 0}`, a hold repair on the global route as ORFS runs it; see [Set wire RC](#set-wire-rc).
+- **`global-route-hold-repair`** (default `false`) repairs hold again after global route, on `estimate_parasitics -global_routing`, then legalizes and reroutes the new buffers before detail route, as ORFS does; see [Set wire RC](#set-wire-rc).
 - **`routing-layer-adjustment`** (0 to 1, unset by default) withholds that fraction of each signal layer's capacity from the global router (`set_global_routing_layer_adjustment`, ORFS `ROUTING_LAYER_ADJUSTMENT`, 0.25 on ASAP7). Raise it when detailed routing ends with DRCs in congested areas; unset leaves the router's default.
 - **`pdn-config`** is a path, resolved from `root_config.yaml`, to a Tcl snippet that declares the power grid (`add_global_connection`, `set_voltage_domain`, `define_pdn_grid`, `add_pdn_stripe`, `add_pdn_connect`). The flow sources it after macro placement and calls `pdngen` itself, so the snippet must not. Unset means no power grid. A run can replace it or its core grid; see [Plan the power grid per run](#plan-the-power-grid-per-run).
 - **`dont-use-cells`** and **`rcx-rules`** are described below, and the platform Tcl hooks under [Source platform Tcl hooks](#source-platform-tcl-hooks).
@@ -208,7 +192,7 @@ A pattern that matches no Liberty cell excludes nothing. OpenROAD reports `STA-0
 
 ## Extract parasitics with rcx-rules
 
-`rcx-rules` is a path, resolved like `pdn-config`, to an OpenRCX extraction-rules file (ORFS `RCX_RULES`). Its `LayerCount` must match the technology LEF's routing stack. It is an input of a [hardened block's](#harden-a-block) abstract when set, so editing it makes the abstract stale.
+`rcx-rules` is a path, resolved like `pdn-config`, to an OpenRCX extraction-rules file (ORFS `RCX_RULES`). Its `LayerCount` must match the technology LEF's routing stack.
 
 With it set, the flow extracts parasitics after fill insertion, writes `<top>.routed.spef`, and times the final reports on that SPEF instead of the global-route estimate. The summary's WNS and TNS come from the extracted parasitics, and a [`netlist-source: pnr` power run](power.md#extracted-parasitics) reads the same SPEF. With the key unset there is no extraction.
 
@@ -239,48 +223,6 @@ cfg-pdks:
 - `rb power` sources `platform-tcl` before its Liberty reads. The layer RC is session state that the routed ODB does not keep, so a [`netlist-source: pnr` power run](power.md#extracted-parasitics) also sources `layer-rc-tcl` after `read_sdc`.
 - The hooks are inputs to stage checkpoints and to a [hardened block's](#harden-a-block) abstract, so changing one makes the abstract stale.
 
-## Run Tcl hooks
-
-A block that needs a step the generated flow does not have, such as its own macro placement, a density screen, an extra repair or a report, names Tcl files under `hooks:` on its run, and `rb pnr` sources them at fixed points of the flow. No edit of the generated `pnr.tcl` is needed. Each point takes one path or a list, relative to `pnr.yaml`:
-
-```yaml
-runs:
-  - name: demo_pnr_nangate45
-    # ...
-    hooks:
-      session: [wire_rc.tcl]
-      macro-placement: [macros.tcl]
-      after-cts: [io_latency.tcl, clock_report.tcl]
-```
-
-| Point | Sourced |
-| --- | --- |
-| `session` | After `read_sdc`, `max-fanout`, `layer-rc-tcl` and the don't-use cells, before the floorplan |
-| `after-floorplan` | After the floorplan, tracks, blockages, cut-outs and tie cells, before macro placement |
-| `macro-placement` | In place of rb's macro placement (the packer or RTL-MP), inside the macro branch |
-| `after-pdn` | After the tap cells and the power grid, before IO pin placement |
-| `after-pins` | Right after `place_pins`, before `buffer_ports` |
-| `after-global-placement` | Right after `global_placement`, before `repair_tie_fanout` |
-| `after-repair-design` | Right after `repair_design`, before the legalizing `detailed_placement` |
-| `after-cts` | Right after `clock_tree_synthesis`, before the post-CTS legalization and the setup and hold repair, so the repair sees what the hook sets |
-| `after-global-route` | Right after `global_route`, before the [global-route repair](#repair-on-the-global-route) |
-| `before-detailed-route` | Immediately before `detailed_route`, and again before each [post-route repair round's](#repair-on-the-detailed-route) detailed route |
-| `before-reports` | After fill insertion and parasitic extraction, before the final reports |
-
-- The files of a point are sourced in list order at Tcl global scope, so the flow's variables are visible to them: `$OUT_DIR` and `$DESIGN` throughout, `$block` and `$macros` from macro placement on. A variable one file sets is still set in the next. `pnr.log` announces each file as `>>> Hook <point>: <path>`.
-- OpenROAD runs in the run's artefact directory, `artefacts/<run>/`, so a hook reaches files next to itself through `[file dirname [info script]]`.
-- `session` is for state the saved database does not keep, such as `set_wire_rc` on a run's own layers or extra `set_dont_use` cells. The PDK's `layer-rc-tcl` stays the wire RC rb knows about: the [no-wire-RC qualifier](#set-wire-rc) and a [`netlist-source: pnr` power run](power.md#extracted-parasitics) read only that. The post-route don't-use check covers only the configured cells, not ones a hook adds.
-- `macro-placement` runs inside the flow's macro branch, so it does not run when the netlist has no macros. The [`floorplan.macros`](#place-individual-macros) directives still apply before it, and the cell-halo blockages around every macro are still created after it. `$rb_movable_macros` lists the macros the directives leave unlocated, or every macro when there are no directives. Setting `floorplan.macro-placement` or `floorplan.macro-anchor` together with the hook is a config error, since neither would have an effect.
-- Results come from the final reports: a report a hook prints earlier does not change the result's area, slack or TNS.
-- `after-pdn` runs whether or not the run has a pdn-config.
-- `pin-constraints` is unchanged: it is sourced just before `place_pins`, and `after-pins` runs after it.
-- A hook that raises a Tcl error fails the run, and the error names the point and file: `Hook after-cts (<path>): <message>`. OpenROAD stops there. An OpenROAD `[ERROR ...]` line a hook catches still fails the run, as anywhere in the flow. `exit`, a top-level `break` or `continue`, and a `return` that reaches past the hook file are such errors too, since each would end the flow unfinished.
-- A configured file missing from disk fails the run at `setup`, naming `hooks.<point>[<index>]`, before OpenROAD starts.
-- Every hook file is an input to [stage checkpoints](#keep-stage-checkpoints) and to a [hardened block's](#harden-a-block) abstract, so editing one makes the abstract stale. `hooks` is part of the block's configuration only when set.
-- Commands a hook runs report their progress like the flow's own, but they do not move a stage checkpoint: a `global_placement` inside a hook leaves the `floorplan` checkpoint to the flow's own `global_placement`.
-- In a [staged run](#run-stages-as-separate-sessions), and in a one-session run with [`post-route-repair`](#repair-on-the-detailed-route), each hook point is sourced in the session of the stage that contains it, and `session` hooks are sourced again in every session. Session state a hook sets, such as a Tcl procedure, a `rename` wrapper or `set_wire_rc`, is gone in the next session; see [what a session keeps](#run-stages-as-separate-sessions). A `session` hook keeps it in every session, but from the first one on, so it also changes the steps before the hook point that it was written for.
-- `after-pins` runs before rb's `buffer_ports`. A hook that buffers the ports itself needs `buffer-ports: false`, or rb buffers them again after it.
-
 ## Set wire RC
 
 Set the PDK's `layer-rc-tcl` so clock-tree synthesis, placement parasitics and hold repair see wire resistance and capacitance. Without it they see only the technology LEF's layer RC, which is zero on most open PDKs. CTS then balances, and hold repair fixes, a design with no wires, and the routed timing can fail hold that repair never saw.
@@ -301,74 +243,7 @@ set_wire_rc -signal -layer met2
 set_wire_rc -clock -layer met5
 ```
 
-To also catch hold growth from wire lengths before detail route, set `global-route-hold-repair: true` on the platform. It runs `repair_timing -hold` on the global-route estimate, then legalizes the added buffers and reroutes their nets incrementally. It is off by default because it changes QoR. A `global_route` [checkpoint](#keep-stage-checkpoints) holds the route after this repair. [Repair timing after routing](#repair-timing-after-routing) sets margins, setup and electrical repair, and repair after detailed route.
-
-## Repair timing after routing
-
-Post-CTS repair times the design on placement parasitics, which see no routed wire. Two platform blocks repair again on routed parasitics. Both are unset by default because they add run time and change QoR:
-
-```yaml
-cfg-pnr-platforms:
-  - name: sky130hd_tt
-    # ...
-    global-route-repair:
-      repair-design: {slew-margin: 20, cap-margin: 20}
-      setup-margin: 0.05       # ns
-      hold-margin: 0.02        # ns
-      reroute: incremental     # or full
-    post-route-repair:
-      setup-margin: 0.05
-      rounds: 3
-      margin-step: 0.02
-      reroute: eco             # or full
-```
-
-Each block takes:
-
-- `repair-design`: run `repair_design` with `slew-margin` and `cap-margin` (percent, 0 to 100) and `max-wire-length` (microns, positive). `{}` runs it with OpenROAD's defaults. Unset or `null` skips it.
-- `setup-margin` and `hold-margin`: run `repair_timing -setup` or `-hold` with that margin, in ns, at least 0. rb passes the margin in the Liberty time unit, so `0.05` is `-setup_margin 50` on a picosecond library and `-setup_margin 0.05` on a nanosecond one. A margin of `0` passes no option. Unset or `null` skips that repair. With `setup-margin` set, the hold repair also passes it as `-setup_margin`, as ORFS does, so the hold buffers it inserts keep that much setup slack.
-
-A block that sets none of the three repairs is a config error, and so is `post-route-repair` with `rounds` above 1 and neither margin. Both rules apply to the block a run ends up with, the platform's merged with the run's, so a platform may set part of a block, such as `{rounds: 3, margin-step: 0.05}`, that its runs complete; a run that leaves it incomplete fails at `setup`. Each repair is logged before it runs, with its margins in ns and the unit they were passed in:
-
-```text
->>> Global-route repair: repair_timing -setup -setup_margin 50 (setup margin 0.05 ns in Liberty time unit 1ps)
->>> Global-route repair: repair_timing -hold -hold_margin 20 -setup_margin 50 (hold margin 0.02 ns, setup margin 0.05 ns in Liberty time unit 1ps)
-```
-
-A global-route repair of only `hold-margin: 0`, which is what `global-route-hold-repair: true` sets, logs the single line `>>> Post-global-route hold repair` instead, so its flow script and checkpoints compare equal to the shorthand's.
-
-A run sets its own `global-route-repair:` or `post-route-repair:` in `pnr.yaml` over the platform's, field by field and within `repair-design`. A run's `null` field skips that repair, and a run's `global-route-repair: null` or `post-route-repair: null` turns the platform's block off. `global-route-hold-repair: true` on a platform is `global-route-repair: {hold-margin: 0}`; a platform that sets both is a config error.
-
-### Repair on the global route
-
-After global route and its `after-global-route` hooks, `global-route-repair` runs `estimate_parasitics -global_routing`, the repairs and a legalization, in ORFS order. `repair_timing` reroutes the nets it changes itself. With `repair-design` and a margin set, the repair also legalizes inside an incremental global route between `repair_design` and `repair_timing`, as ORFS does: `repair_timing` builds buffer trees from the global routes, and the nets `repair_design` split have none until they are rerouted. With `reroute: incremental` (the default) the legalization, `detailed_placement` alone, runs inside `global_route -start_incremental` and `-end_incremental`, which reroutes the nets of the cells it moved; `reroute: full` runs the flow's global route again after the legalization. The closing route is `-verbose`, so `pnr.log` repeats the congestion table. The `global_route` [checkpoint](#keep-stage-checkpoints) holds the design after this repair.
-
-### Repair on the detailed route
-
-`post-route-repair` adds the stage `post_route_repair` (`06_post_route_repair`) between `detailed_route` and `finish`. It needs the PDK's [`rcx-rules`](#extract-parasitics-with-rcx-rules); without them the run fails at setup. The stage runs up to `rounds` rounds (default 1), each in fresh OpenROAD sessions:
-
-1. Read the latest routed database (the detailed route's, then each round's), extract its parasitics into `06_post_route_repair.r<k>.spef`, read it once per corner and report setup and hold worst slack and TNS on every corner.
-2. Stop when every side the block repairs meets timing: setup when `setup-margin` is set, hold when `hold-margin` is set, each with worst slack at least 0 on every corner or unconstrained (`INF`, such as hold on a block constrained only by `set_max_delay`). Also stop when the report has no slack for such a side. A side the block does not repair never starts a round, and a block with neither margin (`repair-design` only) repairs in its one round whatever the slack.
-3. Otherwise read the database in a new session and repair it, then write the stage's checkpoint. The next round's extraction of that route, or the final report after the last round, is what judges the repair. With `reroute: eco` (the default) the session keeps the detailed route. It estimates placement parasitics, reads the SPEF once per corner over them, removes the fill cells and opens an incremental global route. The repairs then run with OpenROAD's `design_is_routed` answering 0, so they stay on the placement source: they time the nets they do not change on the SPEF and the nets they change on placement estimates, and build buffer trees from Steiner trees. The session legalizes and closes the incremental route, which reroutes only the nets the repair changed, runs the `before-detailed-route` hooks and routes in detail, keeping every other net's wires. With `reroute: full` it removes the fill cells and the detailed route, routes globally and reads the SPEF over the global-route estimate, so the repairs time the nets they change on the global route; as on the global route, a `repair_design` followed by a timing repair is legalized between them. It then legalizes, runs the hooks and routes every net in detail again.
-
-Round k repairs with the configured margins plus (k - 1) × `margin-step` (default 0). A round whose detailed route reports DRC violations is the last; `finish` continues from it, and its DRC count is the run's. When no round repairs, the stage's checkpoint is the detailed route's. The stage keeps the last round that repaired even when it measured worse than an earlier one; see [Quirks & Known Issues](../known-issues.md#post-route-repair-keeps-the-last-repaired-round). Each repairing round runs the `before-detailed-route` hooks before its detailed route. It does not run the `after-global-route` hooks: their work belongs to the `global_route` stage, and running them on each round's global route would repeat it. `finish` fills and writes the outputs from the stage's checkpoint. Quirks & Known Issues explains [why a round runs in sessions of its own and in this order](../known-issues.md#post-route-repair-rounds-work-around-openroad-routing-failures), [what an `eco` round depends on in OpenROAD](../known-issues.md#eco-post-route-repair-overrides-an-openroad-procedure) and [why a multi-corner run's rounds and final report can disagree](../known-issues.md#post-route-repair-rounds-and-the-final-report-can-disagree-on-a-multi-corner-platform). A session that fails fails the run in stage `06_post_route_repair`.
-
-`pnr.post_route_round` logs each round's setup and hold WNS and TNS, the sides that are `unconstrained` and the margins it repairs with, and `progress.jsonl` records it as a `post_route_round` event; a [dispatched](#dispatch-the-stages-to-slurm) run's head logs them from there too. `pnr.post_route_repair_done` gives how many rounds repaired and why the rounds stopped. The checkpoint run directory holds each session's script and log (`06_post_route_repair.r<k>.extract.tcl` and `.r<k>.repair.tcl`) and `06_post_route_repair.plan.json`, the rounds the stage runs.
-
-A run with `post-route-repair` and without `stages: true` runs `pnr.tcl` through detailed route and writes the `detailed_route` checkpoint, then runs the rounds and `finish` as sessions of their own, as a [staged run](#run-stages-as-separate-sessions) does. Its `pnr.tcl` ends the first session with `exit` and then records the later sessions' scripts, so it holds the whole flow, and those sessions log hook commands that do not reach them as a staged run's do.
-
-## Probe without timing repair
-
-Set `mode: probe` on a run to find out quickly whether a floorplan places and routes:
-
-```yaml
-runs:
-  - name: blk_probe
-    # ...
-    mode: probe        # default closure
-```
-
-A probe keeps `repair_design`, `repair_tie_fanout` and every legalization, skips the post-CTS setup and hold repair and the global-route repair, and stops after global route as [`--stop-after global_route`](#stop-after-a-stage) does: it writes the `global_route` checkpoint and no routed DEF or ODB. The result is a `PASS` with `routed: false`, `mode: probe` and `stopped_after: global_route`, with the global-route overflow and the timing on the global-route estimate. Like any stopped run it is no verdict on a routed design, so `xfail:` turns neither its `PASS` into `XPASS` nor a `FAIL` into `XFAIL`. `post-route-repair` does not apply, and `--stop-after` may name an earlier stage. A probe publishes no abstract, so a run with `harden: true` and `mode: probe` fails to load. A closure run cannot [resume](#resume-a-staged-run) a probe's checkpoints, whose stages skipped timing repair; run the closure from the start.
+To also catch hold growth from wire lengths before detail route, set `global-route-hold-repair: true` on the platform. It runs `repair_timing -hold` on the global-route estimate, then legalizes the added buffers and reroutes their nets incrementally. It is off by default because it changes QoR. A `global_route` [checkpoint](#keep-stage-checkpoints) holds the route before this repair.
 
 ## Macro placement
 
@@ -391,7 +266,7 @@ When macros do not fit, the run fails with `N macros do not fit the W x H um flo
       macro-placement: rtl-mp
 ```
 
-RTL-MP places macros by connectivity and wirelength and may flip them (`MX`, `MY` or `R180`), but never [turns](#rotate-a-macro) one by 90 degrees. Macros end up `LOCKED` on the track grid, and reports go to `artefacts/<run>/rtlmp/`. Use it for a flat netlist with many memories or when timing depends on macro placement; on the template's sky130hd assembly it gave about 0.8 ns better setup slack than the packer.
+RTL-MP places macros by connectivity and wirelength and may rotate them. Macros end up `LOCKED` on the track grid, and reports go to `artefacts/<run>/rtlmp/`. Use it for a flat netlist with many memories or when timing depends on macro placement; on the template's sky130hd assembly it gave about 0.8 ns better setup slack than the packer.
 
 - It keeps `placement.macro-halo` around every macro and keeps macros out of every placement blockage, including `soft` and `partial` ones that the packer lets macros sit on.
 - [`macro-cell-halo`](#tune-the-process-dependent-steps) and the power grid apply afterwards as usual.
@@ -425,23 +300,11 @@ Two optional `floorplan` keys steer where macros and standard cells may go.
 
 A row cut rounds outward to whole sites, so the remnants stay on the site grid. A remnant narrower than twice the row height is dropped. The power grid's followpins follow the cut rows.
 
-**Global-placement-only blockages.** `lifetime: global-placement` on an entry of any type (default `flow`) makes it a screen for global placement alone:
-
-```yaml
-      blockages:
-        - rect: [400, 300, 520, 420]
-          type: partial
-          max-density: 0.35
-          lifetime: global-placement
-```
-
-It is created immediately before `global_placement` and removed immediately after, by the handle the flow created, so legalization, repair and routing never see it. No row is cut under it, the packer and RTL-MP do not avoid it, and no [checkpoint](#keep-stage-checkpoints) holds it.
-
 Blockages need OpenROAD 26Q1 or newer; on an older build the run fails at setup. A malformed rectangle (`x0 >= x1`, `y0 >= y1`, a side under 0.001 µm, a negative coordinate, or not four numbers), an unknown type, or `max-density` on anything but `partial` fails when `pnr.yaml` loads.
 
 ## Place individual macros
 
-`floorplan.macros` gives individual macros a fixed location, an orientation or their own standard-cell halo. Each entry names an `instance`, by its full hierarchical name or a glob over the names. A floorplanner's output can come from a [file](#read-macros-and-pins-from-planner-files) instead:
+`floorplan.macros` gives individual macros a fixed location, an orientation or their own standard-cell halo. Each entry names an `instance`, by its full hierarchical name or a glob over the names:
 
 ```yaml
     floorplan:
@@ -457,83 +320,17 @@ Blockages need OpenROAD 26Q1 or newer; on an older build the run fails at setup.
 | Key | Meaning |
 | --- | --- |
 | `instance` | A macro instance name as OpenROAD reads it from the netlist, such as `u_inner/u_hist_mem/u_sram`. A name that is not an instance is matched as a glob, where `*` also crosses `/`. |
-| `location` | `[x, y]`, the lower-left corner of the macro's box after orientation, in die microns. The macro is fixed (`LOCKED`) before the packer or RTL-MP runs, and both leave it there. The pattern must match exactly one macro. |
-| `orientation` | `R0`, `R90`, `R180`, `R270`, `MX`, `MY`, `MXR90` or `MYR90`. Applied before any location and before placement, so a packed macro keeps it. See [Rotate a macro](#rotate-a-macro). |
+| `location` | `[x, y]`, the macro's lower-left corner in die microns, after orientation. The macro is fixed (`LOCKED`) before the packer or RTL-MP runs, and both leave it there. The pattern must match exactly one macro. |
+| `orientation` | `R0`, `R180`, `MX` or `MY`. Applied before placement, so a packed macro keeps it. |
 | `halo` | `[x, y]` in microns. Replaces `placement.macro-cell-halo` for the matched macros: no standard cell is placed within `x` of the macro's left and right edges or `y` of its top and bottom. `[0, 0]` removes the halo. |
 
 - A location snaps to the nearest standard-cell site and row from the core's lower-left corner, the grid the packer also uses, so the macro's bottom edge lies on a row boundary. A macro that fits the core before snapping still fits after. The log shows `fixed <inst> at (x, y) um <orientation> (requested (x, y))`.
-- `floorplan.macro-snap: false` (default `true`) places every located macro at its exact location, rounded once to the database unit, off the site and row grid. The location is then the floorplanner's to keep on the grids the flow relies on: a macro whose bottom edge lies between two rows can fail legalization with `DPL-0011`.
 - A fixed macro must lie inside the core and must not overlap another fixed macro; either fails the run naming the entry. Overlap with a placement blockage is allowed.
 - With the [packer](#macro-placement), fixed macros are keep-outs: the other macros stay `placement.macro-halo` away from them, as from each other. With `rtl-mp`, RTL-MP treats them as fixed obstacles.
-- Under `rtl-mp`, an `orientation` without a `location` is refused, because RTL-MP picks each placed macro's orientation itself.
-- A macro may be matched by several entries, inline or from the file, but only one entry may set each key for it.
+- Rotations by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) are refused: they swap the macro's width and height off the site grid and turn its pins across the routing tracks. Under `rtl-mp`, an `orientation` without a `location` is refused, because RTL-MP picks each placed macro's orientation itself.
+- A macro may be matched by several entries, but only one entry may set each key for it.
 - At run time a pattern that matches no instance, or that matches a standard cell, fails the run: `floorplan.macros[i]: no instance matches '<pattern>'`.
-- A `location` on a netlist with no hard macros fails the run at macro placement, naming up to three located entries: `floorplan.macros: the netlist has no hard macros, but 1 entry gives a macro location: floorplan.macros[0] (u_sram)`.
 - `floorplan.macros` is part of a hardened block's configuration. For a [hardened block](#assemble-hardened-blocks) placed with a `location`, check that its supply pins land on the parent's straps, and that a mirrored block's net order still fits the parent's grid.
-
-## Rotate a macro
-
-`R90`, `R270`, `MXR90` and `MYR90` turn a macro by 90 degrees, so its box is the master's height wide and its width tall. `location` is the lower-left corner of that turned box, and the packer packs a turned macro by its turned size. RTL-MP does not turn macros.
-
-Turning a macro turns its pins and power ring with it, so pin access and power are the floorplan's to check: horizontal pin shapes become vertical, and a PDK power grid written for unrotated macros may have no grid for the turned orientations or connect layers that no longer cross. `pdngen` then fails, for example with `PDN-0233` when a macro grid gets no via. Give the PDK's `pdn-config`, or the run's own, a macro grid for the turned orientations that reaches the turned power pins.
-
-OpenROAD's default legalizer blocks a turned fixed macro over its master's unrotated width and height from the macro's lower-left corner, not over its real box (OpenROAD#11735). Cells that global placement put in the part of that footprint outside the macro are then moved out by legalization, some far. `placement.rotated-macro-footprint` (PDK, platform or run [placement](#tune-the-process-dependent-steps) key) chooses the workaround; it acts only when a `floorplan.macros` or macros-file entry turns a macro, or when the run has a [hook](#run-tcl-hooks) before global placement (`session`, `after-floorplan`, `macro-placement`, `after-pdn` or `after-pins`), which may turn one:
-
-| Value | Effect |
-| --- | --- |
-| `block` (default) | A hard placement blockage over each turned macro's unrotated footprint, grown by its [cell halo](#tune-the-process-dependent-steps), then outward to whole rows and sites as the legalizer rounds it, and clipped to the core, exists during global placement only, like a [`lifetime: global-placement`](#floorplan-controls) blockage. No cell is placed where legalization would refuse it, and the area outside the macro stays empty. |
-| `diamond-legalizer` | Every `detailed_placement`, including the one after post-global-route hold repair, runs `-use_diamond_legalizer`, which sees the macro's real box. |
-| `none` | Neither. |
-
-The log names each blocked footprint under `>>> Rotated macros`, or the switch to the diamond legalizer.
-
-## Read macros and pins from planner files
-
-A floorplanner that writes hundreds of macro locations or thousands of pin positions can hand them over as files instead of `pnr.yaml` entries:
-
-```yaml
-    floorplan:
-      macros-file: plan/macros.yaml   # floorplan.macros entries
-      macro-snap: false               # exact locations, no site or row snapping
-      pins-file: plan/pins.json       # exact pins and floorplan.pins entries
-      pin-snap: false                 # exact pin centres, not moved to the edge or a track
-      pins-complete: true             # every signal port must be covered
-```
-
-```yaml
-# plan/macros.yaml
-- {instance: u_core/u_sram0, location: [120.0375, 80.64], orientation: R90}
-- {instance: "u_core/u_rf*", halo: [2, 2]}
-```
-
-```json
-[
-  {"name": "din[0]", "location": [0.5, 68.34], "layer": "met3", "size": [1.0, 0.3]},
-  {"names": ["dout*"], "side": "right"}
-]
-```
-
-- Each file is a YAML or JSON list, its path relative to `pnr.yaml`. It is read when the run starts, before OpenROAD, so `rb pnr --list` does not need it. A missing file, a malformed entry or an unknown key fails the run with `fail_stage: setup`, naming the file and the entry's index.
-- A macros-file entry has the [`floorplan.macros`](#place-individual-macros) keys. A pins-file entry is either an exact pin, `name` (or `names` with one name) with `location`, optional `layer` and optional `size`, or any [`floorplan.pins`](#constrain-boundary-pins) entry. `size` is `[width, height]` in microns, the pin's x and y extents, as in `floorplan.pins` and `place_pin -pin_size`.
-- File entries apply after the inline ones and keep their order: exact pins from `floorplan.pins`, then from the file, then the inline and file side and group rules, then `pin-constraints`. Messages name them `floorplan.macros-file[i]` and `floorplan.pins-file[i]`.
-- File coordinates reach OpenROAD at full precision and are rounded once, to the database unit. Inline coordinates are rounded to the nanometre.
-- Both files are fingerprinted as inputs of a [checkpoint](#keep-stage-checkpoints) run and of a [hardened block](#harden-a-block), so editing one makes the block's abstract stale.
-
-`macro-snap: false` is described under [Place individual macros](#place-individual-macros). `pin-snap: false` (default `true`) places each exact pin, inline or from the file, with its centre at its location to the database unit: `place_pin` runs without `-force_to_die_boundary`, so the pin is neither moved onto the die edge nor onto a routing track. Give a pin on an edge a centre half its depth inside the die. Without the force, placing a pin is also much faster, which matters for thousands of pins. The log still reports each pin's requested and final centre.
-
-### Check that every port is placed
-
-`floorplan.pins-complete: true` (default `false`) checks, just before the `pin-constraints` file and `place_pins`, that every port other than a power or ground port is covered by the inline and file pin entries. An exact pin covers its port; a side or group rule covers the ports it matches that have no exact pin. The run fails, listing up to ten ports per problem and the count:
-
-- a port with more than one exact entry;
-- a port with no exact entry that several side or group rules match;
-- a port nothing matches.
-
-The message reads `floorplan.pins-complete: 2 port(s) matched by no entry (irq, test_mode)`, and the result carries `fail_stage: pins_complete`, so `xfail:` does not excuse it. A port constrained only by the `pin-constraints` file counts as unmatched.
-
-### Check the routed floorplan
-
-A run with a located macro or an exact pin compares them with the routed `<top>.def` after OpenROAD succeeds. `pnr.log` records each as placed, `RB-FLOORPLAN-MACRO: <x> <y> <orientation> <instance>` and `RB-FLOORPLAN-PIN: <x0> <y0> <x1> <y1> <layer> <port>` in database units, and the check reads only the DEF's COMPONENTS and PINS. A macro at another location or orientation, or a pin with another layer or box, fails the run with `fail_stage: routed_check`, naming the first three differences, so `xfail:` does not excuse it. The routed outputs stay for inspection and no abstract is published.
 
 ## Size the die and core
 
@@ -611,11 +408,11 @@ While it sources the pdn-config, the flow skips each `define_pdn_grid` that is n
 | `side` | `left`, `right`, `top` or `bottom`: `set_io_pin_constraint -region <side>:<start>-<end>`. |
 | `start` / `end` | Optional range along the side in die microns: y for `left` and `right`, x for `top` and `bottom`. Either one alone leaves the other end open. Without both the whole edge is allowed. |
 | `group` / `order` | `group: true` keeps the matched pins next to each other (`-group`); `order: true` also keeps them in the order matched. With no `side` the group may land on any edge. |
-| `location` | `[x, y]` pin centre in die microns. Places exactly one pin with `place_pin -force_to_die_boundary`, so it moves onto the nearest die edge for its layer's direction and onto the nearest routing track; the log reports the requested and the final centre. `floorplan.pin-snap: false` places it at its centre instead; see [Read macros and pins from planner files](#read-macros-and-pins-from-planner-files). The pin is fixed, and pin placement leaves it there. |
+| `location` | `[x, y]` pin centre in die microns. Places exactly one pin with `place_pin -force_to_die_boundary`, so it moves onto the nearest die edge for its layer's direction and onto the nearest routing track; the log reports the requested and the final centre. The pin is fixed, and pin placement leaves it there. |
 | `layer` | With `location` only. Default: the PDK's horizontal pin layer on a left or right edge, its vertical one on a top or bottom edge, judged by the nearest edge. |
-| `size` | With `location` only. `[width, height]` in microns: the pin's x and y extents, as `place_pin -pin_size` takes them. Default: the layer's minimum width and area. |
+| `size` | With `location` only. `[width, height]` in microns. Default: the layer's minimum width and area. |
 
-- Exact pins are placed first, then the edge and group constraints, then the `pin-constraints` file below, all just before `place_pins`. A side or group rule leaves out the pins placed exactly, so a pin both placed and matched by a side keeps its location.
+- Exact pins are placed first, then the edge and group constraints, then the `pin-constraints` file below, all just before `place_pins`. A pin both placed and matched by a side keeps its location.
 - A name or glob that matches no port fails the run with `floorplan.pins[i]: no port matches '<pattern>'`, where `set_io_pin_constraint` alone would only warn. A `location` entry whose name matches more than one port fails too.
 - A malformed entry fails when `pnr.yaml` loads, naming `floorplan.pins[i]`: an unknown side, `start` at or above `end`, a negative coordinate, `start` or `end` without `side`, `order` without `group`, `location` with `side`, `group` or more than one name, `layer` or `size` without `location`, or an entry that sets none of `side`, `group` and `location`.
 - A `harden: true` run places its pins the same way, and the published abstract carries them. `floorplan.pins` is part of a hardened block's configuration, so changing it makes the block's abstract stale.
@@ -642,7 +439,7 @@ The same flow runs on any PDK the root config declares. Switching PDKs is a `pla
 
 `pnr.log` is OpenROAD's output, written as it happens, so `tail -f artefacts/<run>/pnr.log` follows a running flow.
 
-- Every global route runs with `-verbose`. After it, `pnr.log` has the per-layer resource and usage table (`[INFO GRT-0096] Final congestion report:`), which shows the congestion margin of a passing run. With a [global-route repair](#repair-on-the-global-route), its closing route prints the table again.
+- Every global route runs with `-verbose`. After it, `pnr.log` has the per-layer resource and usage table (`[INFO GRT-0096] Final congestion report:`), which shows the congestion margin of a passing run. With `global-route-hold-repair`, the incremental reroute prints the table again.
 - When global routing overflows, each overflowing tile, with its capacity, usage and nets, goes to `congestion.rpt`, in the DRC-report format the OpenROAD GUI's DRC viewer loads. A route that fails with `GRT-0116` keeps it.
 - Detailed routing logs each optimization iteration (`[INFO DRT-0195] Start 1st optimization iteration.`), its progress (`Completing 30% with 88 violations.`) and its result (`[INFO DRT-0199] Number of violations = 16.`), so a converging route can be told from a stalled one. Set `detailed-route-verbose:` on the run to change the level: `0` silences the iterations; higher levels add more router detail.
 
@@ -667,7 +464,7 @@ runs:
 - Unset gives 1 thread. A positive integer gives that many. `auto` gives the CPUs of the allocation the run is in, or 1 with none; never the host's core count.
 - Zero, negative numbers, booleans, quoted numbers and other strings fail configuration loading.
 
-Without `--dispatch`, `rb pnr` runs OpenROAD where it is started. Run it inside an allocation (`srun -c 8 rb pnr ...` or an `sbatch` script) to give OpenROAD CPUs, or give each stage a job of its own with [`--dispatch slurm`](#dispatch-the-stages-to-slurm). The allocation is `SLURM_CPUS_PER_TASK` (else `SLURM_CPUS_ON_NODE`) in a Slurm job, or a smaller CPU affinity mask on Linux. A container CPU quota (`docker --cpus`) is not visible.
+`rb pnr` is not dispatched. Run it inside an allocation (`srun -c 8 rb pnr ...` or an `sbatch` script) to give OpenROAD CPUs. The allocation is `SLURM_CPUS_PER_TASK` (else `SLURM_CPUS_ON_NODE`) in a Slurm job, or a smaller CPU affinity mask on Linux. A container CPU quota (`docker --cpus`) is not visible.
 
 A count above the allocation is clamped to it with an `openroad.threads_capped` warning naming both numbers. Outside an allocation an explicit count is used as given.
 
@@ -686,164 +483,18 @@ runs:
 
 | Stage | Written | Holds |
 | --- | --- | --- |
-| `floorplan` | before `global_placement` | floorplan, pins, tie cells, placed macros, PDN; no global-placement-only blockage |
+| `floorplan` | before `global_placement` | floorplan, pins, tie cells, placed macros, PDN |
 | `place` | before `clock_tree_synthesis` | legalized global placement |
 | `cts` | before `global_route` | clock tree, hold repair, legalization |
-| `global_route` | after `global_route`, the `after-global-route` hooks and the [global-route repair](#repair-on-the-global-route), before the `before-detailed-route` hooks | the global route |
-| `detailed_route` | after `detailed_route` | the detailed route, before fill |
-| `post_route_repair` | after the last [post-route repair](#repair-on-the-detailed-route) round; only with `post-route-repair` | the repaired route, before fill |
+| `global_route` | after a successful `global_route` | the global route |
 
-In a one-session run the flow ends each stage, but `global_route`, on the command the table names: on entering `global_placement`, `clock_tree_synthesis` or `global_route`, or on leaving `detailed_route`. A hook that wraps one of these commands with `rename` hides that boundary, which a one-session run does not support: a run that reaches its end without writing a checkpoint it keeps fails with `fail_stage: checkpoint`, naming the stage and the command. A [staged run](#run-stages-as-separate-sessions) ends each stage at the end of its session and has no such limit.
-
-`true` keeps every stage the run has, five or, with `post-route-repair`, six; a name or list keeps some; `[]` keeps only the progress file. Unset or `false` disables the feature. Each stage writes `<NN>_<stage>.odb`, `.def` and `.sdc` into `artefacts/<run>/checkpoints/<timestamp>-<pid>/`, and `checkpoints/latest` points at the newest run. The `global_route` checkpoint adds the route guides (`.guide`) and global-route segments (`.segments`). The `detailed_route` and `post_route_repair` checkpoints keep a copy of each report the detailed router wrote, `<NN>_<stage>.route.drc.rpt` and `.route.maze.log`. The SDC is written with `write_sdc -no_timestamp -digits 9`.
+`true` keeps all four stages; a name or list keeps some; `[]` keeps only the progress file. Unset or `false` disables the feature. Each stage writes `<NN>_<stage>.odb`, `.def` and `.sdc` into `artefacts/<run>/checkpoints/<timestamp>-<pid>/`, and `checkpoints/latest` points at the newest run.
 
 - `tail -f artefacts/<run>/checkpoints/latest/progress.jsonl` follows a running flow. After a kill, the last `step_begin` with no `step_end` is the step the run was in.
-- With [`hooks:`](#run-tcl-hooks) set, `hook_begin` and `hook_end` events bracket each hook file and name its point and path. `hook_end` adds the status, the elapsed seconds and, on failure, the error. A `hook_begin` with no `hook_end` is the hook the run was in; rb's retained-checkpoints message names it as the step `hook <point>`.
-- Each stage's wall time, CPU time and peak memory are recorded; see [Stage resources](#stage-resources).
 - A checkpoint is never final. `rb power` and a plain `rb pnr-export` never read it.
 - Old run directories are not pruned. Delete the ones you no longer need.
 
-To look at a checkpoint, open its ODB in OpenROAD or stream it out with [`rb pnr-export --checkpoint`](#export-a-saved-result). To continue from one, the run must be staged; see [Resume a staged run](#resume-a-staged-run).
-
-## Run stages as separate sessions
-
-Set `stages: true` on a run to run each stage in its own OpenROAD session, one after another:
-
-```yaml
-runs:
-  - name: demo_pnr_nangate45
-    # ...
-    stages: true
-```
-
-The stages are `floorplan`, `place`, `cts`, `global_route`, `detailed_route`, `post_route_repair` with [`post-route-repair`](#repair-on-the-detailed-route), and `finish` (fill, parasitic extraction, the `before-reports` hooks, the final reports and the outputs). Each session but `finish` ends by writing its stage's [checkpoint](#keep-stage-checkpoints), which the next session reads, so a staged run writes every checkpoint. `stages: true` with a `checkpoints:` list that leaves out a stage other than `post_route_repair` is a config error.
-
-A staged run's checkpoint directory also holds each session's script and log, `<NN>_<stage>.tcl` and `<NN>_<stage>.log`, and with each checkpoint a `<NN>_<stage>.state.tcl` of the flow variables a later stage reads (the `floorplan.macros` cell halos). The run keeps one `progress.jsonl` and one `manifest.json`. `artefacts/<run>/pnr.log` is the sessions' logs in order, written as each session runs, and `pnr.tcl` is their scripts in order.
-
-Each session after `floorplan` starts with a prelude rb generates from the same flow template, so a staged run and a one-session run of the same configuration run the same flow commands. Their results are identical at equal thread counts unless OpenROAD carries in-memory state over a stage boundary in the one-session run; see [Quirks & Known Issues](../known-issues.md#a-staged-pr-run-can-differ-from-a-one-session-run). The prelude is:
-
-1. The header variables, `threads:`, `platform-tcl`, the Liberty of every corner and every LEF, including the views of `blocks:`.
-2. `read_db` and `read_sdc` of the previous stage's checkpoint, and its saved flow variables.
-3. `max-fanout`, `layer-rc-tcl`, the don't-use cells and the `session` hooks.
-4. The flow's design variables (`$block`, `$macros`) and, after `place`, the detailed-placement options a rotated macro needs.
-5. `set_propagated_clock [all_clocks]` after `cts`, the routing layers and layer adjustment after `global_route`, for `detailed_route` the `global_route` checkpoint's segments (`read_global_route_segments`), and for `finish` a fanout check, without which OpenROAD crashes in the final reports' max-fanout count.
-
-The detailed router reads the route guides the database keeps, so a staged run routes exactly as a one-session run does; `read_guides` would rewrite them without their via layers. The `finish` session also takes the global route from those guides, as `rb power` does from a routed database. A routed database's pin access points can put a pin in another global-routing cell than the route reached, so OpenROAD would refuse the saved segments there. On a PDK with `rcx-rules` the final reports are timed on the extracted SPEF.
-
-A session has what the previous stage's checkpoint holds and what its prelude sets up again, nothing more:
-
-- The database keeps the design with its global-connect rules, placement blockages, routing layer range and layer adjustments, `dont_touch` marks, track grids and route guides.
-- The checkpoint SDC, written at the end of the stage after its hooks, keeps the timing constraints, including `set_max_fanout` and propagated clocks.
-- The state file keeps the flow variables named above.
-
-Anything else an earlier session set is gone: Tcl variables, procedures and `rename` wrappers, `set_wire_rc`, `set_layer_rc` and `set_dont_use` that a hook ran, STA settings outside the SDC, and the resizer's in-memory state. In every session but `finish`, rb compares the global Tcl commands and procedures before and after each hook but a `session` one. A hook that renamed, deleted or redefined a command that existed before it logs the warning `pnr.hook_commands_not_kept` naming them, since later sessions run the original. A hook that only defined new commands logs them at info as `pnr.hook_commands_added`: a later session that calls one fails with an unknown command. See [Quirks & Known Issues](../known-issues.md#session-state-does-not-cross-a-pr-stage-boundary).
-
-A session that fails, prints an OpenROAD `[ERROR ...]` line or exits before it ends its stage fails the run with its stage in the description, and no later stage runs. Its stage is recorded as not finished cleanly, so no resume can start after it. A checkpoint that cannot be written fails the run with `fail_stage: checkpoint`, and a session that exits with code 0 before its end-of-stage line fails it with `fail_stage: incomplete`; `xfail:` excuses neither.
-
-### Stop after a stage
-
-`--stop-after <stage>` ends a run, staged or not, once that stage's checkpoint is written:
-
-```bash
-rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --stop-after global_route
-```
-
-Any stage of the run but `finish` can be named, and `post_route_repair` only with `post-route-repair`. A [probe](#probe-without-timing-repair) stops after `global_route` unless an earlier stage is named. The run writes the stage's checkpoint even without `checkpoints:`, prints a stage report and then `>>> STOPPED after <stage>`. The report gives the design area, setup and hold worst slack and TNS (per corner on a multi-corner platform), timed on no parasitics after `floorplan`, the placement estimate after `place` and `cts`, the global-route estimate after `global_route` and `detailed_route`, and the extracted parasitics after `post_route_repair`.
-
-The result is a `PASS` with `routed: false` and `stopped_after: <stage>`, with `area_um2`, the slack and TNS fields from the report, `global_route_overflow` (the total overflow in the last global-route usage table) from `global_route` on, and `drc_count` after `detailed_route`. A stopped run writes no routed DEF, ODB, SPEF or GDS, publishes no abstract for `harden: true`, and skips the [routed-floorplan check](#check-the-routed-floorplan) and the stream-out. A run that exits with code 0 before printing its stop line fails with `fail_stage: incomplete`, and one that cannot write the stage's checkpoint fails with `fail_stage: checkpoint`. A run's `xfail:` marker does not apply to a stopped run, which is no verdict on the routed design: its `PASS` stays `PASS`, never `XPASS`, and a `FAIL` stays `FAIL`.
-
-### Resume a staged run
-
-`--resume <run> --from <stage>` starts a new staged run at `<stage>` from a staged run's checkpoint of the stage before it:
-
-```bash
-rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --stop-after global_route
-rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --resume latest --from detailed_route
-```
-
-`<run>` is `latest` or a run id under the run's `checkpoints/`, both looked up there first, or else a checkpoint run directory, which a relative path names from the directory `rb` was invoked in. The resumed run writes its own run directory and leaves the old one unchanged, so detailed routing can be retried several times from one global route. Its manifest records `resumed_from` (run id and stage) and lists the inherited stages' scripts, logs and checkpoints with the run that wrote them (`rb pnr-export --checkpoint <run-id>/<stage>` on the resumed run exports an inherited checkpoint from the run that wrote it, wherever that run is), and its `pnr.log` starts with the inherited stages' logs. A run resumed from `finish` puts the inherited route's `route.drc.rpt` and `route.maze.log` (the last post-route repair round's, when the run has that stage) back in the artefact directory, so its `drc_count` and DRC report are that route's. A resumed run is staged whatever its `stages:` setting, and can itself be resumed. Both options need a single named run, and `--stop-after` may be added.
-
-The resume is refused, with `fail_stage: resume` and a description that names what differs, unless:
-
-- the run named was a staged run, and its stage before `--from` finished cleanly with its checkpoint written and unchanged since;
-- the script of every stage before `--from`, generated from today's configuration, is the one that run used, as compared below;
-- every input file those stages read has the same content;
-- OpenROAD reports the same version; and
-- the run named was not a [probe](#probe-without-timing-repair), unless this run is one too.
-
-The input files are those the [checkpoint manifest](#keep-stage-checkpoints) fingerprints: the netlist, the SDC, the Liberty of every corner, the LEF, `pin-constraints`, the planner files, the `pdn-config`, the PDK's `rcx-rules` (read first by post-route repair, else by `finish`), the PDK Tcl hooks (`platform-tcl`, `layer-rc-tcl`, `tracks-tcl`, `tapcell-tcl`) and the run's `hooks:` files. A file that one of them sources or reads in turn, such as a file a hook, `platform-tcl`, a `pdn-config` or the SDC sources, is not checked, and neither are environment variables.
-
-A stage script is compared up to its end-of-stage line, without:
-
-- whole-line comments;
-- the two lines that name run directories (`RB_RUN_DIR` and `RB_PRED_DIR`);
-- the thread count (`set_thread_count`); and
-- each `set NAME value` line of the header at the top of the script whose variable the rest of that stage's script does not read, as `$NAME`, `${NAME}`, `$::NAME` or `${::NAME}`, itself or through another header line it keeps.
-
-Everything else is compared, including rb's own Tcl procedures, so an rtl_buddy version that generates a different script for an earlier stage refuses the resume. The scan sees only the stage script: a hook file, `platform-tcl` or other file that the stage sources and that reads a header variable does not make that variable part of the comparison.
-
-So a setting that only `--from` and later stages read may change between the runs: `detailed-route-verbose:` or a `before-detailed-route` hook, the routing layers (first read by `global_route`), or the fill cells (read by `finish`). The thread count may differ between stages, so a resume can run on another CPU allocation than the run it resumes; a staged run equals a one-session run of the same configuration only at equal thread counts.
-
-A resume is checked before anything is cleared or written. A refused resume, or one that fails setup before it is checked, leaves `checkpoints/latest` and the previous run's outputs as they were, so the same `--resume latest` can be retried once the configuration is put back.
-
-### Dispatch the stages to Slurm
-
-`--dispatch slurm` runs each stage of a staged run as its own Slurm job:
-
-```bash
-rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --dispatch slurm
-```
-
-rb writes every stage's script into the run directory first, so the jobs run the configuration as it was when the run started. It then submits one job per stage, each held until the one before it succeeds (`--dependency=afterok`), and waits until the last one has left the queue. Each job runs its stage as a local staged run does and adds to the same `pnr.log`, `progress.jsonl` and checkpoints, so the result, manifest and outputs are those of the same run staged locally. `--dispatch slurm` makes a run staged whatever its `stages:` setting. With `--stop-after` or `--resume` it submits only the stages the run runs. The `post_route_repair` job runs every [post-route repair](#repair-on-the-detailed-route) round. `--dispatch local`, the default, runs the stages where `rb pnr` runs; `cfg-dispatch.backend` does not apply to `rb pnr`.
-
-Each job's reservation is resolved field by field, most specific first, from the run's `resources.stages.<stage>`, the run's `resources:`, `cfg-dispatch.resources`, then the built-in defaults:
-
-```yaml
-runs:
-  - name: demo_pnr_nangate45
-    # ...
-    threads: auto
-    resources:
-      cpus: 4
-      mem: 8G
-      time: "02:00:00"
-      stages:
-        detailed_route: {cpus: 16, mem: 32G, time: "12:00:00"}
-```
-
-`threads: auto` takes each job's CPUs, so here detailed routing runs on 16 threads and every other stage on 4. A fixed `threads:` count is the same in every stage, clamped to the CPUs of a smaller job. Each job counts the CPUs it received when it starts, as a run inside an allocation does (see [OpenROAD threads](#openroad-threads)), so a `--cpus-per-task` in `cfg-dispatch.sbatch-args` or a site that grants a different count sets the thread count too, for every session of the `post_route_repair` job as well. A run that is not dispatched ignores `resources:`. A dispatched run without a `resources:` block warns (`pnr.dispatch_resources_default`) with the CPUs, memory and time every job then gets.
-
-Every job asks for one task (`--ntasks=1`); `cfg-dispatch.sbatch-args` come after the reservation and apply to every job. The jobs are named `rb:pnr:<run>:<stage>`, tagged by `RTL_BUDDY_JOB_TAG` (see [Tag job names for one caller](dispatch.md#tag-job-names-for-one-caller)). The console shows each job id as Slurm accepts it, then the stage `rb pnr` waits on and its state.
-
-`rb pnr` itself stays on the submitting host. It writes the scripts, submits the jobs and waits for them, then runs there every check a local run makes on the routed result. The stream-out for `--gds`, `--png` or `harden: true` also runs there: KLayout reads the whole routed layout, so give the submitting host, or the allocation `rb pnr` runs in, memory to match.
-
-A stage whose job fails, is cancelled, runs out of time or is killed for memory fails the run, and Slurm removes the jobs after it. The description names the stage and how the job ended, for example `stage 05_detailed_route: OpenROAD exited with code -9 (Slurm job 1234 ended OUT_OF_MEMORY)`. A job killed inside its stage gets the stage's `stage_end` from Slurm's accounting, and the stage's log is cut from `pnr.log` when the job had not written it. A stage succeeds only when its job wrote a successful result and Slurm's accounting records the job `COMPLETED`, so a job that Slurm ended after its stage succeeded, for example when its `time` ran out as it exited, fails the run at that stage. When accounting gives no end state for a job, its result is taken as written, with the warning `pnr.stage_jobs_unaccounted`.
-
-`cfg-dispatch.max-wait` bounds how long each job waits in the queue before it starts: the first from its submission, each later one from when the job before it ends. How long a job runs is bounded by its own `time`. A job that waits longer, or one that cannot be submitted, fails the run and cancels the jobs; `sbatch` gets 10 minutes to answer a submission before it is stopped and the submission fails. The wait counts while `squeue` does not answer, and each `squeue` of the wait gets at most 30 seconds, so one that hangs counts as not answering. A job past `max-wait` then is given up only when Slurm's accounting (`sacct`) records it as still pending; when accounting has no answer either, only once it has been queued longer than `max-wait` plus its own `time`, so a job that started while the queue could not be read is never cancelled as unstarted. A job that `squeue` shows pending on a dependency that can never be met is cancelled by the wait, and that `scancel` gets at most 30 seconds too; one that hangs leaves the job counted as queued, and a later poll cancels it again.
-
-A failed stage carries its own `fail_stage` only when its job ran the stage and ended itself; it then fails as it would in a local staged run. Every other failure is the scheduler's and carries `fail_stage: dispatch`, which `xfail:` never excuses, as for an `rb test` job the scheduler lost:
-
-| How the stage's job ended | `fail_stage` |
-| --- | --- |
-| Ran its stage, which failed, and ended `COMPLETED` or `FAILED` | The stage's own: none, `incomplete` or `checkpoint` |
-| Ran its stage, which succeeded, and ended in any state but `COMPLETED` | `dispatch` |
-| Ran its stage and ended in any other state: `OUT_OF_MEMORY`, `TIMEOUT`, `CANCELLED`, `NODE_FAIL`, `PREEMPTED` | `dispatch` |
-| Refused its stage, never started it, or left no result | `dispatch` |
-| Could not be submitted, or waited in the queue longer than `max-wait` | `dispatch` |
-| Refused because an earlier dispatched run's jobs are still queued (below) | `dispatch` |
-
-Ctrl-C, SIGTERM or SIGHUP cancels the run's own jobs, and no others, including a job whose submission is still waiting on `sbatch`. `rb pnr` then waits up to 30 seconds for them to leave the queue, closes the stage a cancelled job was running as for a killed job, finishes the manifest and exits. A second Ctrl-C ends that wait early, in every run under `-j`; one that arrives while Slurm is asked to cancel takes effect once the request is done, and each `squeue` and `scancel` of the cancel gets at most 10 seconds. Under `-j`, every run being dispatched stops the same way and no further run starts. Jobs still queued after the wait are named with the `scancel` command that cancels them. Any other error before the chain has left the queue, such as a full disk, cancels the jobs and finishes the manifest the same way before rb reports it. Either way, `rb pnr` marks the run given up (`dispatch/given_up`) before it cancels the jobs, and clears the run's outputs after the wait. A job that starts after the mark refuses its stage, and one already running its stage removes the run's outputs again when the stage ends and fails it, so a job that outlives the cancel leaves no routed result that looks valid. A signal that arrives after the chain has left the queue takes effect once rb has read how the chain ended; the run then fails as interrupted.
-
-An `rb pnr` killed outright (SIGKILL, or the end of the allocation it runs in) leaves its jobs to run the rest of the chain unattended: the checks it makes after the last job never run and its manifest is never finished. While a job of an earlier dispatched run of the same configuration is queued or running, every `rb pnr` of it, dispatched or not, refuses to start before it clears anything, naming the jobs and the `scancel` command. It looks up only your own jobs, and refuses too while `squeue` does not answer, since it cannot tell. On a host without `squeue`, a run that is not dispatched refuses while the earlier run's `dispatch/` has changed within the total `time` its jobs asked for; after that it warns (`pnr.stage_jobs_unchecked`) and runs. That age is no proof that the jobs have ended, since a job can wait in the queue for any time before it starts. A submission that `sbatch` has not answered yet, such as one that was running when its `rb pnr` was killed, has no job id to look up, so it refuses every `rb pnr` of the configuration, naming its `dispatch/<NN>_<stage>.sbatch.tmp` (or `.sbatch.cancel`), until it is 11 minutes old: `sbatch` is stopped after 10 minutes, so a submission with no answer for longer has failed, and `rb pnr` warns (`pnr.stage_submission_presumed_failed`) and runs. Once the jobs have ended, or the submission is known to have died, removing the earlier run's `checkpoints/<run id>/dispatch/` directory lets `rb pnr` run without looking them up; a refusal that could not confirm the jobs names the directory. A job refuses its stage when its run has already finished or been given up, or when it runs another rtl_buddy version than the `rb pnr` that started the run.
-
-The run directory's `dispatch/` holds `jobs.json`, with each stage's job id, dependency and reservation and whether all have left the queue, `given_up` once `rb pnr` has given the run up, and for each stage Slurm's answer to the submission (`<NN>_<stage>.sbatch`, `<NN>_<stage>.sbatch.tmp` until `sbatch` answers), the job's Slurm output (`<NN>_<stage>.slurm.log`), its rtl_buddy log (`<NN>_<stage>.rtl_buddy.log`) and how it ended (`<NN>_<stage>.result.json`). A job whose CPUs give another thread count than the head wrote runs a copy of the stage script with that count, `<NN>_<stage>.tcl` there; the stage script in the run directory stays as the manifest records it. The manifest's `dispatch` entry records the backend and, for each stage, its reservation, `threads:` and the thread count that reservation gives. Each stage's `stage_begin` and `stage_end` record the count its job set (`thread_plan`), and the run's `openroad_threads` result is the last stage job's.
-
-### Stage resources
-
-Each stage's wall time, CPU time (user plus system) and peak resident memory are recorded as `stage_end` events in `progress.jsonl` and under `resources` in the manifest, with `measured_by` naming how:
-
-- In a staged run rb measures each session as a process (`measured_by: process`) and also records its thread count (`threads`, the count OpenROAD reported, else the one `threads:` set). A [dispatched](#dispatch-the-stages-to-slurm) stage is measured the same way inside its job, and its `stage_begin` and `stage_end` name the job (`slurm_job`) and `host`. A job killed inside its stage gets a `stage_end` with Slurm's accounting (`measured_by: scheduler`, and the job's `slurm_state`).
-- In a one-session run with `checkpoints:` or `--stop-after`, the flow measures each stage from inside OpenROAD (`measured_by: session`) at the stage boundaries of the [checkpoint table](#keep-stage-checkpoints): wall time from the Tcl clock, CPU time from `/proc/self/stat`, and peak memory from `VmHWM`, reset at each stage boundary through `/proc/self/clear_refs`. The reset starts from the memory the process already holds, so a stage's peak includes what earlier stages left resident (the `finish` stage after detailed routing, for example). Without `/proc` the CPU time and peak memory are `null`, and the peak memory is `null` after the first stage when the reset is refused.
+Resume from a checkpoint is not supported. To look at one, open its ODB in OpenROAD or stream it out with [`rb pnr-export --checkpoint`](#export-a-saved-result).
 
 ## Stream-out inputs
 
@@ -1059,13 +710,6 @@ rb pnr -c pnr/top/pnr.yaml --synth
 - **`fail_stage: abstract`, or `harden:` refused.** A view could not be produced (read `pnr.log`), or the platform has several corners.
 - **A missing or stale abstract, or a platform/corner mismatch.** Run the `rb pnr` command the message names, run `rb pnr` with no run name, or pass `--accept-stale`.
 - **`fail_stage: blocked`.** A block the run consumes failed. Fix it first.
-- **`fail_stage: routed_check`.** A located macro or exact pin in the routed DEF is not where the floorplan put it. A `pin-constraints` file or a platform hook that moves it is the usual cause. See [Check the routed floorplan](#check-the-routed-floorplan).
-- **`fail_stage: pins_complete`, `floorplan.pins-complete: ...`.** Add a pin entry for each port listed, or remove the duplicate entries. See [Check that every port is placed](#check-that-every-port-is-placed).
-- **`floorplan.macros: the netlist has no hard macros, ...`.** The netlist has no instance of a LEF `CLASS BLOCK` master, so the located entries place nothing. Check that synthesis kept the macro instances. See [Place individual macros](#place-individual-macros).
-- **`PDN-0008 ... halo overlaps row`.** A macro grid's `-halo` in the `pdn-config` reaches into a row beside the macro, which OpenROAD 26Q4's `pdngen` refuses. Reduce the halo to at most the value the message suggests.
 - **`block power: ... is not on a parent <net> strap`, `no single parent power net`, or `PDN-0233` on a block's macro grid.** A block's supply pins are off the parent's straps or cannot be tied. See [Blocks with supply pins on the top strap layer](#blocks-with-supply-pins-on-the-top-strap-layer).
 - **`instance '<inst>' ... of block '<blk>' sets <P>=...`, `port '<p>' is connected to N bit(s)`, `instances of block '<blk>' have different parameters`, or `... named by a hash`.** The parent instances a block with parameters or ports it was not hardened with. See [Instance a parameterised block](#instance-a-parameterised-block).
-- **`fail_stage: checkpoint`.** A stage checkpoint that a staged run or `--stop-after` needs could not be written (the `checkpoint` event in `progress.jsonl` has the error), or a one-session run never ended the stage the description names because a hook wrapped its command with `rename`. Free disk space, or remove the wrapper or set `stages: true`. See [Keep stage checkpoints](#keep-stage-checkpoints).
-- **`fail_stage: dispatch`.** A [dispatched](#dispatch-the-stages-to-slurm) stage's job was ended by Slurm, refused or never started its stage, or could not be submitted or waited in the queue past `max-wait`. The description names the stage, the job and its Slurm state; the job's `dispatch/<NN>_<stage>.slurm.log` has its output. Raise the stage's `resources:` for `OUT_OF_MEMORY` or `TIMEOUT`. A run refused before it started names the jobs of an earlier dispatched run that are still queued: wait for them, or cancel them with the `scancel` command it prints. When it could not look them up (`squeue` did not answer, or the host has none), run where `squeue` answers, or remove the `dispatch/` directory it names once the jobs have ended. When it names a submission `sbatch` has not answered, run again once `sbatch` answers, at most 11 minutes after the submission began, or remove the `dispatch/` directory it names once the submission is known to have died.
-- **`fail_stage: resume`.** `--resume` was refused; the description names the stage script, input file, checkpoint or OpenROAD version that differs. Rerun the stages from that point, or resume from an earlier stage. See [Resume a staged run](#resume-a-staged-run).
 - **`fail_stage: error`.** The run crashed; the exception is in the row description. Its consumers are blocked and other runs still report.

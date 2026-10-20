@@ -33,18 +33,15 @@ def no_inherited_job_tag(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def reset_cancellation_latch():
-    """Un-latch ``process_utils`` cancellation and forget a ``pnr_dispatch`` interrupt between tests.
+    """Un-latch ``process_utils`` cancellation between tests.
 
-    Both are one-way per process, so a test that sets one would otherwise block every later test from spawning tool processes or opening a stage chain.
+    The latch is one-way per process, so a test that sets it would otherwise block every later test from spawning tool processes.
     """
     from rtl_buddy import process_utils
-    from rtl_buddy.tools import pnr_dispatch
 
     process_utils._reset_cancellation_latch()
-    pnr_dispatch._reset_interrupted()
     yield
     process_utils._reset_cancellation_latch()
-    pnr_dispatch._reset_interrupted()
 
 
 @pytest.fixture(autouse=True)
@@ -60,40 +57,6 @@ def reset_tool_path_warning_dedupe():
     yield
     toolpath.reset_unresolved_warnings()
     verible.reset_exe_fallback_warnings()
-
-
-@pytest.fixture(autouse=True)
-def openroad_sessions_follow_a_patched_subprocess_run(monkeypatch):
-    """Send `rb pnr`'s OpenROAD sessions to a test's `subprocess.run` stand-in.
-
-    P&R tests fake OpenROAD by patching `subprocess.run`, while the backend runs each session with `run_managed_process`. With `subprocess.run` unpatched the real managed process runs.
-    """
-    import subprocess
-
-    from rtl_buddy.process_utils import ManagedProcessResult
-    from rtl_buddy.tools import pnr_openroad
-
-    real_run = subprocess.run
-    real_managed = pnr_openroad.run_managed_process
-
-    def _managed(cmd, **kwargs):
-        run = pnr_openroad.subprocess.run
-        if run is real_run:
-            return real_managed(cmd, **kwargs)
-        done = run(
-            cmd,
-            stdout=kwargs.get("stdout"),
-            stderr=kwargs.get("stderr"),
-            text=kwargs.get("text", False),
-            check=False,
-            env=kwargs.get("env"),
-            cwd=kwargs.get("cwd"),
-        )
-        return ManagedProcessResult(
-            returncode=done.returncode, stderr=getattr(done, "stderr", None)
-        )
-
-    monkeypatch.setattr(pnr_openroad, "run_managed_process", _managed)
 
 
 @pytest.fixture(autouse=True)
