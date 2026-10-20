@@ -262,7 +262,10 @@ def test_the_global_route_checkpoint_precedes_the_grid_rebuild(tmp_path):
     platform = _gr_platform(
         tmp_path, {"grid_origin": [3, 3]}, global_route_hold_repair=True
     )
-    pnr_cfg = _pnr_cfg(tmp_path, CHECKPOINT_STAGES)
+    pnr_cfg = replace(
+        _pnr_cfg(tmp_path, CHECKPOINT_STAGES),
+        hooks=_hook(tmp_path, "before-detailed-route", "puts MARK\n"),
+    )
     pnr_cfg.resolve_synth_cfg = MagicMock(
         return_value=MagicMock(get_top=lambda: "demo_top", get_name=lambda: "s")
     )
@@ -277,6 +280,7 @@ def test_the_global_route_checkpoint_precedes_the_grid_rebuild(tmp_path):
         text.rindex("global_route -end_incremental -grid_origin {3 3} ")
         < text.index("rb::ckpt::stage_end global_route\n")
         < text.index(_GUIDES)
+        < text.index("rb::hook::run before-detailed-route")
         < text.index("\ndetailed_route \\")
     )
 
