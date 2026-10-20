@@ -650,6 +650,11 @@ proc detailed_route {args} {
     set i [lsearch $args -output_maze]
     if {$i >= 0} { rb_write [lindex $args [expr {$i + 1}]] "maze r$round" }
 }
+rename write_db rb_harness_write_db
+proc write_db {path} {
+    if {[rb_stub_round RB_STUB_NO_ODB]} { return }
+    rb_harness_write_db $path
+}
 """
 
 
@@ -2010,6 +2015,36 @@ def test_a_failed_repair_session_keeps_the_best_round(
         and e.get("source")
     ]
     assert checkpoint["source"] == source
+
+
+@pytest.mark.parametrize("stages", [False, True])
+def test_a_repair_session_that_writes_no_database_is_set_aside(
+    tmp_path, monkeypatch, stages
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        stages=stages,
+        env={"RB_STUB_SETUP": "-0.2 -0.1 -0.05", "RB_STUB_NO_ODB": "2"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["post_route_repair"] == {
+        "kept_round": 1,
+        "repaired_rounds": 1,
+        "rounds": 3,
+        "stop": "session_failed",
+        "reason": "round 2's repair session failed: it wrote no checkpoint",
+    }
+    (run_dir,) = _runs(artefacts)
+    assert [r["round"] for r in _rounds(run_dir)] == [0, 1]
+    assert not (run_dir / "06_post_route_repair.r2.extract.log").exists()
+    assert (run_dir / "06_post_route_repair.odb").samefile(
+        run_dir / "06_post_route_repair.r1.odb"
+    )
 
 
 @pytest.mark.parametrize("setup, kept", [("-0.2 0.0", 1), ("-0.2 -0.3", 0)])
