@@ -354,7 +354,7 @@ def record_checkpoint(
 def keep_failed_global_route(
     artefact_dir: str, run_dir: str, *, design: str | None
 ) -> dict | None:
-    """File the database the flow wrote when global route failed as `run_dir`'s `global_route` checkpoint, marked `failed`, with a copy of the congestion report; return its `{kind: file name}`, or None when the flow wrote none."""
+    """File the database the flow wrote when global route failed as `run_dir`'s `global_route` checkpoint, marked `failed`, with each corner's SDC mode and a copy of the congestion report; return its `{kind: file name}`, or None when the flow wrote none."""
     source = os.path.join(artefact_dir, FAILED_GLOBAL_ROUTE_DIRNAME)
     if not os.path.isfile(os.path.join(source, "global_route.odb")):
         return None
@@ -366,6 +366,14 @@ def keep_failed_global_route(
         if os.path.isfile(path):
             os.replace(path, os.path.join(run_dir, f"{base}.{kind}"))
             files[kind] = f"{base}.{kind}"
+    # Each corner's SDC mode, on a platform with one per corner.
+    for name in sorted(os.listdir(source)):
+        mode = name[len("global_route.") : -len(".sdc")]
+        if name.startswith("global_route.") and name.endswith(".sdc") and mode:
+            os.replace(
+                os.path.join(source, name), os.path.join(run_dir, f"{base}.{mode}.sdc")
+            )
+            files[f"sdc_{mode}"] = f"{base}.{mode}.sdc"
     congestion = os.path.join(artefact_dir, "congestion.rpt")
     if os.path.isfile(congestion):
         shutil.copyfile(congestion, os.path.join(run_dir, f"{base}.congestion.rpt"))

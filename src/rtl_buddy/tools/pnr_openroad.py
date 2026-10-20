@@ -2606,6 +2606,10 @@ class OpenRoadPnr:
             "post_cts_repair": _post_cts_repair_tcl(platform, self._mode),
             "layer_adjustment": _layer_adjustment_tcl(platform),
             "global_route_cmd": _global_route_cmd(platform.get_global_route()),
+            # `_mode_checkpoint_sdc_tcl` defines it with an SDC mode per corner.
+            "failed_global_route_write_sdc": (
+                "rb::ckpt::write_sdc" if self._mode_corners else "write_sdc"
+            ),
             "global_route_repair": _global_route_repair_tcl(
                 platform.get_global_route_repair(),
                 self._mode,

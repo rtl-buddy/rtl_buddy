@@ -145,7 +145,8 @@ rb::global_connect
 {{ @global_route }}# -verbose logs the per-layer usage table (GRT-0096) of every global route.
 puts ">>> Global route"
 # A global_route that fails in this stage writes the database before the run
-# ends; rb files it as a failed global_route checkpoint.
+# ends; rb files it as a failed global_route checkpoint. Its SDC is written as
+# a checkpoint's is, each corner's mode too on a platform with one per corner.
 proc rb::keep_failed_global_route {cmd_string code result op} {
   if {$code != 1} { return }
   global OUT_DIR
@@ -156,7 +157,7 @@ proc rb::keep_failed_global_route {cmd_string code result op} {
     rb::global_connect
     write_db [file join $dir global_route.odb]
     write_def [file join $dir global_route.def]
-    write_sdc -no_timestamp -digits 9 [file join $dir global_route.sdc]
+    {{ failed_global_route_write_sdc }} -no_timestamp -digits 9 [file join $dir global_route.sdc]
   } err]} { puts ">>> rb: the failed global route's database was not written: $err" }
 }
 trace add execution global_route leave rb::keep_failed_global_route

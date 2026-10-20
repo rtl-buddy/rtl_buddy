@@ -501,6 +501,32 @@ def test_the_congestion_report_is_copied_into_the_checkpoint(tmp_path):
     assert not source.exists()
 
 
+def test_each_corner_sdc_mode_is_filed_with_the_checkpoint(tmp_path):
+    artefacts = tmp_path / "a"
+    source = artefacts / pnr_checkpoints.FAILED_GLOBAL_ROUTE_DIRNAME
+    source.mkdir(parents=True)
+    for name in ("odb", "def", "sdc", "tt.sdc", "ss.sdc"):
+        (source / f"global_route.{name}").write_text(name)
+    run_dir = artefacts / "checkpoints" / "run"
+
+    files = pnr_checkpoints.keep_failed_global_route(
+        str(artefacts), str(run_dir), design="top"
+    )
+
+    assert files["sdc"] == "04_global_route.sdc"
+    assert files["sdc_tt"] == "04_global_route.tt.sdc"
+    assert files["sdc_ss"] == "04_global_route.ss.sdc"
+    assert (run_dir / "04_global_route.ss.sdc").read_text() == "ss.sdc"
+
+
+def test_the_keeper_writes_the_sdc_as_a_checkpoint_does(tmp_path):
+    text = _render(tmp_path, _gr_platform(tmp_path))
+    assert (
+        "    write_sdc -no_timestamp -digits 9 [file join $dir global_route.sdc]\n"
+        in text
+    )
+
+
 def test_nothing_is_filed_without_a_failed_database(tmp_path):
     assert (
         pnr_checkpoints.keep_failed_global_route(
