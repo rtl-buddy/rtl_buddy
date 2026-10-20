@@ -136,11 +136,35 @@ proc write_db {path} {
     rb_write $path "odb"
 }
 proc write_sdc {args} { rb_write [lindex $args end] "sdc" }
-proc write_verilog {path} { rb_write $path "module m(); endmodule" }
+# The top's ports in OpenROAD's order: a session that read the database has the supply
+# ports before the buses, the session that built the grid after them.
+proc read_db {args} { set ::rb_read_db 1 }
+proc rb_ports {pwr} {
+    set ports [expr {[info exists ::rb_read_db] ? {clk VDD VSS d} : {clk d VDD VSS}}]
+    if {$pwr} { return $ports }
+    return [lsearch -all -inline -not -glob $ports V*]
+}
+proc write_verilog {args} {
+    set ports [rb_ports [expr {"-include_pwr_gnd" in $args}]]
+    set dcls {clk { input clk;} d { input [1:0] d;} VDD { inout VDD;} VSS { inout VSS;}}
+    set text "module demo_top ([join $ports ",\n    "]);\n"
+    foreach port $ports { append text [dict get $dcls $port] "\n" }
+    rb_write [lindex $args end] "$text\nendmodule"
+}
 proc write_guides {path} { rb_write $path "guides" }
 proc write_global_route_segments {path} { rb_write $path "segments" }
 proc write_abstract_lef {args} { rb_write [lindex $args end] "MACRO demo_top" }
-proc write_timing_model {args} { rb_write [lindex $args end] "library (demo_top) {}" }
+proc write_timing_model {args} {
+    set text "library (demo_top) \{\n  cell (\"demo_top\") \{\n"
+    foreach port [rb_ports 1] {
+        if {$port eq "d"} {
+            append text "    bus(\"d\") \{\n    pin(\"d\[0\]\") \{\n    \}\n    \}\n"
+        } else {
+            append text "    pin(\"$port\") \{\n      direction : input;\n    \}\n"
+        }
+    }
+    rb_write [lindex $args end] "$text  \}\n\}"
+}
 source [lindex $argv 0]
 """
 

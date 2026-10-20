@@ -1,6 +1,6 @@
 """Hardened-block abstracts: the outputs of a P&R run with `harden: true`, and their use by `blocks:`.
 
-A hardened run publishes `<artefact-dir>/abstract/` holding `<top>.lef`, `<top>.lib`, `<top>.gds` and `abstract.manifest.json`. The directory is published all at once, by renaming a staging directory, so a parent never reads a mix of fresh and stale views. The manifest records `{path, size, sha256}` for the inputs, outputs and configuration the abstract was built from, with project-relative paths.
+A hardened run publishes `<artefact-dir>/abstract/` holding `<top>.lef`, `<top>.lib`, `<top>.gds` (left out with `abstract: {gds: false}`) and `abstract.manifest.json`. The directory is published all at once, by renaming a staging directory, so a parent never reads a mix of fresh and stale views. The manifest records `{path, size, sha256}` for the inputs, outputs and configuration the abstract was built from, with project-relative paths.
 """
 
 import hashlib
@@ -476,6 +476,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
                     "feedthrough_layers": list(
                         pnr_cfg.get_abstract().feedthrough_layers
                     ),
+                    **({"gds": False} if not pnr_cfg.get_abstract().gds else {}),
                 }
             }
             if not pnr_cfg.get_abstract().is_default()
@@ -502,10 +503,11 @@ def write_manifest(
     technology: dict,
     inputs: dict,
     config: dict,
+    gds: bool = True,
 ) -> str:
     """Write `abstract.manifest.json` into the staging directory and return its path.
 
-    `inputs` maps a role to an absolute path, a list of paths, or None. `technology` names the technology LEF and corner Liberty a parent must share; it is fingerprinted the same way. Output paths are recorded at their published location, not the staging one.
+    `inputs` maps a role to an absolute path, a list of paths, or None. `technology` names the technology LEF and corner Liberty a parent must share; it is fingerprinted the same way. Output paths are recorded at their published location, not the staging one. Without `gds` the GDS output is recorded as null.
     """
     root = project_root_or_none(artefact_dir)
     published = abstract_dir(artefact_dir)
@@ -521,6 +523,9 @@ def write_manifest(
         v for v in OPTIONAL_VIEWS if os.path.isfile(view_path(staging, design, v))
     ]
     for view in (*ABSTRACT_VIEWS, *optional):
+        if view == "gds" and not gds:
+            outputs[view] = None
+            continue
         record = file_fingerprint(view_path(staging, design, view), root) or {}
         record["path"] = (
             project_relative(view_path(published, design, view), root)
@@ -571,7 +576,8 @@ class ResolvedBlock:
     manifest: dict
     lef: str
     lib: str
-    gds: str
+    #: None when the block was hardened with `abstract: {gds: false}`.
+    gds: str | None
     run_cfg: object = None
     changes: tuple[str, ...] = ()
 
@@ -611,6 +617,12 @@ def read_manifest(directory: str) -> dict | None:
     return data
 
 
+def has_gds(manifest: dict) -> bool:
+    """Whether an abstract has a GDS: one hardened with `abstract: {gds: false}` records its GDS output as null."""
+    outputs = manifest.get("outputs") or {}
+    return not ("gds" in outputs and outputs["gds"] is None)
+
+
 def resolve_block(ref: BlockRef) -> ResolvedBlock:
     """Resolve one `blocks:` entry to its published abstract, or raise BlockResolutionError.
 
@@ -648,7 +660,11 @@ def resolve_block(ref: BlockRef) -> ResolvedBlock:
             f"{where}: the abstract is of module {manifest.get('block')!r}, "
             f"not {ref.name!r}"
         )
-    views = {view: view_path(directory, ref.name, view) for view in ABSTRACT_VIEWS}
+    views = {
+        view: view_path(directory, ref.name, view)
+        for view in ABSTRACT_VIEWS
+        if view != "gds" or has_gds(manifest)
+    }
     missing = [os.path.basename(p) for p in views.values() if not os.path.isfile(p)]
     if missing:
         raise BlockResolutionError(
@@ -661,7 +677,7 @@ def resolve_block(ref: BlockRef) -> ResolvedBlock:
         manifest=manifest,
         lef=views["lef"],
         lib=views["lib"],
-        gds=views["gds"],
+        gds=views.get("gds"),
         run_cfg=run_cfg,
     )
 

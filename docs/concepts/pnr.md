@@ -83,6 +83,7 @@ A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line, stops befo
 | `pnr.log`, `pnr.tcl` | OpenROAD output, written live, and the generated flow script |
 | `<top>.def`, `<top>.routed.odb` | Routed design. `rb power` reads the ODB. |
 | `<top>.routed.v`, `<top>.routed.sdc` | Logical netlist (no supply ports or supply pin connections) and constraints, for STA and gate-level simulation. The SDC is the primary corner's on a multi-corner platform. |
+| `<top>.routed.pwr.v` | Powered netlist, for LVS against `<top>.gds`: the top's supply ports, last and sorted by name, and every instance's supply pins, fill and tap cells included, connected by the `pdn-config` global connections. It is the same whether the run was staged or one session. |
 | `<top>.<corner>.routed.sdc` | Each corner's constraints, on a [multi-corner platform](#sign-off-at-several-corners) |
 | `<top>.routed.spef` | Extracted parasitics, when the PDK sets `rcx-rules` |
 | `timing.rpt`, `electrical.rpt` | Worst paths and electrical violators, all corners |
@@ -453,7 +454,7 @@ rb pnr-export alu_pnr -c pnr/alu/pnr.yaml --png-only --lyp dark.lyp
 
 ## Harden a block
 
-`harden: true` publishes a routed block as a hard macro for a larger design: `abstract/<top>.lef`, `<top>.lib` (timing only), `<top>.gds` and `abstract.manifest.json`, all or nothing (`fail_stage: abstract`). `<top>.params.json` records the block's parameter values; it is left out, with the warning `pnr.block_params_unrecorded`, when Yosys cannot elaborate the top.
+`harden: true` publishes a routed block as a hard macro for a larger design: `abstract/<top>.lef`, `<top>.lib` (timing only), `<top>.gds` and `abstract.manifest.json`, all or nothing (`fail_stage: abstract`). `<top>.lib` lists the supply pins last and is the same whether the run was staged or one session. `<top>.params.json` records the block's parameter values; it is left out, with the warning `pnr.block_params_unrecorded`, when Yosys cannot elaborate the top.
 
 ```yaml
 runs:
@@ -463,7 +464,8 @@ runs:
     harden: true
 ```
 
-- It forces `--gds` with `gds-mode: strict`, so it needs KLayout, and a single-corner platform.
+- It forces `--gds` with `gds-mode: strict`, so it needs KLayout and the PDK's `klayout-tech`. `abstract: {gds: false}` publishes no GDS instead, records it as `null` in the manifest and leaves stream-out to `--gds`.
+- It needs a single-corner platform.
 - It turns on `buffer-ports`, so each port drives or is driven by one buffer and the abstract's pin load does not depend on the block's internals. Set the platform's `port-buffer`; on sky130hd OpenROAD otherwise picks a delay cell.
 - The abstract LEF blocks every layer the block uses over its whole area. `abstract: {bloat: 0}` writes the real shapes, a number grows them, and `feedthrough-layers: [met4]` writes real shapes on the listed layers only, so the parent can route across. Check the parent's DRCs after changing it.
 - A parent's `rb power` sees the block as 0 W. Run `rb power` on the block itself.
@@ -489,6 +491,7 @@ A top run names its blocks under `blocks:`, in `pnr.yaml` and in the `synth.yaml
 - A run whose block failed is not attempted (`fail_stage: blocked`, with `blocked_by`).
 - The block must use the same technology LEF and corner as the top.
 - An abstract whose inputs changed since hardening is refused, naming what changed. Re-harden it, or pass `--accept-stale`.
+- A block hardened with `abstract: {gds: false}` has no GDS. A parent that streams out (`--gds`, `--png` or its own `harden`) or `rb pnr-export` of the parent fails at setup naming the block.
 
 ## Instance a parameterised block
 

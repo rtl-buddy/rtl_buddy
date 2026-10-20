@@ -2506,6 +2506,7 @@ def test_pnr_unresolvable_synth_ref_does_not_preempt_the_tool_error(
         for name in (
             "old_top.routed.odb",
             "old_top.routed.v",
+            "old_top.routed.pwr.v",
             "old_top.routed.sdc",
             "old_top.def",
             "old_top.gds",

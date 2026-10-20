@@ -1139,7 +1139,7 @@ ABSTRACT_BLOAT_OCCUPIED = "occupied"
 
 @serde
 class PnrAbstractFile:
-    """`abstract:` of a `harden: true` run: the obstruction style of the abstract LEF (#768)."""
+    """`abstract:` of a `harden: true` run: the obstruction style of the abstract LEF (#768) and whether it has a GDS."""
 
     # `str` first so `occupied` is not read as a number.
     bloat: str | float | int | None = None
@@ -1147,20 +1147,26 @@ class PnrAbstractFile:
     feedthrough_layers: str | list[str] | None = field(
         rename="feedthrough-layers", default=None
     )
+    gds: bool | None = None
 
 
 @dataclass(frozen=True)
 class PnrAbstract:
     """A hardened run's abstract LEF obstruction style.
 
-    `bloat` is `occupied` (every layer the block uses is blocked over its whole footprint) or OpenROAD's `-bloat_factor`. `feedthrough_layers` are written with the block's real shapes as obstructions instead, so a parent can route between them.
+    `bloat` is `occupied` (every layer the block uses is blocked over its whole footprint) or OpenROAD's `-bloat_factor`. `feedthrough_layers` are written with the block's real shapes as obstructions instead, so a parent can route between them. Without `gds` the abstract has no GDS and the run needs no stream-out.
     """
 
     bloat: str | float = ABSTRACT_BLOAT_OCCUPIED
     feedthrough_layers: tuple[str, ...] = ()
+    gds: bool = True
 
     def is_default(self) -> bool:
-        return self.bloat == ABSTRACT_BLOAT_OCCUPIED and not self.feedthrough_layers
+        return (
+            self.bloat == ABSTRACT_BLOAT_OCCUPIED
+            and not self.feedthrough_layers
+            and self.gds
+        )
 
 
 def _load_abstract(
@@ -1195,7 +1201,10 @@ def _load_abstract(
     names = tuple(_layer_name(f"{where}.feedthrough-layers", v) for v in layers)
     if len(set(names)) != len(names):
         raise FatalRtlBuddyError(f"{where}.feedthrough-layers repeats a layer")
-    return PnrAbstract(bloat=bloat, feedthrough_layers=names)
+    gds = True if entry.gds is None else entry.gds
+    if not isinstance(gds, bool):
+        raise FatalRtlBuddyError(f"{where}.gds must be true or false, got {gds!r}")
+    return PnrAbstract(bloat=bloat, feedthrough_layers=names, gds=gds)
 
 
 @serde
@@ -1689,7 +1698,7 @@ class PnrConfig:
         return self.harden
 
     def get_abstract(self) -> PnrAbstract:
-        """The abstract LEF obstruction style of a hardened run (`abstract:`)."""
+        """The abstract LEF obstruction style of a hardened run and whether its abstract has a GDS (`abstract:`)."""
         return self.abstract
 
     def get_buffer_ports(self) -> bool:

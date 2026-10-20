@@ -3,6 +3,7 @@
 Pinned behaviour:
 
 - `<top>.routed.v` is the logical netlist: `write_verilog` without `-include_pwr_gnd`;
+  `<top>.routed.pwr.v` is the powered one, written beside it;
 - the `finish` session, and only it, re-asserts the supply bterms after fill and the
   `before-reports` hooks and before the final reports, the routed outputs and a
   hardened block's timing model, in a one-session and in a staged run;
@@ -26,6 +27,7 @@ from test_pnr_stages import _NAMES, _STAGES, _only_run, _staged
 
 _CALL = "rb::supply_ports::reassert\n"
 _ROUTED_V = "write_verilog $OUT_DIR/${DESIGN}.routed.v\n"
+_PWR_V = "write_verilog -include_pwr_gnd $OUT_DIR/${DESIGN}.routed.pwr.v\n"
 
 
 def _source() -> str:
@@ -35,9 +37,10 @@ def _source() -> str:
 def test_the_routed_netlist_is_written_without_supply_pins(tmp_path):
     text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
 
-    assert text.count("\nwrite_verilog ") == 1
+    assert text.count("\nwrite_verilog ") == 2
     assert "\n" + _ROUTED_V in text
-    assert "include_pwr_gnd" not in text
+    assert text.count("include_pwr_gnd") == 1
+    assert "\n" + _PWR_V in text
 
 
 def test_finish_reasserts_the_supply_ports_before_the_reports_and_outputs(tmp_path):
@@ -54,6 +57,7 @@ def test_finish_reasserts_the_supply_ports_before_the_reports_and_outputs(tmp_pa
         "report_worst_slack",
         "write_def",
         _ROUTED_V,
+        _PWR_V,
         "write_db",
         "write_timing_model",
     ):

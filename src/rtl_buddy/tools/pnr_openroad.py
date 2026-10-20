@@ -60,6 +60,7 @@ from . import (
     pnr_dispatch,
     pnr_placement_check,
     pnr_stages,
+    pnr_supply_order,
 )
 from .synth_yosys import probe_block_parameters
 from .liberty_units import (
@@ -102,6 +103,7 @@ _FLOW_OUTPUT_NAMES = (
     "electrical.rpt",
     "{design}.def",
     "{design}.routed.v",
+    "{design}.routed.pwr.v",
     "{design}.routed.sdc",
     "{design}.routed.odb",
     # Written only when the PDK declares `rcx-rules`, but cleared on every run so `rb power` never reads a stale SPEF.
@@ -115,6 +117,7 @@ _KLAYOUT_OUTPUT_NAMES = ("{design}.gds", "{design}.png")
 _MANAGED_OUTPUT_SUFFIXES = (
     ".def",
     ".routed.v",
+    ".routed.pwr.v",
     ".routed.sdc",
     ".routed.odb",
     ".routed.spef",
@@ -2122,7 +2125,7 @@ class OpenRoadPnr:
         self.png_width = png_width
         self.png_height = png_height
         self.gds_mode = gds_mode or pnr_cfg.get_gds_mode()
-        if pnr_cfg.get_harden():
+        if pnr_cfg.get_harden() and pnr_cfg.get_abstract().gds:
             # A hardened block is streamed into a parent, so its layout must be complete.
             self.emit_gds = True
             self.gds_mode = GdsMode.STRICT
@@ -3841,7 +3844,9 @@ class OpenRoadPnr:
                 desc=f"cannot resolve the design name from the synth entry: {e}",
                 fail_stage="setup",
             )
-        blocks_failure = self._resolve_blocks(platform)
+        blocks_failure = self._resolve_blocks(
+            platform, None if png_only else "the stream-out"
+        )
         if blocks_failure is not None:
             return blocks_failure
         ckpt = None
@@ -4217,10 +4222,12 @@ class OpenRoadPnr:
         resumed_from = self._resumed_from()
         return {**summary, "resumed_from": resumed_from} if resumed_from else summary
 
-    def _resolve_blocks(self, platform) -> PnrFailResults | None:
+    def _resolve_blocks(
+        self, platform, gds_needed_by: str | None = None
+    ) -> PnrFailResults | None:
         """Resolve `blocks:` to published abstracts and append their views to the run's path lists.
 
-        Each block's LEF, Liberty and GDS are appended to `lef-paths`, `lib-paths` and `gds-paths`, so blocks are treated like hand-wired macros. Returns a FAIL before OpenROAD when an abstract is missing, stale or built for another technology or corner; blocks are never re-run.
+        Each block's LEF, Liberty and GDS are appended to `lef-paths`, `lib-paths` and `gds-paths`, so blocks are treated like hand-wired macros. Returns a FAIL before OpenROAD when an abstract is missing, stale or built for another technology or corner, or has no GDS while `gds_needed_by` names what needs it; blocks are never re-run.
         """
         refs = self.pnr_cfg.get_blocks()
         if not refs:
@@ -4234,6 +4241,13 @@ class OpenRoadPnr:
                 )
             resolved = pnr_abstract.resolve_blocks(refs)
             for block in resolved:
+                if gds_needed_by and block.gds is None:
+                    raise pnr_abstract.BlockResolutionError(
+                        f"block {block.ref.name!r} has no GDS: pnr run "
+                        f"{block.ref.pnr_run!r} in {block.ref.pnr_suite_path} hardens "
+                        f"it with abstract: {{gds: false}}, and {gds_needed_by} "
+                        "needs its GDS"
+                    )
                 pnr_abstract.check_technology(
                     block,
                     liberty=platform.get_sta_lib_paths(),
@@ -4270,7 +4284,10 @@ class OpenRoadPnr:
             self.pnr_cfg,
             lef_paths=[*self.pnr_cfg.get_lef_paths(), *(b.lef for b in resolved)],
             lib_paths=[*self.pnr_cfg.get_lib_paths(), *(b.lib for b in resolved)],
-            gds_paths=[*self.pnr_cfg.get_gds_paths(), *(b.gds for b in resolved)],
+            gds_paths=[
+                *self.pnr_cfg.get_gds_paths(),
+                *(b.gds for b in resolved if b.gds),
+            ],
         )
         log_event(
             logger,
@@ -4496,8 +4513,9 @@ class OpenRoadPnr:
             if not os.path.isfile(pnr_abstract.view_path(staging, design, view))
             or os.path.getsize(pnr_abstract.view_path(staging, design, view)) == 0
         ]
+        with_gds = self.pnr_cfg.get_abstract().gds
         gds = export.gds_path if export is not None else None
-        if not gds or not os.path.isfile(gds):
+        if with_gds and (not gds or not os.path.isfile(gds)):
             missing.append(f"{design}.gds")
         problem = (
             f"abstract view(s) not produced: {', '.join(missing)}" if missing else None
@@ -4527,7 +4545,8 @@ class OpenRoadPnr:
                             pnr=self.pnr_cfg.get_name(),
                             layers=unused,
                         )
-                shutil.copyfile(gds, pnr_abstract.view_path(staging, design, "gds"))
+                if with_gds:
+                    shutil.copyfile(gds, pnr_abstract.view_path(staging, design, "gds"))
                 pnr_abstract.write_manifest(
                     staging,
                     artefact_dir=self.artefact_dir,
@@ -4547,6 +4566,7 @@ class OpenRoadPnr:
                     },
                     inputs=self.abstract_inputs(platform),
                     config=pnr_abstract.abstract_config(self._configured_cfg, platform),
+                    gds=with_gds,
                 )
                 published = pnr_abstract.publish(self.artefact_dir)
             except OSError as e:
@@ -4572,6 +4592,21 @@ class OpenRoadPnr:
             manifest=manifest,
         )
         return {"abstract_dir": published, "abstract_manifest": manifest}
+
+    def _order_supply_ports(self) -> None:
+        """Put the supply ports last in `<top>.routed.pwr.v` and a hardened block's staged `<top>.lib` (see `pnr_supply_order`)."""
+        design = self.pnr_cfg.resolve_synth_cfg().get_top()
+        out = Path(self.artefact_dir)
+        pnr_supply_order.canonicalise(
+            str(out / f"{design}.routed.v"),
+            str(out / f"{design}.routed.pwr.v"),
+            design,
+            pnr_abstract.view_path(
+                pnr_abstract.staging_dir(self.artefact_dir), design, "lib"
+            )
+            if self.pnr_cfg.get_harden()
+            else None,
+        )
 
     def _stage_option_error(self) -> str | None:
         return pnr_stages.option_error(
@@ -5293,7 +5328,9 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
-        blocks_failure = self._resolve_blocks(platform)
+        blocks_failure = self._resolve_blocks(
+            platform, "this run's stream-out" if self.emit_gds else None
+        )
         if blocks_failure is not None:
             return blocks_failure
         netlist_failure = self._prepare_netlist(write=self.resume is None)
@@ -5653,6 +5690,8 @@ class OpenRoadPnr:
 
         if self.stop_after is not None:
             return self._stopped_result(platform, log_text)
+
+        self._order_supply_ports()
 
         # Logged for every run that got this far; only a pass carries it in the result description.
         no_wire_rc = self._no_wire_rc_qualifier(platform, log_text)

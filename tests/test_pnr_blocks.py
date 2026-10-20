@@ -59,9 +59,16 @@ def _block_platform(tmp_path):
 
 
 def _block_suite(
-    tmp_path, *, harden=True, module="blk_top", manifest=True, views=True, lef_text=None
+    tmp_path,
+    *,
+    harden=True,
+    module="blk_top",
+    manifest=True,
+    views=True,
+    lef_text=None,
+    gds=True,
 ):
-    """A block pnr.yaml whose `blk_pnr` run published a current abstract."""
+    """A block pnr.yaml whose `blk_pnr` run published a current abstract; without `gds`, one hardened with `abstract: {gds: false}`."""
     suite = _write(
         tmp_path / "blk/pnr.yaml",
         dedent(f"""\
@@ -73,12 +80,14 @@ def _block_suite(
             synth-path: synth.yaml
             platform: p
             harden: {"true" if harden else "false"}
-        """),
+        """)
+        + ("" if gds else "    abstract: {gds: false}\n"),
     )
+    published = ("lef", "lib", "gds") if gds else ("lef", "lib")
     out = tmp_path / "blk/artefacts/blk_pnr/abstract"
     out.mkdir(parents=True)
     if views:
-        for view in ("lef", "lib", "gds"):
+        for view in published:
             _write(out / f"{module}.{view}", _view_text(view, lef_text))
     if manifest:
         run_cfg = PnrSuiteConfig(str(suite)).get_runs("blk_pnr")[0]
@@ -103,8 +112,9 @@ def _block_suite(
                             "path": str(out / f"{module}.{view}"),
                             "sha256": _sha(_view_text(view, lef_text)),
                         }
-                        for view in ("lef", "lib", "gds")
+                        for view in published
                     }
+                    | ({} if gds else {"gds": None})
                     if views
                     else {},
                 }
