@@ -1500,6 +1500,28 @@ def test_a_resume_from_finish_restores_the_last_round_s_reports(tmp_path, monkey
     assert (artefacts / "route.maze.log").read_text().strip() == "maze r1"
 
 
+@pytest.mark.parametrize("rcx", [True, False])
+def test_a_hardened_block_records_the_rcx_rules_it_was_extracted_with(
+    tmp_path, monkeypatch, rcx
+):
+    backend, _artefacts = _repair_backend(
+        tmp_path, monkeypatch, post_route=_PR if rcx else None, rcx=rcx
+    )
+    monkeypatch.setattr(
+        backend.pnr_cfg,
+        "resolve_synth_cfg",
+        lambda: MagicMock(get_top=lambda: "t", get_name=lambda: "s"),
+    )
+    platform = backend.root_cfg.get_pnr_platform_cfg.return_value
+
+    inputs = backend.abstract_inputs(platform)
+
+    if rcx:
+        assert inputs["rcx_rules"].endswith("rcx.rules")
+    else:
+        assert "rcx_rules" not in inputs
+
+
 @pytest.mark.parametrize("post_route", [_PR, None], ids=["repaired", "unrepaired"])
 def test_a_resume_from_finish_refuses_changed_rcx_rules_only_after_repair_rounds(
     tmp_path, monkeypatch, post_route
