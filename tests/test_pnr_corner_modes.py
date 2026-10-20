@@ -724,6 +724,34 @@ def test_the_checkpoint_sdc_writer_returns_to_the_mode_it_was_called_in(tmp_path
     )
 
 
+def test_a_checkpoint_without_a_corner_sdc_is_not_written(tmp_path):
+    from rtl_buddy.tools import pnr_checkpoints
+
+    harness = tmp_path / "harness.tcl"
+    harness.write_text(_HARNESS)
+    script = tmp_path / "ckpt.tcl"
+    script.write_text(
+        pnr_checkpoints._procs()
+        + f"\nrb::ckpt::arm {tmp_path} {tmp_path}/progress.jsonl {{}} "
+        "{anchors {} wanted {floorplan} order {floorplan 01} routed {} "
+        "reports {} state {} account 0 strict 1 modes {tt ff}}\n"
+        # An SDC writer that writes no corner's file.
+        "proc write_sdc {args} { close [open [lindex $args end] w] }\n"
+        "set DESIGN top\nset OUT_DIR .\n"
+        "catch {rb::ckpt::write_checkpoint 01 floorplan 1} err\n"
+        'puts "ERR: $err"\n'
+    )
+
+    out = _REAL_RUN(
+        _tcl_command(harness, str(script)), capture_output=True, text=True, check=True
+    ).stdout
+
+    assert (
+        f"ERR: checkpoint 01_floorplan not written: {tmp_path}/01_floorplan.tt.sdc not written"
+        in out
+    )
+
+
 def test_resume_refuses_a_changed_per_corner_sdc(tmp_path, monkeypatch):
     sdcs = {c: _sdc(tmp_path, f"{c}.sdc") for c in ("tt", "ff")}
     backend, artefacts = _modes_backend(tmp_path, monkeypatch, sdcs, stop_after="place")
