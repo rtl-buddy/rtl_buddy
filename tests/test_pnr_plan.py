@@ -375,6 +375,17 @@ def test_a_run_deselected_by_reglvl_is_skip_even_when_its_block_failed(
     assert "blocked_by" not in top
 
 
+@pytest.mark.parametrize("mode", ["probe", "closure"])
+def test_a_run_skipped_by_reglvl_carries_its_mode(tmp_path, monkeypatch, mode):
+    suite = _suite(tmp_path / "pnr.yaml", _run("r", reglvl=5, mode=mode))
+    rb, _ran = _driver(monkeypatch, {})
+
+    (row,) = rb._do_pnr_suite(suite, reg_level=1)
+
+    assert row["results"].results["result"] == "SKIP"
+    assert row["results"].results["mode"] == mode
+
+
 def test_two_suites_in_one_directory_defining_one_run_name_are_refused(tmp_path):
     _suite(tmp_path / "blocks.yaml", _run("x"))
     suite = _suite(
