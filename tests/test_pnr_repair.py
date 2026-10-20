@@ -290,6 +290,8 @@ def test_mode_defaults_to_closure_and_rejects_others(tmp_path):
     assert _run(mode="probe").get_mode() is PnrMode.PROBE
     with pytest.raises(FatalRtlBuddyError, match="mode must be one of closure, probe"):
         _run(mode="explore")
+    with pytest.raises(FatalRtlBuddyError, match="cannot be harden: true"):
+        _run(mode="probe", harden=True)
 
 
 @pytest.mark.parametrize(
