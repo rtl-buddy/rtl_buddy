@@ -15,6 +15,7 @@ Use `rb --machine`. Field definitions: `rb --machine docs show reference/yaml#pn
 - Process files and defaults live on the `cfg-pdks` entry (`pdn-config`, `rcx-rules`, `layer-rc-tcl`, `placement.*`, `dont-use-cells`); the platform picks `corner` or `corners` and overrides knobs; the run overrides `placement:` and the repair blocks.
 - Copy an existing run in the project before writing one from scratch. Find names with `rb --machine pnr --list -c <pnr.yaml>`.
 - Put extra Tcl in `hooks:` (fixed flow points) or `pin-constraints`, never in an edited `pnr.tcl` or the SDC.
+- List files a hook or the SDC `source`s under `inputs:`, so `--resume` and hardened-block staleness see edits to them.
 - Multi-corner (`corners:`): each corner is timed in its own SDC mode (OpenROAD 26Q4+). `constraints:` may map each corner to its SDC. An SDC command in a hook constrains only the primary (first) corner; put per-corner constraints in the SDCs.
 
 ## Run loop

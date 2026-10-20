@@ -867,22 +867,16 @@ def _normalise_hooks(run: str, value, config_dir: str) -> dict[str, tuple[str, .
 def _normalise_inputs(run: str, value, config_dir: str) -> tuple[str, ...]:
     """Return the `inputs:` files with absolute paths, relative to `pnr.yaml`; null or an empty list is unset.
 
-    Each file must exist: a file an SDC or hook sources that is not there is a config error here, not a failure inside OpenROAD.
+    Whether each file exists is checked by `PnrConfig.check_inputs` when the run is about to run, so a hardened block whose input was deleted still loads and reports it as stale.
     """
-    where = f"pnr run '{run}': inputs"
     if value is None:
         return ()
     if not (isinstance(value, list) and all(isinstance(n, str) and n for n in value)):
         raise FatalRtlBuddyError(
-            f"{where} must be a list of non-empty file paths, got {value!r}"
+            f"pnr run '{run}': inputs must be a list of non-empty file paths, "
+            f"got {value!r}"
         )
-    paths = tuple(os.path.abspath(os.path.join(config_dir, n)) for n in value)
-    missing = [path for path in paths if not os.path.isfile(path)]
-    if missing:
-        raise FatalRtlBuddyError(
-            f"{where} names a file that does not exist: {', '.join(missing)}"
-        )
-    return paths
+    return tuple(os.path.abspath(os.path.join(config_dir, n)) for n in value)
 
 
 #: `detailed_route -verbose` level when a run sets none: iteration and violation counts, no per-net detail.
@@ -1714,6 +1708,15 @@ class PnrConfig:
     def get_inputs(self) -> tuple[str, ...]:
         """The run's extra `inputs:` files, absolute; empty when none."""
         return tuple(self.inputs)
+
+    def check_inputs(self) -> None:
+        """Raise naming every `inputs:` file that does not exist; called before the run starts."""
+        missing = [path for path in self.inputs if not os.path.isfile(path)]
+        if missing:
+            raise FatalRtlBuddyError(
+                f"pnr run '{self.name}': inputs names a file that does not exist: "
+                f"{', '.join(missing)}"
+            )
 
     def get_harden(self) -> bool:
         """Whether the run publishes a hard-macro abstract."""

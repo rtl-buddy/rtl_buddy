@@ -11589,6 +11589,10 @@ class RtlBuddy:
                 for run in suite_cfg.get_runs(pnr_name)
             ]
 
+        for planned in plan:
+            if _selected(planned.cfg):
+                planned.cfg.check_inputs()
+
         # Lock every tree here, on this thread, before any worker starts.
         for planned in plan:
             run = planned.cfg
