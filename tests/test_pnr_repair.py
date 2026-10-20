@@ -584,7 +584,11 @@ def test_a_probe_skips_timing_repair_and_stops_after_global_route(tmp_path):
 # OpenROAD's does without usable routes; `RB_STUB_REPAIR_FAIL=<round>` makes
 # that round's `remove_fillers` fail; `RB_STUB_ERROR=<round>` prints an
 # `[ERROR` line in that round's extraction. `repair_timing` and
-# `detailed_route` log what `design_is_routed` answers them.
+# `detailed_route` log what `design_is_routed` answers them. `RB_STUB_SLEW` and
+# `RB_STUB_CAP` give each round's max-slew and max-capacitance violators over
+# every corner (one count per round from round 0; unset, the count fails), and
+# `RB_STUB_SLEW_<corner>` and `RB_STUB_CAP_<corner>` the `report_check_types`
+# violators of that corner. A round's `write_spef` writes its SPEF.
 _ROUND_STUBS = r"""
 proc design_is_routed {args} { return 1 }
 proc rb_round {} {
@@ -627,6 +631,26 @@ proc report_tns {args} {
         puts "\[ERROR STA-0001\] stub"
     }
     if {[lsearch $args -min] >= 0} { puts "tns min 0.0" } else { puts "tns max -1.5" }
+}
+proc write_spef {path} {
+    if {[rb_round] ne ""} { rb_write $path "spef r[rb_round]" }
+}
+proc rb_violators {var} {
+    global env
+    if {[rb_round] eq "" || ![info exists env($var)]} { error "stub: no $var" }
+    return [rb_slack $var]
+}
+proc sta::max_slew_violation_count {} { rb_violators RB_STUB_SLEW }
+proc sta::max_capacitance_violation_count {} { rb_violators RB_STUB_CAP }
+proc sta::redirect_string_begin {} { set ::rb_redirect "" }
+proc sta::redirect_string_end {} { return $::rb_redirect }
+proc report_check_types {args} {
+    if {[rb_round] eq ""} { return }
+    set check [expr {[lsearch $args -max_slew] >= 0 ? "SLEW" : "CAP"}]
+    set corner [lindex $args [expr {[lsearch $args -corner] + 1}]]
+    for {set i 0} {$i < [rb_slack RB_STUB_${check}_$corner 0]} {incr i} {
+        append ::rb_redirect "u$i/A 1.00 2.00 -1.00 (VIOLATED)\n"
+    }
 }
 proc remove_fillers {args} {
     if {[rb_stub_round RB_STUB_REPAIR_FAIL]} {
@@ -721,10 +745,13 @@ def _repair_backend(
     stages=False,
     env=None,
     corners=None,
+    gate=False,
     **options,
 ):
-    """A stub-harness backend whose platform sets `post_route` as its `post-route-repair`."""
-    pnr_cfg = replace(_pnr_cfg(tmp_path, stages=stages), mode=mode)
+    """A stub-harness backend whose platform sets `post_route` as its `post-route-repair`; `gate` sets `fail-on-electrical`."""
+    pnr_cfg = replace(
+        _pnr_cfg(tmp_path, stages=stages), mode=mode, fail_on_electrical=gate
+    )
     backend, artefacts = _backend(
         tmp_path, monkeypatch, pnr_cfg=pnr_cfg, env=env, stages=stages, **options
     )
@@ -3178,3 +3205,525 @@ def test_the_abstract_digest_names_wire_rc_and_after_timing_only_when_set(tmp_pa
     }
     assert _digest({"after-timing": True})["repair_design"]["after_timing"] is True
     assert "after_timing" not in _digest({"after-timing": False})["repair_design"]
+
+
+# -- electrical violators and the electrical round ----------------------------------
+
+
+def test_electrical_repair_takes_margins_a_run_overrides_field_by_field():
+    platform = _platform(
+        post_route_repair={"setup-margin": 0, "electrical-repair": {"slew-margin": 20}}
+    )
+    assert platform.get_post_route_repair().electrical_repair == RepairDesign(
+        slew_margin=20.0
+    )
+    run = read_post_route_repair("run", {"electrical-repair": {"cap-margin": 10}})
+    resolved = platform.with_run_repairs(UNSET, run, "r").get_post_route_repair()
+    assert resolved.electrical_repair == RepairDesign(slew_margin=20.0, cap_margin=10.0)
+    off = read_post_route_repair("run", {"electrical-repair": None})
+    resolved = platform.with_run_repairs(UNSET, off, "r").get_post_route_repair()
+    assert resolved.electrical_repair is None
+    unset = _platform(post_route_repair={"setup-margin": 0})
+    assert unset.get_post_route_repair().electrical_repair is None
+    defaults = _platform(post_route_repair={"setup-margin": 0, "electrical-repair": {}})
+    assert defaults.get_post_route_repair().electrical_repair == RepairDesign()
+
+
+@pytest.mark.parametrize(
+    "value, words",
+    [
+        ({"slew-margin": 150}, "electrical-repair.slew-margin must be a number from 0"),
+        ({"cap-margin": "x"}, "electrical-repair.cap-margin must be a number"),
+        (5, "electrical-repair must be a mapping of slew-margin, cap-margin"),
+    ],
+)
+def test_a_bad_electrical_repair_is_refused_naming_the_key(value, words):
+    with pytest.raises(FatalRtlBuddyError, match=re.escape(words)):
+        read_post_route_repair("run", {"electrical-repair": value})
+
+
+def test_the_electrical_round_repairs_at_its_margins_and_the_repair_design_wire_rc():
+    repair = PostRouteRepair(
+        repair_design=RepairDesign(
+            slew_margin=20.0,
+            max_wire_length=100.0,
+            wire_rc=WireRc(layer="M5"),
+            after_timing=True,
+        ),
+        setup_margin=0.0,
+        electrical_repair=RepairDesign(slew_margin=10.0, cap_margin=5.0),
+    )
+    assert repair.electrical_design() == RepairDesign(
+        slew_margin=10.0, cap_margin=5.0, wire_rc=WireRc(layer="M5")
+    )
+    assert replace(repair, repair_design=None).electrical_design() == RepairDesign(
+        slew_margin=10.0, cap_margin=5.0
+    )
+    assert replace(repair, electrical_repair=None).electrical_design() is None
+
+
+def _electrical(setup, slew, cap=0, drcs=0):
+    timing = _timing(setup)
+    if slew is not None:
+        timing |= {
+            "max_slew_violation_count": slew,
+            "max_capacitance_violation_count": cap,
+        }
+    return {"timing": timing, "drcs": drcs}
+
+
+@pytest.mark.parametrize(
+    "new, best, gated, improves",
+    [
+        # No violators beats violators at timing as good, only when gated.
+        (_electrical(-100.0, 0), _electrical(-100.0, 3), True, True),
+        (_electrical(-100.0, 0), _electrical(-100.0, 0, cap=2), True, True),
+        (_electrical(-50.0, 0), _electrical(-100.0, 3), False, True),
+        (_electrical(-100.0, 0), _electrical(-100.0, 3), False, False),
+        # Worse timing, fewer but some violators, or a route with DRCs: no.
+        (_electrical(-150.0, 0), _electrical(-100.0, 3), True, False),
+        (_electrical(-100.0, 1), _electrical(-100.0, 3), True, False),
+        (_electrical(-100.0, 0, drcs=1), _electrical(-100.0, 3, drcs=1), True, False),
+        (_electrical(-100.0, 0), _electrical(-100.0, 3, drcs=1), True, True),
+        # Counts the extraction did not report decide nothing.
+        (_electrical(-100.0, None), _electrical(-100.0, 3), True, False),
+        (_electrical(-100.0, 0), _electrical(-100.0, None), True, False),
+        # Better timing still wins with violators.
+        (_electrical(-50.0, 3), _electrical(-100.0, 0), True, True),
+    ],
+)
+def test_a_gated_run_keeps_a_clean_round_without_electrical_violators(
+    new, best, gated, improves
+):
+    assert pnr_openroad._round_improves(new, best, ["setup"], gated) is improves
+
+
+_PR_E = {
+    "repair-design": {"slew-margin": 20},
+    "setup-margin": 0.1,
+    "rounds": 1,
+    "electrical-repair": {"slew-margin": 10, "cap-margin": 5},
+}
+
+
+@pytest.mark.parametrize("reroute", ["eco", "full"])
+def test_the_electrical_round_repairs_the_best_round_s_violators(
+    tmp_path, monkeypatch, reroute
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_PR_E, "reroute": reroute},
+        gate=True,
+        env={
+            "RB_STUB_SETUP": "-0.1 -0.05 -0.05",
+            "RB_STUB_SLEW": "0 2 0",
+            "RB_STUB_CAP": "0 1 0",
+        },
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    rounds = _rounds(run_dir)
+    assert [r["round"] for r in rounds] == [0, 1, 2]
+    assert [r.get("electrical_round") for r in rounds] == [None, None, True]
+    assert [r["max_slew_violation_count"] for r in rounds] == [0, 2, 0]
+    assert [r["max_capacitance_violation_count"] for r in rounds] == [0, 1, 0]
+    assert [r["best_round"] for r in rounds] == [0, 1, 2]
+    done = _done(run_dir)
+    assert done["kept_round"] == 2
+    assert done["repaired_rounds"] == 1
+    assert done["stop"] == "last_round"
+    assert done["electrical_round"] == {
+        "round": 2,
+        "source_round": 1,
+        "status": "kept",
+        "reason": (
+            "round 1 has 2 max-slew, 1 max-capacitance violator(s); round 2 has no "
+            "violators (setup WNS -0.0500 ns, hold WNS 0.0000 ns, 0 DRC "
+            "violation(s)) and is kept"
+        ),
+    }
+    assert (
+        res.results["post_route_repair"]["electrical_round"]
+        == (done["electrical_round"])
+    )
+    assert "post-route electrical round 2 kept" in res.results["desc"]
+    # The round repairs the best round's database on its SPEF, with repair_design only.
+    assert (run_dir / "06_post_route_repair.best.odb").samefile(
+        run_dir / "06_post_route_repair.r1.odb"
+    )
+    assert (run_dir / "06_post_route_repair.best.spef").samefile(
+        run_dir / "06_post_route_repair.r1.spef"
+    )
+    assert (run_dir / "06_post_route_repair.odb").samefile(
+        run_dir / "06_post_route_repair.r2.odb"
+    )
+    r2 = (run_dir / "06_post_route_repair.r2.repair.tcl").read_text()
+    assert "read_db [file join $RB_RUN_DIR 06_post_route_repair.best.odb]" in r2
+    assert re.search(r"^read_spef .*06_post_route_repair\.best\.spef\]$", r2, re.M)
+    assert r2.count("\nrepair_design -slew_margin 10 -cap_margin 5\n") == 1
+    assert not re.search(r"^repair_timing", r2, re.M)
+    assert "\ndetailed_placement" in r2 and "\ndetailed_route \\" in r2
+    if reroute == "full":
+        assert "destroyNetWires" in r2
+    else:
+        assert "\nrb::eco::repair 2 {\n" in r2
+    log = (artefacts / "pnr.log").read_text()
+    assert ">>> rb: begin 06_post_route_repair round 2 electrical repair\n" in log
+    assert (
+        ">>> Post-route repair round 2 (electrical): repair_design -slew_margin 10 "
+        "-cap_margin 5\n" in log
+    )
+    assert (
+        "06_post_route_repair.r2.repair.tcl"
+        in pnr_openroad.stage_scripts(str(run_dir), "post_route_repair")[-2]
+    )
+
+
+def test_the_electrical_round_inherits_the_repair_design_wire_rc(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_PR_E, "repair-design": {"wire-rc": {"layer": "M5"}}},
+        env={
+            "RB_STUB_SETUP": "-0.1 -0.05",
+            "RB_STUB_SLEW": "0 2",
+            "RB_STUB_CAP": "0 0",
+        },
+    )
+
+    assert backend.run().results["result"] == "PASS"
+    (run_dir,) = _runs(artefacts)
+    r2 = (run_dir / "06_post_route_repair.r2.repair.tcl").read_text()
+    assert "rb::rc::apply {layer {M5}}\n" in r2
+    assert "\nrepair_design -slew_margin 10 -cap_margin 5\nrb::rc::restore\n" in r2
+
+
+def test_the_electrical_round_is_skipped_when_the_best_round_has_no_violators(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR_E,
+        gate=True,
+        env={
+            "RB_STUB_SETUP": "-0.1 -0.05",
+            "RB_STUB_SLEW": "3 0",
+            "RB_STUB_CAP": "0 0",
+        },
+    )
+    logged = _logged(monkeypatch)
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    assert [r["round"] for r in _rounds(run_dir)] == [0, 1]
+    why = "round 1 has no max-slew or max-capacitance violators"
+    assert _done(run_dir)["electrical_round"] == {
+        "round": 2,
+        "source_round": 1,
+        "status": "skipped",
+        "reason": why,
+    }
+    assert _done(run_dir)["kept_round"] == 1
+    assert not (run_dir / "06_post_route_repair.r2.repair.log").exists()
+    assert not (run_dir / "06_post_route_repair.best.odb").exists()
+    log = (artefacts / "pnr.log").read_text()
+    assert f">>> rb: skip 06_post_route_repair round 2 (electrical): {why}\n" in log
+    assert "electrical round" not in (res.results["desc"] or "")
+    (done,) = [f for _l, e, f in logged if e == "pnr.post_route_repair_done"]
+    assert _human_message("pnr.post_route_repair_done", done).endswith(
+        f"; electrical round 2 skipped: {why}"
+    )
+
+
+def test_the_electrical_round_is_skipped_when_violators_were_not_counted(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _repair_backend(
+        tmp_path, monkeypatch, post_route=_PR_E, env={"RB_STUB_SETUP": "-0.1 -0.05"}
+    )
+
+    assert backend.run().results["result"] == "PASS"
+    (run_dir,) = _runs(artefacts)
+    assert "max_slew_violation_count" not in _rounds(run_dir)[1]
+    assert _done(run_dir)["electrical_round"]["status"] == "skipped"
+    assert _done(run_dir)["electrical_round"]["reason"] == (
+        "round 1's max-slew and max-capacitance violators were not counted"
+    )
+
+
+def test_an_electrical_round_with_worse_timing_is_not_kept(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR_E,
+        gate=True,
+        env={
+            "RB_STUB_SETUP": "-0.1 -0.05 -0.08",
+            "RB_STUB_SLEW": "0 2 0",
+            "RB_STUB_CAP": "0 0 0",
+        },
+    )
+
+    res = backend.run()
+
+    (run_dir,) = _runs(artefacts)
+    done = _done(run_dir)
+    assert done["kept_round"] == 1
+    assert done["electrical_round"]["status"] == "not_kept"
+    assert done["electrical_round"]["reason"].endswith(
+        "and does not improve on round 1"
+    )
+    # The gated run names the kept round's violators.
+    assert done["reason"] == (
+        "all 1 round(s) ran; the kept round 1 has 2 max-slew violator(s)"
+    )
+    assert "post-route electrical round 2 not kept" in res.results["desc"]
+    assert (run_dir / "06_post_route_repair.odb").samefile(
+        run_dir / "06_post_route_repair.r1.odb"
+    )
+
+
+def test_an_ungated_run_does_not_keep_an_electrical_round_for_its_violators_alone(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR_E,
+        env={
+            "RB_STUB_SETUP": "-0.1 -0.05 -0.05",
+            "RB_STUB_SLEW": "0 2 0",
+            "RB_STUB_CAP": "0 0 0",
+        },
+    )
+
+    assert backend.run().results["result"] == "PASS"
+    (run_dir,) = _runs(artefacts)
+    done = _done(run_dir)
+    assert done["kept_round"] == 1
+    assert done["reason"] == "all 1 round(s) ran"
+    assert done["electrical_round"]["status"] == "not_kept"
+    assert done["electrical_round"]["reason"].endswith(
+        "and does not improve on round 1: electrical violators decide the kept "
+        "round only on a run that gates on them"
+    )
+
+
+def test_a_failed_electrical_round_keeps_the_best_round(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR_E,
+        gate=True,
+        env={
+            "RB_STUB_SETUP": "-0.1 -0.05",
+            "RB_STUB_SLEW": "0 2",
+            "RB_STUB_CAP": "0 0",
+            "RB_STUB_REPAIR_FAIL": "2",
+        },
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    done = _done(run_dir)
+    assert done["kept_round"] == 1
+    assert done["stop"] == "last_round"
+    assert done["electrical_round"]["status"] == "failed"
+    assert "round 2's repair session failed" in done["electrical_round"]["reason"]
+    assert "post-route electrical round 2 failed" in res.results["desc"]
+
+
+def test_a_gated_run_keeps_a_round_that_clears_electrical_violators_and_says_so(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={"setup-margin": 0.1, "rounds": 3},
+        gate=True,
+        env={
+            "RB_STUB_SETUP": "-0.1 -0.1 -0.1",
+            "RB_STUB_SLEW": "3 0 0",
+            "RB_STUB_CAP": "0 0 0",
+        },
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    assert [r["best_round"] for r in _rounds(run_dir)] == [0, 1, 1]
+    done = _done(run_dir)
+    assert done["kept_round"] == 1
+    assert done["stop"] == "no_improvement"
+    assert done["reason"] == (
+        "round 2 did not improve timing; round 1 has no electrical violators and "
+        "timing as good as round 0, which has 3 max-slew violator(s)"
+    )
+    assert "electrical_round" not in done
+    assert "electrical_round" not in res.results["post_route_repair"]
+
+
+def test_an_ungated_run_compares_rounds_without_electrical_violators(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={"setup-margin": 0.1, "rounds": 3},
+        env={
+            "RB_STUB_SETUP": "-0.1 -0.1 -0.1",
+            "RB_STUB_SLEW": "3 0 0",
+            "RB_STUB_CAP": "0 0 0",
+        },
+    )
+
+    assert backend.run().results["result"] == "PASS"
+    (run_dir,) = _runs(artefacts)
+    rounds = _rounds(run_dir)
+    # Not counted at all: the round scripts are those of a run without the feature.
+    assert all("max_slew_violation_count" not in r for r in rounds)
+    assert [r["best_round"] for r in rounds] == [0, 0]
+    assert _done(run_dir)["reason"] == "round 1 did not improve timing"
+    plan = json.loads((run_dir / "06_post_route_repair.plan.json").read_text())
+    assert "electrical" not in plan and "gate_electrical" not in plan
+    for name in os.listdir(run_dir):
+        if name.endswith(".tcl"):
+            text = (run_dir / name).read_text()
+            assert "RB-ELECTRICAL" not in text.split(">>> Final reports")[0], name
+            assert ".best." not in text and "(electrical)" not in text, name
+    assert not (run_dir / "06_post_route_repair.r4.repair.tcl").exists()
+    script = (artefacts / "pnr.tcl").read_text()
+    assert "RB-ELECTRICAL-CORNER" not in script
+    assert script.count("RB-ELECTRICAL:") == 1
+
+
+def test_a_gated_run_counts_each_corner_s_violators_in_each_round(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={"setup-margin": 0, "rounds": 1},
+        gate=True,
+        corners=["ss", "ff"],
+        env={
+            "RB_STUB_SETUP": "-0.3 0.1",
+            "RB_STUB_SETUP_ss": "-0.3 0.1",
+            "RB_STUB_SETUP_ff": "0.4 0.5",
+            "RB_STUB_SLEW": "4 1",
+            "RB_STUB_CAP": "2 0",
+            "RB_STUB_SLEW_ss": "4 1",
+            "RB_STUB_SLEW_ff": "1 0",
+            "RB_STUB_CAP_ss": "0 0",
+            "RB_STUB_CAP_ff": "2 0",
+        },
+    )
+    logged = _logged(monkeypatch)
+
+    assert backend.run().results["result"] == "PASS"
+    (run_dir,) = _runs(artefacts)
+    rounds = _rounds(run_dir)
+    counts = [
+        {
+            corner: (
+                values["max_slew_violation_count"],
+                values["max_capacitance_violation_count"],
+            )
+            for corner, values in r["corners"].items()
+        }
+        for r in rounds
+    ]
+    assert counts == [{"ss": (4, 0), "ff": (1, 2)}, {"ss": (1, 0), "ff": (0, 0)}]
+    assert [r["max_slew_violation_count"] for r in rounds] == [4, 1]
+    e1 = (run_dir / "06_post_route_repair.r1.extract.tcl").read_text()
+    assert "foreach rb_corner {ss ff} {\n" in e1
+    first = [f for _l, e, f in logged if e == "pnr.post_route_round"][0]
+    assert _human_message("pnr.post_route_round", first).endswith(
+        ", 0 DRC violation(s), 4 max-slew and 2 max-capacitance violator(s); "
+        "best round 0"
+    )
+
+
+def test_the_electrical_round_message_names_it():
+    fields = {
+        "pnr": "demo",
+        "round": 3,
+        "rounds": 2,
+        "electrical_round": True,
+        "setup_margin_ns": None,
+        "hold_margin_ns": None,
+        "drc_count": 0,
+        "wns_setup_ps": -50.0,
+        "wns_hold_ps": 0.0,
+        "tns_ps": -100.0,
+        "tns_hold_ps": 0.0,
+        "unconstrained": [],
+        "max_slew_violation_count": 0,
+        "max_capacitance_violation_count": 0,
+        "best_round": 3,
+    }
+    assert _human_message("pnr.post_route_round", fields).startswith(
+        'P&R "demo" post-route repair round 3 (electrical, repair_design only): '
+        "setup WNS -0.0500 ns"
+    )
+
+
+def test_a_resume_after_post_route_repair_refuses_a_changed_electrical_repair(
+    tmp_path, monkeypatch
+):
+    env = {"RB_STUB_SETUP": "-0.2 0.01", "RB_STUB_SLEW": "0 0", "RB_STUB_CAP": "0 0"}
+    first, artefacts = _repair_backend(
+        tmp_path, monkeypatch, post_route=_PR_E, stages=True, env=env
+    )
+    assert first.run().results["result"] == "PASS"
+    (first_dir,) = _runs(artefacts)
+
+    def _again(post_route):
+        backend, _artefacts = _repair_backend(
+            tmp_path,
+            monkeypatch,
+            post_route=post_route,
+            stages=True,
+            resume=str(first_dir),
+            resume_from="finish",
+            env=env,
+        )
+        return backend.run().results
+
+    for changed in (
+        {**_PR_E, "electrical-repair": {"slew-margin": 5}},
+        {k: v for k, v in _PR_E.items() if k != "electrical-repair"},
+    ):
+        refused = _again(changed)
+        assert refused["fail_stage"] == "resume", refused
+        assert (
+            "06_post_route_repair.tcl script generated now differs" in (refused["desc"])
+        )
+    assert _again(_PR_E)["result"] == "PASS"
+
+
+def test_the_abstract_digest_names_electrical_repair_only_when_set(tmp_path):
+    from rtl_buddy.tools import pnr_abstract
+
+    pnr_cfg = _pnr_cfg(tmp_path, ())
+
+    def _digest(**block):
+        platform = _real_platform(
+            tmp_path, post_route_repair={"setup-margin": 0.1, **block}
+        )
+        return pnr_abstract.abstract_config(pnr_cfg, platform)["post_route_repair"]
+
+    assert "electrical_repair" not in _digest()
+    assert _digest(**{"electrical-repair": {"slew-margin": 10}})[
+        "electrical_repair"
+    ] == {"slew_margin": 10.0, "cap_margin": None}

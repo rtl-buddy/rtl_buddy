@@ -285,6 +285,14 @@ def _repair_digest(platform) -> dict:
                 }
             if not design["after_timing"]:
                 del design["after_timing"]
+    post_route = digest.get("post_route_repair")
+    if post_route is not None:
+        electrical = post_route.pop("electrical_repair")
+        if electrical is not None:
+            post_route["electrical_repair"] = {
+                "slew_margin": electrical["slew_margin"],
+                "cap_margin": electrical["cap_margin"],
+            }
     return digest
 
 

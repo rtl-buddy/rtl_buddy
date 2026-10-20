@@ -188,6 +188,13 @@ _ELECTRICAL_RE = re.compile(
     rf"^{re.escape(_ELECTRICAL_TAG)} max_(slew|capacitance|fanout) (\d+)\s*$",
     re.MULTILINE,
 )
+# Printed by a post-route repair round's extraction on a multi-corner platform: one corner's max-slew or max-capacitance violator count.
+_ELECTRICAL_CORNER_TAG = "RB-ELECTRICAL-CORNER:"
+_ELECTRICAL_CORNER_RE = re.compile(
+    rf"^{re.escape(_ELECTRICAL_CORNER_TAG)} (\S+) max_(slew|capacitance) (\d+)\s*$",
+    re.MULTILINE,
+)
+
 # Printed once by the macro pin-limit step: the macro pins it buffered and those still over their limit less the margin.
 _MACRO_PIN_LIMITS_TAG = "RB-MACRO-PIN-LIMITS:"
 _MACRO_PIN_LIMITS_RE = re.compile(
@@ -201,6 +208,56 @@ _ELECTRICAL_FIELDS = {
     "capacitance": ("max_capacitance_violation_count", "max-capacitance"),
     "fanout": ("max_fanout_violation_count", "max-fanout"),
 }
+
+#: The electrical checks a post-route repair round counts, by result field.
+_ROUND_ELECTRICAL_FIELDS = tuple(
+    _ELECTRICAL_FIELDS[check][0] for check in ("slew", "capacitance")
+)
+
+
+def _electrical_desc(fields: dict) -> str:
+    """`"N max-slew, M max-capacitance violator(s)"` for the nonzero counts in `fields`, or `""` when there are none."""
+    parts = [
+        f"{fields[key]} {word}"
+        for key, word in _ELECTRICAL_FIELDS.values()
+        if fields.get(key)
+    ]
+    return f"{', '.join(parts)} violator(s)" if parts else ""
+
+
+def _round_electrical_tcl(corners: list[str]) -> str:
+    """Tcl that prints a post-route repair round's max-slew and max-capacitance violator counts over every corner, as the final reports do, and on a multi-corner platform each corner's, counted from `report_check_types -violators` of that corner. A count that cannot be read is not printed."""
+    lines = [
+        "foreach rb_check {slew capacitance} {",
+        "  if {[catch {",
+        f'    puts "{_ELECTRICAL_TAG} max_$rb_check [sta::max_${{rb_check}}_violation_count]"',
+        '  } rb_err]} { puts "rb: max $rb_check violator count unavailable: $rb_err" }',
+        "}",
+    ]
+    if corners:
+        lines += [
+            "proc rb_corner_violators {check corner} {",
+            "  sta::redirect_string_begin",
+            "  set code [catch {",
+            "    report_check_types -max_$check -violators -corner $corner",
+            "  } rb_err]",
+            "  set text [sta::redirect_string_end]",
+            "  if {$code} { error $rb_err }",
+            "  return [regexp -all -line {\\(VIOLATED\\)\\s*$} $text]",
+            "}",
+            f"foreach rb_corner {{{' '.join(corners)}}} {{",
+            "  foreach rb_check {slew capacitance} {",
+            "    if {[catch {",
+            f'      puts "{_ELECTRICAL_CORNER_TAG} $rb_corner max_$rb_check '
+            '[rb_corner_violators $rb_check $rb_corner]"',
+            "    } rb_err]} {",
+            '      puts "rb: $rb_corner max $rb_check violator count unavailable: $rb_err"',
+            "    }",
+            "  }",
+            "}",
+        ]
+    return "".join(f"{line}\n" for line in lines)
+
 
 # OpenROAD's warnings that a pre-route step saw zero wire R/C: EST-0018 from `estimate_parasitics -placement`, CTS-0104 from clock-tree latency balancing.
 _NO_WIRE_RC_CODES = ("EST-0018", "CTS-0104")
@@ -1501,6 +1558,8 @@ def _post_route_file(suffix: str) -> str:
 
 #: What the post-route repair stage reads from the checkpoint run directory besides its scripts (see `run_post_route_repair`).
 POST_ROUTE_PLAN = _post_route_file(".plan.json")
+#: The checkpoint files and SPEF of the round the electrical round repairs, linked there before it runs.
+POST_ROUTE_ELECTRICAL_SOURCE = _post_route_file(".best")
 
 
 def stage_scripts(run_dir: str, stage: str) -> list[str]:
@@ -1511,6 +1570,8 @@ def stage_scripts(run_dir: str, stage: str) -> list[str]:
         files.append(plan["extract"])
         for entry in plan["rounds"]:
             files += [entry["repair"], entry["extract"]]
+        if plan.get("electrical"):
+            files += [plan["electrical"]["repair"], plan["electrical"]["extract"]]
         if plan.get("report"):
             files.append(plan["report"])
     return [os.path.join(run_dir, name) for name in files]
@@ -1528,7 +1589,10 @@ class PostRouteOutcome:
 
 
 def _round_timing(text: str, round_: int, plan: dict) -> dict:
-    """Round `round_`'s worst slack and TNS, setup and hold, in ps, with each corner's on a multi-corner platform; a value the log lacks is None. `unconstrained` names each side whose worst slack is INF."""
+    """Round `round_`'s worst slack and TNS, setup and hold, in ps, with each corner's on a multi-corner platform; a value the log lacks is None. `unconstrained` names each side whose worst slack is INF.
+
+    When the round's extraction counted them (`_round_electrical_tcl`), the max-slew and max-capacitance violator counts over every corner join it, and each corner's join that corner's; a count the log lacks is left out.
+    """
     text = text[text.rfind(f"{_ROUND_TIMING_MARKER}{round_}") :]
     ps = plan["ps_per_unit"]
 
@@ -1550,6 +1614,13 @@ def _round_timing(text: str, round_: int, plan: dict) -> dict:
         timing["corners"] = openroad_corners.parse_corner_timing(
             text, plan["corners"], ps
         )
+    for m in _ELECTRICAL_RE.finditer(text):
+        if m.group(1) in ("slew", "capacitance"):
+            timing[_ELECTRICAL_FIELDS[m.group(1)][0]] = int(m.group(2))
+    for m in _ELECTRICAL_CORNER_RE.finditer(text):
+        corner, check, count = m.groups()
+        if corner in timing.get("corners", {}):
+            timing["corners"][corner][_ELECTRICAL_FIELDS[check][0]] = int(count)
     return timing
 
 
@@ -1586,14 +1657,40 @@ def _improves(timing: dict, best: dict, sides) -> bool:
     return new != old and all(n >= o for n, o in zip(new, old))
 
 
-def _round_improves(new: dict, best: dict, sides) -> bool:
-    """Whether round `new` improves on the best round `best`, each `{"timing": ..., "drcs": n}`: better timing (`_improves`) without more DRC violations, or timing as good on every repaired side with fewer."""
-    if new["drcs"] <= best["drcs"] and _improves(new["timing"], best["timing"], sides):
-        return True
-    return new["drcs"] < best["drcs"] and all(
+def _timing_as_good(new: dict, best: dict, sides) -> bool:
+    """Whether round `new`'s worst slack is at least round `best`'s on every repaired side."""
+    return all(
         _side_slack(new["timing"], side) >= _side_slack(best["timing"], side)
         for side in sides
     )
+
+
+def _electrical_violators(round_: dict) -> int | None:
+    """A round's max-slew plus max-capacitance violators over every corner, or None when its extraction did not count both."""
+    counts = [round_["timing"].get(key) for key in _ROUND_ELECTRICAL_FIELDS]
+    if any(count is None for count in counts):
+        return None
+    return sum(counts)
+
+
+def _electrically_cleaner(new: dict, best: dict, sides) -> bool:
+    """Whether round `new` and round `best` both route clean and `new` has no electrical violators where `best` has some, at timing as good on every repaired side."""
+    return (
+        not new["drcs"]
+        and not best["drcs"]
+        and _electrical_violators(new) == 0
+        and bool(_electrical_violators(best))
+        and _timing_as_good(new, best, sides)
+    )
+
+
+def _round_improves(new: dict, best: dict, sides, electrical: bool = False) -> bool:
+    """Whether round `new` improves on the best round `best`, each `{"timing": ..., "drcs": n}`: better timing (`_improves`) without more DRC violations, or timing as good on every repaired side with fewer. With `electrical` (a run that gates on electrical violators), also a clean round without electrical violators over a clean one with some at timing as good (`_electrically_cleaner`)."""
+    if new["drcs"] <= best["drcs"] and _improves(new["timing"], best["timing"], sides):
+        return True
+    if new["drcs"] < best["drcs"] and _timing_as_good(new, best, sides):
+        return True
+    return electrical and _electrically_cleaner(new, best, sides)
 
 
 def _round_summary(round_: dict) -> str:
@@ -1639,32 +1736,45 @@ def _round_files(run_dir: str, round_: int) -> dict | None:
     return files
 
 
-def _keep_round(run_dir: str, plan: dict, round_: int, files: dict | None) -> None:
-    """Make round `round_`'s database, with the router reports it keeps, the stage's checkpoint, and put those reports back in the artefact directory, where the run's DRC count reads them: hard links where the filesystem allows, else copies.
+def _link(src: str, dst: str) -> None:
+    """Make `dst` a hard link to `src` where the filesystem allows, else a copy."""
+    if os.path.lexists(dst):
+        os.remove(dst)
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def _link_round(
+    run_dir: str, plan: dict, round_: int, files: dict | None, target: str
+) -> tuple[dict, str]:
+    """Link round `round_`'s checkpoint files into `run_dir` as `<target>.*` (`_link`) and return their `{kind: file name}` and the name they had there.
 
     Round 0 is the detailed route's checkpoint; a later round's `files` are those `_round_files` returned.
     """
-    target = _checkpoint_name(POST_ROUTE_REPAIR_STAGE)
     if round_ == 0:
         carry = plan["carry"]
         source_dir, source = carry["dir"], carry["name"]
         files = pnr_checkpoints.written_checkpoint(source_dir, carry["stage"])
     else:
-        source_dir, source = run_dir, f"{target}.r{round_}"
-    kept = {}
+        source_dir = run_dir
+        source = f"{_checkpoint_name(POST_ROUTE_REPAIR_STAGE)}.r{round_}"
+    linked = {}
     for kind, name in (files or {}).items():
         src = os.path.join(source_dir, str(name))
         if not os.path.isfile(src):
             continue
         dst_name = target + str(name).removeprefix(source)
-        dst = os.path.join(run_dir, dst_name)
-        if os.path.lexists(dst):
-            os.remove(dst)
-        try:
-            os.link(src, dst)
-        except OSError:
-            shutil.copy2(src, dst)
-        kept[kind] = dst_name
+        _link(src, os.path.join(run_dir, dst_name))
+        linked[kind] = dst_name
+    return linked, source
+
+
+def _keep_round(run_dir: str, plan: dict, round_: int, files: dict | None) -> None:
+    """Make round `round_`'s database, with the router reports it keeps, the stage's checkpoint (`_link_round`), and put those reports back in the artefact directory, where the run's DRC count reads them."""
+    target = _checkpoint_name(POST_ROUTE_REPAIR_STAGE)
+    kept, source = _link_round(run_dir, plan, round_, files, target)
     for kind, name in pnr_checkpoints.STAGE_REPORTS[POST_ROUTE_REPAIR_STAGE].items():
         report = os.path.join(plan["out_dir"], name)
         if kind in kept:
@@ -1688,6 +1798,8 @@ def run_post_route_repair(
     `session(path, label)` runs OpenROAD on one script and returns its exit code, stderr, resources and log; `note(line)` appends a line of rb's own to the log and returns it. Each session's part of the log begins with `_SESSION_BEGIN_MARKER`.
 
     Round 0 is the detailed route: its extraction session extracts it and times every corner. Round k from 1 repairs round k-1's database on that round's SPEF, routes, and writes the stage's checkpoint, which rb renames `06_post_route_repair.r<k>.*` (`_round_files`); its extraction session then times the result. Each round's DRC violations are counted from its router's report. A round becomes the best when it improves on the best (`_round_improves`), or when its route is clean and the best's is not. A round whose route has violations never stops the rounds, so the next one gets another detailed route on its database. The rounds stop when a clean round is the best and meets timing on every side they repair (setup with `setup-margin` set, hold with `hold-margin` set), when a clean round does not become the best, when a round's timing is not reported, when a session of a later round fails, or after the last round. The stage keeps the best round's database as its checkpoint (`_keep_round`); a round from 1 whose timing was not reported or whose session failed is never kept. When a round with violations has better timing than the clean round kept, the stop reason names both (`_passed_over`).
+
+    On a run that gates on electrical violators (`gate_electrical` in the plan), a clean round without max-slew or max-capacitance violators also becomes the best over a clean one with some at timing as good (`_electrically_cleaner`), and the stop reason names that and the kept round's violators. With `electrical-repair` (`electrical` in the plan) one more round runs after the others when the best round has such violators: rb links the best round's checkpoint and SPEF as `POST_ROUTE_ELECTRICAL_SOURCE`, and the round's `repair_design` runs on them. It is timed and compared as any round; `electrical_round` in the done event says whether it was kept, not kept, skipped or failed, and why.
 
     A failed session of round k from 1 is set aside: rb warns, notes it after the session's part of the log, whose `[ERROR` lines then do not fail the run (`_error_lines`), and the stage keeps the best round. Round 0's extraction failing fails the stage, as does a failed stage report: a `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint the stage kept.
     """
@@ -1748,18 +1860,27 @@ def run_post_route_repair(
 
     rounds = plan["rounds"]
     sides = plan["sides"]
+    # A run that gates on electrical violators compares rounds on them too.
+    gate = plan.get("gate_electrical", False)
+    electrical = plan.get("electrical")
     best = 0
     repaired = 0
     files: dict[int, dict | None] = {}
     timed: dict[int, dict] = {}
+    # Each round that became the best only for having no electrical violators, with the round it replaced.
+    cleaner: dict[int, int] = {}
 
     def _record(round_: int, drcs: int, timing: dict) -> None:
-        entry = rounds[round_ - 1] if round_ else {}
+        if electrical is not None and round_ == electrical["round"]:
+            entry = {"electrical_round": True}
+        else:
+            entry = rounds[round_ - 1] if round_ else {}
         fields = {
             "round": round_,
             "rounds": len(rounds),
             "setup_margin_ns": entry.get("setup_margin_ns"),
             "hold_margin_ns": entry.get("hold_margin_ns"),
+            **({"electrical_round": True} if entry.get("electrical_round") else {}),
             "drc_count": drcs,
             **timing,
             "best_round": best,
@@ -1796,20 +1917,31 @@ def run_post_route_repair(
         pnr_checkpoints.record_event(run_dir, "post_route_round_failed", **fields)
         return "session_failed", f"round {round_}'s {kind} session failed: {failure}"
 
+    def _repair(round_: int, script: str, label: str):
+        """Run round `round_`'s repair session; return its checkpoint files, or None after setting it aside, and the stop a set-aside round gives."""
+        _code, _stderr, _problem, failure, section = _run(
+            script, label, f"{_ROUND_DONE_MARKER}{round_} repair"
+        )
+        if failure is None:
+            files[round_] = _round_files(run_dir, round_)
+            if files[round_] is None:
+                failure = "it wrote no checkpoint"
+        if failure is not None:
+            return None, _set_aside(round_, "repair", failure, section)
+        return files[round_], None
+
+    def _becomes_best(current: dict) -> bool:
+        prior = timed[best]
+        # A clean route is never passed over for one with violations.
+        return _round_improves(current, prior, sides, gate) or (
+            not current["drcs"] and prior["drcs"]
+        )
+
     for round_ in range(len(rounds) + 1):
         if round_:
             entry = rounds[round_ - 1]
-            _code, _stderr, _problem, failure, section = _run(
-                entry["repair"],
-                f"round {round_} repair",
-                f"{_ROUND_DONE_MARKER}{round_} repair",
-            )
-            if failure is None:
-                files[round_] = _round_files(run_dir, round_)
-                if files[round_] is None:
-                    failure = "it wrote no checkpoint"
-            if failure is not None:
-                stop = _set_aside(round_, "repair", failure, section)
+            written, stop = _repair(round_, entry["repair"], f"round {round_} repair")
+            if written is None:
                 break
             repaired = round_
         drcs = count_drc_violations(drc_report)
@@ -1837,11 +1969,12 @@ def run_post_route_repair(
             )
             break
         current = {"timing": timing, "drcs": drcs}
-        if round_:
-            prior = timed[best]
-            # A clean route is never passed over for one with violations.
-            if _round_improves(current, prior, sides) or (not drcs and prior["drcs"]):
-                best = round_
+        if round_ and _becomes_best(current):
+            if not _round_improves(current, timed[best], sides) and (
+                drcs or not timed[best]["drcs"]
+            ):
+                cleaner[round_] = best
+            best = round_
         timed[round_] = current
         _record(round_, drcs, timing)
         if drcs:
@@ -1854,8 +1987,81 @@ def run_post_route_repair(
             break
     else:
         stop = "last_round", f"all {len(rounds)} round(s) ran"
-    passed = _passed_over(timed, best, sides)
+    electrical_round = None
+    if electrical is not None:
+        e = electrical["round"]
+        source = best
+        violators = _electrical_violators(timed[best]) if best in timed else None
+        if not violators:
+            status = "skipped"
+            why = (
+                f"round {best} has no max-slew or max-capacitance violators"
+                if violators == 0
+                else f"round {best}'s max-slew and max-capacitance violators were "
+                "not counted"
+            )
+            sections.append(note(f">>> rb: skip {stage} round {e} (electrical): {why}"))
+        else:
+            name = POST_ROUTE_ELECTRICAL_SOURCE
+            _link_round(run_dir, plan, best, files.get(best), name)
+            spef = os.path.join(run_dir, _post_route_file(f".r{best}.spef"))
+            if os.path.isfile(spef):
+                _link(spef, os.path.join(run_dir, f"{name}.spef"))
+            had = f"round {best} has {_electrical_desc(timed[best]['timing'])}"
+            written, failed = _repair(
+                e, electrical["repair"], f"round {e} electrical repair"
+            )
+            if written is None:
+                status, why = "failed", f"{had}; {failed[1]}"
+            else:
+                drcs = count_drc_violations(drc_report)
+                _code, _stderr, _problem, failure, section = _run(
+                    electrical["extract"],
+                    f"round {e} electrical extraction",
+                    f"{_ROUND_DONE_MARKER}{e} extraction",
+                )
+                if failure is not None:
+                    failed = _set_aside(e, "extraction", failure, section)
+                    status, why = "failed", f"{had}; {failed[1]}"
+                else:
+                    timing = _round_timing(section.decode(errors="replace"), e, plan)
+                    current = {"timing": timing, "drcs": drcs}
+                    if _timing_met(timing, sides) is None:
+                        status = "not_kept"
+                        why = f"{had}; round {e}'s timing was not reported"
+                    else:
+                        status = "kept" if _becomes_best(current) else "not_kept"
+                        if status == "kept":
+                            best = e
+                        timed[e] = current
+                        left = _electrical_desc(timing) or "no violators"
+                        why = f"{had}; round {e} has {left} ({_round_summary(current)})"
+                        if status == "kept":
+                            why += " and is kept"
+                        else:
+                            why += f" and does not improve on round {source}"
+                            if not gate and _electrically_cleaner(
+                                current, timed[source], sides
+                            ):
+                                why += (
+                                    ": electrical violators decide the kept round "
+                                    "only on a run that gates on them"
+                                )
+                    _record(e, drcs, timing)
+        electrical_round = {
+            "round": e,
+            "source_round": source,
+            "status": status,
+            "reason": why,
+        }
     reason = stop[1]
+    if best in cleaner:
+        reason += (
+            f"; round {best} has no electrical violators and timing as good as "
+            f"round {cleaner[best]}, which has "
+            f"{_electrical_desc(timed[cleaner[best]]['timing'])}"
+        )
+    passed = _passed_over(timed, best, sides)
     if passed is not None:
         reason += (
             f"; round {passed} times better ({_round_summary(timed[passed])}), "
@@ -1866,6 +2072,10 @@ def run_post_route_repair(
             reason += (
                 "; more `rounds` give the detailed router more passes at the violations"
             )
+    if gate and best in timed and _electrical_violators(timed[best]):
+        reason += (
+            f"; the kept round {best} has {_electrical_desc(timed[best]['timing'])}"
+        )
     _keep_round(run_dir, plan, best, files.get(best))
     pnr_checkpoints.record_kept_round_timing(run_dir, POST_ROUTE_REPAIR_STAGE, best)
     fields = {
@@ -1875,6 +2085,7 @@ def run_post_route_repair(
         "stop": stop[0],
         "reason": reason,
         "passed_over_round": passed,
+        **({"electrical_round": electrical_round} if electrical_round else {}),
     }
     log_event(
         logger, logging.INFO, "pnr.post_route_repair_done", pnr=run_name, **fields
@@ -2832,9 +3043,31 @@ class OpenRoadPnr:
             return "".join(f"read_spef -corner {c} {path}\n" for c in self._corners)
         return f"read_spef {path}\n"
 
-    def _post_route_extract_script(self, round_: int, run_dir: str) -> str:
-        """Round `round_`'s extraction session, bound to `run_dir`: extract round `round_`'s database (the detailed route's for round 0) and time every corner on the result, to a tenth of a picosecond on a nanosecond library."""
+    def _gates_electrical(self) -> bool:
+        """Whether the run fails on electrical violators in its routed design (`fail-on-electrical`)."""
+        return self.pnr_cfg.get_fail_on_electrical()
+
+    def _counts_electrical(self) -> bool:
+        """Whether each post-route repair round counts its electrical violators: when the run gates on them or sets `electrical-repair`."""
+        return (
+            self._gates_electrical() or self._post_route.electrical_repair is not None
+        )
+
+    def _electrical_round(self) -> int | None:
+        """The number of the post-route electrical round, after the last of `rounds`, or None without `electrical-repair`."""
+        if self._post_route.electrical_repair is None:
+            return None
+        return self._post_route.rounds + 1
+
+    def _round_title(self, round_: int) -> str:
         title = f"Post-route repair round {round_}"
+        if round_ == self._electrical_round():
+            title += " (electrical)"
+        return title
+
+    def _post_route_extract_script(self, round_: int, run_dir: str) -> str:
+        """Round `round_`'s extraction session, bound to `run_dir`: extract round `round_`'s database (the detailed route's for round 0) and time every corner on the result, to a tenth of a picosecond on a nanosecond library. When the run counts electrical violators (`_counts_electrical`), it counts them too (`_round_electrical_tcl`)."""
+        title = self._round_title(round_)
         parts = self._prelude(POST_ROUTE_REPAIR_STAGE, self._round_source(round_))
         parts += [
             f'\nputs ">>> {title}: extraction"\n',
@@ -2846,6 +3079,7 @@ class OpenRoadPnr:
             "report_worst_slack -min\n",
             "report_tns\n",
             f"report_tns -min{self._substitutions['corner_reports']}\n",
+            _round_electrical_tcl(self._corners) if self._counts_electrical() else "",
             f'puts "{_ROUND_DONE_MARKER}{round_} extraction"\n',
             "exit 0\n",
         ]
@@ -2864,19 +3098,30 @@ class OpenRoadPnr:
         With `reroute: eco` the session keeps the routed database's wires. It estimates placement parasitics and reads the SPEF over them, opens an incremental global route and runs the repairs in `rb::eco::repair` (`eco_repair.tcl`), which makes `design_is_routed` answer 0 for them alone: `repair_timing` then keeps the placement source instead of switching to detailed-routing parasitics, times the nets it does not change on the SPEF and the nets it changes on Steiner trees, and opens no incremental route of its own, so the session's one sees each netlist change once. Legalizing closes that route, which reroutes only the changed nets, and the detailed route keeps every other net's wires. On detailed-routing parasitics the repairs would build buffer trees from the global routes a fresh session rebuilds from the guides, which can miss pins (RSZ-0074), and a second incremental route open around them delivers each change twice (GRT-0229 on a later rip-up).
 
         With `reroute: full` it removes the detailed route and routes globally first, then reads the SPEF over the global-route estimate; the repairs run before `global_route -start_incremental`, in ORFS order, since `repair_timing` on global-route parasitics opens its own incremental route. Its detailed route routes every net again.
+
+        The electrical round (`electrical-repair`) runs only `repair_design`, at its margins and `repair-design.wire-rc`, on the database and SPEF `run_post_route_repair` links as `POST_ROUTE_ELECTRICAL_SOURCE`: the best round's.
         """
         repair = self._post_route
+        design = repair.repair_design
         setup, hold = repair.margins(round_)
-        title = f"Post-route repair round {round_}"
-        spef = self._read_spef_tcl(
-            f"[file join $RB_RUN_DIR {_post_route_file(f'.r{round_ - 1}.spef')}]"
-        )
-        parts = self._prelude(POST_ROUTE_REPAIR_STAGE, self._round_source(round_ - 1))
-        parts.append(
-            f'\nputs ">>> {title} of {repair.rounds}: repair on extracted parasitics '
-            f'(reroute {repair.reroute.value})"\n'
-        )
-        if repair.repair_design is not None and repair.repair_design.wire_rc:
+        title = self._round_title(round_)
+        if round_ == self._electrical_round():
+            # Only `repair_design`, on the best round's database (`run_post_route_repair`).
+            design = repair.electrical_design()
+            setup = hold = None
+            source = _read_checkpoint_tcl(
+                POST_ROUTE_REPAIR_STAGE, "RB_RUN_DIR", POST_ROUTE_ELECTRICAL_SOURCE
+            )
+            spef_name = f"{POST_ROUTE_ELECTRICAL_SOURCE}.spef"
+            heading = f"{title}: repair_design on the best round's extracted parasitics"
+        else:
+            source = self._round_source(round_ - 1)
+            spef_name = _post_route_file(f".r{round_ - 1}.spef")
+            heading = f"{title} of {repair.rounds}: repair on extracted parasitics"
+        spef = self._read_spef_tcl(f"[file join $RB_RUN_DIR {spef_name}]")
+        parts = self._prelude(POST_ROUTE_REPAIR_STAGE, source)
+        parts.append(f'\nputs ">>> {heading} (reroute {repair.reroute.value})"\n')
+        if design is not None and design.wire_rc:
             parts.append(files(_TEMPLATE_PACKAGE).joinpath(_WIRE_RC_FILE).read_text())
         if repair.reroute is PostRouteReroute.FULL:
             legalize = _legalize_tcl("{{ dpl_options }}")
@@ -2888,18 +3133,13 @@ class OpenRoadPnr:
                 "estimate_parasitics -global_routing\n",
                 spef,
                 _repair_steps_tcl(
-                    title,
-                    repair.repair_design,
-                    setup,
-                    hold,
-                    self._ps_per_unit,
-                    legalize,
+                    title, design, setup, hold, self._ps_per_unit, legalize
                 ),
                 legalize,
             ]
         else:
             steps = _repair_steps_tcl(
-                title, repair.repair_design, setup, hold, self._ps_per_unit, None
+                title, design, setup, hold, self._ps_per_unit, None
             )
             parts += [
                 files(_TEMPLATE_PACKAGE).joinpath(_ECO_REPAIR_FILE).read_text(),
@@ -2928,7 +3168,11 @@ class OpenRoadPnr:
         return self._render(
             "".join(parts),
             self._session_substitutions(
-                POST_ROUTE_REPAIR_STAGE, run_dir, f"round {round_}: repair"
+                POST_ROUTE_REPAIR_STAGE,
+                run_dir,
+                f"round {round_}: "
+                + ("electrical " if round_ == self._electrical_round() else "")
+                + "repair",
             ),
         )
 
@@ -2970,14 +3214,15 @@ class OpenRoadPnr:
         )
 
     def _post_route_scripts(self, run_dir: str) -> list[tuple[str, str]]:
-        """Every session the post-route repair may run, bound to `run_dir`, as (file name, script) in order: round 0's extraction, then each round's repair and extraction."""
+        """Every session the post-route repair may run, bound to `run_dir`, as (file name, script) in order: round 0's extraction, then each round's repair and extraction, the electrical round's last."""
         scripts = [
             (
                 _post_route_file(".r0.extract.tcl"),
                 self._post_route_extract_script(0, run_dir),
             )
         ]
-        for round_ in range(1, self._post_route.rounds + 1):
+        last = self._electrical_round() or self._post_route.rounds
+        for round_ in range(1, last + 1):
             scripts += [
                 (
                     _post_route_file(f".r{round_}.repair.tcl"),
@@ -3025,7 +3270,7 @@ class OpenRoadPnr:
         return record
 
     def _post_route_plan(self, report: str | None) -> dict:
-        """What `run_post_route_repair` reads besides the scripts: round 0's extraction, each later round's scripts and margins, the report session, how to read timing, the artefact directory with the router reports, the reroute, and the detailed route's checkpoint, which is round 0's database."""
+        """What `run_post_route_repair` reads besides the scripts: round 0's extraction, each later round's scripts and margins, the electrical round's scripts, whether the run gates on electrical violators, the report session, how to read timing, the artefact directory with the router reports, the reroute, and the detailed route's checkpoint, which is round 0's database."""
         repair = self._post_route
         rounds = []
         for round_ in range(1, repair.rounds + 1):
@@ -3040,9 +3285,23 @@ class OpenRoadPnr:
                 }
             )
         source = self._predecessor(POST_ROUTE_REPAIR_STAGE)
+        electrical = self._electrical_round()
         return {
             "extract": _post_route_file(".r0.extract.tcl"),
             "rounds": rounds,
+            # Each only when set, so a plan without them is as before.
+            **(
+                {
+                    "electrical": {
+                        "round": electrical,
+                        "repair": _post_route_file(f".r{electrical}.repair.tcl"),
+                        "extract": _post_route_file(f".r{electrical}.extract.tcl"),
+                    }
+                }
+                if electrical is not None
+                else {}
+            ),
+            **({"gate_electrical": True} if self._gates_electrical() else {}),
             "sides": list(repair.sides()),
             "report": report,
             "ps_per_unit": self._ps_per_unit,
@@ -3182,12 +3441,7 @@ class OpenRoadPnr:
 
     def _describe_electrical(self, fields: dict) -> str:
         """Return `"N max-slew, M max-capacitance violator(s)"` for the nonzero counts, or `""` when there are none."""
-        parts = [
-            f"{fields[key]} {word}"
-            for key, word in _ELECTRICAL_FIELDS.values()
-            if fields.get(key)
-        ]
-        return f"{', '.join(parts)} violator(s)" if parts else ""
+        return _electrical_desc(fields)
 
     def _parse_wns(self, log_text: str, kind: str) -> float | None:
         return _worst_slack(log_text, kind)
@@ -4489,7 +4743,7 @@ class OpenRoadPnr:
         return {"blocks": [b.result_row() for b in self._blocks]}
 
     def _post_route_fields(self) -> dict:
-        """Return the `post_route_repair` result field when this run ran that stage: the round whose database it kept, how many rounds repaired, the rounds configured, why the rounds stopped (`stop` and `reason`), and the round with better timing whose DRC violations kept it from being kept (`passed_over_round`, else None)."""
+        """Return the `post_route_repair` result field when this run ran that stage: the round whose database it kept, how many rounds repaired, the rounds configured, why the rounds stopped (`stop` and `reason`), the round with better timing whose DRC violations kept it from being kept (`passed_over_round`, else None) and, with `electrical-repair`, the electrical round's number, the round it repaired, its `status` (`kept`, `not_kept`, `skipped` or `failed`) and `reason` (`electrical_round`)."""
         if self._ckpt_run_dir is None:
             return {}
         done = [
@@ -4499,31 +4753,40 @@ class OpenRoadPnr:
         ]
         if not done:
             return {}
-        return {
-            "post_route_repair": {
-                key: done[-1].get(key)
-                for key in (
-                    "kept_round",
-                    "repaired_rounds",
-                    "rounds",
-                    "stop",
-                    "reason",
-                    "passed_over_round",
-                )
-            }
+        fields = {
+            key: done[-1].get(key)
+            for key in (
+                "kept_round",
+                "repaired_rounds",
+                "rounds",
+                "stop",
+                "reason",
+                "passed_over_round",
+            )
         }
+        if "electrical_round" in done[-1]:
+            fields["electrical_round"] = done[-1]["electrical_round"]
+        return {"post_route_repair": fields}
 
     def _post_route_note(self) -> str:
-        """The qualifier of a pass whose post-route repair set a round aside or passed over a round with better timing, else `""`."""
+        """The qualifier of a pass whose post-route repair set a round aside, passed over a round with better timing or ran its electrical round, else `""`."""
         post_route = self._post_route_fields().get("post_route_repair") or {}
+        notes = []
         if post_route.get("passed_over_round") is not None:
-            return f"post-route repair {post_route['reason']}"
-        if post_route.get("stop") == "session_failed":
-            return (
+            notes.append(f"post-route repair {post_route['reason']}")
+        elif post_route.get("stop") == "session_failed":
+            notes.append(
                 f"post-route repair {post_route['reason']}; kept round "
                 f"{post_route['kept_round']}"
             )
-        return ""
+        electrical = post_route.get("electrical_round") or {}
+        if electrical.get("status") in ("kept", "not_kept", "failed"):
+            words = {"kept": "kept", "not_kept": "not kept", "failed": "failed"}
+            notes.append(
+                f"post-route electrical round {electrical['round']} "
+                f"{words[electrical['status']]}"
+            )
+        return "; ".join(notes)
 
     def _planner_files(self, record) -> dict:
         """`macros_file` and `pins_file`, each through `record`, only when set, so other runs' records keep their roles."""
@@ -5842,7 +6105,7 @@ class OpenRoadPnr:
             "tns_ps": tns * ps_per_unit if tns is not None else None,
             "tns_hold_ps": tns_hold * ps_per_unit if tns_hold is not None else None,
             "drc_count": drcs,
-            **self._parse_electrical(log_text),
+            **self._parse_electrical(final),
             **self._macro_pin_limits_fields(log_text),
         }
         corner_fields = self._corner_fields(platform, final)
@@ -5876,7 +6139,7 @@ class OpenRoadPnr:
                     key: metrics.get(key, 0)
                     for key, _word in _ELECTRICAL_FIELDS.values()
                 },
-                fail_on_electrical=self.pnr_cfg.get_fail_on_electrical(),
+                fail_on_electrical=self._gates_electrical(),
                 report=os.path.join(self.artefact_dir, "electrical.rpt"),
             )
 
@@ -5903,7 +6166,7 @@ class OpenRoadPnr:
                 },
             )
 
-        if electrical and self.pnr_cfg.get_fail_on_electrical():
+        if electrical and self._gates_electrical():
             # A verdict on the design, so no `fail_stage`: an `xfail:` may excuse it. The routed outputs stay for inspection; no abstract is published.
             pnr_abstract.clear_abstract(self.artefact_dir)
             desc = (

@@ -59,6 +59,7 @@ POST_ROUTE_REPAIR_ALL = {
     "rounds": 3,
     "margin-step": 0.01,
     "reroute": "full",
+    "electrical-repair": {"slew-margin": 10, "cap-margin": None},
 }
 RUN_SIZED = {
     "name": "a",
@@ -380,7 +381,13 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
         (
             "pnr run 'a': post-route-repair",
             ("post-route-repair",),
-            "repair-design, setup-margin, hold-margin, rounds, margin-step, reroute",
+            "repair-design, setup-margin, hold-margin, rounds, margin-step, reroute, "
+            "electrical-repair",
+        ),
+        (
+            "pnr run 'a': post-route-repair.electrical-repair",
+            ("post-route-repair", "electrical-repair"),
+            "slew-margin, cap-margin",
         ),
         (
             "pnr run 'a': post-route-repair.repair-design",

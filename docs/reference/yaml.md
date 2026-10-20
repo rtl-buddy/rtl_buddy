@@ -213,6 +213,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `reroute` | `incremental` (default) or `full` for `global-route-repair`; `eco` (default) or `full` for `post-route-repair` |
 | `rounds` | `post-route-repair` only. Positive, default 1; above 1 needs a margin |
 | `margin-step` | `post-route-repair` only. ns added to the margins each round after the first. Default 0 |
+| `electrical-repair` | `post-route-repair` only. `{slew-margin, cap-margin}` (percent): one more round runs `repair_design` alone when the best round has max-slew or max-capacitance violators. Unset runs none |
 
 The block a run ends up with must set at least one of `repair-design`, `setup-margin` and `hold-margin`. A run's block overrides the platform's field by field; `null` turns a field or the block off. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing).
 
@@ -855,7 +856,7 @@ runs:
 | `routing-layers`, `routing-layer-adjustment`, `cts-buffer`, `cts-clock-nets`, `cts-latency-balancing`, `cts-repair-clock-nets`, `post-cts-setup-repair`, `global-route-hold-repair`, `port-buffer`, `tapcell-tcl` | Platform's | Override the platform's value for this run. See [P&R keys](#synthesis-and-physical-design-tools) |
 | `global-route-repair`, `post-route-repair` | Platform's | Overrides the platform's block field by field; `null` turns it off. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing) |
 | `mode` | `closure` | `probe` skips timing repair and stops after global route. Not with `harden: true`. See [Probe a floorplan](../concepts/pnr.md#probe-a-floorplan) |
-| `fail-on-electrical` | `false` | `true` fails a routed run with any max-slew, max-capacitance or max-fanout violator |
+| `fail-on-electrical` | `false` | `true` fails a routed run with any max-slew, max-capacitance or max-fanout violator, and post-route repair prefers a round without max-slew or max-capacitance violators |
 | `threads` | 1 | Positive integer, or `auto` for the CPUs of the current allocation. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `detailed-route-verbose` | 1 | `detailed_route -verbose` level; 0 silences the iteration log |
 | `checkpoints` | `false` | `true`, a stage, or a list of `floorplan`, `place`, `cts`, `global_route`, `detailed_route`, `post_route_repair`. `[]` writes only the progress log. See [Keep stage checkpoints](../concepts/pnr.md#keep-stage-checkpoints) |
