@@ -296,7 +296,7 @@ global-route:
 | --- | --- |
 | Overflow that more rip-up and reroute would clear | `congestion-iterations` (default 20), with `congestion-report-iter-step` to see how it falls |
 | Long wires low on the stack, or one layer congested | `layer-adjustment` per layer, applied after `routing-layer-adjustment` |
-| Boundary pins centred on a GCell edge fail detailed route (ASAP7 pins on a fine lattice) | `grid-origin`. OpenROAD drops the origin on every call, so rb passes it to each one, including the incremental routes of global-route and post-route repair. OpenROAD 26Q4 offsets only the guides, not the GCell grid, so rb rebuilds the grid from the guides before each detailed route |
+| Boundary pins centred on a GCell edge fail detailed route (ASAP7 pins on a fine lattice) | `grid-origin`. OpenROAD drops the origin on every call, so rb passes it to each one, including the incremental routes of global-route and post-route repair. OpenROAD 26Q4 offsets only the guides, not the GCell grid, so rb rebuilds the grid from the guides before each detailed route. It does so after the `global_route` checkpoint, so a staged or resumed detailed route starts from the router's own route and rebuilds the grid as a one-session run does |
 | Critical nets routed on resistive layers | `critical-nets-percentage`, `resistance-aware` |
 | Where a design overflows, without failing at global route | `allow-congestion: true` |
 
@@ -502,7 +502,7 @@ A run killed at a wall-time limit leaves only its log. `checkpoints: true` (or o
 | `floorplan` | Floorplan, macros, power grid, pins |
 | `place` | Legalized global placement |
 | `cts` | Clock tree and hold repair |
-| `global_route` | The global route after global-route repair, with route guides |
+| `global_route` | The global route after global-route repair, with route guides and segments; with `global-route.grid-origin`, before the GCell grid is rebuilt from the guides |
 | `detailed_route` | The detailed route, before fill, with its DRC report |
 | `post_route_repair` | The kept repair round (only with `post-route-repair`) |
 

@@ -167,10 +167,10 @@ proc rb::keep_failed_global_route {cmd_string code result op} {
 }
 trace add execution global_route leave rb::keep_failed_global_route
 {{ @layers }}set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS
-{{ layer_adjustment }}{{ @/layers }}{{ global_route_cmd }}{{ hook_after_global_route_block }}{{ global_route_repair }}{{ grid_origin_guides }}rb::global_connect
+{{ layer_adjustment }}{{ @/layers }}{{ global_route_cmd }}{{ hook_after_global_route_block }}{{ global_route_repair }}rb::global_connect
 trace remove execution global_route leave rb::keep_failed_global_route
 file delete -force [file join $OUT_DIR global_route_failed]
-{{ @detailed_route }}{{ hook_before_detailed_route_block }}
+{{ @detailed_route }}{{ grid_origin_guides }}{{ hook_before_detailed_route_block }}
 # Again for cells a before-detailed-route hook added.
 rb::global_connect
 puts ">>> Detail route"

@@ -28,6 +28,8 @@ from test_pnr_checkpoints import (
 )
 
 from rtl_buddy.config.pnr import CHECKPOINT_STAGES, PNR_STAGES, PnrConfigFile
+from rtl_buddy.config.pnr_global_route import GlobalRoute, PnrGlobalRouteFile
+from rtl_buddy.config.pnr_platform import PnrRunOverrides
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.tools import pnr_checkpoints, pnr_stages
 from rtl_buddy.tools.pnr_openroad import STOPPED_MARKER
@@ -128,6 +130,116 @@ def test_each_stage_session_reads_its_predecessor_checkpoint(tmp_path, monkeypat
         script = (run_dir / f"{_NAMES[stage]}.tcl").read_text()
         assert script.rstrip().endswith("exit 0")
         assert f"rb::ckpt::stage_end {stage}\n" in script
+
+
+_SEGMENTS = (
+    "read_global_route_segments [file join $RB_PRED_DIR 04_global_route.segments]\n"
+)
+_ROUND_TRIP = (
+    "write_guides $OUT_DIR/grid_origin.guide\n"
+    "read_guides $OUT_DIR/grid_origin.guide\n"
+    "file delete $OUT_DIR/grid_origin.guide\n"
+)
+
+
+def _grid_origin(tmp_path, monkeypatch, where, **kw):
+    """A staged run with `global-route.grid-origin` set on the platform or on the run."""
+    cfg = _pnr_cfg(tmp_path, stages=True)
+    if where == "run":
+        cfg = replace(
+            cfg,
+            overrides=PnrRunOverrides(global_route=GlobalRoute(grid_origin=(3, 3))),
+        )
+    backend, artefacts = _backend(tmp_path, monkeypatch, pnr_cfg=cfg, **kw)
+    if where == "platform":
+        backend.root_cfg.get_pnr_platform_cfg.return_value = _platform(
+            _pdk(tmp_path), global_route=PnrGlobalRouteFile(grid_origin=[3, 3])
+        )
+    return backend, artefacts
+
+
+@pytest.mark.parametrize("where", ["platform", "run"])
+def test_a_grid_origin_rebuilds_the_grid_after_the_global_route_checkpoint(
+    tmp_path, monkeypatch, where
+):
+    """The `global_route` checkpoint holds the router's own segments; the detailed-route session reads them, then rebuilds the GCell grid from the guides, as a one-session run does after that checkpoint. Segments written after `read_guides` would be refused (GRT-0265)."""
+    backend, artefacts = _grid_origin(tmp_path, monkeypatch, where)
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    run_dir = _only_run(artefacts)
+    route = (run_dir / "04_global_route.tcl").read_text()
+    assert "grid_origin.guide" not in route
+    assert "-grid_origin {3 3}" in route
+    assert (run_dir / "04_global_route.segments").read_text() == "segments\n"
+    detailed = (run_dir / "05_detailed_route.tcl").read_text()
+    assert detailed.count(_SEGMENTS) == 1
+    assert detailed.count(_ROUND_TRIP) == 1
+    assert (
+        detailed.index("read_db [file join $RB_PRED_DIR 04_global_route.odb]")
+        < detailed.index("set_routing_layers")
+        < detailed.index(_SEGMENTS)
+        < detailed.index(_ROUND_TRIP)
+        < detailed.index("\ndetailed_route \\")
+    )
+    log = (run_dir / "05_detailed_route.log").read_text()
+    assert log.index("stub: read_global_route_segments 04_global_route.segments") < (
+        log.index("stub: read_guides grid_origin.guide")
+    )
+    finish = (run_dir / "07_finish.tcl").read_text()
+    assert "read_guides" not in finish
+    assert "read_global_route_segments" not in finish
+
+
+def test_a_resume_from_a_grid_origin_route_rebuilds_the_grid(tmp_path, monkeypatch):
+    stopped, artefacts = _grid_origin(
+        tmp_path, monkeypatch, "run", stop_after="global_route"
+    )
+    assert stopped.run().results["result"] == "PASS"
+    first = _only_run(artefacts)
+
+    backend, _ = _grid_origin(
+        tmp_path, monkeypatch, "run", resume=first.name, resume_from="detailed_route"
+    )
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    second = next(r for r in _runs(artefacts) if r != first)
+    detailed = (second / "05_detailed_route.tcl").read_text()
+    assert f"set RB_PRED_DIR {_quoted(first)}" in detailed
+    assert detailed.index(_SEGMENTS) < detailed.index(_ROUND_TRIP)
+    assert (
+        "stub: read_guides grid_origin.guide"
+        in (second / "05_detailed_route.log").read_text()
+    )
+
+
+def test_a_global_route_checkpointed_after_the_grid_rebuild_is_not_resumed(
+    tmp_path, monkeypatch
+):
+    """A `global_route` session that rebuilt the grid before its checkpoint wrote segments the next session cannot read; its script differs, so no resume starts from it."""
+    stopped, artefacts = _grid_origin(
+        tmp_path, monkeypatch, "run", stop_after="global_route"
+    )
+    assert stopped.run().results["result"] == "PASS"
+    first = _only_run(artefacts)
+    route = first / "04_global_route.tcl"
+    end = "\nrb::ckpt::stage_end global_route\n"
+    route.write_text(route.read_text().replace(end, "\n" + _ROUND_TRIP + end))
+    manifest_path = first / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    (entry,) = [c for c in manifest["chain"] if c["stage"] == "global_route"]
+    entry["script"]["identity"] = pnr_stages.script_identity(route.read_text())
+    manifest_path.write_text(json.dumps(manifest))
+
+    backend, _ = _grid_origin(
+        tmp_path, monkeypatch, "run", resume=first.name, resume_from="detailed_route"
+    )
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "resume"
+    assert "04_global_route.tcl" in res.results["desc"]
 
 
 @pytest.mark.parametrize("stages", [False, True])

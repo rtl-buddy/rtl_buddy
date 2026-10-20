@@ -248,7 +248,41 @@ def test_a_route_without_repair_rebuilds_the_grid_at_the_origin(tmp_path):
     stage = text[text.index('puts ">>> Global route"') : text.index(">>> Detail route")]
     route = stage.index("global_route -congestion_iterations 20 -grid_origin {3 3} ")
     assert stage.count(_GUIDES) == 1
-    assert route < stage.index(_GUIDES) < stage.index("rb::global_connect\n", route)
+    # In the detailed-route stage, before its hooks.
+    assert (
+        route
+        < stage.index("file delete -force [file join $OUT_DIR global_route_failed]\n")
+        < stage.index(_GUIDES)
+        < stage.index("# Again for cells a before-detailed-route hook added.\n")
+    )
+
+
+def test_the_global_route_checkpoint_precedes_the_grid_rebuild(tmp_path):
+    """The `global_route` checkpoint holds the router's own route: its segments are written before `read_guides`, after which OpenROAD writes segments it cannot read back (GRT-0265)."""
+    platform = _gr_platform(
+        tmp_path, {"grid_origin": [3, 3]}, global_route_hold_repair=True
+    )
+    pnr_cfg = replace(
+        _pnr_cfg(tmp_path, CHECKPOINT_STAGES),
+        hooks=_hook(tmp_path, "before-detailed-route", "puts MARK\n"),
+    )
+    pnr_cfg.resolve_synth_cfg = MagicMock(
+        return_value=MagicMock(get_top=lambda: "demo_top", get_name=lambda: "s")
+    )
+    backend = OpenRoadPnr("demo/openroad", pnr_cfg, str(tmp_path), MagicMock())
+    backend._ps_per_unit = 1.0
+    run_dir = tmp_path / "ck" / "run"
+    run_dir.mkdir(parents=True)
+    backend._ckpt_run_dir = str(run_dir)
+    text = Path(backend._write_script(platform, pnr_cfg.get_floorplan())).read_text()
+    assert text.count(_GUIDES) == 1
+    assert (
+        text.rindex("global_route -end_incremental -grid_origin {3 3} ")
+        < text.index("rb::ckpt::stage_end global_route\n")
+        < text.index(_GUIDES)
+        < text.index("rb::hook::run before-detailed-route")
+        < text.index("\ndetailed_route \\")
+    )
 
 
 def test_an_incremental_repair_carries_the_origin_and_rebuilds_the_grid(tmp_path):
@@ -279,7 +313,7 @@ def test_the_hold_shorthand_carries_the_origin(tmp_path):
     assert "global_route -start_incremental -grid_origin {3 3}\n" in text
     assert (
         "global_route -end_incremental -grid_origin {3 3} -congestion_report_file "
-        "$CONGESTION_RPT -verbose\ncheck_placement -verbose\n" + 'puts ">>> Global'
+        "$CONGESTION_RPT -verbose\ncheck_placement -verbose\nrb::global_connect\n"
     ) in text
     assert _GUIDES in text
 
@@ -609,7 +643,7 @@ def test_the_global_route_stage_ends_by_dropping_the_keeper(tmp_path):
         "trace remove execution global_route leave rb::keep_failed_global_route\n"
     )
     clear = text.index("file delete -force [file join $OUT_DIR global_route_failed]\n")
-    assert text.index(_GUIDES) < drop < clear < text.index(">>> Detail route")
+    assert drop < clear < text.index(_GUIDES) < text.index(">>> Detail route")
 
 
 def _hook(tmp_path, point: str, text: str) -> dict:

@@ -469,7 +469,7 @@ def _end_incremental_cmd(gr: GlobalRoute) -> str:
 def _grid_origin_guides_tcl(gr: GlobalRoute) -> str:
     """Rebuild the GCell grid from the guides before detailed route, `""` without a grid origin.
 
-    Every `global_route`, full or incremental, writes the GCell grid at the die origin while `-grid_origin` offsets only the guides; detailed route then fails (DRT-0155). `read_guides` rebuilds the grid from the guides.
+    Every `global_route`, full or incremental, writes the GCell grid at the die origin while `-grid_origin` offsets only the guides; detailed route then fails (DRT-0155). `read_guides` rebuilds the grid from the guides. The flow does this at the start of the detailed-route stage, after the `global_route` checkpoint: the segments OpenROAD writes after `read_guides` hold single-point segments that `read_global_route_segments` refuses (GRT-0265), and a staged session that read the guides again would rewrite them in another order and route differently.
     """
     if gr.grid_origin is None:
         return ""
@@ -1551,7 +1551,7 @@ def _read_checkpoint_tcl(
 def _read_global_route_tcl(stage: str) -> str:
     """Return the prelude lines that restore `stage`'s global route for `estimate_parasitics -global_routing`: its segments.
 
-    The detailed router reads the guides the database keeps; `read_guides` would rewrite them without their via layers, and the route would differ from a one-session run's.
+    The detailed router reads the guides the database keeps; `read_guides` would rewrite them without their via layers, and the route would differ from a one-session run's. With a grid origin the stage itself then rebuilds them, as a one-session run does (`_grid_origin_guides_tcl`).
     """
     name = _checkpoint_name(stage)
     return (

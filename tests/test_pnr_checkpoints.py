@@ -59,6 +59,9 @@ DESIGN = "demo_top"
 # `RB_STUB_DRC=<n>` makes `detailed_route` report n DRC violations and write a maze log;
 # `RB_STUB_ERRLINE=<cmd>` prints an OpenROAD `[ERROR` line in that command, which returns.
 # `RB_STUB_CKPT_FAIL=<NN_stage>` makes `write_db` of that checkpoint fail without an `[ERROR` line.
+# `read_guides` and `read_global_route_segments` fail on a missing file. Segments written
+# after a `read_guides` in the session are refused on reading, as OpenROAD 26Q4 refuses
+# their single-point segments (GRT-0265).
 _HARNESS = r"""
 # `clock format` loads msgcat through the auto-loader, which the catch-all
 # `unknown` below would swallow; load it first.
@@ -153,7 +156,27 @@ proc write_verilog {args} {
     rb_write [lindex $args end] "$text\nendmodule"
 }
 proc write_guides {path} { rb_write $path "guides" }
-proc write_global_route_segments {path} { rb_write $path "segments" }
+proc write_global_route_segments {path} {
+    rb_write $path [expr {[info exists ::rb_read_guides] ? "segments from guides" : "segments"}]
+}
+proc rb_read {cmd path} {
+    if {![file exists $path]} { error "$cmd: cannot open $path" }
+    puts "stub: $cmd [file tail $path]"
+}
+proc read_guides {path} {
+    rb_read read_guides $path
+    set ::rb_read_guides 1
+}
+proc read_global_route_segments {path} {
+    rb_read read_global_route_segments $path
+    set fh [open $path]
+    set text [string trim [read $fh]]
+    close $fh
+    if {$text eq "segments from guides"} {
+        puts "\[ERROR GRT-0265\] Segment 2 of net n1 is not a horizontal/vertical line or via."
+        error "GRT-0265"
+    }
+}
 proc write_abstract_lef {args} { rb_write [lindex $args end] "MACRO demo_top" }
 proc write_timing_model {args} {
     set text "library (demo_top) \{\n  cell (\"demo_top\") \{\n"
