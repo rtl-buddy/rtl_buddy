@@ -700,6 +700,7 @@ def test_a_run_that_raises_is_its_own_fail_and_keeps_the_others(
     boom = results["boom"]["results"].results
     assert boom["result"] == "FAIL"
     assert boom["fail_stage"] == "error"
+    assert boom["mode"] == "closure"
     assert "openroad segfaulted" in boom["desc"]
     assert results["sibling"]["results"].is_pass()
     assert results["top"]["results"].results["fail_stage"] == "blocked"
