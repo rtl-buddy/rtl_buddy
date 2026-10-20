@@ -478,6 +478,18 @@ def abstract_config(pnr_cfg, platform) -> dict:
             else {}
         ),
         **_repair_digest(platform),
+        # Emitted only when set so existing digests do not change: the corners the post-route rounds judge each side at decide the round kept.
+        **(
+            {
+                "signoff": {
+                    "setup_corners": list(signoff.setup_corners),
+                    "hold_corners": list(signoff.hold_corners),
+                    "fail_on": list(signoff.fail_on),
+                }
+            }
+            if (signoff := platform.get_signoff()) is not None
+            else {}
+        ),
         # The CTS knobs below are emitted only when set so existing digests do not change.
         **(
             {"cts_clock_nets": list(platform.get_cts_clock_nets())}

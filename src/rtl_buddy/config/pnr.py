@@ -26,6 +26,7 @@ from .dispatch import (
 from .openroad_threads import validate_threads
 from .pdk import PLACEMENT_SPEC, PlacementFile, validate_placement
 from .pnr_platform import PnrRoutingLayersFile, PnrRunOverrides, read_run_overrides
+from .pnr_signoff import SIGNOFF_SPEC
 from .pnr_repair import (
     GLOBAL_ROUTE_REPAIR_SPEC,
     POST_ROUTE_REPAIR_SPEC,
@@ -1270,6 +1271,8 @@ class PnrConfigFile:
     cts_clock_nets: str | list | None = field(rename="cts-clock-nets", default=None)
     # `closure` (default) or `probe`: no timing repair, stop after global route.
     mode: str | None = None
+    # Overrides the platform's `signoff:` field by field; `null` turns it off. Read by `pnr_signoff`.
+    signoff: Any = UNSET
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
     # OpenROAD threads: a positive integer or `auto`; unset means single-threaded.
@@ -1395,6 +1398,7 @@ class PnrConfigFile:
             port_buffer=self.port_buffer,
             tapcell_tcl=self.tapcell_tcl,
             config_dir=config_dir,
+            signoff=self.signoff,
         )
         post_route_repair = read_post_route_repair(
             f"pnr run '{self.name}'", self.post_route_repair
@@ -1560,6 +1564,7 @@ PNR_RUN_SPEC = KeySpec(
         "routing-layers": KeySpec(PnrRoutingLayersFile),
         "blocks": KeySpec(BlockRefFile, many=True),
         "resources": KeySpec(PnrResourcesFile, {"stages": _STAGE_RESOURCES_SPEC}),
+        "signoff": SIGNOFF_SPEC,
     },
 )
 
@@ -1605,7 +1610,7 @@ class PnrConfig:
     # The run's repair layers (see `pnr_repair`), applied over the platform's: `UNSET` when absent, `None` when off.
     global_route_repair: Any = UNSET
     post_route_repair: Any = UNSET
-    # The run's routing, CTS, repair and tap-cell values; apply them with `PnrPlatformConfig.with_run_overrides`.
+    # The run's routing, CTS, repair, tap-cell and signoff values; apply them with `PnrPlatformConfig.with_run_overrides`.
     overrides: PnrRunOverrides = PnrRunOverrides()
     mode: PnrMode = PnrMode.CLOSURE
     xfail: bool = False

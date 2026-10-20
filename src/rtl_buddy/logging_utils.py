@@ -3088,6 +3088,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"miss hold they never repaired; set the PDK's layer-rc-tcl, "
                 f"see {fields.get('docs')}"
             )
+        case "pnr.signoff_failed":
+            return f"pnr {fields.get('pnr')}: {fields.get('desc')}"
         case "pnr.electrical_violators":
             verdict = (
                 "the run fails (fail-on-electrical)"
