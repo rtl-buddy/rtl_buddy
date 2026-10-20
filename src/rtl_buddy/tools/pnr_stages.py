@@ -264,6 +264,7 @@ _FLOORPLAN_INPUTS = (
     "pdn_config",
     "tracks_tcl",
     "tapcell_tcl",
+    "extra_inputs",
 )
 
 

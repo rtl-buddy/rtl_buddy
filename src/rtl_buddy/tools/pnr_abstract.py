@@ -458,6 +458,12 @@ def abstract_config(pnr_cfg, platform) -> dict:
             if pnr_cfg.get_hooks()
             else {}
         ),
+        # Emitted only when `inputs:` is set so existing digests do not change.
+        **(
+            {"inputs": [_rel(p) for p in pnr_cfg.get_inputs()]}
+            if pnr_cfg.get_inputs()
+            else {}
+        ),
         # Emitted only when non-default so existing digests do not change; a change regenerates.
         **(
             {

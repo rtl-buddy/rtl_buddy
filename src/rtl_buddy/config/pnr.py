@@ -842,6 +842,27 @@ def _normalise_hooks(run: str, value, config_dir: str) -> dict[str, tuple[str, .
     return hooks
 
 
+def _normalise_inputs(run: str, value, config_dir: str) -> tuple[str, ...]:
+    """Return the `inputs:` files with absolute paths, relative to `pnr.yaml`; null or an empty list is unset.
+
+    Each file must exist: a file an SDC or hook sources that is not there is a config error here, not a failure inside OpenROAD.
+    """
+    where = f"pnr run '{run}': inputs"
+    if value is None:
+        return ()
+    if not (isinstance(value, list) and all(isinstance(n, str) and n for n in value)):
+        raise FatalRtlBuddyError(
+            f"{where} must be a list of non-empty file paths, got {value!r}"
+        )
+    paths = tuple(os.path.abspath(os.path.join(config_dir, n)) for n in value)
+    missing = [path for path in paths if not os.path.isfile(path)]
+    if missing:
+        raise FatalRtlBuddyError(
+            f"{where} names a file that does not exist: {', '.join(missing)}"
+        )
+    return paths
+
+
 #: `detailed_route -verbose` level when a run sets none: iteration and violation counts, no per-net detail.
 DEFAULT_DETAILED_ROUTE_VERBOSE = 1
 
@@ -1204,6 +1225,8 @@ class PnrConfigFile:
     stages: bool = False
     # Tcl files sourced at fixed flow points: point -> a path or a list of paths. Typed loosely so `initialise` names a bad value.
     hooks: Any = None
+    # Extra files the SDC or hooks source, fingerprinted with the run's other inputs. Typed loosely so `initialise` names a bad value.
+    inputs: Any = None
     # Publish a hard-macro abstract (LEF, Liberty, GDS, manifest) under `abstract/`; forces a strict GDS export.
     harden: bool = False
     # Obstruction style of a hardened run's abstract LEF; unset keeps `-bloat_occupied_layers`.
@@ -1360,6 +1383,7 @@ class PnrConfigFile:
                 "checkpoint; remove 'checkpoints' or set it to true"
             )
         hooks = _normalise_hooks(self.name, self.hooks, config_dir)
+        inputs = _normalise_inputs(self.name, self.inputs, config_dir)
         if "macro-placement" in hooks:
             for key, is_default in (
                 ("floorplan.macro-placement", macro_placement is MacroPlacement.PACK),
@@ -1448,6 +1472,7 @@ class PnrConfigFile:
             checkpoints=CHECKPOINT_STAGES if self.stages else checkpoints,
             stages=bool(self.stages),
             hooks=hooks,
+            inputs=inputs,
             harden=bool(self.harden),
             abstract=_load_abstract(self.name, self.abstract, bool(self.harden)),
             buffer_ports=(
@@ -1524,6 +1549,8 @@ class PnrConfig:
     stages: bool = False
     # Absolute paths by flow point, in flow order; only points with a file.
     hooks: dict[str, tuple[str, ...]] = dc_field(default_factory=dict)
+    # Absolute paths of the `inputs:` files, in the order written.
+    inputs: tuple[str, ...] = ()
     harden: bool = False
     abstract: PnrAbstract = dc_field(default_factory=PnrAbstract)
     # As written in pnr.yaml; `None` follows `harden`. Read it through `get_buffer_ports`.
@@ -1635,6 +1662,10 @@ class PnrConfig:
     def get_hooks(self) -> dict[str, tuple[str, ...]]:
         """The run's Tcl hook files by flow point, in flow order; empty when none."""
         return {point: tuple(paths) for point, paths in self.hooks.items()}
+
+    def get_inputs(self) -> tuple[str, ...]:
+        """The run's extra `inputs:` files, absolute; empty when none."""
+        return tuple(self.inputs)
 
     def get_harden(self) -> bool:
         """Whether the run publishes a hard-macro abstract."""

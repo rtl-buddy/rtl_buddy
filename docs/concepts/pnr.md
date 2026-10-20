@@ -297,6 +297,14 @@ runs:
 - In a [staged run](#run-stages-as-separate-sessions), and in a one-session run with [`post-route-repair`](#repair-on-the-detailed-route), each hook point is sourced in the session of the stage that contains it, and `session` hooks are sourced again in every session. Session state a hook sets, such as a Tcl procedure, a `rename` wrapper or `set_wire_rc`, is gone in the next session; see [what a session keeps](#run-stages-as-separate-sessions). A `session` hook keeps it in every session, but from the first one on, so it also changes the steps before the hook point that it was written for.
 - `after-pins` runs before rb's `buffer_ports`. A hook that buffers the ports itself needs `buffer-ports: false`, or rb buffers them again after it.
 
+rb fingerprints the SDC and the hook files but not the files they `source`, so editing a helper script alone changes neither a [resume](#resume-a-staged-run) check nor a hardened block's digest. List such helpers under `inputs:`, a list of files relative to `pnr.yaml`, each of which must exist:
+
+```yaml
+    inputs: [scripts/window.tcl, scripts/closure_timing.tcl]
+```
+
+Each file is fingerprinted with the run's other inputs. Editing one makes `--resume` refuse, naming it, and makes a hardened block's abstract stale. rb does not read the Tcl to find `source` targets. `inputs` is part of a block's configuration only when set.
+
 ## Set wire RC
 
 Set the PDK's `layer-rc-tcl` so clock-tree synthesis, placement parasitics and hold repair see wire resistance and capacitance. Without it they see only the technology LEF's layer RC, which is zero on most open PDKs. CTS then balances, and hold repair fixes, a design with no wires, and the routed timing can fail hold that repair never saw.
@@ -809,7 +817,7 @@ The resume is refused, with `fail_stage: resume` and a description that names wh
 - OpenROAD reports the same version; and
 - the run named was not a [probe](#probe-without-timing-repair), unless this run is one too.
 
-The input files are those the [checkpoint manifest](#keep-stage-checkpoints) fingerprints: the netlist, the SDC, the Liberty of every corner, the LEF, `pin-constraints`, the planner files, the `pdn-config`, the PDK's `rcx-rules` (read first by post-route repair, else by `finish`), the PDK Tcl hooks (`platform-tcl`, `layer-rc-tcl`, `tracks-tcl`, `tapcell-tcl`) and the run's `hooks:` files. A file that one of them sources or reads in turn, such as a file a hook, `platform-tcl`, a `pdn-config` or the SDC sources, is not checked, and neither are environment variables.
+The input files are those the [checkpoint manifest](#keep-stage-checkpoints) fingerprints: the netlist, the SDC, the Liberty of every corner, the LEF, `pin-constraints`, the planner files, the `pdn-config`, the PDK's `rcx-rules` (read first by post-route repair, else by `finish`), the PDK Tcl hooks (`platform-tcl`, `layer-rc-tcl`, `tracks-tcl`, `tapcell-tcl`) and the run's `hooks:` files. The run's [`inputs:`](#run-tcl-hooks) files are checked as well. Any other file that one of them sources or reads in turn, such as a file a hook, `platform-tcl`, a `pdn-config` or the SDC sources, is not checked, and neither are environment variables.
 
 A stage script is compared up to its end-of-stage line, without:
 
