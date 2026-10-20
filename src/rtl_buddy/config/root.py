@@ -450,7 +450,7 @@ class RootConfig:
 
             # Populate P&R platform configs
             self.pnr_platform_cfgs = {
-                cfg.name: PnrPlatformConfig(cfg, _pdk_lookup)
+                cfg.name: PnrPlatformConfig(cfg, _pdk_lookup, cfg_dir)
                 for cfg in data.pnr_platforms
             }
 
