@@ -61,7 +61,7 @@ read_verilog $NETLIST
 link_design  $DESIGN
 
 puts ">>> Reading SDC"
-{{ read_sdc }}{{ @session }}{{ max_fanout_block }}{{ layer_rc_block }}{{ dont_use_block }}{{ hook_session_block }}
+{{ read_sdc }}{{ @session }}{{ max_fanout_block }}{{ layer_rc_block }}{{ dont_use_block }}{{ keep_sizing_vt_block }}{{ hook_session_block }}
 {{ @floorplan }}puts ">>> Initializing floorplan"
 {{ initialize_floorplan }}
 {{ make_tracks }}
@@ -126,11 +126,11 @@ detailed_placement{{ dpl_options }}
 {{ macro_pin_limits_block }}rb::global_connect
 
 {{ @cts }}puts ">>> Clock tree synthesis"
-{{ @clocks }}{{ propagated_clocks }}{{ @/clocks }}clock_tree_synthesis \
+{{ @clocks }}{{ propagated_clocks }}{{ @/clocks }}{{ cts_dont_use_block }}clock_tree_synthesis \
     -root_buf {{ cts_root_buf }} \
     -buf_list $CTS_BUF \
     {{ cts_clustering_option }}{{ cts_ndr_option }}{{ cts_clock_nets_option }}{{ cts_insertion_delay_option }}
-{{ cts_repair_clock_nets }}{{ hook_after_cts_block }}
+{{ cts_repair_clock_nets }}{{ cts_dont_use_restore_block }}{{ hook_after_cts_block }}
 puts ">>> Detail placement (post-CTS)"
 detailed_placement{{ dpl_options }}
 {{ post_cts_repair }}

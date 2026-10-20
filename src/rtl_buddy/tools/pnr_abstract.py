@@ -499,6 +499,13 @@ def abstract_config(pnr_cfg, platform) -> dict:
             if isinstance(platform.get_cts_apply_ndr(), str)
             else {}
         ),
+        # The threshold-voltage keys, likewise only when set.
+        **(
+            {"cts_dont_use_cells": cts_dont_use}
+            if (cts_dont_use := list(platform.get_cts_dont_use_cells()))
+            else {}
+        ),
+        **({"keep_sizing_vt": True} if platform.get_keep_sizing_vt() is True else {}),
         **(
             {"max_fanout": platform.get_max_fanout()}
             if isinstance(platform.get_max_fanout(), int)

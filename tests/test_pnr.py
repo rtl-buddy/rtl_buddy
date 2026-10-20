@@ -3237,7 +3237,9 @@ def test_dont_use_check_names_every_offender_and_fails():
     assert error == "TCL-ERROR: 2 instance(s) of dont-use-cells in the routed design"
 
 
-def _dont_use_backend(tmp_path, monkeypatch, *, log, returncode, dont_use_cells):
+def _dont_use_backend(
+    tmp_path, monkeypatch, *, log, returncode, dont_use_cells, cts_dont_use_cells=()
+):
     """An `OpenRoadPnr` whose OpenROAD writes `log` and exits `returncode`."""
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
@@ -3273,6 +3275,7 @@ def _dont_use_backend(tmp_path, monkeypatch, *, log, returncode, dont_use_cells)
     platform.with_run_repairs.return_value = platform
     platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
     platform.get_dont_use_cells.return_value = list(dont_use_cells)
+    platform.get_cts_dont_use_cells.return_value = list(cts_dont_use_cells)
     root_cfg = MagicMock()
     root_cfg.get_pnr_platform_cfg.return_value = platform
 
@@ -3446,6 +3449,25 @@ def test_pnr_warns_about_a_dont_use_pattern_that_matched_nothing(tmp_path, monke
     level, fields = _one_event(events, "pnr.dont_use_unmatched")
     assert level == logging.WARNING
     assert fields["patterns"] == ["no_such_*", "mylib/gone_X1"]
+
+
+def test_pnr_warns_about_a_cts_dont_use_pattern_that_matched_nothing(
+    tmp_path, monkeypatch
+):
+    events = _capture_pnr_events(monkeypatch)
+    backend, _odb = _dont_use_backend(
+        tmp_path,
+        monkeypatch,
+        log="[WARNING STA-0122] cell '*_LVTX' not found.\n",
+        returncode=0,
+        dont_use_cells=["AND2_X1"],
+        cts_dont_use_cells=["*_LVTX", "AND2_X1"],
+    )
+
+    backend.run()
+
+    _level, fields = _one_event(events, "pnr.dont_use_unmatched")
+    assert fields["patterns"] == ["*_LVTX"]
 
 
 def test_pnr_is_quiet_when_every_dont_use_pattern_matched(tmp_path, monkeypatch):
