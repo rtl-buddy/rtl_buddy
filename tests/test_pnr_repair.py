@@ -3010,6 +3010,50 @@ def test_a_wire_rc_the_session_shadows_fails_the_session():
     assert result == "1 1"
 
 
+@pytest.mark.parametrize(
+    "missing", ["sta::scenes", "est::set_h_wire_signal_rc_cmd"], ids=["scenes", "est"]
+)
+def test_wire_rc_fails_at_setup_without_scenes_or_est_rc_commands(
+    tmp_path, monkeypatch, missing
+):
+    """An OpenROAD whose OpenSTA has corners rather than scenes, or no `est::` wire RC commands (before 26Q2), is refused at setup."""
+    from rtl_buddy.config.pnr import PnrFloorplan
+
+    pnr_cfg = MagicMock()
+    pnr_cfg.get_name.return_value = "demo"
+    pnr_cfg.get_mode.return_value = PnrMode.CLOSURE
+    pnr_cfg.get_floorplan.return_value = PnrFloorplan(
+        utilization=0.5, aspect=1.0, core_margin=2.0
+    )
+    pnr_cfg.get_checkpoints.return_value = None
+    platform = MagicMock()
+    platform.get_pdk.return_value.get_pdn_config.return_value = ""
+    platform.get_pdk.return_value.get_rcx_rules.return_value = ""
+    platform.get_post_route_repair.return_value = PostRouteRepair(
+        repair_design=RepairDesign(wire_rc=WireRc(layer="M5")), hold_margin=0.0
+    )
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = platform
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    backend = OpenRoadPnr("demo/openroad", pnr_cfg, str(tmp_path), root_cfg)
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_clear_stale_outputs", lambda **kw: None)
+    monkeypatch.setattr(backend, "_has_tcl_command", lambda cmd: cmd != missing)
+    launched = []
+    monkeypatch.setattr(
+        pnr_openroad.subprocess, "run", lambda *a, **k: launched.append(a)
+    )
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "setup"
+    assert "sta::scenes and est:: wire RC commands" in res.results["desc"]
+    assert launched == []
+    assert "upgrade OpenROAD or drop wire-rc" in _human_message(
+        "pnr.wire_rc_unsupported", {"pnr": "demo", "exe": "openroad"}
+    )
+
+
 _PR_RC = {
     "repair-design": {"slew-margin": 20, "wire-rc": _WIRE_RC, "after-timing": True},
     "setup-margin": 0.1,
