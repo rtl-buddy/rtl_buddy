@@ -269,7 +269,7 @@ Each post-route repair round runs in fresh sessions and orders its steps to avoi
 
 - A generated clock's latency comes from one corner at every corner, so a forwarded clock can be timed for hold at a fast corner on a slow corner's latency.
 - A per-corner `constraints:` fails setup with `pnr.corner_constraints_unsupported`.
-- `STA-1140 library ... already exists` is logged once per extra corner for a macro with one Liberty.
+- `STA-1140 library ... already exists` is logged once per extra corner for a macro with one Liberty. Per-corner Liberty files of one macro that share a `library` name log it in every session, with or without modes; it is harmless there, because each file is named only by its own corner's scene.
 - Every `<top>.<corner>.routed.sdc` holds that one mode, and checkpoints write no per-corner SDC.
 
 Upgrade OpenROAD, or run each corner on a single-corner platform. See [Sign off at several corners](concepts/pnr.md#sign-off-at-several-corners).

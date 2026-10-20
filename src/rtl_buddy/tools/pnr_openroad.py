@@ -18,7 +18,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from ..config.dispatch import JobResources
-from ..config.lib_paths import corner_lib_file, fit_lib_paths
+from ..config.lib_paths import corner_lib_file, fit_lib_paths, lib_paths_overlap
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
 from ..config.pdk import MacroPinLimitsFile
 from ..config.pdk import RotatedMacroFootprint
@@ -3822,6 +3822,20 @@ class OpenRoadPnr:
             self.pnr_cfg = replace(
                 self.pnr_cfg, lib_paths=fit_lib_paths(entries, corners)
             )
+            overlap = lib_paths_overlap(self.pnr_cfg.get_lib_path_entries())
+            if overlap is not None:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr.lib_paths_duplicate",
+                    pnr=name,
+                    problem=overlap,
+                )
+                return PnrFailResults(
+                    name=self.name + "/results",
+                    desc=overlap,
+                    fail_stage="setup",
+                )
         problem = self.pnr_cfg.constraints_problem(corners)
         if problem is not None:
             log_event(

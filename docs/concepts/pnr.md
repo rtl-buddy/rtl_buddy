@@ -195,7 +195,7 @@ A `lib-paths` entry that is one path is timed at every corner, so a macro keeps 
       - {tt: macros/sram_tt.lib, ss: macros/sram_ss.lib, ff: macros/sram_ff.lib}
 ```
 
-Each file is timed at its corner only. A map must name every corner of the platform and no other, or setup fails with `pnr.lib_paths_corners`; on a single-corner platform it names that one corner. The Liberty time-unit check reads every file, and `--resume` refuses a checkpoint made with another map. `rb power` reads a map the same way, inherited from the P&R run or in its own `lib-paths`.
+Each file is timed at its corner only. A map must name every corner of the platform and no other, or setup fails with `pnr.lib_paths_corners`; on a single-corner platform it names that one corner. The Liberty time-unit check reads every file, and `--resume` refuses a checkpoint made with another map. A file listed both as a plain entry and in a map fails setup with `pnr.lib_paths_duplicate`, because OpenSTA times a cell with the last copy it read; drop the plain entry. `rb power` reads a map inherited from the P&R run or in its own `lib-paths`, and accepts a platform with fewer corners than the map; see [Power](power.md).
 
 A multi-corner platform cannot harden a block or consume hardened blocks.
 

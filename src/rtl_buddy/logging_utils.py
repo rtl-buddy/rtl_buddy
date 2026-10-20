@@ -2049,6 +2049,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"lib-paths mapping names each corner of platform "
                 f'"{fields.get("platform")}" and no other'
             )
+        case "pnr.lib_paths_duplicate":
+            return f'P&R "{fields.get("pnr")}": {fields.get("problem")}'
         case "pnr.corner_constraints_unsupported":
             return (
                 f'P&R "{fields.get("pnr")}": constraints: a per-corner SDC needs '
@@ -2476,8 +2478,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f'power run "{fields.get("power")}": {fields.get("problem")}; a '
                 "per-corner lib-paths mapping, here or on the run this one reads, "
-                f'names each corner of platform "{fields.get("platform")}" and no other'
+                f'names each corner of platform "{fields.get("platform")}"'
             )
+        case "power.lib_paths_duplicate":
+            return f'power run "{fields.get("power")}": {fields.get("problem")}'
         case "power.missing_macro_inputs":
             missing = fields.get("missing") or []
             return (

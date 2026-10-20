@@ -12,7 +12,14 @@ logger = logging.getLogger(__name__)
 _SNAPSHOT_ATTEMPTS = 3
 
 from .liberty_units import open_liberty
-from ..config.lib_paths import LibPath, fit_lib_paths, lib_files, lib_paths_problem
+from ..config.lib_paths import (
+    LibPath,
+    fit_lib_paths,
+    lib_files,
+    lib_path_key,
+    lib_paths_overlap,
+    lib_paths_problem,
+)
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
 from ..config.pnr_repair import PnrMode
 from ..config.power import PowerConfig
@@ -113,18 +120,16 @@ def _dedup_paths(paths) -> list[str]:
 
 
 def _dedup_lib_paths(entries: list[LibPath]) -> list[LibPath]:
-    """Return `lib-paths` entries as `_dedup_paths` returns paths: a path once, and a per-corner mapping once per distinct set of files."""
+    """Return `lib-paths` entries as `_dedup_paths` returns paths: a path once, and a per-corner mapping once per distinct corner-to-file assignment."""
     out: list[LibPath] = []
     seen: set = set()
     for entry in entries:
         if not entry:
             continue
         if isinstance(entry, str):
-            key = os.path.normcase(os.path.realpath(entry))
+            key = lib_path_key(entry)
         else:
-            key = tuple(
-                (c, os.path.normcase(os.path.realpath(p))) for c, p in entry.items()
-            )
+            key = frozenset((c, lib_path_key(p)) for c, p in entry.items())
         if key in seen:
             continue
         seen.add(key)
@@ -681,7 +686,10 @@ class OpenRoadPower(BasePower):
         # The script is generated from these; `_publish_phys_model` reads this capture instead of resolving again.
         self._script_inputs = inputs
         corners = platform.get_sta_corners()
-        lib_problem = lib_paths_problem(list(inputs.get("macro_libs") or []), corners)
+        # A platform with fewer corners than a mapping is fine: the corners it lacks are ignored.
+        lib_problem = lib_paths_problem(
+            list(inputs.get("macro_libs") or []), corners, ignore_unknown=True
+        )
         if lib_problem is not None:
             log_event(
                 logger,
@@ -693,9 +701,18 @@ class OpenRoadPower(BasePower):
             )
             raise RuntimeError(lib_problem)
         # Each entry fitted to the platform's corners: a mapping is one path on a single corner.
-        macro_entries = _dedup_lib_paths(
-            fit_lib_paths(list(inputs.get("macro_libs") or []), corners)
-        )
+        fitted = fit_lib_paths(list(inputs.get("macro_libs") or []), corners)
+        overlap = lib_paths_overlap(fitted)
+        if overlap is not None:
+            log_event(
+                logger,
+                logging.ERROR,
+                "power.lib_paths_duplicate",
+                power=self.power_cfg.get_name(),
+                problem=overlap,
+            )
+            raise RuntimeError(overlap)
+        macro_entries = _dedup_lib_paths(fitted)
         inputs["macro_libs"] = macro_entries
         macro_libs = lib_files(macro_entries)
         macro_lefs = list(inputs.get("macro_lefs") or [])

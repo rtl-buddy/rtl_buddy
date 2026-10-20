@@ -23,7 +23,11 @@ from test_pnr_corner_modes import (
 )
 from test_power import _FakePlatform, _make_power_backend
 
-from rtl_buddy.config.lib_paths import fit_lib_paths, lib_paths_problem
+from rtl_buddy.config.lib_paths import (
+    fit_lib_paths,
+    lib_paths_overlap,
+    lib_paths_problem,
+)
 from rtl_buddy.config.pnr import PnrSuiteConfig
 from rtl_buddy.config.power import PowerSuiteConfig
 from rtl_buddy.errors import FatalRtlBuddyError
@@ -155,6 +159,31 @@ def test_fitting_orders_a_mapping_by_corner_and_collapses_one_corner():
     assert fit_lib_paths(["/m/one.lib", {"ss": "/s"}], ["ss"]) == ["/m/one.lib", "/s"]
 
 
+def test_a_mapping_may_name_corners_the_platform_lacks_when_told_to_ignore_them():
+    entries = [{"tt": "/t", "ss": "/s", "ff": "/f"}]
+
+    assert lib_paths_problem(entries, ["tt"], ignore_unknown=True) is None
+    assert lib_paths_problem(entries, ["tt", "ss"], ignore_unknown=True) is None
+    assert lib_paths_problem(entries, ["typ"], ignore_unknown=True) == (
+        "lib-paths[0] has no Liberty for corner(s) typ"
+    )
+    assert fit_lib_paths(entries, ["tt"]) == ["/t"]
+    assert fit_lib_paths(entries, ["ff", "tt"]) == [{"ff": "/f", "tt": "/t"}]
+
+
+def test_a_plain_path_that_a_mapping_also_names_is_an_overlap(tmp_path):
+    (one, other) = _macro_libs(tmp_path, "one", "other")
+    mapped = {"tt": one, "ss": other}
+    respelled = str(Path(one).parent / ".." / "macros" / Path(one).name)
+
+    assert lib_paths_overlap([one, mapped]) is not None
+    assert lib_paths_overlap([mapped, respelled]) == (
+        f"{one} is listed both as a plain lib-paths entry and in a per-corner "
+        "mapping; drop the plain entry"
+    )
+    assert lib_paths_overlap([mapped, "/elsewhere/x.lib", dict(mapped)]) is None
+
+
 # ── rb pnr setup ───────────────────────────────────────────────────────────
 
 
@@ -215,6 +244,35 @@ def test_a_single_corner_mapping_is_its_one_path(tmp_path):
     assert backend._check_corner_constraints(platform, "26Q4") is None
 
     assert backend.pnr_cfg.get_lib_path_entries() == ["/m/one.lib", ss]
+
+
+def test_a_file_listed_plain_and_in_a_mapping_fails_setup(tmp_path, caplog):
+    platform = _platform(_pdk(tmp_path))
+    per_corner = _per_corner(tmp_path)
+    respelled = str(tmp_path / "macros" / ".." / "macros" / "m_tt.lib")
+    backend, probes = _pnr_setup(tmp_path, platform, [per_corner, respelled])
+
+    with caplog.at_level(logging.ERROR):
+        failed = backend._check_corner_constraints(platform, "26Q4")
+
+    assert failed.results["fail_stage"] == "setup"
+    assert failed.results["desc"] == (
+        f"{per_corner['tt']} is listed both as a plain lib-paths entry and in a "
+        "per-corner mapping; drop the plain entry"
+    )
+    assert not probes
+    assert any(
+        getattr(r, "rtl_event", None) == "pnr.lib_paths_duplicate"
+        for r in caplog.records
+    )
+
+
+def test_a_plain_path_beside_a_mapping_of_other_files_is_accepted(tmp_path):
+    platform = _platform(_pdk(tmp_path))
+    (one,) = _macro_libs(tmp_path, "one")
+    backend, _ = _pnr_setup(tmp_path, platform, [one, _per_corner(tmp_path)])
+
+    assert backend._check_corner_constraints(platform, "26Q4") is None
 
 
 def test_a_mapping_is_put_in_corner_order_at_setup(tmp_path):
@@ -451,6 +509,52 @@ def test_power_on_one_corner_reads_the_mapping_as_its_path(tmp_path):
     ]
 
 
+def test_power_ignores_mapping_corners_a_one_corner_platform_lacks(tmp_path):
+    per_corner = _per_corner(tmp_path)
+
+    backend, lines = _power_script(
+        tmp_path, [per_corner], corners={"tt": _POWER_CORNERS["tt"]}
+    )
+
+    assert [line for line in lines if "macros" in line] == [
+        f"read_liberty {per_corner['tt']}"
+    ]
+    assert backend._script_technology["macro_libs"] == [per_corner["tt"]]
+
+
+def test_power_ignores_mapping_corners_a_smaller_platform_lacks(tmp_path):
+    per_corner = _per_corner(tmp_path)
+    corners = {c: _POWER_CORNERS[c] for c in ("tt", "ss")}
+
+    backend, lines = _power_script(tmp_path, [per_corner], corners=corners)
+
+    assert [line for line in lines if "macros" in line] == [
+        f"read_liberty -corner {c} {per_corner[c]}" for c in ("tt", "ss")
+    ]
+    assert backend._script_technology["macro_libs"] == [
+        per_corner["tt"],
+        per_corner["ss"],
+    ]
+
+
+def test_power_on_one_corner_fails_setup_when_the_mapping_lacks_that_corner(tmp_path):
+    per_corner = _per_corner(tmp_path)
+    del per_corner["tt"]
+    backend = _make_power_backend(
+        tmp_path,
+        platform=_FakePlatform(
+            liberty="/pdk/tt.lib", corners={"tt": _POWER_CORNERS["tt"]}
+        ),
+    )
+    inner = backend._resolve_inputs
+    backend._resolve_inputs = lambda: {**inner(), "macro_libs": [per_corner]}
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "setup"
+    assert "lib-paths[0] has no Liberty for corner(s) tt" in res.results["desc"]
+
+
 def test_power_fails_setup_on_a_mapping_that_misses_a_corner(tmp_path, caplog):
     per_corner = _per_corner(tmp_path)
     del per_corner["tt"]
@@ -471,13 +575,12 @@ def test_power_fails_setup_on_a_mapping_that_misses_a_corner(tmp_path, caplog):
     )
 
 
-def test_power_inherits_the_pnr_runs_mapping(tmp_path):
+def _inheriting_backend(tmp_path, inherited, own):
+    """An OpenRoadPower on a P&R source whose run declares `inherited` and whose `power.yaml` declares `own`."""
     from rtl_buddy.tools.power_openroad import OpenRoadPower
 
-    per_corner = _per_corner(tmp_path)
-    (own,) = _macro_libs(tmp_path, "own")
     pnr_cfg = MagicMock()
-    pnr_cfg.get_lib_path_entries.return_value = [per_corner]
+    pnr_cfg.get_lib_path_entries.return_value = inherited
     pnr_cfg.get_blocks.return_value = []
     pnr_cfg.get_name.return_value = "demo_pnr"
     pnr_cfg.resolve_synth_cfg.return_value.get_top.return_value = "demo_top"
@@ -486,11 +589,72 @@ def test_power_inherits_the_pnr_runs_mapping(tmp_path):
     power_cfg.resolve_pnr_cfg.return_value = pnr_cfg
     power_cfg.get_pnr_suite_path.return_value = str(tmp_path / "pnr.yaml")
     power_cfg.get_constraints.return_value = None
-    power_cfg.get_lib_path_entries.return_value = [own, dict(per_corner)]
+    power_cfg.get_lib_path_entries.return_value = own
     backend = OpenRoadPower.__new__(OpenRoadPower)
     backend.power_cfg = power_cfg
+    return backend
+
+
+def test_power_inherits_the_pnr_runs_mapping(tmp_path):
+    per_corner = _per_corner(tmp_path)
+    (own,) = _macro_libs(tmp_path, "own")
+    backend = _inheriting_backend(tmp_path, [per_corner], [own, dict(per_corner)])
 
     assert backend._resolve_inputs()["macro_libs"] == [per_corner, own]
+
+
+def test_power_keeps_a_mapping_and_its_corner_swapped_twin():
+    from rtl_buddy.tools.power_openroad import _dedup_lib_paths
+
+    mapping = {"tt": "/m/a.lib", "ss": "/m/b.lib"}
+    swapped = {"tt": "/m/b.lib", "ss": "/m/a.lib"}
+    reordered = {"ss": "/m/b.lib", "tt": "/m/a.lib"}
+
+    assert _dedup_lib_paths([mapping, swapped, dict(mapping), reordered]) == [
+        mapping,
+        swapped,
+    ]
+
+
+def test_power_fails_setup_on_a_plain_path_that_the_inherited_mapping_names(
+    tmp_path, caplog
+):
+    per_corner = _per_corner(tmp_path)
+    inheriting = _inheriting_backend(tmp_path, [per_corner], [per_corner["ss"]])
+    macro_libs = inheriting._resolve_inputs()["macro_libs"]
+    backend = _make_power_backend(
+        tmp_path, platform=_FakePlatform(liberty="/pdk/tt.lib", corners=_POWER_CORNERS)
+    )
+    inner = backend._resolve_inputs
+    backend._resolve_inputs = lambda: {**inner(), "macro_libs": macro_libs}
+
+    with caplog.at_level(logging.ERROR):
+        res = backend.run()
+
+    assert res.results["fail_stage"] == "setup"
+    assert (
+        f"{per_corner['ss']} is listed both as a plain lib-paths entry and in a "
+        "per-corner mapping; drop the plain entry"
+    ) in res.results["desc"]
+    assert any(
+        getattr(r, "rtl_event", None) == "power.lib_paths_duplicate"
+        for r in caplog.records
+    )
+
+
+def test_power_accepts_that_plain_path_on_a_platform_that_lacks_the_corner(tmp_path):
+    per_corner = _per_corner(tmp_path)
+
+    _, lines = _power_script(
+        tmp_path,
+        [per_corner, per_corner["ss"]],
+        corners={"tt": _POWER_CORNERS["tt"]},
+    )
+
+    assert [line for line in lines if "macros" in line] == [
+        f"read_liberty {per_corner['tt']}",
+        f"read_liberty {per_corner['ss']}",
+    ]
 
 
 def test_resume_refuses_a_checkpoint_made_with_another_mapping(tmp_path, monkeypatch):

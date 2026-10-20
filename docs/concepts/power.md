@@ -62,7 +62,7 @@ runs:
 
 Paths resolve from `power.yaml`.
 
-On a platform with `corners:`, an entry, here or inherited, can map each corner to the macro's Liberty for it, as in [Sign off at several corners](pnr.md#sign-off-at-several-corners). Each file is read into its corner only. A map must name every corner of the platform and no other, or the run fails at setup with `power.lib_paths_corners`.
+An entry, here or inherited, can map each corner to the macro's Liberty for it, as in [Sign off at several corners](pnr.md#sign-off-at-several-corners). Each file is read into its corner only. A map must name every corner of the platform, or the run fails at setup with `power.lib_paths_corners`. Corners the platform lacks are ignored, so `rb power` accepts a map written for a platform with more corners than its own, unlike `rb pnr`. On a single-corner platform, such as the one [Known Issues](../known-issues.md#rb-power-times-every-corner-in-one-sdc-mode) recommends for one corner's figures, the entry is that corner's file. A file listed both as a plain entry and in a map fails setup with `power.lib_paths_duplicate`; drop the plain entry.
 
 - A `synth` source requires `synth`, `synth-path` and `constraints`.
 - A `pnr` source requires `pnr` and `pnr-path`. It uses the routed SDC unless `constraints` overrides it.
