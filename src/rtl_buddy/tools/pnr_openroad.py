@@ -4134,6 +4134,18 @@ class OpenRoadPnr:
             }
         }
 
+    def _post_route_note(self) -> str:
+        """The qualifier of a pass whose post-route repair set a round aside or passed over a round with better timing, else `""`."""
+        post_route = self._post_route_fields().get("post_route_repair") or {}
+        if post_route.get("passed_over_round") is not None:
+            return f"post-route repair {post_route['reason']}"
+        if post_route.get("stop") == "session_failed":
+            return (
+                f"post-route repair {post_route['reason']}; kept round "
+                f"{post_route['kept_round']}"
+            )
+        return ""
+
     def _planner_files(self, record) -> dict:
         """`macros_file` and `pins_file`, each through `record`, only when set, so other runs' records keep their roles."""
         fp = self.pnr_cfg.get_floorplan()
@@ -4756,9 +4768,12 @@ class OpenRoadPnr:
             },
         )
         probe = "probe " if self._mode is PnrMode.PROBE else ""
+        desc = f"P&R {probe}stopped after {stage} (not routed)"
+        if note := self._post_route_note():
+            desc += f"; {note}"
         return PnrPassResults(
             name=self.name + "/results",
-            desc=f"P&R {probe}stopped after {stage} (not routed)",
+            desc=desc,
             fields={
                 **metrics,
                 **corner_fields,
@@ -5525,15 +5540,6 @@ class OpenRoadPnr:
             gds_status=export.status if export is not None else None,
             log=log_path,
         )
-        post_route = self._post_route_fields().get("post_route_repair") or {}
-        post_route_note = ""
-        if post_route.get("passed_over_round") is not None:
-            post_route_note = f"post-route repair {post_route['reason']}"
-        elif post_route.get("stop") == "session_failed":
-            post_route_note = (
-                f"post-route repair {post_route['reason']}; kept round "
-                f"{post_route['kept_round']}"
-            )
         qualifiers = [
             q
             for q in (
@@ -5541,7 +5547,7 @@ class OpenRoadPnr:
                 pnr_abstract.stale_qualifier(self._blocks),
                 no_wire_rc,
                 f"electrical {electrical}" if electrical else "",
-                post_route_note,
+                self._post_route_note(),
             )
             if q
         ]

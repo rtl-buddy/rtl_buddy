@@ -2321,6 +2321,71 @@ def test_stop_after_post_route_repair_reports_on_extracted_parasitics(
     assert not (run_dir / "07_finish.tcl").exists()
 
 
+def test_stop_after_post_route_repair_qualifies_a_set_aside_round(
+    tmp_path, monkeypatch
+):
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        env={"RB_STUB_SETUP": "-0.2 -0.1 -0.05", "RB_STUB_REPAIR_FAIL": "2"},
+        stop_after="post_route_repair",
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["stopped_after"] == "post_route_repair"
+    assert res.results["post_route_repair"]["kept_round"] == 1
+    assert res.results["desc"] == (
+        "P&R stopped after post_route_repair (not routed); post-route repair "
+        "round 2's repair session failed: OpenROAD exited with code 1: STUB-0003; "
+        "kept round 1"
+    )
+
+
+def test_stop_after_post_route_repair_qualifies_a_passed_over_round(
+    tmp_path, monkeypatch
+):
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_BOTH, "rounds": 1},
+        env={
+            "RB_STUB_SETUP": "0.01 0.175",
+            "RB_STUB_HOLD": "-0.12 0.044",
+            "RB_STUB_DRC": "1",
+        },
+        stop_after="post_route_repair",
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    reason = res.results["post_route_repair"]["reason"]
+    assert res.results["post_route_repair"]["passed_over_round"] == 1
+    assert res.results["desc"] == (
+        f"P&R stopped after post_route_repair (not routed); post-route repair {reason}"
+    )
+
+
+def test_stop_after_post_route_repair_without_a_set_aside_has_no_qualifier(
+    tmp_path, monkeypatch
+):
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        env={"RB_STUB_SETUP": "-0.2 0.0"},
+        stop_after="post_route_repair",
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["desc"] == "P&R stopped after post_route_repair (not routed)"
+
+
 def test_post_route_repair_without_rcx_rules_is_a_setup_error(tmp_path, monkeypatch):
     backend, _artefacts = _repair_backend(
         tmp_path, monkeypatch, post_route=_PR, rcx=False
