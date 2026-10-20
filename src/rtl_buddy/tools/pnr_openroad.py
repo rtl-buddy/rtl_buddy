@@ -2699,8 +2699,8 @@ class OpenRoadPnr:
         scripts = self._post_route_scripts(run_dir)
         return (
             "# rb pnr post-route repair: rb runs these sessions in order and stops "
-            "once timing is met or a round does not improve it; each starts with the "
-            "first one's header and threads.\n"
+            "once a clean round meets timing or does not improve on the best; each "
+            "starts with the first one's header and threads.\n"
             + "".join(
                 f"\n# ---- {name} ----\n"
                 + (text if index == 0 else pnr_stages.session_body(text))
