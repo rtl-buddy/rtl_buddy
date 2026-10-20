@@ -1500,6 +1500,40 @@ def test_a_resume_from_finish_restores_the_last_round_s_reports(tmp_path, monkey
     assert (artefacts / "route.maze.log").read_text().strip() == "maze r1"
 
 
+@pytest.mark.parametrize("post_route", [_PR, None], ids=["repaired", "unrepaired"])
+def test_a_resume_from_finish_refuses_changed_rcx_rules_only_after_repair_rounds(
+    tmp_path, monkeypatch, post_route
+):
+    """The rounds extract with `rcx-rules`; without them only `finish`, which a resume from finish reruns, reads the file."""
+    first, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=post_route,
+        stages=True,
+        env={"RB_STUB_SETUP": "-0.2 0.01"},
+    )
+    assert first.run().results["result"] == "PASS"
+    (first_dir,) = _runs(artefacts)
+    again, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=post_route,
+        stages=True,
+        resume=str(first_dir),
+        resume_from="finish",
+        env={"RB_STUB_SETUP": "-0.2 0.01"},
+    )
+    (tmp_path / "pdk" / "rcx.rules").write_text("recalibrated rules\n")
+
+    res = again.run()
+
+    if post_route is None:
+        assert res.results["result"] == "PASS", res.results
+    else:
+        assert res.results["fail_stage"] == "resume", res.results
+        assert "input rcx_rules differs" in res.results["desc"]
+
+
 def test_a_failed_repair_session_fails_the_stage(tmp_path, monkeypatch):
     backend, artefacts = _repair_backend(
         tmp_path,

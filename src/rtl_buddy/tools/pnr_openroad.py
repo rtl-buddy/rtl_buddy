@@ -3584,6 +3584,7 @@ class OpenRoadPnr:
             "pin_constraints": _file_fingerprint(self.pnr_cfg.pin_constraints),
             **self._planner_files(_file_fingerprint),
             "pdn_config": _file_fingerprint(self._pdn_config(pdk)),
+            "rcx_rules": _file_fingerprint(pdk.get_rcx_rules()),
             **{
                 key.replace("-", "_"): _file_fingerprint(path)
                 for key, path in pdk.get_tcl_hooks().items()

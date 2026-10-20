@@ -260,14 +260,22 @@ _FLOORPLAN_INPUTS = (
 )
 
 
-def input_read_before(role: str, stage: str) -> bool:
-    """Whether a session before `stage` reads the manifest input `role`.
+#: The stages that read the PDK's `rcx-rules`, in flow order.
+_RCX_RULES_READERS = ("post_route_repair", "finish")
 
-    Every session reads the Liberty, LEF, `platform-tcl`, `layer-rc-tcl` and `session` hooks, and so does any role not named here.
+
+def input_read_before(
+    role: str, stage: str, stages: tuple[str, ...] = PNR_STAGES
+) -> bool:
+    """Whether a session before `stage` of a run of `stages` reads the manifest input `role`.
+
+    Every session reads the Liberty, LEF, `platform-tcl`, `layer-rc-tcl` and `session` hooks, and so does any role not named here. `rcx_rules` is read first by the run's post-route repair, else by its finish.
     """
     if role == "script":
         return False
-    if role in _FLOORPLAN_INPUTS:
+    if role == "rcx_rules":
+        first = next((s for s in _RCX_RULES_READERS if s in stages), "finish")
+    elif role in _FLOORPLAN_INPUTS:
         first = "floorplan"
     elif role.startswith("hook_") and role[5:].replace("_", "-") in HOOK_STAGE:
         first = HOOK_STAGE[role[5:].replace("_", "-")]
@@ -433,7 +441,7 @@ def check_resume(
 
     old_inputs = _absolutise(manifest.get("inputs") or {}, root)
     for role, value in inputs.items():
-        if not input_read_before(role, from_stage):
+        if not input_read_before(role, from_stage, stages):
             continue
         if _content(old_inputs.get(role)) != _content(value):
             return (
@@ -441,7 +449,7 @@ def check_resume(
                 f"{_describe(old_inputs.get(role))} then, {_describe(value)} now"
             )
     for role in old_inputs:
-        if role not in inputs and input_read_before(role, from_stage):
+        if role not in inputs and input_read_before(role, from_stage, stages):
             return f"input {role} that {where} read is no longer configured"
 
     for kind, file in (record.get("files") or {}).items():
