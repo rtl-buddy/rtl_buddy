@@ -20,8 +20,12 @@ _GROUP_HEAD = re.compile(r'(\w+)\s*\(\s*"?([^")]*?)"?\s*\)\s*$')
 
 
 def _header(text: str, module: str) -> tuple[int, int, list[str]] | None:
-    """Return the span of `module`'s port list in `text` and its port names, or None without one."""
-    match = re.search(rf"^module {re.escape(module)} \(", text, re.M)
+    """Return the span of `module`'s port list in `text` and its port names, or None without one.
+
+    A name that is not a simple identifier is written escaped, `module \\my-model (`.
+    """
+    name = re.escape(module)
+    match = re.search(rf"^module (?:{name}|\\{name}) \(", text, re.M)
     if match is None:
         return None
     end = text.find(");", match.end())

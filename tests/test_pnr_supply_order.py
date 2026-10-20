@@ -150,6 +150,14 @@ def test_the_supply_ports_are_sorted_by_name():
     assert order_netlist(swapped, "top", {"VDD", "VSS"}) == _BUILT_V
 
 
+def test_an_escaped_module_name_is_found_and_ordered():
+    escaped = _READ_V.replace("module top (", "module \\my-top (")
+    built = _BUILT_V.replace("module top (", "module \\my-top (")
+    assert netlist_ports(escaped, "my-top") == ["en", "z", "VDD", "VSS", "a"]
+    assert order_netlist(escaped, "my-top", {"VDD", "VSS"}) == built
+    assert netlist_ports(escaped, "top") is None
+
+
 def test_the_supply_pin_groups_go_last_in_the_cell():
     read = _lib(_PIN_EN, _PIN_VDD, _PIN_VSS, _BUS_A)
     built = _lib(_PIN_EN, _BUS_A, _PIN_VDD, _PIN_VSS)
