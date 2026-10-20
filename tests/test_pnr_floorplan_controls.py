@@ -429,6 +429,7 @@ def test_blockages_fail_at_setup_without_create_blockage(tmp_path, monkeypatch):
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
     backend = OpenRoadPnr("demo/openroad", pnr_cfg, str(tmp_path), root_cfg)
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     monkeypatch.setattr(backend, "_clear_stale_outputs", lambda **kw: None)
     probed = []
     monkeypatch.setattr(

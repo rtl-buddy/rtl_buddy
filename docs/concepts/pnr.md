@@ -41,11 +41,11 @@ rb pnr alu_pnr -c pnr/alu/pnr.yaml
 rb pnr alu_pnr -c pnr/alu/pnr.yaml --png    # also stream out GDS and render a PNG
 ```
 
-Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previous run's outputs first. With no run name, `rb pnr` runs every entry whose `reglvl` is within `-l`, hardened blocks before the runs that use them.
+Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previous run's outputs first, except a refused `--resume`, which stops before that and leaves them in place. With no run name, `rb pnr` runs every entry whose `reglvl` is within `-l`, hardened blocks before the runs that use them.
 
 ## Interpret results
 
-`PASS` means OpenROAD ran the flow to its end and wrote its outputs. It does not mean the design meets timing or routes clean. Judge the design on these fields:
+`PASS` means OpenROAD ran the flow to its end and wrote its outputs, or, for `mode: probe` and `--stop-after`, to the stage it stops after, with `routed: false` and no routed outputs. Check `routed` before treating a `PASS` as a routed result. It does not mean the design meets timing or routes clean. Judge the design on these fields:
 
 | Field | Meaning |
 | --- | --- |
@@ -74,7 +74,7 @@ A passing run's description carries qualifiers worth reading:
 - `GDS incomplete: ...`: cells with no layout in `preview` mode.
 - `stale block abstract(s) accepted: ...`: run with `--accept-stale`.
 
-A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line, stops before the end of its flow, or a check below fails. It is `SKIP` when `-l` filters it out or `tool:` is not `openroad`.
+A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in a post-route repair session rb sets aside), stops before the end of its flow, or a check below fails. It is `SKIP` when `-l` filters it out or `tool:` is not `openroad`.
 
 ## Inspect artefacts
 
@@ -82,7 +82,8 @@ A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line, stops befo
 | --- | --- |
 | `pnr.log`, `pnr.tcl` | OpenROAD output, written live, and the generated flow script |
 | `<top>.def`, `<top>.routed.odb` | Routed design. `rb power` reads the ODB. |
-| `<top>.routed.v`, `<top>.routed.sdc` | Logical netlist (no supply ports or supply pin connections) and constraints, for STA and gate-level simulation |
+| `<top>.routed.v`, `<top>.routed.sdc` | Logical netlist (no supply ports or supply pin connections) and constraints, for STA and gate-level simulation. The SDC is the primary corner's on a multi-corner platform. |
+| `<top>.<corner>.routed.sdc` | Each corner's constraints, on a [multi-corner platform](#sign-off-at-several-corners) |
 | `<top>.routed.spef` | Extracted parasitics, when the PDK sets `rcx-rules` |
 | `timing.rpt`, `electrical.rpt` | Worst paths and electrical violators, all corners |
 | `route.drc.rpt`, `route.maze.log` | Detailed-route DRCs and router log |
@@ -105,7 +106,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `fail_stage: setup` | Configuration or input problem found before OpenROAD started: a missing file (`pdn-config`, `rcx-rules`, a hook, a planner file), a bad planner-file entry, `post-route-repair` without `rcx-rules`, blockages on OpenROAD older than 26Q1. The description names it. |
+| `fail_stage: setup` | Configuration or input problem found before OpenROAD started: a missing file (`pdn-config`, `rcx-rules`, a hook, a planner file), a bad planner-file entry, `post-route-repair` without `rcx-rules`, blockages on OpenROAD older than 26Q1, a per-corner `constraints:` that does not fit the platform, or an OpenROAD that does not answer the [SDC mode check](#sign-off-at-several-corners). The description names it. |
 | `fail_stage: incomplete`, `the flow did not finish` | A Tcl file the flow sources (PDK Tcl, `pdn-config`, `pin-constraints`, a hook) called `exit` or `return -level 2`, ending OpenROAD with code 0. The description names the last step reached; remove the exit from the file that step sources. |
 | `fail_stage: routed_check` | A located macro or exact pin moved between floorplan and the routed DEF, usually because a `pin-constraints` file or hook moved it. |
 | `fail_stage: pins_complete` | `pins-complete: true` found a port with no pin entry, or with conflicting entries. Add or remove entries. |
@@ -113,7 +114,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `fail_stage: resume` | `--resume` refused: a stage script, input file, checkpoint or OpenROAD version differs. Rerun from an earlier stage. |
 | `fail_stage: dispatch` | A Slurm stage job ended `OUT_OF_MEMORY`, `TIMEOUT`, `CANCELLED` or similar, never started, or was refused. Read `dispatch/<NN>_<stage>.slurm.log`; raise that stage's `resources:`. See [Dispatch](#dispatch-the-stages-to-slurm). |
 | `fail_stage: abstract` | A hardened block's view could not be written. Read `pnr.log`. |
-| `fail_stage: export` | Stream-out failed under `gds-mode: strict`: KLayout, `klayout-tech`, an input file or the render. Fix it and run `rb pnr-export`. |
+| `fail_stage: export` | Stream-out failed, under `gds-mode: strict` in `rb pnr` or in any mode in `rb pnr-export`: KLayout, `klayout-tech`, an input file or the render. Fix it and run `rb pnr-export`. |
 | `fail_stage: blocked`, `synth`, `error` | A block this run uses failed, its upstream synthesis failed under `--synth`, or rb crashed (the exception is in the description). Fix the cause first. |
 | `[ERROR PDN-0179] Unable to repair all channels` | Macros too close for the power grid. Raise `placement.macro-halo` (about 19 µm minimum on sky130hd). |
 | `PDN-0008 ... halo overlaps row` | A macro grid's `-halo` in `pdn-config` reaches into a row. Reduce it to the value the message suggests. |
@@ -160,9 +161,24 @@ The four Tcl keys match ORFS's `PLATFORM_TCL`, `SET_RC_TCL`, `MAKE_TRACKS` and `
 
 ## Sign off at several corners
 
-Give a platform `corners: [tt, ss, ff]` instead of `corner:`. All corners are analysed in one OpenROAD session, so repair and the final reports see every corner. Clock-tree synthesis uses the first. Without either key the PDK's first corner is used. `rb power` reads the list too; `rb synth` stays single-corner.
+Give a platform `corners: [tt, ss, ff]` instead of `corner:`. All corners are analysed in one OpenROAD session, so repair and the final reports see every corner. Clock-tree synthesis uses the first, the primary. Without either key the PDK's first corner is used. `rb power` reads the list too, in one SDC mode ([Known Issues](../known-issues.md#rb-power-times-every-corner-in-one-sdc-mode)); `rb synth` stays single-corner.
 
-A macro with a single Liberty keeps that file's timing at every corner and can fail a slow corner (`RSZ-0090`). Give it a Liberty per corner. `STA-1140 library ... already exists` once per extra corner is expected. A multi-corner platform cannot harden a block or consume hardened blocks.
+Each corner is timed in an OpenSTA SDC mode and scene of its own, named after the corner, so a generated clock's latency comes from the corner being timed:
+
+- The SDC, `max-fanout` and the propagated clocks after CTS apply in every mode. The final reports read the routed SPEF once per corner.
+- `constraints:` can give each corner its own SDC, as a map that names every corner. Define the same clocks in each, since CTS builds the clock trees from the primary corner's.
+
+  ```yaml
+      constraints: {tt: top_tt.sdc, ss: top_ss.sdc, ff: top_ff.sdc}
+  ```
+
+- The primary corner's mode is the one CTS, hooks and an SDC command without a mode use. To constrain every corner from a hook, run the command after `set_mode <corner>` for each corner, then `set_mode <primary>`.
+- `<top>.routed.sdc` holds the primary corner's constraints and `<top>.<corner>.routed.sdc` each corner's. A checkpoint's `.sdc` holds every mode; its `<NN>_<stage>.<corner>.sdc` holds one corner's as a plain SDC.
+- `max_fanout_violation_count` counts a pin once per corner it violates at. Without modes (below) it counts the pin once.
+
+A mode per corner needs OpenROAD 26Q4 or newer; rb asks OpenROAD at setup. An older one times every corner in one mode and warns `pnr.corner_modes_unsupported`, and a per-corner `constraints:` fails setup. An OpenROAD that gives no answer twice fails setup with `pnr.corner_modes_probe_failed`. See [Known Issues](../known-issues.md#corners-share-one-sdc-mode-on-an-openroad-without-modes).
+
+A macro with a single Liberty keeps that file's timing at every corner and can fail a slow corner (`RSZ-0090`). Give it a Liberty per corner. A multi-corner platform cannot harden a block or consume hardened blocks.
 
 ## Set wire RC
 
@@ -352,7 +368,7 @@ By default each stripe layer connects to the next; `connect: [[met1, met4], ...]
 | `before-detailed-route` | Before each detailed route, including each post-route repair round's |
 | `before-reports` | After fill and extraction, before the final reports |
 
-Hooks run at Tcl global scope in `artefacts/<run>/`, with `$OUT_DIR` and `$DESIGN` set. A Tcl error, `exit` or stray `return` in a hook fails the run naming the point and file. Results come from the final reports, so a report a hook prints earlier does not change them. Hook files are inputs of checkpoints and hardened abstracts.
+Hooks run at Tcl global scope in `artefacts/<run>/`, with `$OUT_DIR` and `$DESIGN` set. A Tcl error, `exit` or stray `return` in a hook fails the run naming the point and file. Results come from the final reports, so a report a hook prints earlier does not change them. Hook files are inputs of checkpoints and hardened abstracts. On a multi-corner platform an SDC command in a hook constrains the primary corner only; see [Sign off at several corners](#sign-off-at-several-corners).
 
 When a run splits into several OpenROAD sessions (`stages: true`, `--resume`, `--dispatch slurm`, or `post-route-repair`), Tcl procedures, `rename` wrappers, `set_wire_rc` and `set_dont_use` set by a hook are gone in the next session. Put such state in a `session` hook. rb warns `pnr.hook_commands_not_kept` when a hook redefines an existing command.
 
@@ -373,6 +389,8 @@ A run killed at a wall-time limit leaves only its log. `checkpoints: true` (or o
 | `detailed_route` | The detailed route, before fill, with its DRC report |
 | `post_route_repair` | The kept repair round (only with `post-route-repair`) |
 
+On a multi-corner platform the `.sdc` holds every corner's SDC mode, and `<NN>_<stage>.<corner>.sdc` each corner's alone.
+
 Look at a checkpoint in OpenROAD or with `rb pnr-export --checkpoint`. It is never a final result. Old run directories are not pruned.
 
 ## Run stages as separate sessions
@@ -388,7 +406,7 @@ rb pnr alu_pnr -c pnr/alu/pnr.yaml --resume latest --from detailed_route
 
 - `--stop-after <stage>` works on any run, writes that checkpoint and a stage report, and passes with `routed: false`. It writes no routed outputs, GDS or abstract, and `xfail:` does not apply.
 - `--resume <run> --from <stage>` starts a new staged run from a staged run's checkpoint of the stage before. `<run>` is `latest`, a run id or a checkpoint directory. The old run is left unchanged, so detailed routing can be retried from one global route.
-- The resume is refused (`fail_stage: resume`) when the earlier stages' generated scripts, their input files or the OpenROAD version changed, or when resuming a probe into a closure run. Settings read only from `--from` on, such as `detailed-route-verbose`, routing layers or `threads:`, may change. Files sourced by hooks, `platform-tcl`, a `pdn-config` or the SDC, and environment variables, are not checked.
+- The resume is refused (`fail_stage: resume`) when the earlier stages' generated scripts, their input files or the OpenROAD version changed, or when resuming a probe into a closure run. A `constraints:` path and a map of that path to every corner count as different. Settings read only from `--from` on, such as `detailed-route-verbose`, routing layers or `threads:`, may change. Files sourced by hooks, `platform-tcl`, a `pdn-config` or the SDC, and environment variables, are not checked.
 
 ## Dispatch the stages to Slurm
 
@@ -411,7 +429,7 @@ Each job's reservation comes from `resources.stages.<stage>`, then the run's `re
 
 - A job that fails, times out or runs out of memory fails the run at that stage (`fail_stage: dispatch` unless the stage itself failed) and Slurm removes the jobs after it.
 - Ctrl-C, SIGTERM or SIGHUP cancels the run's jobs.
-- If `rb pnr` itself is killed, its jobs keep running. Until they leave the queue, a new `rb pnr` of the same configuration refuses to start and prints the `scancel` command. See [Known Issues](../known-issues.md#an-unconfirmed-dispatched-pr-run-blocks-later-runs).
+- If `rb pnr` itself is killed, its jobs keep running. Until they leave the queue, a new `rb pnr` of the same configuration refuses to start and prints the `scancel` command. On a host without `squeue`, that refusal lapses once the dispatch directory has been quiet for the sum of the stages' time limits (`pnr.stage_jobs_unchecked`), so check the queue before starting again. See [Known Issues](../known-issues.md#an-unconfirmed-dispatched-pr-run-blocks-later-runs).
 - `checkpoints/<run-id>/dispatch/` holds each job's id, Slurm log, rtl_buddy log and result.
 
 ## Stream out GDS and PNG
@@ -492,7 +510,7 @@ Use `frontend: slang` for such a parent. rb rewrites each instance to `blk u_blk
 
 For maintainers and hook authors. The generated `pnr.tcl` runs:
 
-1. `platform-tcl`, Liberty, LEF, netlist, SDC, `max-fanout`, `layer-rc-tcl`, don't-use cells, `session` hooks.
+1. `platform-tcl`, Liberty, LEF, a mode and scene per corner on a multi-corner platform, netlist, SDC, `max-fanout`, `layer-rc-tcl`, don't-use cells, `session` hooks. The SDC and `max-fanout` go into every mode.
 2. Floorplan, tracks, blockages and cut-outs, tie cells.
 3. Macro placement, tap cells, power grid, pin placement, port buffering.
 4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present), `repair_tie_fanout`, `repair_design`, legalization.
@@ -503,6 +521,6 @@ For maintainers and hook authors. The generated `pnr.tcl` runs:
 
 A `probe` skips the setup and hold repair and stops after global route. Each session must print its end marker (`>>> DONE`, `>>> End of stage <NN>_<stage>`, `>>> STOPPED after <stage>`, or the post-route round markers), or the run fails `incomplete`. This check comes before any check of the design.
 
-A staged session starts with a prelude regenerated from the same template: the header, Liberty and LEF, `read_db` and `read_sdc` of the previous checkpoint, its saved flow variables, then step 1's per-session settings. It keeps only what the database, the checkpoint SDC and the state file hold. A resume compares each earlier stage's script up to its end-of-stage line, ignoring comments, the run-directory lines, `set_thread_count` and header variables the stage does not read.
+A staged session starts with a prelude regenerated from the same template: the header, Liberty and LEF, `read_db` and `read_sdc` of the previous checkpoint (every mode), its saved flow variables, then step 1's per-session settings. It keeps only what the database, the checkpoint SDC and the state file hold. A resume compares each earlier stage's script up to its end-of-stage line, ignoring comments, the run-directory lines, `set_thread_count` and header variables the stage does not read.
 
 Each stage's wall time, CPU time and peak memory are recorded as `stage_end` events in `progress.jsonl` and under `resources` in the manifest. In a one-session run the peak memory of a stage includes what earlier stages left resident.
