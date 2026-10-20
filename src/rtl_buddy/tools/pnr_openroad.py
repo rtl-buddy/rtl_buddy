@@ -1278,15 +1278,6 @@ def _timing_met(timing: dict, sides) -> bool | None:
     return all(slack >= 0 for slack in slacks)
 
 
-def _report_lines(path: str) -> int:
-    """The non-blank lines of a DRC report; 0 when it is missing."""
-    try:
-        with open(path) as f:
-            return sum(1 for line in f if line.strip())
-    except OSError:
-        return 0
-
-
 def _carry_checkpoint(run_dir: str, plan: dict) -> None:
     """Make the detailed route's checkpoint, with the reports it keeps, the post-route repair stage's when no round repaired: hard links where the filesystem allows, else copies."""
     carry = plan["carry"]
@@ -1394,9 +1385,9 @@ def run_post_route_repair(run_dir: str, session, *, run_name: str) -> PostRouteO
         if returncode != 0 or problem is not None or errors:
             return _outcome(returncode, stderr, problem)
         repaired = round_
-        drcs = _report_lines(plan["drc_report"])
+        drcs = count_drc_violations(plan["drc_report"])
         if drcs:
-            reason = f"round {round_}'s detailed route has {drcs} DRC report line(s)"
+            reason = f"round {round_}'s detailed route has {drcs} DRC violation(s)"
             break
     if repaired == 0:
         _carry_checkpoint(run_dir, plan)

@@ -627,7 +627,7 @@ proc detailed_route {args} {
     rb_stub detailed_route
     set i [lsearch $args -output_drc]
     if {$i >= 0 && [info exists env(RB_STUB_DRC)] && $env(RB_STUB_DRC) == [rb_round]} {
-        rb_write [lindex $args [expr {$i + 1}]] "violation"
+        rb_write [lindex $args [expr {$i + 1}]] "violation type: Short\n\tsrcs: net:a net:b\n\tbbox = (1.0, 2.0) - (1.1, 2.1) on Layer met1"
     }
     set i [lsearch $args -output_maze]
     if {$i >= 0} { rb_write [lindex $args [expr {$i + 1}]] "maze r[rb_round]" }
@@ -1444,11 +1444,11 @@ def test_a_round_with_drc_violations_stops_the_rounds(tmp_path, monkeypatch):
     (run_dir,) = _runs(artefacts)
     assert [r["round"] for r in _rounds(run_dir)] == [1]
     assert _done(run_dir)["repaired_rounds"] == 1
-    assert "DRC" in _done(run_dir)["reason"]
+    assert "1 DRC violation(s)" in _done(run_dir)["reason"]
     assert res.results["drc_count"] == 1
     # The stage's checkpoint keeps the last round's router reports.
     kept = run_dir / "06_post_route_repair.route.drc.rpt"
-    assert kept.read_text().strip() == "violation"
+    assert kept.read_text().startswith("violation type: Short")
     maze = run_dir / "06_post_route_repair.route.maze.log"
     assert maze.read_text().strip() == "maze r1"
 
