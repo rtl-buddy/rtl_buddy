@@ -114,6 +114,8 @@ Outputs land under `<pnr-dir>/artefacts/<run>/`.
 | `export.provenance.json` | What the last `rb pnr-export` read and produced |
 | `checkpoints/`, `abstract/` | Optional [stage checkpoints](#keep-stage-checkpoints), with a [staged run's](#run-stages-as-separate-sessions) stage scripts and logs, and [hardened-block abstract](#harden-a-block) |
 
+`<top>.routed.v` is the logical netlist, as OpenROAD's `write_verilog` writes it without `-include_pwr_gnd`. It declares no supply ports and connects no cell supply pin, and a cell with only supply pins, such as a fill cell, appears with no connections. A one-session, staged, resumed or dispatched run writes the same netlist. Static timing and gate-level simulation read it as it is. A parent design instances a hardened block through its [abstract](#harden-a-block), not this netlist, and `rb power` reads `<top>.routed.odb`. The supply connections are in the DEF and the ODB; `rb pnr` writes no netlist for LVS.
+
 Each run deletes the previous run's outputs first, and a run that fails after writing the routed database removes it again, so `rb power` never reads a stale one. `pnr.log`, `pnr.tcl` and `congestion.rpt` are kept from a failed run.
 
 On failure, read `pnr.log`. If only KLayout failed, read the matching `klayout.*.log`, fix the installation and rerun with `--gds` or `--png`.

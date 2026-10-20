@@ -114,6 +114,10 @@ The flow applies the PDK's global connections again (`global_connect`) at the en
 
 A port with an exact location in `floorplan.pins` is left out of every side or group rule that also matches it. In v6 it stayed in the rule's list: the run failed with `PPL-0107` when the pin lay outside the rule's edge, and otherwise the rule's other pins were placed around it. Such a config now places the rule's other pins differently.
 
+### The routed netlist declares no supply ports
+
+`<top>.routed.v` is the logical netlist in every run: it declares no supply ports and connects no cell supply pin. In v6 it declared the supply nets the power grid created, such as `VDD` and `VSS`, as `inout` ports that nothing inside the module connected to. A hardened block's `<top>.lib` lists those supply pins with `direction : input`, where v6 wrote `inout`. A script or testbench that connects the supply ports of a routed netlist by name must drop those connections. See [Inspect artefacts](concepts/pnr.md#inspect-artefacts).
+
 ### Stage checkpoints
 
 The `global_route` checkpoint holds the design after the `after-global-route` hooks and the global-route repair (`global-route-hold-repair` or `global-route-repair`), before the `before-detailed-route` hooks: the design detailed routing starts from. In v6 it held the design as `global_route` returned, before the hold repair. A `detailed_route` checkpoint (`05_detailed_route.odb`, `.def` and `.sdc`) follows detailed routing, so `checkpoints: true` writes five stages and `rb pnr-export --checkpoint detailed_route` exports the route before fill. Checkpoint SDC files are written with `write_sdc -no_timestamp -digits 9`. No `pnr.yaml` change is needed; a script that reads `04_global_route` as the design before hold repair gets the repaired design. See [Keep stage checkpoints](concepts/pnr.md#keep-stage-checkpoints).
