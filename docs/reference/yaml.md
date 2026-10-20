@@ -165,7 +165,7 @@ An unknown key in a `cfg-pdks` or `cfg-pnr-platforms` entry, including its `pin-
 
 `placement.*` stands for every `placement.` key in the table below.
 
-P&R keys, all optional. `placement.*` keys are set on the PDK, overridden by the platform and then by a `pnr.yaml` run's `placement:` block, field by field. When to use each is in [Tune placement, clock tree and repair](../concepts/pnr.md#tune-placement-clock-tree-and-repair).
+P&R keys, all optional. A key set at more than one level takes its value from the most specific: the PDK, then the platform, then the `pnr.yaml` run. `placement.*` and `routing-layers.*` go field by field. A path resolves from the file that sets it. When to use each is in [Tune placement, clock tree and repair](../concepts/pnr.md#tune-placement-clock-tree-and-repair).
 
 | Key | Where | Behavior |
 |---|---|---|
@@ -179,22 +179,27 @@ P&R keys, all optional. `placement.*` keys are set on the PDK, overridden by the
 | `placement.routability-use-grt` | PDK, platform | `true` adds `-routability_use_grt`. Needs `routability-driven: true` after overrides. Default `false` |
 | `placement.timing-driven` | PDK, platform | `true` adds `-timing_driven`; on OpenROAD 26Q4 it also buffers and resizes during placement. Default `false` |
 | `placement.rotated-macro-footprint` | PDK, platform | `block` (default), `diamond-legalizer` or `none`. See [Known Issues](../known-issues.md#openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint) |
+| `placement.macro-pin-limits` | PDK, platform | Mapping; unset (default) turns the step off. `buffers` (required): buffer cell names, weakest first. `margin`: fraction of a pin's max-slew limit kept in hand, from 0 up to but not including 1, default `0.05`. `capacitance-margin`: the same for max-capacitance, default `margin`. A block replaces a lower level's whole. See [Tune placement, clock tree and repair](../concepts/pnr.md#tune-placement-clock-tree-and-repair) |
 | `dont-use-cells` | PDK, synth and P&R platforms | Cell names or globs (`*`, `?`), one per entry. Empty by default |
 | `pdn-config` | PDK | Tcl that declares the power grid; the flow calls `pdngen`. Unset means no grid |
 | `rcx-rules` | PDK | OpenRCX rules. Enables extraction, `<top>.routed.spef` and `post-route-repair` |
 | `layer-rc-tcl` | PDK | `set_layer_rc` / `set_wire_rc` script, sourced after `read_sdc` by `rb pnr`, a `netlist-source: pnr` power run and a synthesis effort with `openroad.repair`. Unset warns `pnr.no_wire_rc` |
 | `platform-tcl` | PDK | Sourced before the Liberty reads of `rb pnr` and `rb power` |
 | `tracks-tcl` | PDK | `make_tracks` script, replacing the bare `make_tracks` |
-| `tapcell-tcl` | PDK | Tap and endcap insertion, after macro placement |
-| `cts-buffer` | platform | One cell or a list; a list's first entry is the root buffer |
+| `tapcell-tcl` | PDK, platform, run | Tap and endcap insertion, after macro placement |
+| `routing-layers.signal`, `routing-layers.clock` | platform, run | Layer ranges for `set_routing_layers -signal` / `-clock` |
+| `cts-buffer` | platform, run | One cell or a list; a list's first entry is the root buffer |
+| `cts-clock-nets` | run | One net or a list: `clock_tree_synthesis -clk_nets`, building trees for those clock nets only. Unset lets CTS find every clock |
+| `cts-latency-balancing` | platform, run | `false` adds `-no_insertion_delay`: CTS does not pad shallow branches of a clock net with delay buffers to match its deepest. Default `true` |
+| `cts-repair-clock-nets` | platform, run | `true` runs `repair_clock_nets` right after CTS, before the `after-cts` hooks. Default `false` |
 | `cts-sink-clustering` | platform | `-sink_clustering_enable` for CTS. Default `true` |
 | `cts-apply-ndr` | platform | `none`, `root_only`, `half` or `full`. Unset keeps OpenROAD's `half` |
-| `port-buffer` | platform | Cell `buffer_ports` inserts. Unset lets OpenROAD choose |
-| `post-cts-setup-repair` | platform | `true` runs `repair_timing -setup` after CTS. Default `false` |
-| `global-route-hold-repair` | platform | `true` is `global-route-repair: {hold-margin: 0}`; not with `global-route-repair`. Default `false` |
+| `port-buffer` | platform, run | Cell `buffer_ports` inserts. Unset lets OpenROAD choose |
+| `post-cts-setup-repair` | platform, run | `true` runs `repair_timing -setup` after CTS. Default `false` |
+| `global-route-hold-repair` | platform, run | `true` is `global-route-repair: {hold-margin: 0}`; not with `global-route-repair` at the same level. On a run, `false` drops the hold repair from the platform's block, and turns the block off when nothing is left. Default `false` |
 | `global-route-repair` | platform, run | Repair after global route. See below |
 | `post-route-repair` | platform, run | Repair rounds after detailed route. See below |
-| `routing-layer-adjustment` | platform | 0 to 1: signal-layer capacity withheld from the global router. Unset keeps the router's default |
+| `routing-layer-adjustment` | platform, run | 0 to 1: signal-layer capacity withheld from the global router. Unset keeps the router's default |
 | `max-fanout` | platform | Positive integer; `set_max_fanout` after each `read_sdc` in `rb pnr` and `rb power` |
 
 `global-route-repair` and `post-route-repair` take:
@@ -202,7 +207,7 @@ P&R keys, all optional. `placement.*` keys are set on the PDK, overridden by the
 | Key | Behavior |
 |---|---|
 | `repair-design` | `repair_design` with `slew-margin`, `cap-margin` (percent) and `max-wire-length` (µm); `{}` uses OpenROAD's defaults |
-| `repair-design.wire-rc` | `post-route-repair` only. Signal wire RC for `repair_design`: `{resistance: <kohm/um>, capacitance: <fF/um>}` or `{layer: <name>}`. The session's RC is restored for `repair_timing`. Unset uses the session's |
+| `repair-design.wire-rc` | `post-route-repair` only. Signal wire RC for `repair_design`: `{resistance: <kohm/um>, capacitance: <fF/um>}` or `{layer: <name>}`. The session's RC is restored for `repair_timing`; nets `repair_design` changed keep this estimate until they are estimated again. Unset uses the session's |
 | `repair-design.after-timing` | `post-route-repair` only. `true` runs `repair_design` again after timing repair in each round; needs a margin. Default `false` |
 | `setup-margin`, `hold-margin` | `repair_timing -setup` / `-hold` with that margin in ns, at least 0 |
 | `reroute` | `incremental` (default) or `full` for `global-route-repair`; `eco` (default) or `full` for `post-route-repair` |
@@ -831,7 +836,7 @@ runs:
 | `name` | Required | Run name and artefact directory |
 | `desc` | Required | Description |
 | `synth`, `synth-path` | Required | Upstream synthesis entry and its `synth.yaml`. The run reads `artefacts/<synth>/synth_netlist.v` |
-| `constraints` | Required | SDC file |
+| `constraints` | Required | SDC file, or on a multi-corner platform a map of each corner to its SDC file. A map that misses a corner or names another fails setup. See [Sign off at several corners](../concepts/pnr.md#sign-off-at-several-corners) |
 | `platform` | Required | `cfg-pnr-platforms` entry |
 | `tool` | `openroad` | Only `openroad` runs; anything else is `SKIP` |
 | `lef-paths`, `lib-paths` | — | Extra macro LEF and Liberty |
@@ -843,6 +848,7 @@ runs:
 | `pdn-config` | PDK's | Tcl that replaces the PDK's `pdn-config` |
 | `pdn` | — | Core grid in YAML; see below |
 | `placement` | Platform's | Any `placement.*` key, overriding the platform for this run |
+| `routing-layers`, `routing-layer-adjustment`, `cts-buffer`, `cts-clock-nets`, `cts-latency-balancing`, `cts-repair-clock-nets`, `post-cts-setup-repair`, `global-route-hold-repair`, `port-buffer`, `tapcell-tcl` | Platform's | Override the platform's value for this run. See [P&R keys](#synthesis-and-physical-design-tools) |
 | `global-route-repair`, `post-route-repair` | Platform's | Overrides the platform's block field by field; `null` turns it off. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing) |
 | `mode` | `closure` | `probe` skips timing repair and stops after global route. Not with `harden: true`. See [Probe a floorplan](../concepts/pnr.md#probe-a-floorplan) |
 | `fail-on-electrical` | `false` | `true` fails a routed run with any max-slew, max-capacitance or max-fanout violator, and post-route repair prefers a round without max-slew or max-capacitance violators |
@@ -934,7 +940,7 @@ runs:
 | `synth`, `synth-path` | Required for synth source | Upstream synthesis entry and YAML path |
 | `pnr`, `pnr-path` | Required for P&R source | Upstream P&R entry and YAML path |
 | `phys-run` | Optional, synth source only | Synthesis run in `synth-path` whose artefact directory receives this run's `phys-model.json`. A run name, never a path |
-| `constraints` | Required for synth source | SDC path. For P&R source it defaults to the routed SDC |
+| `constraints` | Required for synth source | SDC path. For P&R source it defaults to the routed SDC, the primary corner's on a multi-corner platform |
 | `platform` | Required | `cfg-pnr-platforms` entry |
 | `lib-paths` | Optional | Extra macro Liberty files relative to `power.yaml`, appended after what the referenced run declares |
 | `threads` | Default unset (1) | OpenROAD worker threads, as in `pnr.yaml`. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |

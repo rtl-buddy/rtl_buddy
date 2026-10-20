@@ -1989,6 +1989,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('exe')} does not have; upgrade OpenROAD or drop "
                 "the blockages"
             )
+        case "pnr.wire_rc_unsupported":
+            return (
+                f'P&R "{fields.get("pnr")}": post-route-repair.repair-design.'
+                "wire-rc needs OpenROAD's sta::scenes and est:: wire RC "
+                f"commands (26Q2 or newer), which {fields.get('exe')} does not "
+                "have; upgrade OpenROAD or drop wire-rc"
+            )
         case "pnr.run_hook_missing":
             return (
                 f'P&R "{fields.get("pnr")}": hooks.{fields.get("point")}'
@@ -2000,6 +2007,29 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'P&R "{fields.get("pnr")}": harden: needs a single-corner '
                 f"platform, and '{fields.get('platform')}' declares corners — "
                 "an abstract carries one corner's timing model"
+            )
+        case "pnr.constraints_corners":
+            return f'P&R "{fields.get("pnr")}": constraints: {fields.get("problem")}'
+        case "pnr.corner_constraints_unsupported":
+            return (
+                f'P&R "{fields.get("pnr")}": constraints: a per-corner SDC needs '
+                f"an SDC mode per corner, and {fields.get('exe')} "
+                f"({fields.get('version') or 'version unknown'}) cannot switch "
+                "between SDC modes; upgrade OpenROAD or give one SDC path"
+            )
+        case "pnr.corner_modes_probe_failed":
+            return (
+                f'P&R "{fields.get("pnr")}": could not tell whether '
+                f"{fields.get('exe')} can give each corner an SDC mode: "
+                f"{fields.get('problem')}"
+            )
+        case "pnr.corner_modes_unsupported":
+            return (
+                f'P&R "{fields.get("pnr")}": {fields.get("exe")} '
+                f"({fields.get('version') or 'version unknown'}) cannot switch "
+                f"between SDC modes, so every corner of '{fields.get('platform')}' "
+                "is timed in one mode, where a generated clock's source latency "
+                "comes from one corner; upgrade OpenROAD for a mode per corner"
             )
         case "pnr.block_unresolved" | "synth.block_unresolved":
             flow = "P&R" if event.startswith("pnr") else "synthesis"
@@ -3051,6 +3081,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('max_capacitance_violation_count')} max-capacitance and "
                 f"{fields.get('max_fanout_violation_count')} max-fanout violator(s); "
                 f"{verdict}; see {fields.get('report')}"
+            )
+        case "pnr.macro_pin_limits_unmet":
+            return (
+                f"pnr {fields.get('pnr')}: {fields.get('unmet')} macro pin(s) stayed "
+                "over their max-slew or max-capacitance limit less the "
+                "placement.macro-pin-limits margin with the strongest buffer "
+                "candidate (or had no free row site); add a stronger buffer, "
+                "lower placement.macro-cell-halo, or check the routed result in "
+                f"electrical.rpt; see the '>>> Macro pin limits' lines in {fields.get('log')}"
             )
         case "pnr.dont_use_instantiated":
             shown = [

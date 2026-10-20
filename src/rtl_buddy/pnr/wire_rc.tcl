@@ -2,7 +2,9 @@
 # A post-route `repair_design` at its own signal wire RC (`repair-design.wire-rc`,
 # see `_repair_steps_tcl`). `rb::rc::save` keeps every scene's signal wire RC,
 # `rb::rc::apply` replaces it and `rb::rc::restore` puts it back, so the
-# `repair_timing` after it runs at the RC the session had. Clock wire RC is left
+# `repair_timing` after it estimates the nets it changes at the RC the session
+# had. Restoring does not invalidate parasitics: the nets `repair_design` changed
+# keep their `wire-rc` estimate until they are estimated again. Clock wire RC is left
 # alone. OpenROAD reads back only the mean of the horizontal and vertical signal
 # RC, so `save` reads the horizontal one with the vertical one set to zero.
 namespace eval rb::rc {

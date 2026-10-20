@@ -251,7 +251,7 @@ Move such state into a `session` hook, which runs at the start of every session.
 
 A staged run runs the same flow commands as a one-session run and gives identical results at the same thread count, except where OpenROAD carries in-memory state across a stage boundary:
 
-- The resizer keeps state from `repair_design` and `buffer_ports`. A hook that runs one of them in an earlier stage, such as `repair_design -pre_placement` in `after-pins`, can change a later repair. rb's own `buffer-ports` and `repair_design` do not.
+- The resizer keeps state from `repair_design` and `buffer_ports`. A hook that runs one of them in an earlier stage, such as `repair_design -pre_placement` in `after-pins`, can change a later repair. rb's own `buffer_ports` (floorplan) and `repair_design` (place) also run in different stages; the sky130hd template routes identically either way, which does not guarantee it for every design.
 - OpenSTA keeps the supply ports `pdngen` creates bidirectional in the session that ran `pdngen` (OpenROAD#11850). The `finish` session re-asserts them as supply ports, so `<top>.routed.v` and a hardened `<top>.lib` do not depend on it, but a one-session hook that runs after `pdngen` sees them as signal ports.
 - A hardened block's `<top>.lib` lists the supply pins in another order (rtl_buddy#890). Both files describe the same block.
 - Without `rcx-rules`, `finish` times on the global route restored from the route guides, which can miss a few pins (`EST-0026`), so slack can differ slightly. With `rcx-rules` both time the same SPEF.
@@ -267,9 +267,20 @@ Each post-route repair round runs in fresh sessions and orders its steps to avoi
 - `global_route -start_incremental` around a resizer command that reroutes by itself delivers each netlist change twice, and a later rip-up fails with `GRT-0229` and `usage=65535` (OpenROAD#11851). A `full` round and the global-route repair run their repairs first and open the incremental route around the legalization only, as ORFS does. An `eco` round, whose repairs do not reroute, opens it before the repairs.
 - `repair_timing` on global-route parasitics fails `RSZ-0074` on nets `repair_design` split until they are rerouted, so a repair that runs both legalizes and reroutes between them.
 
-## Post-route repair rounds and the final report can disagree on a multi-corner platform
+## Corners share one SDC mode on an OpenROAD without modes
 
-Each repair round reads its SPEF once per corner, but the final reports read the routed SPEF once for all corners, and OpenSTA reuses the first corner's reduced parasitics at the others. The rounds can stop on `timing_met` while the result reports negative setup at another corner. Take a multi-corner verdict from the rounds' per-corner figures in `pnr.post_route_round`, or re-time the routed database with one `read_spef -corner` per corner. See [rtl_buddy#846](https://github.com/rtl-buddy/rtl_buddy/issues/846).
+`rb pnr` gives each corner its own SDC mode only on an OpenROAD that can switch back to an earlier mode, 26Q4 or newer. On an older one, such as 26Q2, every corner is timed in one mode and rb warns `pnr.corner_modes_unsupported`:
+
+- A generated clock's latency comes from one corner at every corner, so a forwarded clock can be timed for hold at a fast corner on a slow corner's latency.
+- A per-corner `constraints:` fails setup with `pnr.corner_constraints_unsupported`.
+- `STA-1140 library ... already exists` is logged once per extra corner for a macro with one Liberty.
+- Every `<top>.<corner>.routed.sdc` holds that one mode, and checkpoints write no per-corner SDC.
+
+Upgrade OpenROAD, or run each corner on a single-corner platform. See [Sign off at several corners](concepts/pnr.md#sign-off-at-several-corners).
+
+## rb power times every corner in one SDC mode
+
+On a multi-corner platform `rb power` reads one SDC, by default the P&R run's `<top>.routed.sdc` (the primary corner's), and the routed SPEF once for all corners. Every corner then uses the primary corner's generated-clock latencies, and the corners after the first reuse the first corner's reduced parasitics. For one corner's own figures, run `rb power` on a single-corner platform of that corner with `constraints:` set to `<top>.<corner>.routed.sdc`.
 
 ## An unconfirmed dispatched P&R run blocks later runs
 

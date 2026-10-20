@@ -33,6 +33,11 @@ PLACEMENT_ALL = {
     "routability-use-grt": True,
     "timing-driven": True,
     "rotated-macro-footprint": "none",
+    "macro-pin-limits": {
+        "buffers": ["buf1", "buf8"],
+        "margin": 0.05,
+        "capacitance-margin": 0.5,
+    },
 }
 
 # Sized by core-margin; the second run sizes with die-area, core-area and core-cutouts instead.
@@ -140,6 +145,15 @@ RUN_SIZED = {
     "placement": PLACEMENT_ALL,
     "global-route-repair": GLOBAL_ROUTE_REPAIR_ALL,
     "post-route-repair": POST_ROUTE_REPAIR_ALL,
+    "routing-layers": {"signal": "m2-m4", "clock": "m3-m4"},
+    "routing-layer-adjustment": 0.2,
+    "cts-buffer": "b2",
+    "cts-latency-balancing": False,
+    "cts-repair-clock-nets": True,
+    "post-cts-setup-repair": False,
+    "port-buffer": "buf2",
+    "tapcell-tcl": "tap_run.tcl",
+    "cts-clock-nets": ["clk", "clk_div[0]"],
     "mode": "closure",
     "reglvl": 1000,
     "tool_overrides": {"any": 1},
@@ -175,6 +189,7 @@ RUN_DIE = {
         "core-cutouts": [[20, 20, 30, 30]],
     },
     "stages": True,
+    "global-route-hold-repair": True,
     "mode": "probe",
     "post-route-repair": {"repair-design": {"wire-rc": {"layer": "m5"}}},
 }
@@ -207,6 +222,8 @@ PLATFORM_ONE_CORNER = {
     "corner": "typ",
     "cts-buffer": ["b1", "b2"],
     "cts-sink-clustering": False,
+    "cts-latency-balancing": False,
+    "cts-repair-clock-nets": True,
     "post-cts-setup-repair": True,
     "global-route-repair": GLOBAL_ROUTE_REPAIR_ALL,
     "post-route-repair": POST_ROUTE_REPAIR_ALL,
@@ -217,6 +234,7 @@ PLATFORM_ONE_CORNER = {
     "routing-layers": {"signal": "m1-m5", "clock": "m3-m5"},
     "placement": PLACEMENT_ALL,
     "dont-use-cells": ["y*"],
+    "tapcell-tcl": "tap_platform.tcl",
 }
 PLATFORM_CORNERS = {
     "name": "pl2",
@@ -296,7 +314,10 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "pdn-config, pdn, platform, floorplan, lef-paths, lib-paths, gds-paths, "
             "gds-mode, gds-allow-empty, checkpoints, stages, hooks, harden, abstract, "
             "buffer-ports, fail-on-electrical, blocks, placement, "
-            "global-route-repair, post-route-repair, mode, reglvl, tool_overrides, "
+            "global-route-repair, post-route-repair, routing-layers, "
+            "routing-layer-adjustment, cts-buffer, cts-latency-balancing, "
+            "cts-repair-clock-nets, post-cts-setup-repair, global-route-hold-repair, "
+            "port-buffer, tapcell-tcl, cts-clock-nets, mode, reglvl, tool_overrides, "
             "threads, resources, detailed-route-verbose, xfail, xfail_strict, "
             "xfail_match",
         ),
@@ -343,9 +364,15 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             ("placement",),
             "density, padding, macro-halo, macro-cell-halo, tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
-            "rotated-macro-footprint",
+            "rotated-macro-footprint, macro-pin-limits",
+        ),
+        (
+            "pnr run 'a': placement.macro-pin-limits",
+            ("placement", "macro-pin-limits"),
+            "buffers, margin, capacitance-margin",
         ),
         ("pnr run 'a': blocks[1]", ("blocks", 1), "name, pnr, pnr-path"),
+        ("pnr run 'a': routing-layers", ("routing-layers",), "signal, clock"),
         (
             "pnr run 'a': global-route-repair",
             ("global-route-repair",),
@@ -629,16 +656,24 @@ cfg-pnr-platforms:
             "cfg-pdks 'pdk1': placement",
             "density, padding, macro-halo, macro-cell-halo, tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
-            "rotated-macro-footprint",
+            "rotated-macro-footprint, macro-pin-limits",
+        ),
+        (
+            "pdk",
+            ("placement", "macro-pin-limits"),
+            "cfg-pdks 'pdk1': placement.macro-pin-limits",
+            "buffers, margin, capacitance-margin",
         ),
         (
             "platform",
             (),
             "cfg-pnr-platforms 'pl1'",
             "name, pdk, corner, corners, cts-buffer, cts-sink-clustering, "
+            "cts-latency-balancing, cts-repair-clock-nets, "
             "post-cts-setup-repair, global-route-hold-repair, global-route-repair, "
             "post-route-repair, routing-layer-adjustment, cts-apply-ndr, "
-            "port-buffer, max-fanout, routing-layers, placement, dont-use-cells",
+            "port-buffer, max-fanout, routing-layers, placement, dont-use-cells, "
+            "tapcell-tcl",
         ),
         (
             "platform",
@@ -658,7 +693,13 @@ cfg-pnr-platforms:
             "cfg-pnr-platforms 'pl1': placement",
             "density, padding, macro-halo, macro-cell-halo, tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
-            "rotated-macro-footprint",
+            "rotated-macro-footprint, macro-pin-limits",
+        ),
+        (
+            "platform",
+            ("placement", "macro-pin-limits"),
+            "cfg-pnr-platforms 'pl1': placement.macro-pin-limits",
+            "buffers, margin, capacitance-margin",
         ),
     ],
 )

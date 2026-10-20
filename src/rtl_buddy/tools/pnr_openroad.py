@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 from ..config.dispatch import JobResources
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
+from ..config.pdk import MacroPinLimitsFile
 from ..config.pdk import RotatedMacroFootprint
 from ..config.pnr import (
     CHECKPOINT_STAGES,
@@ -73,6 +74,8 @@ from .liberty_units import (
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
 _TEMPLATE_FILE = "flow.tcl.template"
 _MACRO_PACK_FILE = "macro_pack.tcl"
+# The macro pin-limit procedures, substituted only when `placement.macro-pin-limits` is set.
+_MACRO_PIN_LIMITS_FILE = "macro_pin_limits.tcl"
 # Cuts the rows under hard placement blockages before tap insertion; see `_floorplan_directives`.
 _CUT_ROWS_FILE = "cut_rows.tcl"
 # Replaces the pdn-config's core grid with a run's `pdn:` block; see `_pdn_block`.
@@ -127,6 +130,9 @@ _MANAGED_OUTPUT_SUFFIXES = (
 
 # Suffix of the OpenRCX SPEF written when the PDK declares `rcx-rules`; `rb power` resolves it by this.
 ROUTED_SPEF_SUFFIX = ".routed.spef"
+
+# Suffix of the routed SDC: `<top>.routed.sdc`, the primary corner's mode, and on a multi-corner platform `<top>.<corner>.routed.sdc` for each corner, which the suffix clears too.
+ROUTED_SDC_SUFFIX = ".routed.sdc"
 
 _FIXED_OUTPUT_NAMES = tuple(
     name for name in _FLOW_OUTPUT_NAMES if "{design}" not in name
@@ -188,6 +194,14 @@ _ELECTRICAL_CORNER_RE = re.compile(
     rf"^{re.escape(_ELECTRICAL_CORNER_TAG)} (\S+) max_(slew|capacitance) (\d+)\s*$",
     re.MULTILINE,
 )
+
+# Printed once by the macro pin-limit step: the macro pins it buffered and those still over their limit less the margin.
+_MACRO_PIN_LIMITS_TAG = "RB-MACRO-PIN-LIMITS:"
+_MACRO_PIN_LIMITS_RE = re.compile(
+    rf"^{re.escape(_MACRO_PIN_LIMITS_TAG)} buffered (\d+) unmet (\d+)\s*$",
+    re.MULTILINE,
+)
+
 # Result field per check, and the word a description uses for it.
 _ELECTRICAL_FIELDS = {
     "slew": ("max_slew_violation_count", "max-slew"),
@@ -388,6 +402,25 @@ def _buffer_ports_tcl(enabled: bool, buffer_cell: str | None) -> str:
     return f'\nputs ">>> Port buffers"\nbuffer_ports -inputs -outputs{cell}\n'
 
 
+def _macro_pin_limits_tcl(platform, dpl_options: str = "") -> str:
+    """Return the macro pin-limit step, run after `repair_design`, the `after-repair-design` hook and the legalization that follows them, before CTS, or `""` when `placement.macro-pin-limits` is unset.
+
+    `repair_design` sizes its repeaters for the library-wide target slew, so a macro input whose Liberty `max_transition` is far below it stays over its limit. The step buffers each macro pin over its limit less the margin with a cell fixed on the nearest free row site, sizes it, and marks it dont_touch; see `macro_pin_limits.tcl`. It reads the checks on the legal placement because legalization moves a macro output's loads. It belongs to the `place` stage, so its cells and their dont_touch marks are in that stage's checkpoint. `dpl_options` follows its `detailed_placement`, as it does the flow's others.
+    """
+    limits = platform.get_placement_macro_pin_limits()
+    if not isinstance(limits, MacroPinLimitsFile):
+        return ""
+    procs = files(_TEMPLATE_PACKAGE).joinpath(_MACRO_PIN_LIMITS_FILE).read_text()
+    return (
+        'puts ">>> Macro pin limits"\n'
+        f"{procs}"
+        f"rb::macro_pins::repair {{{' '.join(limits.buffers)}}} {limits.margin:g} "
+        f"{limits.capacitance_margin:g} "
+        f"{platform.get_placement_padding()} {_MACRO_PIN_LIMITS_TAG} "
+        f"[list{dpl_options}]\n"
+    )
+
+
 #: The flow's global route; a `reroute: full` global-route repair runs it again.
 _GLOBAL_ROUTE_CMD = (
     "global_route -congestion_iterations 20 "
@@ -453,7 +486,7 @@ def _repair_steps_tcl(
 
     Between `repair_design` and `repair_timing` runs `legalize` (`_legalize_tcl`), as in ORFS: `repair_timing` on global-route parasitics builds buffer trees from the global routes, and the nets `repair_design` split have none until they are rerouted (RSZ-0074). `None` runs nothing there, for repairs that build them from Steiner trees. The caller legalizes after the timing repair.
 
-    A post-route `repair-design` may set `wire-rc`: each `repair_design` then runs at that signal wire RC and the `repair_timing` log lines name the session's (`wire_rc.tcl`). With `after-timing` it runs again after the timing repair.
+    A post-route `repair-design` may set `wire-rc`: each `repair_design` then runs at that signal wire RC and the `repair_timing` log lines name the session's, at which `repair_timing` estimates the nets it changes (`wire_rc.tcl`). The RC setters do not invalidate parasitics, so the nets `repair_design` changed keep their `wire-rc` estimate until OpenROAD estimates them again. With `after-timing` it runs again after the timing repair.
     """
     lines = []
     if design is not None:
@@ -484,7 +517,7 @@ def _repair_steps_tcl(
         if any(opt for opt, _ in options):
             note += f" in Liberty time unit {format_time_unit(ps_per_unit)}"
         if design is not None and design.wire_rc is not None:
-            note += ", signal wire RC [rb::rc::describe]"
+            note += ", signal wire RC [rb::rc::describe] for the nets it changes"
         lines += [f'puts ">>> {title}: {command} ({note})"', command]
     if design is not None and design.after_timing:
         lines += _repair_design_tcl(title, design, " after timing repair")
@@ -591,6 +624,23 @@ def _cts_apply_ndr_option(platform) -> str:
     """Return ` -apply_ndr <value>` for the CTS invocation, or `""` for the tool's default."""
     ndr = platform.get_cts_apply_ndr()
     return f" -apply_ndr {ndr}" if ndr is not None else ""
+
+
+def _cts_clock_nets_option(platform) -> str:
+    """Return ` -clk_nets {<nets>}` for the CTS invocation, or `""` to let CTS find every clock."""
+    nets = platform.get_cts_clock_nets()
+    return f" -clk_nets {{{' '.join(nets)}}}" if nets else ""
+
+
+def _cts_repair_clock_nets_tcl(platform) -> str:
+    """Return `repair_clock_nets` on placement parasitics, as ORFS runs it right after CTS, or `""` when `cts-repair-clock-nets` is off."""
+    if not platform.get_cts_repair_clock_nets():
+        return ""
+    return (
+        'puts ">>> Repair clock nets"\n'
+        "estimate_parasitics -placement\n"
+        "repair_clock_nets\n"
+    )
 
 
 def max_fanout_cmd(platform) -> str:
@@ -946,6 +996,21 @@ def _pdn_grid_tcl(pdn) -> str:
     for lower, upper in pdn.connect:
         lines.append(f"add_pdn_connect -grid $rb_pdn_grid -layers {{{lower} {upper}}}")
     return "\n".join(lines) + "\n"
+
+
+def _tcl_quoted_path(path: str) -> str:
+    """A file path as a double-quoted Tcl word, with substitutions suppressed."""
+    escaped = path.replace("\\", "\\\\")
+    for char in ("$", "[", "]", '"'):
+        escaped = escaped.replace(char, "\\" + char)
+    return f'"{escaped}"'
+
+
+def _tcl_path_word(path: str) -> str:
+    """A file path as a Tcl word: bare when it needs no quoting, so ordinary paths render as before."""
+    if any(c.isspace() or c in '$[]"\\{};' for c in path):
+        return _tcl_quoted_path(path)
+    return path
 
 
 def _tcl_list(items) -> str:
@@ -1380,6 +1445,44 @@ def _read_global_route_tcl(stage: str) -> str:
     return (
         f'puts ">>> Reading global route {name}"\n'
         f"read_global_route_segments [file join $RB_PRED_DIR {name}.segments]\n"
+    )
+
+
+#: How long the SDC mode probe may take (`OpenRoadPnr._probe_sta_modes`).
+_MODES_PROBE_TIMEOUT_S = 15
+
+#: Every clock propagates after CTS; in each corner's mode on a platform with one.
+_PROPAGATED_CLOCKS = "set_propagated_clock [all_clocks]"
+
+
+def _mode_checkpoint_sdc_tcl(corners: list[str]) -> str:
+    """Tcl defining `rb::ckpt::write_sdc`, which `write_checkpoint` (checkpoints.tcl) calls in place of OpenSTA's `write_sdc` when each corner has an SDC mode.
+
+    Given `<name>.sdc`, it writes each corner's mode alone to `<name>.<corner>.sdc`, a plain SDC, and every mode into `<name>.sdc`, each after its `set_mode` and the primary's last, so the next session's `read_sdc` of that file restores every mode and leaves the primary current. It returns to the mode it was called in.
+    """
+    primary = corners[0]
+    return (
+        "namespace eval rb::ckpt {}\n"
+        "proc rb::ckpt::write_sdc {args} {\n"
+        "  set path [lindex $args end]\n"
+        "  set root [file rootname $path]\n"
+        "  set was [sta::cmd_mode_name]\n"
+        "  set out [open $path w]\n"
+        "  try {\n"
+        f"    foreach mode {{{' '.join(corners)}}} {{\n"
+        "      set_mode $mode\n"
+        "      ::write_sdc {*}[lrange $args 0 end-1] $root.$mode.sdc\n"
+        "      set in [open $root.$mode.sdc]\n"
+        '      puts $out "set_mode $mode"\n'
+        '      puts $out [string trimright [read $in] "\\n"]\n'
+        "      close $in\n"
+        "    }\n"
+        f'    puts $out "set_mode {primary}"\n'
+        "  } finally {\n"
+        "    close $out\n"
+        "    set_mode $was\n"
+        "  }\n"
+        "}"
     )
 
 
@@ -2295,6 +2398,10 @@ class OpenRoadPnr:
         self._stages: tuple[str, ...] = pnr_stages.TEMPLATE_STAGES
         self._post_route: PostRouteRepair | None = None
         self._split = False
+        # Whether a multi-corner platform gets an SDC mode per corner; `run` asks OpenROAD.
+        self._sta_modes = True
+        # The corners whose SDC modes each checkpoint also writes alone; empty without modes.
+        self._mode_corners: tuple[str, ...] = ()
         self.pnr_cfg = pnr_cfg
         self._configured_cfg = pnr_cfg
         self.root_cfg = root_cfg
@@ -2456,19 +2563,26 @@ class OpenRoadPnr:
         self._platform = platform
         pdk = platform.get_pdk()
         netlist = self._openroad_netlist or self._resolve_netlist_path()
-        sdc = self.pnr_cfg.get_constraints()
-        if not sdc:
+        if not self.pnr_cfg.get_constraints():
             raise RuntimeError(
                 f"pnr run '{self.pnr_cfg.get_name()}': "
                 "constraints (SDC path) is required"
             )
+        corners = platform.get_sta_corners()
+        sdc_by_corner = self.pnr_cfg.constraints_by_corner(corners)
+        sdc = sdc_by_corner[corners[0]]
 
         fill_cells = " ".join(pdk.get_fill_cells())
 
         multi_corner = platform.is_multi_corner()
+        modes = multi_corner and self._sta_modes
         if multi_corner:
             corner_libs = platform.get_sta_corner_lib_paths()
-            read_liberty = "\n".join(openroad_corners.liberty_tcl(corner_libs, []))
+            read_liberty = "\n".join(
+                openroad_corners.mode_liberty_tcl(corner_libs)
+                if modes
+                else openroad_corners.liberty_tcl(corner_libs, [])
+            )
             corner_reports = openroad_corners.timing_report_tcl(list(corner_libs))
         else:
             corner_libs = {}
@@ -2481,7 +2595,7 @@ class OpenRoadPnr:
 
         extra_lines = []
         for lib in self.pnr_cfg.get_lib_paths():
-            if multi_corner:
+            if multi_corner and not modes:
                 extra_lines.extend(
                     f"read_liberty -corner {c} {lib}" for c in corner_libs
                 )
@@ -2490,6 +2604,31 @@ class OpenRoadPnr:
         for lef in self.pnr_cfg.get_lef_paths():
             extra_lines.append(f"read_lef     {lef}")
         extra_libs_lefs = "\n".join(extra_lines)
+        if modes:
+            scenes_block = (
+                '\nputs ">>> An SDC mode and a scene per corner"\n'
+                + "\n".join(
+                    openroad_corners.scenes_tcl(
+                        corner_libs, self.pnr_cfg.get_lib_paths()
+                    )
+                )
+                + "\n"
+                + _mode_checkpoint_sdc_tcl(corners)
+            )
+            per_corner_sdc = isinstance(self.pnr_cfg.get_constraints(), dict)
+            # `read_sdc -mode` returns to a mode named `default` only by this `set_mode`.
+            read_sdc = (
+                "".join(
+                    f"read_sdc -mode {c} "
+                    f"{_tcl_quoted_path(path) if per_corner_sdc else '$SDC_FILE'}\n"
+                    for c, path in sdc_by_corner.items()
+                )
+                + f"set_mode {corners[0]}\n"
+            )
+        else:
+            scenes_block = ""
+            read_sdc = "read_sdc $SDC_FILE\n"
+        self._mode_corners = tuple(corners) if modes else ()
 
         cts_buffers = platform.get_cts_buffers()
         if len(cts_buffers) > 1:
@@ -2551,7 +2690,9 @@ class OpenRoadPnr:
                 f"extract_parasitics -ext_model_file {rcx_rules}\n"
                 f"write_spef $OUT_DIR/${{DESIGN}}{ROUTED_SPEF_SUFFIX}\n"
             )
-            final_parasitics = f"read_spef $OUT_DIR/${{DESIGN}}{ROUTED_SPEF_SUFFIX}"
+            final_parasitics = self._read_spef_tcl(
+                f"$OUT_DIR/${{DESIGN}}{ROUTED_SPEF_SUFFIX}"
+            ).rstrip("\n")
         else:
             rcx_block = ""
             final_parasitics = "estimate_parasitics -global_routing"
@@ -2578,11 +2719,28 @@ class OpenRoadPnr:
         if pin_script is not None:
             if not os.path.isfile(pin_script):
                 raise RuntimeError(f"pin-constraints file does not exist: {pin_script}")
-            escaped = pin_script.replace("\\", "\\\\")
-            for char in ("$", "[", "]", '"'):
-                escaped = escaped.replace(char, "\\" + char)
-            pin_constraints_tcl = f'source "{escaped}"'
+            pin_constraints_tcl = f"source {_tcl_quoted_path(pin_script)}"
         max_fanout = max_fanout_cmd(platform)
+        if modes:
+            max_fanout_block = (
+                openroad_corners.in_each_mode(corners, max_fanout) if max_fanout else ""
+            )
+            propagated_clocks = openroad_corners.in_each_mode(
+                corners, _PROPAGATED_CLOCKS
+            )
+        else:
+            max_fanout_block = f"{max_fanout}\n" if max_fanout else ""
+            propagated_clocks = f"{_PROPAGATED_CLOCKS}\n"
+        # Each corner's own SDC beside the primary's `<top>.routed.sdc`; without modes every corner's is the one shared mode.
+        routed_corner_sdcs = ""
+        for c in corners if multi_corner else []:
+            if modes:
+                routed_corner_sdcs += f"set_mode {c}\n"
+            routed_corner_sdcs += (
+                f"write_sdc     $OUT_DIR/${{DESIGN}}.{c}{ROUTED_SDC_SUFFIX}\n"
+            )
+        if modes:
+            routed_corner_sdcs += f"set_mode {corners[0]}\n"
         hooks = self.pnr_cfg.get_hooks()
         substitutions = {
             "pin_constraints_tcl": pin_constraints_tcl,
@@ -2590,9 +2748,13 @@ class OpenRoadPnr:
             "place_pins_block": _place_pins_block(fp),
             "design": self.pnr_cfg.resolve_synth_cfg().get_top(),
             "netlist": netlist,
-            "sdc": sdc,
+            "sdc": _tcl_path_word(sdc),
             "liberty": platform.get_sta_lib_paths()[0],
             "read_liberty": read_liberty,
+            "scenes_block": scenes_block,
+            "read_sdc": read_sdc,
+            "propagated_clocks": propagated_clocks,
+            "routed_corner_sdcs": routed_corner_sdcs,
             "corner_reports": corner_reports,
             "tech_lef": pdk.get_tech_lef(),
             "macro_lef": pdk.get_macro_lef(),
@@ -2638,7 +2800,7 @@ class OpenRoadPnr:
             "make_tracks": make_tracks,
             # After macro placement and before the power grid, as ORFS `TAPCELL_TCL`, so endcaps see the placed macros.
             "tapcell_block": _hook_block(
-                "Tap and endcap cells (tapcell-tcl)", pdk.get_tapcell_tcl()
+                "Tap and endcap cells (tapcell-tcl)", platform.get_tapcell_tcl()
             ),
             "threads_block": threads_block,
             "hook_procs_block": _hook_procs_block(hooks),
@@ -2679,6 +2841,9 @@ class OpenRoadPnr:
             "gp_blockages_create": gp_blocks.create,
             "gp_blockages_destroy": gp_blocks.destroy,
             "dpl_options": gp_blocks.dpl_options,
+            "macro_pin_limits_block": _macro_pin_limits_tcl(
+                platform, gp_blocks.dpl_options
+            ),
             "detailed_route_verbose": str(self.pnr_cfg.get_detailed_route_verbose()),
             "cell_count_tag": _CELL_COUNT_TAG,
             "electrical_tag": _ELECTRICAL_TAG,
@@ -2689,7 +2854,12 @@ class OpenRoadPnr:
                 "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
             ),
             "cts_ndr_option": _cts_apply_ndr_option(platform),
-            "max_fanout_block": f"{max_fanout}\n" if max_fanout else "",
+            "cts_clock_nets_option": _cts_clock_nets_option(platform),
+            "cts_insertion_delay_option": (
+                "" if platform.get_cts_latency_balancing() else " -no_insertion_delay"
+            ),
+            "cts_repair_clock_nets": _cts_repair_clock_nets_tcl(platform),
+            "max_fanout_block": max_fanout_block,
             "signal_layers": platform.get_signal_layers(),
             "clock_layers": platform.get_clock_layers(),
             "pin_layer_horizontal": pdk.get_pin_layer_horizontal(),
@@ -2705,6 +2875,7 @@ class OpenRoadPnr:
                     order=self._stages,
                     stop_after="detailed_route" if self._split else self.stop_after,
                     state=pnr_checkpoints.SESSION_STATE if self._split else (),
+                    modes=self._mode_corners,
                 )
                 if self._ckpt_run_dir is not None and not self._staged
                 else ""
@@ -2765,7 +2936,11 @@ class OpenRoadPnr:
         substitutions = {
             **self._substitutions,
             "checkpoint_block": pnr_checkpoints.render_staged_block(
-                stage, run_dir, self._pred_dir(stage, run_dir), session=session
+                stage,
+                run_dir,
+                self._pred_dir(stage, run_dir),
+                session=session,
+                modes=self._mode_corners,
             ),
         }
         if self._dispatch is not None:
@@ -3222,6 +3397,27 @@ class OpenRoadPnr:
             fields[_ELECTRICAL_FIELDS[m.group(1)][0]] = int(m.group(2))
         return fields
 
+    def _macro_pin_limits_fields(self, log_text: str) -> dict:
+        """Return the macro pin-limit step's counts as result fields, or `{}` when the step did not run; warn `pnr.macro_pin_limits_unmet` when a pin is unmet.
+
+        `macro_pin_buffered_count` is the macro pins the step buffered; `macro_pin_unmet_count` those it left over their limit less the margin, judged on placement parasitics. A staged run's `pnr.log` holds the `place` stage's log, inherited or not, so a resumed run reports them too.
+        """
+        m = _MACRO_PIN_LIMITS_RE.search(log_text)
+        if not m:
+            return {}
+        buffered, unmet = int(m.group(1)), int(m.group(2))
+        if unmet:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.macro_pin_limits_unmet",
+                pnr=self.pnr_cfg.get_name(),
+                unmet=unmet,
+                buffered=buffered,
+                log=self._log_path(),
+            )
+        return {"macro_pin_buffered_count": buffered, "macro_pin_unmet_count": unmet}
+
     def _describe_electrical(self, fields: dict) -> str:
         """Return `"N max-slew, M max-capacitance violator(s)"` for the nonzero counts, or `""` when there are none."""
         return _electrical_desc(fields)
@@ -3251,6 +3447,86 @@ class OpenRoadPnr:
                 per_corner, "wns_hold_ps"
             ),
         }
+
+    def _check_corner_constraints(self, platform, version: str | None):
+        """Check `constraints:` against the platform's corners and, on a multi-corner platform, whether OpenROAD can give each corner an SDC mode; return the setup failure, or None.
+
+        A per-corner mapping must name each corner and no other; on a single-corner platform it is the one path from here on. Without modes every corner shares one SDC mode, with a warning, and a per-corner mapping fails. A probe that gives no answer is tried once more, then fails setup.
+        """
+        name = self.pnr_cfg.get_name()
+        constraints = self.pnr_cfg.get_constraints()
+        corners = platform.get_sta_corners()
+        problem = self.pnr_cfg.constraints_problem(corners)
+        if problem is not None:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.constraints_corners",
+                pnr=name,
+                platform=self.pnr_cfg.get_platform(),
+                problem=problem,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=f"constraints: {problem}",
+                fail_stage="setup",
+            )
+        if not platform.is_multi_corner():
+            if isinstance(constraints, dict):
+                self.pnr_cfg = replace(
+                    self.pnr_cfg, constraints=constraints[corners[0]]
+                )
+            return None
+        answer = self._probe_sta_modes()
+        if isinstance(answer, str):
+            answer = self._probe_sta_modes()
+        if isinstance(answer, str):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.corner_modes_probe_failed",
+                pnr=name,
+                exe=self.openroad_executable,
+                problem=answer,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    f"could not tell whether {self.openroad_executable} gives "
+                    f"each corner an SDC mode: {answer}"
+                ),
+                fail_stage="setup",
+            )
+        self._sta_modes = answer
+        if self._sta_modes:
+            return None
+        if isinstance(constraints, dict):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.corner_constraints_unsupported",
+                pnr=name,
+                exe=self.openroad_executable,
+                version=version,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    "constraints: a per-corner SDC needs an SDC mode per corner, "
+                    "which this OpenROAD cannot switch between"
+                ),
+                fail_stage="setup",
+            )
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.corner_modes_unsupported",
+            pnr=name,
+            platform=self.pnr_cfg.get_platform(),
+            exe=self.openroad_executable,
+            version=version,
+        )
+        return None
 
     def _probe_openroad_version(self) -> str | None:
         try:
@@ -3290,6 +3566,33 @@ class OpenRoadPnr:
         except (OSError, subprocess.SubprocessError):
             return False
         return f"RB_HAS_CMD:{command}:yes" in (r.stdout or "")
+
+    def _probe_sta_modes(self) -> bool | str:
+        """Return whether this OpenROAD's OpenSTA can give each corner an SDC mode of its own (see `openroad_corners.MODES_PROBE_TCL`), or, when it gave no answer, what went wrong."""
+        os.makedirs(self.artefact_dir, exist_ok=True)
+        try:
+            r = subprocess.run(
+                [self.openroad_executable, "-no_init", "-exit"],
+                input=openroad_corners.MODES_PROBE_TCL,
+                capture_output=True,
+                text=True,
+                timeout=_MODES_PROBE_TIMEOUT_S,
+                check=False,
+                cwd=self.artefact_dir,
+            )
+        except subprocess.TimeoutExpired:
+            return f"it did not finish in {_MODES_PROBE_TIMEOUT_S} s"
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"it could not be started: {exc}"
+        out = r.stdout or ""
+        if openroad_corners.MODES_PROBE_YES in out:
+            return True
+        if openroad_corners.MODES_PROBE_NO in out:
+            return False
+        last = (r.stderr or out).strip().splitlines()[-1:]
+        return f"it exited with code {r.returncode} without an answer" + (
+            f" ({last[0].strip()})" if last else ""
+        )
 
     def _drc_report_path(self) -> str:
         return os.path.join(self.artefact_dir, "route.drc.rpt")
@@ -4189,7 +4492,17 @@ class OpenRoadPnr:
                 self._openroad_netlist or self._resolve_netlist_path()
             ),
             **stripped,
-            "sdc": _file_fingerprint(self.pnr_cfg.get_constraints()),
+            # A per-corner mapping's, each corner in `corners:` order.
+            "sdc": (
+                [
+                    _file_fingerprint(path)
+                    for path in self.pnr_cfg.constraints_by_corner(
+                        platform.get_sta_corners()
+                    ).values()
+                ]
+                if isinstance(self.pnr_cfg.get_constraints(), dict)
+                else _file_fingerprint(self.pnr_cfg.get_constraints())
+            ),
             # Every corner's, each corner in `corners:` order.
             "liberty": [
                 _file_fingerprint(p)
@@ -4218,7 +4531,7 @@ class OpenRoadPnr:
             "rcx_rules": _file_fingerprint(pdk.get_rcx_rules()),
             **{
                 key.replace("-", "_"): _file_fingerprint(path)
-                for key, path in pdk.get_tcl_hooks().items()
+                for key, path in platform.get_tcl_hooks().items()
             },
             **{
                 _hook_role(point): [_file_fingerprint(p) for p in paths]
@@ -4493,7 +4806,8 @@ class OpenRoadPnr:
             **({"rcx_rules": pdk.get_rcx_rules()} if pdk.get_rcx_rules() else {}),
             # Only the configured hooks, so an abstract hardened without any records no extra roles.
             **{
-                key.replace("-", "_"): path for key, path in pdk.get_tcl_hooks().items()
+                key.replace("-", "_"): path
+                for key, path in platform.get_tcl_hooks().items()
             },
             **{
                 _hook_role(point): list(paths)
@@ -5055,6 +5369,7 @@ class OpenRoadPnr:
             "wns_hold_ps": _ps(self._parse_wns(report, "min")),
             "tns_ps": _ps(self._parse_tns(report)),
             "tns_hold_ps": _ps(self._parse_tns(report, "min")),
+            **self._macro_pin_limits_fields(log_text),
         }
         if stage in pnr_checkpoints.GLOBAL_ROUTED:
             metrics["global_route_overflow"] = self._parse_gr_overflow(
@@ -5170,6 +5485,8 @@ class OpenRoadPnr:
                 desc=f"platform lookup failed: {e}",
                 fail_stage="setup",
             )
+        if not self.pnr_cfg.get_overrides().is_empty():
+            platform = platform.with_run_overrides(self.pnr_cfg.get_overrides())
 
         # Check before OpenROAD starts; a missing snippet would otherwise fail minutes in.
         pdn_config = self._pdn_config(platform.get_pdk())
@@ -5202,7 +5519,7 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
-        for key, path in platform.get_pdk().get_tcl_hooks().items():
+        for key, path in platform.get_tcl_hooks().items():
             if not os.path.isfile(path):
                 log_event(
                     logger,
@@ -5290,6 +5607,10 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
+        failed = self._check_corner_constraints(platform, version)
+        if failed is not None:
+            return failed
+
         # Before OpenROAD, so a bad planner file or placement override fails in seconds.
         try:
             if self.pnr_cfg.get_placement() is not None:
@@ -5345,6 +5666,33 @@ class OpenRoadPnr:
                     f"post-route-repair needs rcx-rules on PDK "
                     f"'{platform.get_pdk_name()}': each round times the route on "
                     "extracted parasitics, and the PDK sets no rcx-rules"
+                ),
+                fail_stage="setup",
+            )
+
+        # `repair-design.wire-rc` reads and sets RC per scene, which needs OpenSTA's scenes and `est::`.
+        design = self._post_route.repair_design if self._post_route else None
+        if (
+            design is not None
+            and design.wire_rc is not None
+            and not all(
+                self._has_tcl_command(command)
+                for command in ("sta::scenes", "est::set_h_wire_signal_rc_cmd")
+            )
+        ):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.wire_rc_unsupported",
+                pnr=self.pnr_cfg.get_name(),
+                exe=self.openroad_executable,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    "post-route-repair.repair-design.wire-rc needs OpenROAD's "
+                    "sta::scenes and est:: wire RC commands (26Q2 or newer); "
+                    "this OpenROAD has none"
                 ),
                 fail_stage="setup",
             )
@@ -5737,6 +6085,7 @@ class OpenRoadPnr:
             "tns_hold_ps": tns_hold * ps_per_unit if tns_hold is not None else None,
             "drc_count": drcs,
             **self._parse_electrical(final),
+            **self._macro_pin_limits_fields(log_text),
         }
         corner_fields = self._corner_fields(platform, final)
 

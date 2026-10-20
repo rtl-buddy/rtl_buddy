@@ -2896,7 +2896,7 @@ def test_repair_steps_set_the_wire_rc_around_each_repair_design_and_repeat_it():
         'puts ">>> T: repair_design -slew_margin 20 (wire-rc: signal wire RC '
         '[rb::rc::describe])"',
         'puts ">>> T: repair_timing -hold (hold margin 0 ns, signal wire RC '
-        '[rb::rc::describe])"',
+        '[rb::rc::describe] for the nets it changes)"',
         'puts ">>> T: repair_design -slew_margin 20 after timing repair (wire-rc: '
         'signal wire RC [rb::rc::describe])"',
     ]
@@ -3016,7 +3016,8 @@ def test_the_log_names_the_signal_wire_rc_of_each_repair_step():
     assert printed == [
         ">>> T: repair_design (wire-rc: signal wire RC 0.06 kohm/um, 0.17 fF/um)",
         ">>> T: repair_timing -setup (setup margin 0 ns, signal wire RC "
-        "ss 0.003 kohm/um, 0.2 fF/um; ff 0.001 kohm/um, 0.1 fF/um)",
+        "ss 0.003 kohm/um, 0.2 fF/um; ff 0.001 kohm/um, 0.1 fF/um for the nets it "
+        "changes)",
     ]
 
 
@@ -3035,6 +3036,42 @@ def test_a_wire_rc_the_session_shadows_fails_the_session():
         "append result { } [string match {*did not take effect*} $m]\n"
     )
     assert result == "1 1"
+
+
+@pytest.mark.parametrize("where", ["platform", "run"])
+@pytest.mark.parametrize(
+    "missing", ["sta::scenes", "est::set_h_wire_signal_rc_cmd"], ids=["scenes", "est"]
+)
+def test_wire_rc_fails_at_setup_without_scenes_or_est_rc_commands(
+    tmp_path, monkeypatch, missing, where
+):
+    """An OpenROAD whose OpenSTA has corners rather than scenes, or no `est::` wire RC commands (before 26Q2), is refused at setup, whether the platform or the run sets `wire-rc`."""
+    design = {"repair-design": {"wire-rc": {"layer": "M5"}}}
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**design, "hold-margin": 0.0}
+        if where == "platform"
+        else {"hold-margin": 0.0},
+    )
+    if where == "run":
+        backend.pnr_cfg = replace(
+            backend.pnr_cfg, post_route_repair=read_post_route_repair("run", design)
+        )
+    monkeypatch.setattr(backend, "_has_tcl_command", lambda cmd: cmd != missing)
+    launched = []
+    monkeypatch.setattr(
+        pnr_openroad.subprocess, "run", lambda *a, **k: launched.append(a)
+    )
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "setup"
+    assert "sta::scenes and est:: wire RC commands" in res.results["desc"]
+    assert launched == []
+    assert "upgrade OpenROAD or drop wire-rc" in _human_message(
+        "pnr.wire_rc_unsupported", {"pnr": "demo", "exe": "openroad"}
+    )
 
 
 _PR_RC = {

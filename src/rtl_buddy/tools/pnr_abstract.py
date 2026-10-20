@@ -18,6 +18,7 @@ from ..config.pdk import (
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
     DEFAULT_ROTATED_MACRO_FOOTPRINT,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
+    MacroPinLimitsFile,
 )
 from ..config.pnr_repair import GlobalRouteRepair
 from ..config.pnr import (
@@ -314,19 +315,30 @@ def abstract_config(pnr_cfg, platform) -> dict:
     def _rel(path):
         return project_relative(path, root) if root and path else path
 
+    # A one-corner mapping means its one SDC, as a plain path does.
+    constraints = pnr_cfg.get_constraints()
+    if isinstance(constraints, dict):
+        constraints = (
+            _rel(next(iter(constraints.values())))
+            if len(constraints) == 1
+            else {c: _rel(p) for c, p in constraints.items()}
+        )
+    else:
+        constraints = _rel(constraints)
     fp = pnr_cfg.get_floorplan()
     platform = platform.with_run_placement(pnr_cfg.get_placement(), pnr_cfg.get_name())
     platform = platform.with_run_repairs(
         pnr_cfg.global_route_repair, pnr_cfg.post_route_repair, pnr_cfg.get_name()
     )
-    hooks = dict(platform.get_pdk().get_tcl_hooks())
+    platform = platform.with_run_overrides(pnr_cfg.get_overrides())
+    hooks = platform.get_tcl_hooks()
     return {
         "platform": pnr_cfg.get_platform(),
         "synth": {
             "name": pnr_cfg.get_synth_name(),
             "path": _rel(pnr_cfg.get_synth_suite_path()),
         },
-        "constraints": _rel(pnr_cfg.get_constraints()),
+        "constraints": constraints,
         "pin_constraints": _rel(pnr_cfg.pin_constraints),
         # Emitted only when set so existing digests do not change.
         **(
@@ -433,6 +445,20 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 != DEFAULT_ROTATED_MACRO_FOOTPRINT
                 else {}
             ),
+            **(
+                {
+                    "macro_pin_limits": {
+                        "buffers": list(macro_pin_limits.buffers),
+                        "margin": macro_pin_limits.margin,
+                        "capacitance_margin": macro_pin_limits.capacitance_margin,
+                    }
+                }
+                if isinstance(
+                    macro_pin_limits := platform.get_placement_macro_pin_limits(),
+                    MacroPinLimitsFile,
+                )
+                else {}
+            ),
         },
         "routing": {
             "signal_layers": platform.get_signal_layers(),
@@ -452,6 +478,22 @@ def abstract_config(pnr_cfg, platform) -> dict:
             else {}
         ),
         **_repair_digest(platform),
+        # The CTS knobs below are emitted only when set so existing digests do not change.
+        **(
+            {"cts_clock_nets": list(platform.get_cts_clock_nets())}
+            if platform.get_cts_clock_nets()
+            else {}
+        ),
+        **(
+            {"cts_latency_balancing": False}
+            if platform.get_cts_latency_balancing() is False
+            else {}
+        ),
+        **(
+            {"cts_repair_clock_nets": True}
+            if platform.get_cts_repair_clock_nets() is True
+            else {}
+        ),
         **(
             {"cts_apply_ndr": platform.get_cts_apply_ndr()}
             if isinstance(platform.get_cts_apply_ndr(), str)
@@ -470,7 +512,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
             if pnr_cfg.get_buffer_ports() and platform.get_port_buffer()
             else {}
         ),
-        # Emitted only when a PDK Tcl hook is set so existing digests do not change.
+        # Emitted only when a Tcl hook is set so existing digests do not change; `tapcell-tcl` is the run's, the platform's or the PDK's.
         **({"tcl_hooks": {k: _rel(v) for k, v in hooks.items()}} if hooks else {}),
         # Emitted only when a run hook is set so existing digests do not change.
         **(
