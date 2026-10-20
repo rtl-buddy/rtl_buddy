@@ -135,11 +135,7 @@ rb::global_connect
 {{ hook_after_cts_block }}
 puts ">>> Detail placement (post-CTS)"
 detailed_placement{{ dpl_options }}
-
-puts ">>> Post-CTS timing repair"
-estimate_parasitics -placement
-{{ setup_repair }}repair_timing -hold
-
+{{ post_cts_repair }}
 # repair_timing inserts unlegalized buffers; without this pass the
 # detailed router fails with DRT-0073.
 puts ">>> Detail placement (legalize repair cells)"
@@ -152,7 +148,7 @@ rb::global_connect
 puts ">>> Global route"
 {{ @layers }}set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS
 {{ layer_adjustment }}{{ @/layers }}global_route -congestion_iterations 20 -congestion_report_file $CONGESTION_RPT -verbose
-{{ hook_after_global_route_block }}{{ global_route_hold_repair }}rb::global_connect
+{{ hook_after_global_route_block }}{{ global_route_repair }}rb::global_connect
 {{ @detailed_route }}{{ hook_before_detailed_route_block }}
 # Again for cells a before-detailed-route hook added.
 rb::global_connect
