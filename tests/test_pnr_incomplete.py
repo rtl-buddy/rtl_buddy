@@ -278,21 +278,12 @@ _ROUND = {"post_route": {**_PR, "rounds": 1}}
 
 
 @pytest.mark.parametrize("stages", [False, True])
-@pytest.mark.parametrize(
-    ("command", "session", "step"),
-    [
-        ("extract_parasitics", "round 1 extraction", "round 1: extraction"),
-        ("remove_fillers", "round 1 repair", "round 1 of 1: repair"),
-    ],
-)
-def test_a_post_route_repair_session_that_ends_early_names_it(
-    tmp_path, monkeypatch, stages, command, session, step
-):
+def test_a_round_0_extraction_that_ends_early_names_it(tmp_path, monkeypatch, stages):
     backend, artefacts = _repair_backend(
         tmp_path,
         monkeypatch,
         stages=stages,
-        env={"RB_STUB_SETUP": "-0.2", "RB_STUB_EXIT": command},
+        env={"RB_STUB_SETUP": "-0.2", "RB_STUB_EXIT": "extract_parasitics"},
         **_ROUND,
     )
     harness = tmp_path / "harness.tcl"
@@ -306,12 +297,37 @@ def test_a_post_route_repair_session_that_ends_early_names_it(
     assert res.results["fail_stage"] == "incomplete"
     assert res.results["desc"].startswith(
         "stage 06_post_route_repair: the flow did not finish: OpenROAD exited with "
-        f"code 0 before the end of {session} "
-        f"('>>> End of post-route repair {session}' is not in the log); "
-        f"the last step in the log is 'Post-route repair {step}"
+        "code 0 before the end of round 0 extraction "
+        "('>>> End of post-route repair round 0 extraction' is not in the log); "
+        "the last step in the log is 'Post-route repair round 0: extraction"
     )
     (run_dir,) = _runs(artefacts)
     assert not (run_dir / "07_finish.log").exists()
+
+
+@pytest.mark.parametrize("stages", [False, True])
+def test_a_round_1_repair_that_ends_early_is_set_aside_and_named(
+    tmp_path, monkeypatch, stages
+):
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        stages=stages,
+        env={"RB_STUB_SETUP": "-0.2", "RB_STUB_EXIT": "remove_fillers"},
+        **_ROUND,
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    repair = res.results["post_route_repair"]
+    assert (repair["kept_round"], repair["stop"]) == (0, "session_failed")
+    assert repair["reason"].startswith(
+        "round 1's repair session failed: the flow did not finish: OpenROAD exited "
+        "with code 0 before the end of round 1 repair "
+        "('>>> End of post-route repair round 1 repair' is not in the log); "
+        "the last step in the log is 'Post-route repair round 1 of 1: repair"
+    )
 
 
 def test_a_round_session_that_ends_before_any_command_names_no_earlier_session_s(
@@ -337,9 +353,10 @@ def test_a_round_session_that_ends_before_any_command_names_no_earlier_session_s
 
     res = backend.run()
 
-    assert res.results["fail_stage"] == "incomplete", res.results
-    assert "before the end of round 2 extraction" in res.results["desc"]
-    assert "last command" not in res.results["desc"]
+    assert res.results["result"] == "PASS", res.results
+    reason = res.results["post_route_repair"]["reason"]
+    assert "before the end of round 2 extraction" in reason
+    assert "last command" not in reason
 
 
 @pytest.mark.parametrize("stages", [False, True])
