@@ -2496,8 +2496,12 @@ class OpenRoadPnr:
         return text
 
     def _unbroken_marker(self, marker: str) -> str:
-        """A one-session run's text for a template marker: nothing, except that with checkpoints armed the global-route stage ends after any global-route repair, before the `before-detailed-route` hooks."""
-        if marker == "detailed_route" and self._ckpt_run_dir is not None:
+        """A one-session run's text for a template marker: nothing, except that with checkpoints armed the global-route stage ends after any global-route repair, before the `before-detailed-route` hooks, and `place` is timed before the clocks are propagated, as a staged `place` session and its report time it (its checkpoint is written on entering clock-tree synthesis)."""
+        if self._ckpt_run_dir is None:
+            return ""
+        if marker == "cts":
+            return "rb::ckpt::stage_timing place stage_end\n"
+        if marker == "detailed_route":
             return "rb::ckpt::stage_end global_route\n"
         return ""
 

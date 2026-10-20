@@ -40,7 +40,7 @@ from rtl_buddy.tools.pnr_stages import TEMPLATE_STAGES
 
 # Slack in seconds by parasitics (k = 1..4) and corner index c: setup -100k - 10c ps,
 # hold 20k + c ps, setup TNS three times the setup slack, hold TNS 0. Each post-route
-# round improves k by 0.5.
+# round improves k by 0.5, and propagated clocks (from CTS on) cost 50 ps of setup.
 # `RB_STUB_UNCONSTRAINED=setup|hold|both` gives that side INF, as OpenSTA does for a
 # side with no constrained path; `RB_STUB_TIMING_FAIL=1` makes the queries rb's timing
 # events make fail, not the flow's reports; `RB_STUB_ESTIMATE_FAIL=<n>` fails the n-th
@@ -60,6 +60,11 @@ proc estimate_parasitics {args} {
     set rb_parasitics [string trimleft [lindex $args 0] -]
     puts "stub: estimate_parasitics $args"
 }
+set rb_propagated 0
+proc set_propagated_clock {args} {
+    global rb_propagated
+    set rb_propagated 1
+}
 proc read_spef {args} {
     global rb_parasitics
     set rb_parasitics extracted
@@ -71,7 +76,7 @@ proc rb_in_ckpt {} {
     return 0
 }
 proc rb_slacks {corner} {
-    global rb_parasitics env
+    global rb_parasitics rb_propagated env
     if {[info exists env(RB_STUB_TIMING_FAIL)] && [rb_in_ckpt]} {
         error "STA-9999 timing failed"
     }
@@ -80,7 +85,7 @@ proc rb_slacks {corner} {
         set k [expr {4 - 0.5 * [rb_round]}]
     }
     set c [expr {$corner eq "" ? 0 : [lsearch -exact {tt ss ff} $corner]}]
-    set setup [expr {-1e-10 * $k - 1e-11 * $c}]
+    set setup [expr {-1e-10 * $k - 1e-11 * $c - 5e-11 * $rb_propagated}]
     set hold [expr {2e-11 * $k + 1e-12 * $c}]
     set tns [expr {$setup * 3}]
     set tns_hold 0.0
@@ -117,14 +122,19 @@ _NS = {"none": 1, "placement": 2, "global_route": 3, "extracted": 4}
 _STAGES = list(TEMPLATE_STAGES)
 
 
-def _expected(parasitics: str, corner: int = 0) -> dict:
+def _expected(parasitics: str, corner: int = 0, propagated: bool = False) -> dict:
     k = _NS[parasitics]
+    extra = 50.0 if propagated else 0.0
     return {
-        "wns_setup_ps": pytest.approx(-100.0 * k - 10.0 * corner),
+        "wns_setup_ps": pytest.approx(-100.0 * k - 10.0 * corner - extra),
         "wns_hold_ps": pytest.approx(20.0 * k + corner),
-        "tns_ps": pytest.approx(-300.0 * k - 30.0 * corner),
+        "tns_ps": pytest.approx(-300.0 * k - 30.0 * corner - 3 * extra),
         "tns_hold_ps": pytest.approx(0.0),
     }
+
+
+#: Stages whose end is timed with propagated clocks: CTS propagates them.
+_PROPAGATED = {"cts", "global_route", "detailed_route", "finish"}
 
 
 def _configure(
@@ -207,17 +217,18 @@ def test_each_stage_end_is_timed_on_the_parasitics_of_its_own_report(
         assert event["parasitics"] == _SOURCE[stage]
         assert event["index"] == pnr_checkpoints.STAGE_INDEX[stage]
         assert event["corners"] == {
-            "typ": _expected("global_route" if stage == "finish" else _SOURCE[stage])
+            "typ": _expected(_SOURCE[stage], propagated=stage in _PROPAGATED)
         }
-    # `typ` is the platform's one corner; no multi-corner entry is invented.
-    # A stage is timed after its checkpoint and before its end is recorded.
+    # A stage is timed before its end is recorded, and after its checkpoint except
+    # a one-session `place`, which is timed before the clocks are propagated and
+    # checkpointed on entering clock-tree synthesis.
     kinds = [(e["event"], e.get("stage")) for e in _events(run_dir)]
     for stage in _STAGES[:-1]:
-        assert (
-            kinds.index(("checkpoint", stage))
-            < kinds.index(("stage_timing", stage))
-            < kinds.index(("stage_end", stage))
-        )
+        assert kinds.index(("stage_timing", stage)) < kinds.index(("stage_end", stage))
+        if stage != "place" or stages:
+            assert kinds.index(("checkpoint", stage)) < kinds.index(
+                ("stage_timing", stage)
+            )
     assert kinds.index(("stage_timing", "finish")) < kinds.index(
         ("stage_end", "finish")
     )
@@ -306,6 +317,28 @@ def test_global_route_repair_is_timed_before_it_runs_and_at_the_stage_end(
     assert [len(v) for v in _by_stage(run_dir).values()] == [1, 1, 1, 2, 1, 1]
 
 
+def test_a_one_session_run_times_each_stage_as_a_staged_run_does(tmp_path, monkeypatch):
+    """The one-session `place` ends on entering clock-tree synthesis, after the clocks are propagated; its event must still be timed as the staged session and the stage report time it."""
+    timed = {}
+    for kind in ("one", "staged"):
+        (tmp_path / kind).mkdir()
+        res, artefacts = _run(
+            tmp_path / kind,
+            monkeypatch,
+            stages=kind == "staged",
+            configure={"gr_repair": {"setup-margin": 0.1}},
+        )
+        assert res.results["result"] == "PASS", res.results
+        (run_dir,) = _runs(artefacts)
+        timed[kind] = [
+            {k: v for k, v in e.items() if k not in ("seq", "t", "epoch_ms")}
+            for e in _timing(run_dir)
+        ]
+
+    assert timed["one"] == timed["staged"]
+    assert len(timed["one"]) == len(_STAGES) + 1
+
+
 def test_a_stage_without_global_route_repair_has_no_before_repair_event(
     tmp_path, monkeypatch
 ):
@@ -362,7 +395,7 @@ def test_round_events_follow_the_extraction_they_time(tmp_path, monkeypatch):
 
     (run_dir,) = _runs(artefacts)
     round0 = [e for e in _timing(run_dir, "post_route_repair") if e["round"] == 0][0]
-    assert round0["corners"] == {"typ": _expected("extracted")}
+    assert round0["corners"] == {"typ": _expected("extracted", propagated=True)}
     # Round 0 times the detailed route's database, before any repair.
     kinds = [(e["event"], e.get("round")) for e in _events(run_dir)]
     assert kinds.index(("stage_timing", 0)) < kinds.index(("post_route_round", 0))
@@ -380,8 +413,9 @@ def test_a_multi_corner_platform_is_timed_per_corner(tmp_path, monkeypatch):
     for stage, (event,) in _by_stage(run_dir).items():
         assert list(event["corners"]) == ["tt", "ss", "ff"], stage
         for index, corner in enumerate(["tt", "ss", "ff"]):
-            source = "global_route" if stage == "finish" else _SOURCE[stage]
-            assert event["corners"][corner] == _expected(source, index)
+            assert event["corners"][corner] == _expected(
+                _SOURCE[stage], index, stage in _PROPAGATED
+            )
 
 
 @pytest.mark.parametrize("stages", [False, True])
@@ -524,6 +558,15 @@ def test_an_armed_flow_lists_what_each_stage_is_timed_on(tmp_path):
     assert text.count(final) == 1
     assert text.index("report_tns -min") < text.index(final)
     assert text.index(final) < text.index("report_checks -path_delay max")
+
+
+def test_a_one_session_flow_times_place_before_the_clocks_are_propagated(tmp_path):
+    text = _render(tmp_path, ("cts",)).read_text()
+
+    call = "rb::ckpt::stage_timing place stage_end\n"
+    assert text.count(call) == 1
+    assert text.index(call) < text.index("set_propagated_clock")
+    assert text.index(call) < text.index("clock_tree_synthesis \\")
 
 
 def test_a_flow_without_checkpoints_has_no_timing_calls(tmp_path):

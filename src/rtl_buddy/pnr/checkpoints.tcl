@@ -47,6 +47,8 @@ namespace eval rb::ckpt {
     # platform) or the session's one default scene.
     variable corners {}
     variable scenes 0
+    # The stage/point pairs already timed.
+    variable timed_done {}
     # A stage ends once.
     variable done {}
     variable seq 0
@@ -370,12 +372,14 @@ proc rb::ckpt::timing_event {stage point source {round ""}} {
 }
 
 # Time `stage` at `point` on the parasitics its own report uses, which this
-# sets first. A stage with no entry in `timed` is timed elsewhere.
+# sets first, once. A stage with no entry in `timed` is timed elsewhere.
 proc rb::ckpt::stage_timing {stage point} {
     variable timed
-    if {![dict exists $timed $stage]} {
+    variable timed_done
+    if {![dict exists $timed $stage] || "$stage/$point" in $timed_done} {
         return
     }
+    lappend timed_done "$stage/$point"
     lassign [dict get $timed $stage] source command
     set error ""
     if {$command ne "" && [catch {uplevel #0 $command} message]} {
