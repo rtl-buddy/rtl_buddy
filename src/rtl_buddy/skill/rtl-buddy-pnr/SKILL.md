@@ -12,7 +12,7 @@ Use `rb --machine`. Field definitions: `rb --machine docs show reference/yaml#pn
 ## Set up a run
 
 - A `pnr.yaml` run needs `name`, `desc`, `synth` + `synth-path` (that synthesis must have written its netlist), `constraints` (SDC) and `platform` (a `cfg-pnr-platforms` entry in `root_config.yaml`). Paths are relative to `pnr.yaml`.
-- Process files and defaults live on the `cfg-pdks` entry (`pdn-config`, `rcx-rules`, `layer-rc-tcl`, `placement.*`, `dont-use-cells`); the platform picks `corner` or `corners` and overrides knobs; the run overrides `placement:` and the repair blocks.
+- Process files and defaults live on the `cfg-pdks` entry (`pdn-config`, `rcx-rules`, `layer-rc-tcl`, `placement.*`, `dont-use-cells`); the platform picks `corner` or `corners` and overrides knobs; the run overrides `placement:`, the repair blocks and the routing, CTS and tap-cell knobs.
 - Copy an existing run in the project before writing one from scratch. Find names with `rb --machine pnr --list -c <pnr.yaml>`.
 - Put extra Tcl in `hooks:` (fixed flow points) or `pin-constraints`, never in an edited `pnr.tcl` or the SDC.
 - Multi-corner (`corners:`): each corner is timed in its own SDC mode (OpenROAD 26Q4+). `constraints:` may map each corner to its SDC. An SDC command in a hook constrains only the primary (first) corner; put per-corner constraints in the SDCs.
@@ -33,6 +33,7 @@ rb --machine pnr-export <run> -c <pnr.yaml> --png        # GDS/PNG from a saved 
 - OpenROAD is single-threaded unless the run sets `threads:` (`auto` = the allocation's CPUs). Quote `openroad_threads.effective`.
 - `--dispatch slurm` sizes each stage from the run's `resources:` (`stages.<stage>` overrides). `rb pnr` blocks until the chain ends; Ctrl-C cancels its jobs.
 - `pnr.log` is live. Before calling a route hung, check `DRT-0195` iterations and `DRT-0199` violation counts, and `checkpoints/latest/progress.jsonl` for the current step.
+- To compare iterations stage by stage, read the `stage_timing` events of `checkpoints/latest/progress.jsonl` (or `timing` in `manifest.json`): per corner setup and hold WNS and TNS in ps, with the `parasitics` they were timed on. Null means no constrained path. Compare only events with the same `parasitics`.
 
 ## Read results
 
@@ -58,6 +59,7 @@ Frequent cases:
 - `fail_stage: dispatch`: the stage job was killed by Slurm; read `dispatch/<NN>_<stage>.slurm.log` and raise that stage's `resources:`.
 - `PDN-*` errors: macro halo, macro grid or a turned macro; `N macros do not fit`: lower `utilization`.
 - Global-route overflow or high `drc_count`: lower density or utilization, `placement.routability-driven`, `routing-layer-adjustment`.
+- Macro pins in `electrical.rpt`, such as SRAM inputs with a tight `max_transition`: `placement.macro-pin-limits`; `macro_pin_unmet_count` counts the pins it could not fix.
 - `RB-DONT-USE-VIOLATION`: the netlist uses an excluded cell; fix synthesis, not P&R.
 - Change one knob per rerun and compare the same fields.
 

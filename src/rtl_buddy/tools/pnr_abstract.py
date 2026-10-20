@@ -18,6 +18,7 @@ from ..config.pdk import (
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
     DEFAULT_ROTATED_MACRO_FOOTPRINT,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
+    MacroPinLimitsFile,
 )
 from ..config.pnr_repair import GlobalRouteRepair
 from ..config.pnr import (
@@ -272,6 +273,18 @@ def _repair_digest(platform) -> dict:
     pr = platform.get_post_route_repair()
     if pr is not None:
         digest["post_route_repair"] = _jsonable(asdict(pr))
+    for block in digest.values():
+        design = block.get("repair_design") if isinstance(block, dict) else None
+        if design:
+            # Emitted only when set so existing digests do not change.
+            if design["wire_rc"] is None:
+                del design["wire_rc"]
+            else:
+                design["wire_rc"] = {
+                    k: v for k, v in design["wire_rc"].items() if v is not None
+                }
+            if not design["after_timing"]:
+                del design["after_timing"]
     return digest
 
 
@@ -309,7 +322,8 @@ def abstract_config(pnr_cfg, platform) -> dict:
     platform = platform.with_run_repairs(
         pnr_cfg.global_route_repair, pnr_cfg.post_route_repair, pnr_cfg.get_name()
     )
-    hooks = dict(platform.get_pdk().get_tcl_hooks())
+    platform = platform.with_run_overrides(pnr_cfg.get_overrides())
+    hooks = platform.get_tcl_hooks()
     return {
         "platform": pnr_cfg.get_platform(),
         "synth": {
@@ -423,6 +437,20 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 != DEFAULT_ROTATED_MACRO_FOOTPRINT
                 else {}
             ),
+            **(
+                {
+                    "macro_pin_limits": {
+                        "buffers": list(macro_pin_limits.buffers),
+                        "margin": macro_pin_limits.margin,
+                        "capacitance_margin": macro_pin_limits.capacitance_margin,
+                    }
+                }
+                if isinstance(
+                    macro_pin_limits := platform.get_placement_macro_pin_limits(),
+                    MacroPinLimitsFile,
+                )
+                else {}
+            ),
         },
         "routing": {
             "signal_layers": platform.get_signal_layers(),
@@ -442,6 +470,22 @@ def abstract_config(pnr_cfg, platform) -> dict:
             else {}
         ),
         **_repair_digest(platform),
+        # The CTS knobs below are emitted only when set so existing digests do not change.
+        **(
+            {"cts_clock_nets": list(platform.get_cts_clock_nets())}
+            if platform.get_cts_clock_nets()
+            else {}
+        ),
+        **(
+            {"cts_latency_balancing": False}
+            if platform.get_cts_latency_balancing() is False
+            else {}
+        ),
+        **(
+            {"cts_repair_clock_nets": True}
+            if platform.get_cts_repair_clock_nets() is True
+            else {}
+        ),
         **(
             {"cts_apply_ndr": platform.get_cts_apply_ndr()}
             if isinstance(platform.get_cts_apply_ndr(), str)
@@ -460,7 +504,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
             if pnr_cfg.get_buffer_ports() and platform.get_port_buffer()
             else {}
         ),
-        # Emitted only when a PDK Tcl hook is set so existing digests do not change.
+        # Emitted only when a Tcl hook is set so existing digests do not change; `tapcell-tcl` is the run's, the platform's or the PDK's.
         **({"tcl_hooks": {k: _rel(v) for k, v in hooks.items()}} if hooks else {}),
         # Emitted only when a run hook is set so existing digests do not change.
         **(

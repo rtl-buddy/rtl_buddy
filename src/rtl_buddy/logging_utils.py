@@ -1989,6 +1989,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('exe')} does not have; upgrade OpenROAD or drop "
                 "the blockages"
             )
+        case "pnr.wire_rc_unsupported":
+            return (
+                f'P&R "{fields.get("pnr")}": post-route-repair.repair-design.'
+                "wire-rc needs OpenROAD's sta::scenes and est:: wire RC "
+                f"commands (26Q2 or newer), which {fields.get('exe')} does not "
+                "have; upgrade OpenROAD or drop wire-rc"
+            )
         case "pnr.run_hook_missing":
             return (
                 f'P&R "{fields.get("pnr")}": hooks.{fields.get("point")}'
@@ -3057,6 +3064,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('max_capacitance_violation_count')} max-capacitance and "
                 f"{fields.get('max_fanout_violation_count')} max-fanout violator(s); "
                 f"{verdict}; see {fields.get('report')}"
+            )
+        case "pnr.macro_pin_limits_unmet":
+            return (
+                f"pnr {fields.get('pnr')}: {fields.get('unmet')} macro pin(s) stayed "
+                "over their max-slew or max-capacitance limit less the "
+                "placement.macro-pin-limits margin with the strongest buffer "
+                "candidate (or had no free row site); add a stronger buffer, "
+                "lower placement.macro-cell-halo, or check the routed result in "
+                f"electrical.rpt; see the '>>> Macro pin limits' lines in {fields.get('log')}"
             )
         case "pnr.dont_use_instantiated":
             shown = [

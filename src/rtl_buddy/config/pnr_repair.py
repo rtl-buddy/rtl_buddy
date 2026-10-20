@@ -54,6 +54,22 @@ class RepairDesignFile:
 
 
 @serde
+class WireRcFile:
+    resistance: Any = UNSET
+    capacitance: Any = UNSET
+    layer: Any = UNSET
+
+
+@serde
+class PostRouteRepairDesignFile:
+    slew_margin: Any = field(rename="slew-margin", default=UNSET)
+    cap_margin: Any = field(rename="cap-margin", default=UNSET)
+    max_wire_length: Any = field(rename="max-wire-length", default=UNSET)
+    wire_rc: Any = field(rename="wire-rc", default=UNSET)
+    after_timing: Any = field(rename="after-timing", default=UNSET)
+
+
+@serde
 class GlobalRouteRepairFile:
     repair_design: Any = field(rename="repair-design", default=UNSET)
     setup_margin: Any = field(rename="setup-margin", default=UNSET)
@@ -76,17 +92,33 @@ GLOBAL_ROUTE_REPAIR_SPEC = KeySpec(
     GlobalRouteRepairFile, {"repair-design": KeySpec(RepairDesignFile)}
 )
 POST_ROUTE_REPAIR_SPEC = KeySpec(
-    PostRouteRepairFile, {"repair-design": KeySpec(RepairDesignFile)}
+    PostRouteRepairFile,
+    {
+        "repair-design": KeySpec(
+            PostRouteRepairDesignFile, {"wire-rc": KeySpec(WireRcFile)}
+        )
+    },
 )
 
 
 @dataclass(frozen=True)
+class WireRc:
+    """The signal wire RC a post-route `repair_design` estimates the nets it changes at: `resistance` (kohm/um) and `capacitance` (fF/um), or the RC `set_wire_rc -signal -layer` gives `layer`."""
+
+    resistance: float | None = None
+    capacitance: float | None = None
+    layer: str | None = None
+
+
+@dataclass(frozen=True)
 class RepairDesign:
-    """`repair_design` options; `None` leaves OpenROAD's default."""
+    """`repair_design` options; `None` leaves OpenROAD's default. `wire_rc` and `after_timing` are `post-route-repair`'s only."""
 
     slew_margin: float | None = None
     cap_margin: float | None = None
     max_wire_length: float | None = None
+    wire_rc: WireRc | None = None
+    after_timing: bool = False
 
     def options(self) -> str:
         """The `repair_design` options, each with a leading space."""
@@ -195,17 +227,62 @@ _REPAIR_DESIGN_KEYS = {
 }
 
 
-def _read_repair_design(where: str, raw):
-    block = _block(where, raw, _REPAIR_DESIGN_KEYS)
+_POST_ROUTE_REPAIR_DESIGN_KEYS = {
+    **_REPAIR_DESIGN_KEYS,
+    "wire-rc": "wire_rc",
+    "after-timing": "after_timing",
+}
+
+
+def _read_wire_rc(where: str, raw) -> WireRc:
+    """Return a `wire-rc` mapping: `resistance` and `capacitance`, both positive, or `layer` alone."""
+    block = _block(
+        where,
+        raw,
+        {"resistance": "resistance", "capacitance": "capacitance", "layer": "layer"},
+    )
+    written = {k for k, v in block.items() if v is not UNSET}
+    if written == {"layer"}:
+        name = block["layer"]
+        if not isinstance(name, str) or not name.strip():
+            raise FatalRtlBuddyError(
+                f"{where}.layer must be a routing layer name, got {name!r}"
+            )
+        return WireRc(layer=name.strip())
+    if written == {"resistance", "capacitance"}:
+        values = {}
+        for key in ("resistance", "capacitance"):
+            values[key] = _number(where, key, block[key], low=0.0, nullable=False)
+            if values[key] == 0.0:
+                raise FatalRtlBuddyError(
+                    f"{where}.{key} must be a positive number, got {block[key]!r}"
+                )
+        return WireRc(**values)
+    raise FatalRtlBuddyError(
+        f"{where} must set resistance (kohm/um) and capacitance (fF/um), or layer "
+        f"alone, got {raw!r}"
+    )
+
+
+def _read_repair_design(where: str, raw, keys: dict = _REPAIR_DESIGN_KEYS):
+    block = _block(where, raw, keys)
     if block is None:
         return None
     layer = {}
-    for key, attr in _REPAIR_DESIGN_KEYS.items():
+    for key, attr in keys.items():
         value = block[attr]
         if value is UNSET:
             continue
         if value is None:
             layer[attr] = None
+        elif attr == "wire_rc":
+            layer[attr] = _read_wire_rc(f"{where}.wire-rc", value)
+        elif attr == "after_timing":
+            if not isinstance(value, bool):
+                raise FatalRtlBuddyError(
+                    f"{where}.after-timing must be true, false or null, got {value!r}"
+                )
+            layer[attr] = value
         elif attr == "max_wire_length":
             layer[attr] = _number(where, key, value, low=0.0)
             if layer[attr] == 0.0:
@@ -218,11 +295,13 @@ def _read_repair_design(where: str, raw):
     return layer
 
 
-def _read_margins(where: str, block: dict) -> dict:
+def _read_margins(
+    where: str, block: dict, design_keys: dict = _REPAIR_DESIGN_KEYS
+) -> dict:
     layer = {}
     if block["repair_design"] is not UNSET:
         layer["repair_design"] = _read_repair_design(
-            f"{where}.repair-design", block["repair_design"]
+            f"{where}.repair-design", block["repair_design"], design_keys
         )
     for key, attr in (("setup-margin", "setup_margin"), ("hold-margin", "hold_margin")):
         value = block[attr]
@@ -283,7 +362,7 @@ def read_post_route_repair(where: str, raw):
     block = _block(where, raw, _POST_ROUTE_KEYS)
     if block is None:
         return None
-    layer = _read_margins(where, block)
+    layer = _read_margins(where, block, _POST_ROUTE_REPAIR_DESIGN_KEYS)
     rounds = block["rounds"]
     if rounds is not UNSET:
         if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 1:
@@ -305,10 +384,19 @@ def read_post_route_repair(where: str, raw):
 
 
 def _merge(layers) -> dict | None:
-    """Merge layers, lowest first: a `None` layer turns the block off, a later layer's keys win field by field, `repair_design` merging the same way."""
+    """Merge layers, lowest first: a `None` layer turns the block off, a later layer's keys win field by field, `repair_design` merging the same way. `HOLD_REPAIR_DROPPED` skips the hold repair, and turns the block off when that leaves nothing to repair."""
     merged = None
     for layer in layers:
         if layer is UNSET:
+            continue
+        if layer is HOLD_REPAIR_DROPPED:
+            if merged is not None:
+                merged = {**merged, "hold_margin": None}
+                if (
+                    merged.get("repair_design") is None
+                    and merged.get("setup_margin") is None
+                ):
+                    merged = None
             continue
         if layer is None:
             merged = None
@@ -333,7 +421,12 @@ def _repairs(where: str, block: str, merged: dict) -> RepairDesign | None:
             f"hold-margin in the run's {block} or the platform's, or write "
             f"{block}: null to turn it off"
         )
-    return RepairDesign(**design) if design is not None else None
+    if design is None:
+        return None
+    # `after-timing: null` is off.
+    return RepairDesign(
+        **{k: v for k, v in design.items() if not (k == "after_timing" and v is None)}
+    )
 
 
 def resolve_global_route_repair(where: str, layers) -> GlobalRouteRepair | None:
@@ -365,6 +458,13 @@ def resolve_post_route_repair(where: str, layers) -> PostRouteRepair | None:
         margin_step=merged.get("margin_step", 0.0),
         reroute=merged.get("reroute", PostRouteReroute.ECO),
     )
+    design = repair.repair_design
+    if design is not None and design.after_timing and not repair.sides():
+        raise FatalRtlBuddyError(
+            f"{where}: post-route-repair.repair-design.after-timing runs "
+            "repair_design again after timing repair, but the block sets no "
+            "setup-margin or hold-margin"
+        )
     if repair.rounds > 1 and not repair.sides():
         raise FatalRtlBuddyError(
             f"{where}: post-route-repair.rounds is {repair.rounds}, but the block "
@@ -376,6 +476,28 @@ def resolve_post_route_repair(where: str, layers) -> PostRouteRepair | None:
 
 #: The layer `global-route-hold-repair: true` stands for: a hold-only repair with no margin.
 HOLD_REPAIR_SHORTHAND = {"hold_margin": 0.0}
+
+
+class _HoldRepairDropped:
+    def __repr__(self) -> str:
+        return "HOLD_REPAIR_DROPPED"
+
+
+#: The layer a run's `global-route-hold-repair: false` stands for: no hold repair after global route.
+HOLD_REPAIR_DROPPED: Any = _HoldRepairDropped()
+
+
+def read_hold_repair_shorthand(where: str, shorthand: bool | None, block):
+    """Return a run's global-route repair layer from its `global-route-hold-repair` and `global-route-repair` (already read); refuse both together."""
+    if shorthand is None:
+        return block
+    if block is not UNSET:
+        raise FatalRtlBuddyError(
+            f"{where}: set either global-route-hold-repair or "
+            "global-route-repair, not both (global-route-hold-repair: true "
+            "is global-route-repair: {hold-margin: 0})"
+        )
+    return dict(HOLD_REPAIR_SHORTHAND) if shorthand else HOLD_REPAIR_DROPPED
 
 
 def read_mode(where: str, value) -> PnrMode:
