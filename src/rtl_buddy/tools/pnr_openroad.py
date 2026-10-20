@@ -1218,7 +1218,7 @@ def _checkpoint_name(stage: str) -> str:
     return f"{pnr_checkpoints.STAGE_INDEX[stage]}_{stage}"
 
 
-_LOGGED_STEP_RE = re.compile(r"^>>> (?! )(?!rb: )(.+)$", re.MULTILINE)
+_LOGGED_STEP_RE = re.compile(r"^>>> (?! )(?!rb[: ])(.+)$", re.MULTILINE)
 
 
 def _last_logged_step(log_text: str) -> str | None:
@@ -1510,8 +1510,8 @@ def _round_summary(round_: dict) -> str:
 
 
 def _passed_over(timed: dict, kept: int, sides) -> int | None:
-    """The round with the best timing among those whose timing is better than the kept round's but whose route has DRC violations, when the kept round's is clean; else None."""
-    if kept not in timed or timed[kept]["drcs"]:
+    """The round with the best timing among those whose timing is better than the kept round's but whose route has DRC violations, when the kept round's is clean; else None. With no repaired side (`sides` empty) timing decides nothing, so None."""
+    if not sides or kept not in timed or timed[kept]["drcs"]:
         return None
     passed = None
     for round_, entry in timed.items():
@@ -1588,7 +1588,7 @@ def run_post_route_repair(
 
     `session(path, label)` runs OpenROAD on one script and returns its exit code, stderr, resources and log; `note(line)` appends a line of rb's own to the log and returns it. Each session's part of the log begins with `_SESSION_BEGIN_MARKER`.
 
-    Round 0 is the detailed route: its extraction session extracts it and times every corner. Round k from 1 repairs round k-1's database on that round's SPEF, routes, and writes the stage's checkpoint, which rb renames `06_post_route_repair.r<k>.*` (`_round_files`); its extraction session then times the result. Each round's DRC violations are counted from its router's report. A round becomes the best when it improves on the best (`_round_improves`), or when its route is clean and the best's is not. A round whose route has violations never stops the rounds, so the next one gets another detailed route on its database. The rounds stop when a clean round is the best and meets timing on every side they repair (setup with `setup-margin` set, hold with `hold-margin` set), when a clean round does not improve on the best, when a round's timing is not reported, when a session of a later round fails, or after the last round. The stage keeps the best round's database as its checkpoint (`_keep_round`); a round whose timing was not reported or whose session failed is never kept. When a round with violations has better timing than the clean round kept, the stop reason names both (`_passed_over`).
+    Round 0 is the detailed route: its extraction session extracts it and times every corner. Round k from 1 repairs round k-1's database on that round's SPEF, routes, and writes the stage's checkpoint, which rb renames `06_post_route_repair.r<k>.*` (`_round_files`); its extraction session then times the result. Each round's DRC violations are counted from its router's report. A round becomes the best when it improves on the best (`_round_improves`), or when its route is clean and the best's is not. A round whose route has violations never stops the rounds, so the next one gets another detailed route on its database. The rounds stop when a clean round is the best and meets timing on every side they repair (setup with `setup-margin` set, hold with `hold-margin` set), when a clean round does not become the best, when a round's timing is not reported, when a session of a later round fails, or after the last round. The stage keeps the best round's database as its checkpoint (`_keep_round`); a round from 1 whose timing was not reported or whose session failed is never kept. When a round with violations has better timing than the clean round kept, the stop reason names both (`_passed_over`).
 
     A failed session of round k from 1 is set aside: rb warns, notes it after the session's part of the log, whose `[ERROR` lines then do not fail the run (`_error_lines`), and the stage keeps the best round. Round 0's extraction failing fails the stage, as does a failed stage report: a `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint the stage kept.
     """
@@ -1738,18 +1738,16 @@ def run_post_route_repair(
             )
             break
         current = {"timing": timing, "drcs": drcs}
-        improved = True
         if round_:
             prior = timed[best]
-            improved = _round_improves(current, prior, sides)
             # A clean route is never passed over for one with violations.
-            if improved or (not drcs and prior["drcs"]):
+            if _round_improves(current, prior, sides) or (not drcs and prior["drcs"]):
                 best = round_
         timed[round_] = current
         _record(round_, drcs, timing)
         if drcs:
             continue
-        if not improved:
+        if best != round_:
             stop = "no_improvement", f"round {round_} did not improve timing"
             break
         if met:
@@ -1859,6 +1857,15 @@ def _error_lines(text: str) -> list[str]:
     return counted + pending
 
 
+def _last_session(text: str) -> tuple[str, str]:
+    """The `_SESSION_BEGIN_MARKER` line of the last post-route repair session in a log and the log after it, or two empty strings when it has none."""
+    lines = text.splitlines()
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].startswith(_SESSION_BEGIN_MARKER):
+            return lines[index], "\n".join(lines[index + 1 :])
+    return "", ""
+
+
 def _has_errors(section: bytes) -> bool:
     """Whether a session's log has an `[ERROR` line that fails the run (see `_error_lines`)."""
     return bool(_error_lines(section.decode(errors="replace")))
@@ -1960,7 +1967,7 @@ def run_stage(
 
     problem = None
     fail_stage = None
-    # The rounds stop at an `[ERROR` line, before the stage's checkpoint.
+    # Only round 0's extraction and the report session stop the stage on an `[ERROR` line, before its checkpoint.
     stopped_on_error = False
     if stage == POST_ROUTE_REPAIR_STAGE:
         post = run_post_route_repair(
@@ -2787,7 +2794,7 @@ class OpenRoadPnr:
         )
 
     def _eco_hint(self, log_text: str) -> str:
-        """What to change when an `eco` post-route repair round failed RSZ-0074, else "".
+        """What to change when the post-route repair session that failed the run, the last one in `log_text`, is an `eco` round's repair that failed RSZ-0074, else "".
 
         An eco round's repairs build buffer trees from Steiner trees while `rb::eco::repair` can override `design_is_routed`; where it cannot (`pnr.post_route_eco_unguarded`), they build them from the global routes a fresh session rebuilds from the routed database's guides, which can miss pins.
         """
@@ -2796,8 +2803,10 @@ class OpenRoadPnr:
             repair is None
             or repair.reroute is not PostRouteReroute.ECO
             or self._failed_stage != _checkpoint_name(POST_ROUTE_REPAIR_STAGE)
-            or "[ERROR RSZ-0074]" not in log_text
         ):
+            return ""
+        label, session = _last_session(log_text)
+        if not label.endswith(" repair") or "[ERROR RSZ-0074]" not in session:
             return ""
         return f"; {_ECO_HINT}"
 
@@ -4312,6 +4321,18 @@ class OpenRoadPnr:
             }
         }
 
+    def _post_route_note(self) -> str:
+        """The qualifier of a pass whose post-route repair set a round aside or passed over a round with better timing, else `""`."""
+        post_route = self._post_route_fields().get("post_route_repair") or {}
+        if post_route.get("passed_over_round") is not None:
+            return f"post-route repair {post_route['reason']}"
+        if post_route.get("stop") == "session_failed":
+            return (
+                f"post-route repair {post_route['reason']}; kept round "
+                f"{post_route['kept_round']}"
+            )
+        return ""
+
     def _planner_files(self, record) -> dict:
         """`macros_file` and `pins_file`, each through `record`, only when set, so other runs' records keep their roles."""
         fp = self.pnr_cfg.get_floorplan()
@@ -4934,9 +4955,12 @@ class OpenRoadPnr:
             },
         )
         probe = "probe " if self._mode is PnrMode.PROBE else ""
+        desc = f"P&R {probe}stopped after {stage} (not routed)"
+        if note := self._post_route_note():
+            desc += f"; {note}"
         return PnrPassResults(
             name=self.name + "/results",
-            desc=f"P&R {probe}stopped after {stage} (not routed)",
+            desc=desc,
             fields={
                 **metrics,
                 **corner_fields,
@@ -5707,15 +5731,6 @@ class OpenRoadPnr:
             gds_status=export.status if export is not None else None,
             log=log_path,
         )
-        post_route = self._post_route_fields().get("post_route_repair") or {}
-        post_route_note = ""
-        if post_route.get("passed_over_round") is not None:
-            post_route_note = f"post-route repair {post_route['reason']}"
-        elif post_route.get("stop") == "session_failed":
-            post_route_note = (
-                f"post-route repair {post_route['reason']}; kept round "
-                f"{post_route['kept_round']}"
-            )
         qualifiers = [
             q
             for q in (
@@ -5723,7 +5738,7 @@ class OpenRoadPnr:
                 pnr_abstract.stale_qualifier(self._blocks),
                 no_wire_rc,
                 f"electrical {electrical}" if electrical else "",
-                post_route_note,
+                self._post_route_note(),
             )
             if q
         ]

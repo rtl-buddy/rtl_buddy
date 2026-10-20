@@ -12,6 +12,7 @@ import re
 from dataclasses import replace
 from importlib.resources import files
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -289,6 +290,8 @@ def test_mode_defaults_to_closure_and_rejects_others(tmp_path):
     assert _run(mode="probe").get_mode() is PnrMode.PROBE
     with pytest.raises(FatalRtlBuddyError, match="mode must be one of closure, probe"):
         _run(mode="explore")
+    with pytest.raises(FatalRtlBuddyError, match="cannot be harden: true"):
+        _run(mode="probe", harden=True)
 
 
 @pytest.mark.parametrize(
@@ -997,6 +1000,83 @@ def test_an_eco_round_that_ends_early_after_rsz_0074_names_reroute_full(
         in res.results["desc"]
     )
     assert "set post-route-repair.reroute: full" in res.results["desc"]
+
+
+@pytest.mark.parametrize("code", [0, 3])
+def test_a_failed_stage_report_after_a_set_aside_eco_round_does_not_name_reroute_full(
+    tmp_path, monkeypatch, code
+):
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_PR, "rounds": 1},
+        env={"RB_STUB_SETUP": "-0.2", "RB_STUB_RSZ0074": "1"},
+        stop_after="post_route_repair",
+    )
+    # The stage report session fails after round 1's repair, set aside for RSZ-0074.
+    harness = tmp_path / "harness.tcl"
+    text = harness.read_text()
+    source = "source [lindex $argv 0]"
+    assert text.count(source) == 1
+    harness.write_text(
+        text.replace(
+            source,
+            f"if {{[string match *.report.tcl [lindex $argv 0]]}} {{ exit {code} }}\n"
+            + source,
+        )
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL", res.results
+    assert "stage 06_post_route_repair:" in res.results["desc"]
+    assert "reroute: full" not in res.results["desc"]
+
+
+@pytest.mark.parametrize(
+    "log, hint",
+    [
+        # The failing session is a repair session that failed RSZ-0074.
+        (
+            ">>> rb: begin 06_post_route_repair round 1 repair\n"
+            "[ERROR RSZ-0074] Failed to build tree from global routes\n",
+            True,
+        ),
+        # An earlier round's set-aside repair is not the failing session.
+        (
+            ">>> rb: begin 06_post_route_repair round 1 repair\n"
+            "[ERROR RSZ-0074] Failed to build tree from global routes\n"
+            ">>> rb: set aside 06_post_route_repair round 1 repair: x\n"
+            ">>> rb: begin 06_post_route_repair stage report\n",
+            False,
+        ),
+        (
+            ">>> rb: begin 06_post_route_repair round 1 repair\n"
+            "[ERROR RSZ-0074] Failed to build tree from global routes\n"
+            ">>> rb: begin 06_post_route_repair round 1 extraction\n",
+            False,
+        ),
+        # A repair session that failed otherwise.
+        (">>> rb: begin 06_post_route_repair round 1 repair\n[ERROR X-1] y\n", False),
+        ("[ERROR RSZ-0074] outside any post-route repair session\n", False),
+    ],
+    ids=[
+        "failing-repair",
+        "set-aside-then-report",
+        "repair-then-extraction",
+        "other-error",
+        "no-session",
+    ],
+)
+def test_the_eco_hint_follows_the_failing_post_route_repair_session(log, hint):
+    backend = SimpleNamespace(
+        _post_route=SimpleNamespace(reroute=PostRouteReroute.ECO),
+        _failed_stage="06_post_route_repair",
+    )
+
+    named = OpenRoadPnr._eco_hint(backend, log) != ""
+
+    assert named is hint
 
 
 def test_an_eco_round_overrides_design_is_routed_around_its_repairs_only(
@@ -1757,6 +1837,41 @@ def test_a_repair_design_only_block_repairs_once(tmp_path, monkeypatch):
     assert not re.search(r"^repair_timing", r1, re.MULTILINE)
 
 
+def test_a_block_that_repairs_no_side_passes_over_no_round():
+    clean = {"timing": _timing(-100.0, 0.0), "drcs": 0}
+    dirty = {"timing": _timing(-100.0, 0.0), "drcs": 2}
+    timed = {0: clean, 1: dirty}
+    assert pnr_openroad._passed_over(timed, 0, []) is None
+    # A side the rounds repair that the dirty round times better on is passed over.
+    better = {"timing": _timing(-50.0, 0.0), "drcs": 2}
+    assert pnr_openroad._passed_over({0: clean, 1: better}, 0, ["setup"]) == 1
+
+
+def test_a_repair_design_only_round_with_violations_is_not_called_better(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={"repair-design": {"slew-margin": 10}},
+        env={"RB_STUB_SETUP": "0.5", "RB_STUB_DRC": "1"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["post_route_repair"] == {
+        "kept_round": 0,
+        "repaired_rounds": 1,
+        "rounds": 1,
+        "stop": "last_round",
+        "reason": "all 1 round(s) ran",
+        "passed_over_round": None,
+    }
+    assert "post-route repair" not in (res.results["desc"] or "")
+    assert res.results["drc_count"] == 0
+
+
 def test_a_partial_platform_block_fails_only_the_run_that_leaves_it_partial(
     tmp_path, monkeypatch
 ):
@@ -1934,36 +2049,52 @@ def test_a_round_with_a_short_gets_another_round_on_its_database(
     )
 
 
-def test_a_clean_round_is_kept_over_a_detailed_route_with_violations(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    "setup, stop, kept, passed",
+    [
+        ("-0.1 -0.2 -0.3", "no_improvement", 1, 0),
+        ("-0.1 -0.2 0.01", "timing_met", 2, None),
+    ],
+)
+def test_a_clean_round_kept_over_a_detailed_route_with_violations_gets_a_next_round(
+    tmp_path, monkeypatch, setup, stop, kept, passed
 ):
     backend, artefacts = _repair_backend(
         tmp_path,
         monkeypatch,
         post_route=_PR,
-        env={"RB_STUB_SETUP": "-0.1 -0.2", "RB_STUB_DRC": "0:2"},
+        env={"RB_STUB_SETUP": setup, "RB_STUB_DRC": "0:2"},
     )
 
     res = backend.run()
 
     assert res.results["result"] == "PASS", res.results
     (run_dir,) = _runs(artefacts)
-    # The detailed route is timed and gets a round in spite of its violations.
-    assert [(r["round"], r["drc_count"]) for r in _rounds(run_dir)] == [(0, 2), (1, 0)]
-    assert res.results["post_route_repair"] == {
-        "kept_round": 1,
-        "repaired_rounds": 1,
-        "rounds": 3,
-        "stop": "no_improvement",
-        "reason": "round 1 did not improve timing; round 0 times better (setup WNS "
-        "-0.1000 ns, hold WNS 0.0000 ns, 2 DRC violation(s)), but the stage keeps "
-        "round 1, whose route is clean (setup WNS -0.2000 ns, hold WNS 0.0000 ns, 0 "
-        "DRC violation(s))",
-        "passed_over_round": 0,
-    }
+    # The detailed route is timed and gets a round in spite of its violations;
+    # round 1 is clean and becomes the best without improving on its timing, and
+    # round 2 repairs it and is compared with it.
+    assert [
+        (r["round"], r["drc_count"], r["best_round"]) for r in _rounds(run_dir)
+    ] == [(0, 2, 0), (1, 0, 1), (2, 0, kept)]
+    r2 = (run_dir / "06_post_route_repair.r2.repair.tcl").read_text()
+    assert "06_post_route_repair.r1.odb]" in r2
+    post_route = res.results["post_route_repair"]
+    assert post_route["kept_round"] == kept
+    assert post_route["repaired_rounds"] == 2
+    assert post_route["stop"] == stop
+    assert post_route["passed_over_round"] == passed
+    if passed is None:
+        assert post_route["reason"] == "timing met"
+    else:
+        assert post_route["reason"] == (
+            "round 2 did not improve timing; round 0 times better (setup WNS "
+            "-0.1000 ns, hold WNS 0.0000 ns, 2 DRC violation(s)), but the stage keeps "
+            "round 1, whose route is clean (setup WNS -0.2000 ns, hold WNS 0.0000 ns, 0 "
+            "DRC violation(s))"
+        )
     assert res.results["drc_count"] == 0
     assert (run_dir / "06_post_route_repair.odb").samefile(
-        run_dir / "06_post_route_repair.r1.odb"
+        run_dir / f"06_post_route_repair.r{kept}.odb"
     )
 
 
@@ -2241,6 +2372,86 @@ def test_a_repair_session_that_writes_no_database_is_set_aside(
     )
 
 
+@pytest.mark.parametrize("stages", [False, True])
+def test_an_error_after_a_set_aside_round_still_fails_the_run(
+    tmp_path, monkeypatch, stages
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        stages=stages,
+        env={
+            "RB_STUB_SETUP": "-0.2 -0.1 -0.05",
+            "RB_STUB_REPAIR_FAIL": "1",
+            "RB_STUB_ERRLINE": "filler_placement",
+        },
+    )
+
+    res = backend.run()
+
+    # Round 1's error is set aside; finish's is counted, and only it.
+    assert res.results["result"] == "FAIL", res.results
+    assert "stage 07_finish: 1 ERROR(s)" in res.results["desc"]
+    assert res.results["post_route_repair"]["stop"] == "session_failed"
+    log = (artefacts / "pnr.log").read_text()
+    assert log.index("[ERROR STUB-0003]") < log.index(">>> rb: set aside ")
+    assert log.index(">>> rb: set aside ") < log.index("[ERROR STUB-0002]")
+
+
+def test_error_lines_leave_out_only_the_sessions_set_aside():
+    log = "\n".join(
+        [
+            "[ERROR A-1] before any session",
+            ">>> rb: begin 06_post_route_repair round 1 repair",
+            "[ERROR B-2] in a session set aside",
+            ">>> rb: set aside 06_post_route_repair round 1 repair: failed",
+            "[ERROR C-3] after the session set aside",
+            ">>> rb: begin 06_post_route_repair round 2 extraction",
+            "[ERROR D-4] in a session that was not set aside",
+            ">>> rb: begin 06_post_route_repair round 2 repair",
+            "[ERROR E-5] in a session without an end",
+        ]
+    )
+
+    assert pnr_openroad._error_lines(log) == [
+        "[ERROR A-1] before any session",
+        "[ERROR C-3] after the session set aside",
+        "[ERROR D-4] in a session that was not set aside",
+        "[ERROR E-5] in a session without an end",
+    ]
+
+
+@pytest.mark.parametrize("has_report", [False, True])
+def test_a_kept_round_without_a_drc_report_removes_a_stale_one(tmp_path, has_report):
+    run_dir, out_dir = tmp_path / "run", tmp_path / "out"
+    run_dir.mkdir()
+    out_dir.mkdir()
+    files = {"odb": "06_post_route_repair.r1.odb"}
+    (run_dir / files["odb"]).write_text("odb")
+    if has_report:
+        files["drc"] = "06_post_route_repair.r1.route.drc.rpt"
+        (run_dir / files["drc"]).write_text("kept")
+    (out_dir / "route.drc.rpt").write_text("stale")
+    (out_dir / "route.maze.log").write_text("stale")
+    plan = {
+        "out_dir": str(out_dir),
+        "carry": {
+            "dir": str(run_dir),
+            "stage": "detailed_route",
+            "name": "05_detailed_route",
+            "design": "top",
+        },
+    }
+
+    pnr_openroad._keep_round(str(run_dir), plan, 1, files)
+
+    assert (out_dir / "route.drc.rpt").is_file() is has_report
+    if has_report:
+        assert (out_dir / "route.drc.rpt").read_text() == "kept"
+    assert not (out_dir / "route.maze.log").exists()
+
+
 @pytest.mark.parametrize("setup, kept", [("-0.2 0.0", 1), ("-0.2 -0.3", 0)])
 def test_stop_after_post_route_repair_reports_on_extracted_parasitics(
     tmp_path, monkeypatch, setup, kept
@@ -2268,6 +2479,71 @@ def test_stop_after_post_route_repair_reports_on_extracted_parasitics(
     assert (run_dir / "06_post_route_repair.odb").samefile(run_dir / kept_odb)
     assert (run_dir / "06_post_route_repair.report.log").is_file()
     assert not (run_dir / "07_finish.tcl").exists()
+
+
+def test_stop_after_post_route_repair_qualifies_a_set_aside_round(
+    tmp_path, monkeypatch
+):
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        env={"RB_STUB_SETUP": "-0.2 -0.1 -0.05", "RB_STUB_REPAIR_FAIL": "2"},
+        stop_after="post_route_repair",
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["stopped_after"] == "post_route_repair"
+    assert res.results["post_route_repair"]["kept_round"] == 1
+    assert res.results["desc"] == (
+        "P&R stopped after post_route_repair (not routed); post-route repair "
+        "round 2's repair session failed: OpenROAD exited with code 1: STUB-0003; "
+        "kept round 1"
+    )
+
+
+def test_stop_after_post_route_repair_qualifies_a_passed_over_round(
+    tmp_path, monkeypatch
+):
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_BOTH, "rounds": 1},
+        env={
+            "RB_STUB_SETUP": "0.01 0.175",
+            "RB_STUB_HOLD": "-0.12 0.044",
+            "RB_STUB_DRC": "1",
+        },
+        stop_after="post_route_repair",
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    reason = res.results["post_route_repair"]["reason"]
+    assert res.results["post_route_repair"]["passed_over_round"] == 1
+    assert res.results["desc"] == (
+        f"P&R stopped after post_route_repair (not routed); post-route repair {reason}"
+    )
+
+
+def test_stop_after_post_route_repair_without_a_set_aside_has_no_qualifier(
+    tmp_path, monkeypatch
+):
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        env={"RB_STUB_SETUP": "-0.2 0.0"},
+        stop_after="post_route_repair",
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["desc"] == "P&R stopped after post_route_repair (not routed)"
 
 
 def test_post_route_repair_without_rcx_rules_is_a_setup_error(tmp_path, monkeypatch):
