@@ -1181,21 +1181,27 @@ def _flow_done(log_text: str) -> bool:
     return _last_logged_step(log_text) == _FLOW_DONE_MARKER.removeprefix(">>> ")
 
 
-def _session_events(run_dir: str | None) -> list[dict]:
-    """The progress events in `run_dir` of the stage that ran last: those after its `stage_begin`, or all of them without one."""
+def _session_events(run_dir: str | None, since: int | None = None) -> list[dict]:
+    """The progress events in `run_dir` of the session that ran last: those from index `since`, else those after the last `stage_begin`, or all of them without one."""
     if run_dir is None:
         return []
     events = pnr_checkpoints.read_progress(run_dir)
+    if since is not None:
+        return events[since:]
     begins = [i for i, e in enumerate(events) if e.get("event") == "stage_begin"]
     return events[begins[-1] :] if begins else events
 
 
 def _incomplete_desc(
-    run_dir: str | None, until: str, marker: str, session_log: str
+    run_dir: str | None,
+    until: str,
+    marker: str,
+    session_log: str,
+    since: int | None = None,
 ) -> str:
     """Return the failure description of a session that exited 0 without printing `marker`.
 
-    `until` names where the session was to end. The last step comes from the session's log, which every run has, and, with checkpoints in `run_dir`, the last command from its progress events.
+    `until` names where the session was to end. The last step comes from the session's log, which every run has, and, with checkpoints in `run_dir`, the last command from its progress events (`_session_events`).
     """
     step = _last_logged_step(session_log)
     reached = f"the last step in the log is '{step}'" if step else "no step is logged"
@@ -1204,7 +1210,7 @@ def _incomplete_desc(
         if marker not in session_log.splitlines()
         else f"'{marker}' is not the last step in the log"
     )
-    command = pnr_checkpoints.last_step(_session_events(run_dir))
+    command = pnr_checkpoints.last_step(_session_events(run_dir, since))
     if command:
         reached += f" (last command: {command['step']}, {command['status']})"
     return (
@@ -1413,6 +1419,7 @@ def run_post_route_repair(run_dir: str, session, *, run_name: str) -> PostRouteO
     used = {"wall_s": 0.0, "cpu_s": 0.0, "peak_rss_kb": 0, "threads": 1}
 
     def _run(file: str, label: str, done: str) -> tuple[int, str, str | None, bool]:
+        since = len(pnr_checkpoints.read_progress(run_dir))
         returncode, stderr, resources, section = session(
             os.path.join(run_dir, file), label
         )
@@ -1429,7 +1436,7 @@ def run_post_route_repair(run_dir: str, session, *, run_name: str) -> PostRouteO
         if returncode == 0 and done not in text.splitlines():
             problem = (
                 f"stage {_checkpoint_name(POST_ROUTE_REPAIR_STAGE)}: "
-                + _incomplete_desc(run_dir, f"the end of {label}", done, text)
+                + _incomplete_desc(run_dir, f"the end of {label}", done, text, since)
             )
         return returncode, stderr, problem, _has_errors(section)
 
@@ -5022,7 +5029,7 @@ class OpenRoadPnr:
             return self._fail_after_openroad(desc, fail_stage="pins_complete")
 
         stage_prefix = f"stage {self._failed_stage}: " if self._failed_stage else ""
-        # A local session reports a problem only when it exited 0; a dispatched stage job killed by the scheduler has a problem and no exit code.
+        # `_unfinished_flow` reported every chain problem with exit code 0; what is left is a dispatched stage job the scheduler ended, with no exit code.
         if chain_problem is not None:
             log_event(
                 logger,

@@ -84,7 +84,7 @@ A run passes when OpenROAD exits 0 with no `[ERROR ...]` line, the flow ran to i
 A Tcl file the flow sources can end the OpenROAD session with exit code 0: an `exit`, or a `return -level 2` that leaves the file's caller, in a PDK Tcl hook (`platform-tcl`, `layer-rc-tcl`, `tracks-tcl`, `tapcell-tcl`), a `pin-constraints` file or a `pdn-config`. rb therefore checks that each OpenROAD session printed its end marker:
 
 - `>>> DONE`, as the last `>>> ` step the log announces, for a one-session run and for the `finish` session of a run in several sessions.
-- `>>> End of stage <NN>_<stage>` for any other session of a [staged run](#run-stages-as-separate-sessions), and for the first session of a one-session run with [`post-route-repair`](#repair-on-the-detailed-route), which ends after detailed route.
+- `>>> End of stage <NN>_<stage>` for any other stage's session of a [staged run](#run-stages-as-separate-sessions), and for the first session of a one-session run with [`post-route-repair`](#repair-on-the-detailed-route), which ends after detailed route.
 - `>>> End of post-route repair round <k> extraction` and `>>> End of post-route repair round <k> repair` for the two sessions of post-route repair round k.
 - `>>> STOPPED after <stage>` for a [`--stop-after`](#stop-after-a-stage) run; with `--stop-after post_route_repair`, for the session that reports timing after the rounds.
 
@@ -751,7 +751,7 @@ A session has what the previous stage's checkpoint holds and what its prelude se
 
 Anything else an earlier session set is gone: Tcl variables, procedures and `rename` wrappers, `set_wire_rc`, `set_layer_rc` and `set_dont_use` that a hook ran, STA settings outside the SDC, and the resizer's in-memory state. In every session but `finish`, rb compares the global Tcl commands and procedures before and after each hook but a `session` one. A hook that renamed, deleted or redefined a command that existed before it logs the warning `pnr.hook_commands_not_kept` naming them, since later sessions run the original. A hook that only defined new commands logs them at info as `pnr.hook_commands_added`: a later session that calls one fails with an unknown command. See [Quirks & Known Issues](../known-issues.md#session-state-does-not-cross-a-pr-stage-boundary).
 
-A session that fails, prints an OpenROAD `[ERROR ...]` line or exits before it ends its stage fails the run with its stage in the description, and no later stage runs. Its stage is recorded as not finished cleanly, so no resume can start after it. A checkpoint that cannot be written fails the run with `fail_stage: checkpoint`, and a session that exits with code 0 before its end-of-stage line fails it with [`fail_stage: incomplete`](#interpret-results); `xfail:` excuses neither.
+A session that fails, prints an OpenROAD `[ERROR ...]` line or exits before it ends its stage fails the run with its stage in the description, and no later stage runs. Its stage is recorded as not finished cleanly, so no resume can start after it. A checkpoint that cannot be written fails the run with `fail_stage: checkpoint`, and a session that exits with code 0 before its [end marker](#interpret-results) fails it with `fail_stage: incomplete`; `xfail:` excuses neither.
 
 ### Stop after a stage
 

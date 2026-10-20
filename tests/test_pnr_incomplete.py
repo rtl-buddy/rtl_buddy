@@ -314,6 +314,34 @@ def test_a_post_route_repair_session_that_ends_early_names_it(
     assert not (run_dir / "07_finish.log").exists()
 
 
+def test_a_round_session_that_ends_before_any_command_names_no_earlier_session_s(
+    tmp_path, monkeypatch
+):
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        stages=True,
+        env={"RB_STUB_SETUP": "-0.2 -0.1"},
+        post_route={**_PR, "rounds": 2},
+    )
+    harness = tmp_path / "harness.tcl"
+    harness.write_text(
+        harness.read_text().replace(
+            "source [lindex $argv 0]",
+            "proc read_db {args} {\n"
+            "    if {[string match *.r2.extract.tcl [lindex $::argv 0]]} { exit 0 }\n"
+            "}\n"
+            "source [lindex $argv 0]",
+        )
+    )
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "incomplete", res.results
+    assert "before the end of round 2 extraction" in res.results["desc"]
+    assert "last command" not in res.results["desc"]
+
+
 @pytest.mark.parametrize("stages", [False, True])
 def test_finish_after_post_route_repair_that_ends_early_names_its_stage(
     tmp_path, monkeypatch, stages
