@@ -884,6 +884,7 @@ def test_pnr_run_rejects_a_missing_pdn_config_before_launching_openroad(
         root_cfg=root_cfg,
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     events = _capture_pnr_events(monkeypatch)
 
     res = backend.run()
@@ -915,6 +916,7 @@ def test_pnr_run_accepts_a_pdn_config_that_is_on_disk(tmp_path, monkeypatch):
         root_cfg=root_cfg,
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     monkeypatch.setattr(
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
@@ -2048,6 +2050,7 @@ def _run_backend_with_export(tmp_path, monkeypatch, *, mode, missing=()):
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     artefacts = Path(backend.artefact_dir)
     streamout = _fake_klayout(backend, "demo_top", missing=missing)
@@ -2394,6 +2397,7 @@ def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatc
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     artefacts = Path(backend.artefact_dir)
     stale_drc = artefacts / "route.drc.rpt"
@@ -2572,6 +2576,7 @@ def test_pnr_openroad_writes_odb_then_fails_removes_it(tmp_path, monkeypatch):
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     artefacts = Path(backend.artefact_dir)
     odb = artefacts / "demo_top.routed.odb"
@@ -2648,6 +2653,7 @@ def test_pnr_openroad_stderr_reaches_the_log_and_the_verdict(tmp_path, monkeypat
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     diagnostic = (
         "Error: pnr.tcl, 272 3 macros do not fit the 492.660 x 489.600 um "
@@ -2731,6 +2737,7 @@ def test_pnr_post_openroad_failure_keeps_the_flow_script(tmp_path, monkeypatch):
 
     monkeypatch.setattr(backend, "_write_script", _fake_write_script)
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     artefacts = Path(backend.artefact_dir)
     odb = artefacts / "demo_top.routed.odb"
@@ -2800,6 +2807,7 @@ def test_a_failed_route_keeps_its_congestion_report(tmp_path, monkeypatch):
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     report = Path(backend.artefact_dir) / "congestion.rpt"
     report.write_text("a previous run's congestion\n")
@@ -2876,6 +2884,7 @@ def test_pnr_error_line_after_writing_removes_the_odb(tmp_path, monkeypatch):
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     odb = Path(backend.artefact_dir) / "demo_top.routed.odb"
 
@@ -3232,6 +3241,7 @@ def _dont_use_backend(tmp_path, monkeypatch, *, log, returncode, dont_use_cells)
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     odb = Path(backend.artefact_dir) / "demo_top.routed.odb"
 
     def _fake_openroad(cmd, **_kwargs):
@@ -3629,6 +3639,7 @@ def test_pnr_run_rejects_missing_rcx_rules_before_launching_openroad(
         root_cfg=root_cfg,
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     events = _capture_pnr_events(monkeypatch)
 
     res = backend.run()
@@ -3681,6 +3692,7 @@ def _pnr_backend_over_a_real_synth(tmp_path, monkeypatch, pdk):
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     return backend
 
 
@@ -3765,6 +3777,7 @@ def test_missing_rcx_rules_leaves_no_checkpoint_run_behind(tmp_path, monkeypatch
         root_cfg=root_cfg,
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     res = backend.run()
 
@@ -4423,6 +4436,7 @@ def test_pnr_run_rejects_a_missing_tcl_hook_before_launching_openroad(
         root_cfg=root_cfg,
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     events = _capture_pnr_events(monkeypatch)
 
     res = backend.run()
@@ -4896,6 +4910,7 @@ def test_pnr_log_shows_openroad_output_while_it_runs(tmp_path, monkeypatch):
         backend, "_write_script", lambda *a, **kw: backend._script_path()
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     log_path = backend._log_path()
     Path(log_path).write_text("[ERROR GRT-0000] a previous run\n")
 
