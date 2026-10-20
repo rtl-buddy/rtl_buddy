@@ -25,12 +25,14 @@ from .dispatch import (
 )
 from .openroad_threads import validate_threads
 from .pdk import PLACEMENT_SPEC, PlacementFile, validate_placement
+from .pnr_platform import PnrRoutingLayersFile, PnrRunOverrides, read_run_overrides
 from .pnr_repair import (
     GLOBAL_ROUTE_REPAIR_SPEC,
     POST_ROUTE_REPAIR_SPEC,
     UNSET,
     PnrMode,
     read_global_route_repair,
+    read_hold_repair_shorthand,
     read_mode,
     read_post_route_repair,
 )
@@ -701,6 +703,28 @@ def _normalise_checkpoints(run: str, value) -> tuple[str, ...] | None:
     return tuple(s for s in CHECKPOINT_STAGES if s in names)
 
 
+def _load_constraints(run: str, value, config_dir: str) -> str | dict[str, str] | None:
+    """Return `constraints:` with each path resolved against `config_dir`: one SDC path, or a mapping of corner name to SDC path in config order. Whether the mapping names the platform's corners is checked when the run starts (see `PnrConfig.constraints_problem`)."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return os.path.normpath(os.path.join(config_dir, value))
+    if not value:
+        raise FatalRtlBuddyError(
+            f"pnr run '{run}': constraints: a per-corner mapping must name "
+            "each corner of the platform"
+        )
+    out: dict[str, str] = {}
+    for corner, path in value.items():
+        if not isinstance(corner, str) or not isinstance(path, str) or not path:
+            raise FatalRtlBuddyError(
+                f"pnr run '{run}': constraints: corner {corner!r} must map to "
+                f"an SDC path, not {path!r}"
+            )
+        out[corner] = os.path.normpath(os.path.join(config_dir, path))
+    return out
+
+
 @serde
 class PnrStageResourcesFile:
     """One stage job's reservation, `resources.stages.<stage>`: the `cfg-dispatch.resources` fields without `modes`, as a P&R stage has no builder mode."""
@@ -1183,7 +1207,8 @@ class PnrConfigFile:
     tool: str = "openroad"
     synth: str = ""
     synth_path: str = field(rename="synth-path", default="")
-    constraints: str | None = None
+    # One SDC path, or a mapping of corner name to SDC path; typed loosely so `initialise` names a bad entry.
+    constraints: str | dict | None = None
     pin_constraints: str | None = field(rename="pin-constraints", default=None)
     # Replaces the PDK's `pdn-config` for this run; relative to pnr.yaml.
     pdn_config: str | None = field(rename="pdn-config", default=None)
@@ -1219,6 +1244,30 @@ class PnrConfigFile:
     # Override the platform's repair blocks field by field; `null` turns one off. Read by `pnr_repair`.
     global_route_repair: Any = field(rename="global-route-repair", default=UNSET)
     post_route_repair: Any = field(rename="post-route-repair", default=UNSET)
+    # Override the platform's keys of the same name; unset keeps the platform's. `routing-layers` goes field by field. Typed loosely where the validators name a bad value.
+    routing_layers: PnrRoutingLayersFile | None = field(
+        rename="routing-layers", default=None
+    )
+    routing_layer_adjustment: float | None = field(
+        rename="routing-layer-adjustment", default=None
+    )
+    cts_buffer: str | list | None = field(rename="cts-buffer", default=None)
+    cts_latency_balancing: bool | None = field(
+        rename="cts-latency-balancing", default=None
+    )
+    cts_repair_clock_nets: bool | None = field(
+        rename="cts-repair-clock-nets", default=None
+    )
+    post_cts_setup_repair: bool | None = field(
+        rename="post-cts-setup-repair", default=None
+    )
+    global_route_hold_repair: bool | None = field(
+        rename="global-route-hold-repair", default=None
+    )
+    port_buffer: str | list | None = field(rename="port-buffer", default=None)
+    tapcell_tcl: str | None = field(rename="tapcell-tcl", default=None)
+    # `clock_tree_synthesis -clk_nets`: the clock nets CTS builds trees for; run only.
+    cts_clock_nets: str | list | None = field(rename="cts-clock-nets", default=None)
     # `closure` (default) or `probe`: no timing repair, stop after global route.
     mode: str | None = None
     reglvl: int | dict | None = field(rename="reglvl", default=None)
@@ -1327,8 +1376,25 @@ class PnrConfigFile:
             if self.placement is not None
             else None
         )
-        global_route_repair = read_global_route_repair(
-            f"pnr run '{self.name}'", self.global_route_repair
+        global_route_repair = read_hold_repair_shorthand(
+            f"pnr run '{self.name}'",
+            self.global_route_hold_repair,
+            read_global_route_repair(
+                f"pnr run '{self.name}'", self.global_route_repair
+            ),
+        )
+        overrides = read_run_overrides(
+            f"pnr run '{self.name}'",
+            routing_layers=self.routing_layers,
+            cts_buffer=self.cts_buffer,
+            cts_clock_nets=self.cts_clock_nets,
+            cts_repair_clock_nets=self.cts_repair_clock_nets,
+            cts_latency_balancing=self.cts_latency_balancing,
+            post_cts_setup_repair=self.post_cts_setup_repair,
+            routing_layer_adjustment=self.routing_layer_adjustment,
+            port_buffer=self.port_buffer,
+            tapcell_tcl=self.tapcell_tcl,
+            config_dir=config_dir,
         )
         post_route_repair = read_post_route_repair(
             f"pnr run '{self.name}'", self.post_route_repair
@@ -1395,11 +1461,7 @@ class PnrConfigFile:
             )
 
         synth_path_abs = os.path.normpath(os.path.join(config_dir, self.synth_path))
-        constraints = (
-            os.path.normpath(os.path.join(config_dir, self.constraints))
-            if self.constraints is not None
-            else None
-        )
+        constraints = _load_constraints(self.name, self.constraints, config_dir)
         lef_paths = [
             os.path.normpath(os.path.join(config_dir, p)) for p in self.lef_paths
         ]
@@ -1444,6 +1506,7 @@ class PnrConfigFile:
             placement=placement,
             global_route_repair=global_route_repair,
             post_route_repair=post_route_repair,
+            overrides=overrides,
             mode=mode,
             lef_paths=lef_paths,
             lib_paths=lib_paths,
@@ -1494,6 +1557,7 @@ PNR_RUN_SPEC = KeySpec(
         "placement": PLACEMENT_SPEC,
         "global-route-repair": GLOBAL_ROUTE_REPAIR_SPEC,
         "post-route-repair": POST_ROUTE_REPAIR_SPEC,
+        "routing-layers": KeySpec(PnrRoutingLayersFile),
         "blocks": KeySpec(BlockRefFile, many=True),
         "resources": KeySpec(PnrResourcesFile, {"stages": _STAGE_RESOURCES_SPEC}),
     },
@@ -1507,7 +1571,8 @@ class PnrConfig:
     tool: str
     synth_name: str
     synth_suite_path: str
-    constraints: str | None
+    # One SDC path, or corner name -> SDC path; absolute.
+    constraints: str | dict[str, str] | None
     platform: str
     floorplan: PnrFloorplan
     _reglvl: int | dict | None
@@ -1540,6 +1605,8 @@ class PnrConfig:
     # The run's repair layers (see `pnr_repair`), applied over the platform's: `UNSET` when absent, `None` when off.
     global_route_repair: Any = UNSET
     post_route_repair: Any = UNSET
+    # The run's routing, CTS, repair and tap-cell values; apply them with `PnrPlatformConfig.with_run_overrides`.
+    overrides: PnrRunOverrides = PnrRunOverrides()
     mode: PnrMode = PnrMode.CLOSURE
     xfail: bool = False
     xfail_strict: bool = False
@@ -1571,8 +1638,31 @@ class PnrConfig:
     def get_synth_suite_path(self) -> str:
         return self.synth_suite_path
 
-    def get_constraints(self) -> str | None:
+    def get_constraints(self) -> str | dict[str, str] | None:
+        """The SDC path, or a mapping of corner name to SDC path."""
         return self.constraints
+
+    def constraints_problem(self, corners: list[str]) -> str | None:
+        """Why a per-corner `constraints:` mapping does not fit a platform of `corners`, or None: it must name each corner and no other."""
+        if not isinstance(self.constraints, dict):
+            return None
+        missing = [c for c in corners if c not in self.constraints]
+        unknown = [c for c in self.constraints if c not in corners]
+        problems = []
+        if missing:
+            problems.append(f"no SDC for corner(s) {', '.join(missing)}")
+        if unknown:
+            problems.append(
+                f"corner(s) {', '.join(unknown)} not among the platform's "
+                f"({', '.join(corners)})"
+            )
+        return "; ".join(problems) or None
+
+    def constraints_by_corner(self, corners: list[str]) -> dict[str, str]:
+        """Each of `corners`' SDC path, in `corners` order: the one path for every corner, or the mapping's entry. The mapping must fit (see `constraints_problem`)."""
+        if isinstance(self.constraints, dict):
+            return {c: self.constraints[c] for c in corners}
+        return {c: self.constraints for c in corners}
 
     def get_platform(self) -> str:
         return self.platform
@@ -1671,6 +1761,10 @@ class PnrConfig:
     def get_placement(self) -> PlacementFile | None:
         """The run's `placement:` overrides, or None; apply them with `PnrPlatformConfig.with_run_placement`."""
         return self.placement
+
+    def get_overrides(self) -> PnrRunOverrides:
+        """The run's own values of the platform's routing, CTS, repair and tap-cell knobs."""
+        return self.overrides
 
     def get_reglvl(self, tool_name: str) -> int:
         match self._reglvl:

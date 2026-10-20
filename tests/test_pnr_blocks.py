@@ -296,6 +296,7 @@ def _top_backend(tmp_path, monkeypatch, blocks_yaml):
         name="top", pnr_cfg=pnr_cfg, suite_dir=str(suite.parent), root_cfg=root_cfg
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     launched = []
 
     def _run(cmd, **_kw):

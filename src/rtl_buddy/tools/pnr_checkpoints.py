@@ -10,6 +10,7 @@ Layout under the run's artefact directory::
         manifest.json                     # inputs + tool identity (Python)
         progress.jsonl                    # step / stage / checkpoint events
         01_floorplan.{odb,def,sdc}
+        01_floorplan.<corner>.sdc         # each corner's SDC mode, with a mode per corner
         02_place.{odb,def,sdc}
         03_cts.{odb,def,sdc}
         04_global_route.{odb,def,sdc,guide,segments}
@@ -157,9 +158,9 @@ def _tcl_quote(value: str) -> str:
 
 
 def _arm_config(
-    *, anchors: dict, wanted, order, account: bool, strict: bool, state=()
+    *, anchors: dict, wanted, order, account: bool, strict: bool, state=(), modes=()
 ) -> str:
-    """Return the braced Tcl dict `rb::ckpt::arm` takes; every name in it is a plain identifier. `order` is the run's stages; only their reports are listed."""
+    """Return the braced Tcl dict `rb::ckpt::arm` takes; every name in it is a plain identifier. `order` is the run's stages; only their reports are listed. `modes` is listed only when there are any, so a single-mode run's block is unchanged."""
     return (
         "{"
         + " ".join(
@@ -185,6 +186,7 @@ def _arm_config(
                 f"state {{{' '.join(state)}}}",
                 f"account {int(account)}",
                 f"strict {int(strict)}",
+                *([f"modes {{{' '.join(modes)}}}"] if modes else []),
             ]
         )
         + "}"
@@ -202,10 +204,11 @@ def render_tcl_block(
     order: tuple[str, ...],
     stop_after: str | None = None,
     state: tuple[str, ...] = (),
+    modes: tuple[str, ...] = (),
 ) -> str:
     """Return the Tcl block the flow template splices in when checkpoints are on, for a one-session run.
 
-    `order` is the run's stages; `state` names the flow globals each checkpoint saves for a later session. Every stage boundary is armed, so each stage's resources are recorded; only `stages`, and the `stop_after` stage, write a checkpoint. The `stop_after` stage is ended by the flow's explicit stop, not by its anchor, so its checkpoint is strict and no later stage starts. The block carries its own leading newline so a run without checkpoints renders the template byte-identically.
+    `order` is the run's stages; `state` names the flow globals each checkpoint saves for a later session; `modes` are the corners whose SDC modes each checkpoint also writes alone, `NN_<stage>.<corner>.sdc`. Every stage boundary is armed, so each stage's resources are recorded; only `stages`, and the `stop_after` stage, write a checkpoint. The `stop_after` stage is ended by the flow's explicit stop, not by its anchor, so its checkpoint is strict and no later stage starts. The block carries its own leading newline so a run without checkpoints renders the template byte-identically.
     """
     wanted = [
         s for s in order if s in CHECKPOINT_STAGES and (s in stages or s == stop_after)
@@ -222,6 +225,7 @@ def render_tcl_block(
         account=True,
         strict=False,
         state=state,
+        modes=modes,
     )
     return (
         f'\nputs ">>> Stage checkpoints (#653)"\n{_procs()}\n'
@@ -242,8 +246,9 @@ def render_staged_block(
     pred_dir: str | None,
     *,
     session: str = "staged run",
+    modes: tuple[str, ...] = (),
 ) -> str:
-    """Return the checkpoint block of one staged session; `session` names the session in its first log line.
+    """Return the checkpoint block of one staged session; `session` names the session in its first log line, and `modes` are as `render_tcl_block`'s.
 
     `RB_RUN_DIR` is where the session writes its checkpoint and events; `RB_PRED_DIR` holds the checkpoint it starts from. They are the only run-specific lines, so two runs' scripts of a stage compare equal apart from them (see `RUN_BINDING_RE`). A checkpoint that cannot be written fails the session. Only `post_route_repair`'s own sessions list it among the stages, so the other stages' scripts are the same whether a run repairs after routing or not.
     """
@@ -263,6 +268,7 @@ def render_staged_block(
         account=False,
         strict=True,
         state=SESSION_STATE,
+        modes=modes,
     )
     lines += [
         _procs().rstrip("\n"),
