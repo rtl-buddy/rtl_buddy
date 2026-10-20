@@ -26,6 +26,7 @@ SPECIALIST_SKILL_DIRNAMES = (
     "rtl-buddy-graph",
     "rtl-buddy-fpv",
     "rtl-buddy-implementation",
+    "rtl-buddy-pnr",
 )
 SKILL_DIRNAMES = (SKILL_DIRNAME, *SPECIALIST_SKILL_DIRNAMES)
 # Underscore spelling of the primary directory; `install` removes it and `uninstall` cleans both.

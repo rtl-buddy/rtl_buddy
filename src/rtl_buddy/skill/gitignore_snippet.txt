@@ -11,6 +11,8 @@
 .agents/skills/rtl-buddy-fpv/
 .claude/skills/rtl-buddy-implementation/
 .agents/skills/rtl-buddy-implementation/
+.claude/skills/rtl-buddy-pnr/
+.agents/skills/rtl-buddy-pnr/
 
 # rtl_buddy project-local env defaults (machine-specific; never commit)
 .rtl-buddy/.env
