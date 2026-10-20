@@ -263,7 +263,7 @@ def _pdk(tmp_path):
         str(tmp_path / "top/root_config.yaml"),
     )
     _write(Path(pdk.get_tech_lef()), _TECH)
-    _write(Path(pdk.get_macro_lef()), "")
+    _write(Path(pdk.get_macro_lef_paths()[0]), "")
     _write(tmp_path / "top/pdk/typ.lib", _CORNER)
     return pdk
 

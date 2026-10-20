@@ -5,12 +5,13 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable
 
 logger = logging.getLogger(__name__)
 
-from . import block_params
+from . import block_params, icg_split
 from .artifact_paths import clear_stale_artefacts
 from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps
 from .vlog_filelist import VlogFilelist, incdirs_from_filelist
@@ -21,6 +22,7 @@ from ..config.synth import (
     SynthToolOpts,
     SynthEffortConfig,
     default_effort_config,
+    resolve_clock_gating_max_flops,
     resolve_clock_gating_min_flops,
     resolve_conflicting_drivers_mode,
     resolve_static_functions_mode,
@@ -836,13 +838,26 @@ def mapped_abc_script(opts: SynthToolOpts) -> str:
     return script
 
 
-def resolve_clock_gating(opts: SynthToolOpts, synth_cfg, root_cfg) -> dict | None:
+def resolve_clock_gating(
+    opts: SynthToolOpts, synth_cfg, root_cfg, *, warn: bool = False
+) -> dict | None:
     """Return ``{"min_flops", "cell"}`` for a run that gates clocks, or None when ``clock-gating-min-flops`` is 0 (#786).
 
     ``cell`` is the platform's ``clock-gating-cell`` or None, in which case ``clockgate -liberty`` picks the ICG.
+    ``max_flops`` is present only when ``clock-gating-max-flops`` is set (#854). With ``warn``, a
+    ``clock-gating-max-flops`` without ``clock-gating-min-flops`` warns ``synth.clock_gating_max_ignored``.
     """
     min_flops = resolve_clock_gating_min_flops(opts)
+    max_flops = resolve_clock_gating_max_flops(opts)
     if not min_flops:
+        if max_flops and warn:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.clock_gating_max_ignored",
+                synth=synth_cfg.get_name(),
+                max_flops=max_flops,
+            )
         return None
     cell = ""
     platform = synth_cfg.get_platform()
@@ -851,17 +866,86 @@ def resolve_clock_gating(opts: SynthToolOpts, synth_cfg, root_cfg) -> dict | Non
             root_cfg.get_synth_platform_cfg(platform), "get_clock_gating_cell", None
         )
         cell = get_cell() if get_cell is not None else ""
-    return {"min_flops": min_flops, "cell": cell or None}
+    gating = {"min_flops": min_flops, "cell": cell or None}
+    if max_flops:
+        gating["max_flops"] = max_flops
+    return gating
+
+
+#: Where `clock_gating_cmds` round-trips the design through `icg_split`, below the artefact directory.
+ICG_SPLIT_RTLIL = ("clockgate.il", "clockgate_split.il")
+
+
+def icg_split_cmds(max_flops: int, artefact_dir: str) -> list[str]:
+    """Return the Yosys lines that split each ICG driving more than ``max_flops`` flops (#854).
+
+    The design goes out as RTLIL, :mod:`rtl_buddy.tools.icg_split` rewrites it, and it comes back
+    in place of the old one, so `dfflibmap`, `abc`, `stat` and the netlist all see the copies.
+    RTLIL, unlike JSON, keeps every parameter's type, so cells that are not split come back unchanged.
+    """
+    tmp_dir = os.path.join(os.path.abspath(artefact_dir), YOSYS_TMP_DIRNAME)
+    os.makedirs(tmp_dir, exist_ok=True)
+    source, target = (os.path.join(tmp_dir, name) for name in ICG_SPLIT_RTLIL)
+    helper = os.path.abspath(icg_split.__file__)
+    command = " ".join(
+        _exec_quote(word)
+        for word in (sys.executable, "-I", helper, source, target, str(max_flops))
+    )
+    return [
+        f"write_rtlil {_ys_quote(source)}",
+        f"exec -expect-return 0 -- {command}",
+        "design -reset",
+        f"read_rtlil {_ys_quote(target)}",
+    ]
+
+
+def _ys_quote(path: str) -> str:
+    """Double-quote a path for a Yosys command, so whitespace stays one argument."""
+    return f'"{path}"'
+
+
+def _exec_quote(word: str) -> str:
+    """Quote one word of a Yosys ``exec`` command for its shell.
+
+    Yosys keeps a double-quoted word whole, with its quotes and backslashes, and joins the words
+    with single spaces, so a word is double-quoted with the shell's own escapes.
+    """
+    return '"' + re.sub(r'([\\"$`])', r"\\\1", word) + '"'
+
+
+#: A line `icg_split` prints for an over-full ICG it left alone; Yosys logs it.
+_ICG_SPLIT_WARNING_RE = re.compile(
+    "^" + re.escape(icg_split.WARNING_PREFIX) + r"(?P<detail>.*)$", re.MULTILINE
+)
+
+
+def warn_icg_split_skipped(log_text: str, synth_name: str, log_path: str) -> None:
+    """Warn ``synth.icg_not_split`` for each over-full ICG `icg_split` could not split."""
+    for m in _ICG_SPLIT_WARNING_RE.finditer(log_text):
+        log_event(
+            logger,
+            logging.WARNING,
+            "synth.icg_not_split",
+            synth=synth_name,
+            detail=m.group("detail").rstrip(),
+            log=log_path,
+        )
 
 
 def clock_gating_cmds(
-    gating: dict | None, cell_libs: str, dont_use: str, synth_name: str, mapped: bool
+    gating: dict | None,
+    cell_libs: str,
+    dont_use: str,
+    synth_name: str,
+    mapped: bool,
+    artefact_dir: str,
 ) -> list[str]:
-    """Return the ``clockgate`` line a run adds between ``chformal -remove`` and ``dfflibmap``, or ``[]``.
+    """Return the ``clockgate`` lines a run adds between ``chformal -remove`` and ``dfflibmap``, or ``[]``.
 
     The ICG comes from the platform's ``clock-gating-cell`` (``-pos``), else ``-liberty`` picks one from
-    the cell libraries, skipping ``dont-use-cells``. Only rising-edge flops are gated. An unmapped run has
-    no ICG to map to, so it warns ``synth.clock_gating_ignored`` and gates nothing.
+    the cell libraries, skipping ``dont-use-cells``. Only rising-edge flops are gated. With ``max_flops``,
+    :func:`icg_split_cmds` follows. An unmapped run has no ICG to map to, so it warns
+    ``synth.clock_gating_ignored`` and gates nothing.
     """
     if gating is None:
         return []
@@ -875,14 +959,18 @@ def clock_gating_cmds(
         )
         return []
     if gating["cell"]:
-        return [f"clockgate -pos {gating['cell']} -min_net_size {gating['min_flops']}"]
-    return [f"clockgate{cell_libs}{dont_use} -min_net_size {gating['min_flops']}"]
+        lines = [f"clockgate -pos {gating['cell']} -min_net_size {gating['min_flops']}"]
+    else:
+        lines = [f"clockgate{cell_libs}{dont_use} -min_net_size {gating['min_flops']}"]
+    if gating.get("max_flops"):
+        lines.extend(icg_split_cmds(gating["max_flops"], artefact_dir))
+    return lines
 
 
 def apply_effort(
     opts: SynthToolOpts, overrides: dict | None, effort_cfg: SynthEffortConfig
 ) -> SynthToolOpts:
-    """Set the effort's ``synth_args``, ``abc_args``, ``abc_script`` and ``clock_gating_min_flops`` on `opts` and return it.
+    """Set the effort's ``synth_args``, ``abc_args``, ``abc_script`` and clock-gating limits on `opts` and return it.
 
     Shared by both synthesis backends. An effort value replaces the tool config's but not a key
     the run's `overrides` set, so precedence is run override, then effort, then tool config.
@@ -892,6 +980,7 @@ def apply_effort(
         ("abc_args", effort_cfg.get_yosys_abc_args()),
         ("abc_script", effort_cfg.get_yosys_abc_script()),
         ("clock_gating_min_flops", effort_cfg.get_yosys_clock_gating_min_flops()),
+        ("clock_gating_max_flops", effort_cfg.get_yosys_clock_gating_max_flops()),
     ):
         if value and (not overrides or key not in overrides):
             setattr(opts, key, value)
@@ -1246,11 +1335,12 @@ class YosysSynth:
         cell_libs = liberty_args(self._resolve_cell_lib_paths())
         lines.extend(
             clock_gating_cmds(
-                resolve_clock_gating(opts, self.synth_cfg, self.root_cfg),
+                resolve_clock_gating(opts, self.synth_cfg, self.root_cfg, warn=True),
                 cell_libs,
                 dont_use,
                 self.synth_cfg.get_name(),
                 mapped,
+                self.artefact_dir,
             )
         )
 
@@ -1529,6 +1619,7 @@ class YosysSynth:
         warn_abc_driving_cell_missing(
             log_text, self._abc_constr, self.synth_cfg.get_name(), log_path
         )
+        warn_icg_split_skipped(log_text, self.synth_cfg.get_name(), log_path)
 
         conflicting = find_conflicting_driver_warnings(log_text)
         if conflicting and conflicting_mode == "error":

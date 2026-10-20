@@ -1835,6 +1835,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('min_flops')} is ignored on an unmapped run "
                 "(no Liberty to take an ICG from); set a platform or lib-paths"
             )
+        case "synth.clock_gating_max_ignored":
+            return (
+                f"synth {fields.get('synth')}: clock-gating-max-flops "
+                f"{fields.get('max_flops')} is ignored without "
+                "clock-gating-min-flops, which turns clock gating on"
+            )
+        case "synth.icg_not_split":
+            return (
+                f"synth {fields.get('synth')}: clock-gating-max-flops could not "
+                f"split an ICG: {fields.get('detail')}; see {fields.get('log')}"
+            )
         case "synth.yosys_abc_missing":
             return (
                 f"abc-persistent: false needs yosys-abc, but none was found next to "
@@ -1883,6 +1894,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"Tcl refused to evaluate it ({fields.get('message')}); falling "
                 "back to the word tokenizer, which does not evaluate "
                 "$variables or [expr]"
+            )
+        case "constraints.tcl_check_skipped":
+            return (
+                f'constraint file "{fields.get("source")}" line {fields.get("line")}: '
+                f"check skipped (error {fields.get('message')!r}); the reader "
+                "cannot answer design queries, so the check is assumed to pass"
+            )
+        case "constraints.tcl_checks_skipped":
+            return (
+                f'constraint file "{fields.get("source")}": '
+                f"{fields.get('count')} `error` check(s) skipped; the reader "
+                "has no design to answer them, so each is assumed to pass "
+                "(each one is logged at DEBUG as constraints.tcl_check_skipped)"
             )
         case "constraints.source_unreadable":
             return (
