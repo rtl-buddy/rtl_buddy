@@ -2,7 +2,9 @@
 
 A platform with two or more `corners:` is analysed in one OpenROAD session, so repair and the final timing reports see every corner. The first listed corner is the primary: CTS characterises buffer and wire delays there.
 
-Per-corner numbers have no user command, so the generated Tcl calls `sta::` functions, using the OpenSTA 3.0 names (`find_scene`, `worst_slack_scene`) when present and the earlier ones (`find_corner`, `worst_slack_corner`) otherwise. `define_corners` is used because every supported OpenROAD accepts it.
+Per-corner numbers have no user command, so the generated Tcl calls `sta::` functions, using the OpenSTA 3.0 names (`find_scene`, `worst_slack_scene`) when present and the earlier ones (`find_corner`, `worst_slack_corner`) otherwise.
+
+`rb pnr` gives each corner an SDC mode of its own (`scenes_tcl`) when OpenSTA can switch between modes (`MODES_PROBE_TCL`); otherwise, and in `rb power`, `define_corners` puts every corner in one mode (`liberty_tcl`).
 """
 
 import math
@@ -32,6 +34,52 @@ def liberty_tcl(corner_libs: dict[str, list[str]], macro_libs: list[str]) -> lis
     for lib in macro_libs:
         lines.extend(f"read_liberty -corner {c} {lib}" for c in corner_libs)
     return lines
+
+
+#: Prints `RB_STA_MODES:yes` when OpenSTA can define scenes and switch back to an SDC mode it made earlier, which the per-corner modes of `scenes_tcl` need; OpenROAD 26Q2's `set_mode` stays on the newest mode.
+MODES_PROBE_TCL = """\
+set rb_ok 0
+catch {
+  set_mode rb_a
+  set_mode rb_b
+  set_mode rb_a
+  set rb_ok [expr {[info commands define_scene] ne "" && [sta::cmd_mode_name] eq "rb_a"}]
+}
+if {$rb_ok} { puts RB_STA_MODES:yes } else { puts RB_STA_MODES:no }
+exit
+"""
+
+#: What `MODES_PROBE_TCL` prints when modes work.
+MODES_PROBE_YES = "RB_STA_MODES:yes"
+
+
+def mode_liberty_tcl(corner_libs: dict[str, list[str]]) -> list[str]:
+    """Return Tcl that reads each corner's Liberty once, primary first, for `scenes_tcl` to assign to its corner's scene."""
+    paths = dict.fromkeys(lib for libs in corner_libs.values() for lib in libs)
+    return [f"read_liberty {lib}" for lib in paths]
+
+
+def scenes_tcl(corner_libs: dict[str, list[str]], macro_libs: list[str]) -> list[str]:
+    """Return Tcl that makes one SDC mode and one scene per corner, both named after the corner, after every Liberty is read.
+
+    Each scene times its corner's Liberty and every macro Liberty. The primary corner's mode is left the command mode, the one an SDC command without a mode, CTS and `write_sdc` use.
+    """
+    lines = []
+    for corner, libs in corner_libs.items():
+        lines.append(f"set_mode {corner}")
+        lines.append(
+            f"define_scene {corner} -mode {corner} "
+            f"-liberty {{{' '.join([*libs, *macro_libs])}}}"
+        )
+    lines.append(f"set_mode {next(iter(corner_libs))}")
+    return lines
+
+
+def in_each_mode(corners: list[str], command: str) -> str:
+    """Return Tcl that runs `command` in each corner's SDC mode, then makes the primary corner's mode current again."""
+    return "".join(f"set_mode {c}\n{command}\n" for c in corners) + (
+        f"set_mode {corners[0]}\n"
+    )
 
 
 #: Lines `timing_report_tcl` prints per corner: the `report_worst_slack` and `report_tns` format behind a `corner <name>` prefix.

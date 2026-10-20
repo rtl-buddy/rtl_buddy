@@ -950,9 +950,9 @@ def test_every_session_of_a_multi_corner_run_reads_every_corner(tmp_path, monkey
     ss = tmp_path / "pdk" / "lib" / "ss.lib"
     for stage in _STAGES[:3]:
         script = (run_dir / f"{_NAMES[stage]}.tcl").read_text()
-        assert "define_corners tt ss" in script
-        assert f"read_liberty -corner ss {ss}" in script
-        assert script.index(f"read_liberty -corner ss {ss}") < script.index("read_lef")
+        assert f"read_liberty {ss}" in script
+        assert script.index(f"read_liberty {ss}") < script.index("read_lef")
+        assert f"define_scene ss -mode ss -liberty {{{ss}}}" in script
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert [Path(f["path"]).name for f in manifest["inputs"]["liberty"]] == [
         "tt.lib",

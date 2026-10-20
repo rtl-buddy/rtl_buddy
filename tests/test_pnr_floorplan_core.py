@@ -387,6 +387,7 @@ def test_a_pdn_block_without_any_pdn_config_fails_at_setup(tmp_path, monkeypatch
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
     backend = OpenRoadPnr("demo/openroad", pnr_cfg, str(tmp_path), root_cfg)
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     monkeypatch.setattr(backend, "_clear_stale_outputs", lambda **kw: None)
     launched = []
     monkeypatch.setattr(
