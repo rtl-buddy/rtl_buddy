@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 from ..config.dispatch import JobResources
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
+from ..config.pdk import MacroPinLimitsFile
 from ..config.pdk import RotatedMacroFootprint
 from ..config.pnr import (
     CHECKPOINT_STAGES,
@@ -39,6 +40,7 @@ from ..config.pnr_repair import (
     PostRouteReroute,
     RepairDesign,
     Reroute,
+    WireRc,
 )
 from ..dispatch.base import PnrStageJobSpec
 from ..errors import FatalRtlBuddyError
@@ -72,6 +74,8 @@ from .liberty_units import (
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
 _TEMPLATE_FILE = "flow.tcl.template"
 _MACRO_PACK_FILE = "macro_pack.tcl"
+# The macro pin-limit procedures, substituted only when `placement.macro-pin-limits` is set.
+_MACRO_PIN_LIMITS_FILE = "macro_pin_limits.tcl"
 # Cuts the rows under hard placement blockages before tap insertion; see `_floorplan_directives`.
 _CUT_ROWS_FILE = "cut_rows.tcl"
 # Replaces the pdn-config's core grid with a run's `pdn:` block; see `_pdn_block`.
@@ -94,6 +98,8 @@ _HOOKS_FILE = "hooks.tcl"
 _HOOK_COMMANDS_FILE = "hook_commands.tcl"
 # Runs an `eco` post-route repair round's repairs on Steiner trees; see `_post_route_repair_script`.
 _ECO_REPAIR_FILE = "eco_repair.tcl"
+# Runs a post-route `repair_design` at `repair-design.wire-rc`; see `_repair_steps_tcl`.
+_WIRE_RC_FILE = "wire_rc.tcl"
 
 # Non-log files the flow writes under `$OUT_DIR`; `test_pnr.py` checks this covers every one.
 _FLOW_OUTPUT_NAMES = (
@@ -182,6 +188,13 @@ _ELECTRICAL_RE = re.compile(
     rf"^{re.escape(_ELECTRICAL_TAG)} max_(slew|capacitance|fanout) (\d+)\s*$",
     re.MULTILINE,
 )
+# Printed once by the macro pin-limit step: the macro pins it buffered and those still over their limit less the margin.
+_MACRO_PIN_LIMITS_TAG = "RB-MACRO-PIN-LIMITS:"
+_MACRO_PIN_LIMITS_RE = re.compile(
+    rf"^{re.escape(_MACRO_PIN_LIMITS_TAG)} buffered (\d+) unmet (\d+)\s*$",
+    re.MULTILINE,
+)
+
 # Result field per check, and the word a description uses for it.
 _ELECTRICAL_FIELDS = {
     "slew": ("max_slew_violation_count", "max-slew"),
@@ -332,6 +345,25 @@ def _buffer_ports_tcl(enabled: bool, buffer_cell: str | None) -> str:
     return f'\nputs ">>> Port buffers"\nbuffer_ports -inputs -outputs{cell}\n'
 
 
+def _macro_pin_limits_tcl(platform, dpl_options: str = "") -> str:
+    """Return the macro pin-limit step, run after `repair_design`, the `after-repair-design` hook and the legalization that follows them, before CTS, or `""` when `placement.macro-pin-limits` is unset.
+
+    `repair_design` sizes its repeaters for the library-wide target slew, so a macro input whose Liberty `max_transition` is far below it stays over its limit. The step buffers each macro pin over its limit less the margin with a cell fixed on the nearest free row site, sizes it, and marks it dont_touch; see `macro_pin_limits.tcl`. It reads the checks on the legal placement because legalization moves a macro output's loads. It belongs to the `place` stage, so its cells and their dont_touch marks are in that stage's checkpoint. `dpl_options` follows its `detailed_placement`, as it does the flow's others.
+    """
+    limits = platform.get_placement_macro_pin_limits()
+    if not isinstance(limits, MacroPinLimitsFile):
+        return ""
+    procs = files(_TEMPLATE_PACKAGE).joinpath(_MACRO_PIN_LIMITS_FILE).read_text()
+    return (
+        'puts ">>> Macro pin limits"\n'
+        f"{procs}"
+        f"rb::macro_pins::repair {{{' '.join(limits.buffers)}}} {limits.margin:g} "
+        f"{limits.capacitance_margin:g} "
+        f"{platform.get_placement_padding()} {_MACRO_PIN_LIMITS_TAG} "
+        f"[list{dpl_options}]\n"
+    )
+
+
 #: The flow's global route; a `reroute: full` global-route repair runs it again.
 _GLOBAL_ROUTE_CMD = (
     "global_route -congestion_iterations 20 "
@@ -358,6 +390,31 @@ def _legalize_tcl(dpl_options: str) -> str:
     )
 
 
+def _wire_rc_spec(wire_rc: WireRc) -> str:
+    """`wire_rc` as the Tcl dict `rb::rc::apply` takes."""
+    if wire_rc.layer is not None:
+        return f"layer {{{wire_rc.layer}}}"
+    return (
+        f"resistance {_fmt_number(wire_rc.resistance)} "
+        f"capacitance {_fmt_number(wire_rc.capacitance)}"
+    )
+
+
+def _repair_design_tcl(title: str, design: RepairDesign, when: str = "") -> list[str]:
+    """`repair_design` after a log line naming it; with `wire-rc`, at that signal wire RC, the session's restored after it. `when` follows the command in the log line."""
+    command = f"repair_design{design.options()}"
+    if design.wire_rc is None:
+        return [f'puts ">>> {title}: {command}{when}"', command]
+    return [
+        "rb::rc::save",
+        f"rb::rc::apply {{{_wire_rc_spec(design.wire_rc)}}}",
+        f'puts ">>> {title}: {command}{when} (wire-rc: signal wire RC '
+        '[rb::rc::describe])"',
+        command,
+        "rb::rc::restore",
+    ]
+
+
 def _repair_steps_tcl(
     title: str,
     design: RepairDesign | None,
@@ -371,11 +428,12 @@ def _repair_steps_tcl(
     Margins are given in ns and passed in the Liberty time unit (`ps_per_unit` picoseconds), which is what `repair_timing` reads; the log line gives both. A zero margin is the tool's default and passes no option. The hold repair also passes a set setup margin, as ORFS's `repair_timing_helper` does, so it keeps that much setup slack on the paths it delays.
 
     Between `repair_design` and `repair_timing` runs `legalize` (`_legalize_tcl`), as in ORFS: `repair_timing` on global-route parasitics builds buffer trees from the global routes, and the nets `repair_design` split have none until they are rerouted (RSZ-0074). `None` runs nothing there, for repairs that build them from Steiner trees. The caller legalizes after the timing repair.
+
+    A post-route `repair-design` may set `wire-rc`: each `repair_design` then runs at that signal wire RC and the `repair_timing` log lines name the session's, at which `repair_timing` estimates the nets it changes (`wire_rc.tcl`). The RC setters do not invalidate parasitics, so the nets `repair_design` changed keep their `wire-rc` estimate until OpenROAD estimates them again. With `after-timing` it runs again after the timing repair.
     """
     lines = []
     if design is not None:
-        command = f"repair_design{design.options()}"
-        lines += [f'puts ">>> {title}: {command}"', command]
+        lines += _repair_design_tcl(title, design)
         if legalize is not None and (setup_ns is not None or hold_ns is not None):
             lines += [
                 f'puts ">>> {title}: legalize after repair_design"',
@@ -401,7 +459,11 @@ def _repair_steps_tcl(
         note = ", ".join(n for _, n in options)
         if any(opt for opt, _ in options):
             note += f" in Liberty time unit {format_time_unit(ps_per_unit)}"
+        if design is not None and design.wire_rc is not None:
+            note += ", signal wire RC [rb::rc::describe] for the nets it changes"
         lines += [f'puts ">>> {title}: {command} ({note})"', command]
+    if design is not None and design.after_timing:
+        lines += _repair_design_tcl(title, design, " after timing repair")
     return "".join(f"{line}\n" for line in lines)
 
 
@@ -425,8 +487,9 @@ def _global_route_repair_tcl(
     mode: PnrMode,
     ps_per_unit: float | None,
     dpl_options: str = "",
+    timing: bool = False,
 ) -> str:
-    """Return the repair on global-route parasitics, as ORFS runs it, or `""` when the platform and run leave it off. A probe skips it.
+    """Return the repair on global-route parasitics, as ORFS runs it, or `""` when the platform and run leave it off. A probe skips it. With `timing` (checkpoints armed) the repair starts by timing the router's result, the stage's `before_repair` event.
 
     The global-route estimate includes the wires that post-CTS repair (on placement parasitics) could not see. The resizer reroutes the nets it changes; the cells it adds are legalized, then `reroute: incremental` reroutes their nets incrementally and `full` runs the flow's global route again. The closing route is `-verbose`, so the log repeats the congestion table after the repair. `dpl_options` follows its `detailed_placement`, as it does the flow's others.
 
@@ -436,9 +499,10 @@ def _global_route_repair_tcl(
         return ""
     if mode is PnrMode.PROBE:
         return 'puts ">>> Global-route repair: skipped (mode: probe)"\n'
+    before = "rb::ckpt::stage_timing global_route before_repair\n" if timing else ""
     if repair == GlobalRouteRepair(hold_margin=0.0):
         return (
-            'puts ">>> Post-global-route hold repair"\n'
+            before + 'puts ">>> Post-global-route hold repair"\n'
             "estimate_parasitics -global_routing\n"
             "repair_timing -hold\n"
             "global_route -start_incremental\n"
@@ -457,7 +521,7 @@ def _global_route_repair_tcl(
         legalize,
     )
     head = (
-        f'puts ">>> {title} (reroute {repair.reroute.value})"\n'
+        before + f'puts ">>> {title} (reroute {repair.reroute.value})"\n'
         "estimate_parasitics -global_routing\n"
     )
     if repair.reroute is Reroute.FULL:
@@ -1217,13 +1281,12 @@ _DETAILED_ROUTE_CMD = (
     "    -verbose {{ detailed_route_verbose }}\n"
 )
 
-#: The parasitics a stopped run's stage report times on: none before placement, the placement estimate until global routing, then the global-route estimate. After post-route repair the report session extracts them instead (see `_post_route_report_script`).
+#: The parasitics a stopped run's stage report times on, the ones the stage's end is timed on (`pnr_checkpoints.STAGE_TIMING`): none before placement, the placement estimate until global routing, then the global-route estimate. After post-route repair the report session extracts them instead (see `_post_route_report_script`).
 _STAGE_PARASITICS = {
-    "floorplan": "",
-    "place": "estimate_parasitics -placement\n",
-    "cts": "estimate_parasitics -placement\n",
-    "global_route": "estimate_parasitics -global_routing\n",
-    "detailed_route": "estimate_parasitics -global_routing\n",
+    **{
+        stage: f"{command}\n" if command else ""
+        for stage, (_source, command) in pnr_checkpoints.STAGE_TIMING.items()
+    },
     "post_route_repair": "",
 }
 
@@ -1804,6 +1867,7 @@ def run_post_route_repair(
                 "; more `rounds` give the detailed router more passes at the violations"
             )
     _keep_round(run_dir, plan, best, files.get(best))
+    pnr_checkpoints.record_kept_round_timing(run_dir, POST_ROUTE_REPAIR_STAGE, best)
     fields = {
         "kept_round": best,
         "repaired_rounds": repaired,
@@ -2413,6 +2477,8 @@ class OpenRoadPnr:
         rcx_rules = pdk.get_rcx_rules()
         self._rcx_rules = rcx_rules
         self._corners = list(corner_libs)
+        # A stage end is timed on every corner; a single-corner platform's is one default scene.
+        self._timing_corners = tuple(corner_libs) or (platform.get_sta_corner(),)
         if rcx_rules:
             rcx_block = (
                 '\nputs ">>> Parasitic extraction (OpenRCX)"\n'
@@ -2426,6 +2492,12 @@ class OpenRoadPnr:
         else:
             rcx_block = ""
             final_parasitics = "estimate_parasitics -global_routing"
+        final_timing = (
+            "rb::ckpt::timing_event finish stage_end "
+            f"{'extracted' if rcx_rules else 'global_route'}\n"
+            if self._ckpt_run_dir is not None
+            else ""
+        )
 
         tie_ports = [
             ("TIEHI_CELL_PORT", pdk.get_tie_hi()),
@@ -2556,6 +2628,7 @@ class OpenRoadPnr:
             "rcx_block": rcx_block,
             "supply_ports_block": _supply_ports_block(),
             "final_parasitics": final_parasitics,
+            "final_timing_block": final_timing,
             "harden_block": (
                 pnr_abstract.harden_tcl(self.pnr_cfg.get_abstract())
                 if self.pnr_cfg.get_harden()
@@ -2568,10 +2641,14 @@ class OpenRoadPnr:
                 self._mode,
                 self._ps_per_unit,
                 gp_blocks.dpl_options,
+                timing=self._ckpt_run_dir is not None,
             ),
             "gp_blockages_create": gp_blocks.create,
             "gp_blockages_destroy": gp_blocks.destroy,
             "dpl_options": gp_blocks.dpl_options,
+            "macro_pin_limits_block": _macro_pin_limits_tcl(
+                platform, gp_blocks.dpl_options
+            ),
             "detailed_route_verbose": str(self.pnr_cfg.get_detailed_route_verbose()),
             "cell_count_tag": _CELL_COUNT_TAG,
             "electrical_tag": _ELECTRICAL_TAG,
@@ -2603,6 +2680,8 @@ class OpenRoadPnr:
                     order=self._stages,
                     stop_after="detailed_route" if self._split else self.stop_after,
                     state=pnr_checkpoints.SESSION_STATE if self._split else (),
+                    corners=self._timing_corners,
+                    scenes=multi_corner,
                     modes=self._mode_corners,
                 )
                 if self._ckpt_run_dir is not None and not self._staged
@@ -2624,8 +2703,12 @@ class OpenRoadPnr:
         return text
 
     def _unbroken_marker(self, marker: str) -> str:
-        """A one-session run's text for a template marker: nothing, except that with checkpoints armed the global-route stage ends after any global-route repair, before the `before-detailed-route` hooks."""
-        if marker == "detailed_route" and self._ckpt_run_dir is not None:
+        """A one-session run's text for a template marker: nothing, except that with checkpoints armed the global-route stage ends after any global-route repair, before the `before-detailed-route` hooks, and `place` is timed before the clocks are propagated, as a staged `place` session and its report time it (its checkpoint is written on entering clock-tree synthesis)."""
+        if self._ckpt_run_dir is None:
+            return ""
+        if marker == "cts":
+            return "rb::ckpt::stage_timing place stage_end\n"
+        if marker == "detailed_route":
             return "rb::ckpt::stage_end global_route\n"
         return ""
 
@@ -2668,6 +2751,8 @@ class OpenRoadPnr:
                 run_dir,
                 self._pred_dir(stage, run_dir),
                 session=session,
+                corners=self._timing_corners,
+                scenes=bool(self._corners),
                 modes=self._mode_corners,
             ),
         }
@@ -2758,6 +2843,7 @@ class OpenRoadPnr:
         parts += [
             f'\nputs ">>> {title}: extraction"\n',
             self._extract_tcl(_post_route_file(f".r{round_}.spef")),
+            f"rb::ckpt::timing_event {POST_ROUTE_REPAIR_STAGE} round extracted {round_}\n",
             f'puts "{_ROUND_TIMING_MARKER}{round_}"\n',
             "set ::sta_report_default_digits 4\n",
             "report_worst_slack -max\n",
@@ -2794,6 +2880,8 @@ class OpenRoadPnr:
             f'\nputs ">>> {title} of {repair.rounds}: repair on extracted parasitics '
             f'(reroute {repair.reroute.value})"\n'
         )
+        if repair.repair_design is not None and repair.repair_design.wire_rc:
+            parts.append(files(_TEMPLATE_PACKAGE).joinpath(_WIRE_RC_FILE).read_text())
         if repair.reroute is PostRouteReroute.FULL:
             legalize = _legalize_tcl("{{ dpl_options }}")
             parts += [
@@ -3074,6 +3162,27 @@ class OpenRoadPnr:
         for m in _ELECTRICAL_RE.finditer(log_text):
             fields[_ELECTRICAL_FIELDS[m.group(1)][0]] = int(m.group(2))
         return fields
+
+    def _macro_pin_limits_fields(self, log_text: str) -> dict:
+        """Return the macro pin-limit step's counts as result fields, or `{}` when the step did not run; warn `pnr.macro_pin_limits_unmet` when a pin is unmet.
+
+        `macro_pin_buffered_count` is the macro pins the step buffered; `macro_pin_unmet_count` those it left over their limit less the margin, judged on placement parasitics. A staged run's `pnr.log` holds the `place` stage's log, inherited or not, so a resumed run reports them too.
+        """
+        m = _MACRO_PIN_LIMITS_RE.search(log_text)
+        if not m:
+            return {}
+        buffered, unmet = int(m.group(1)), int(m.group(2))
+        if unmet:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.macro_pin_limits_unmet",
+                pnr=self.pnr_cfg.get_name(),
+                unmet=unmet,
+                buffered=buffered,
+                log=self._log_path(),
+            )
+        return {"macro_pin_buffered_count": buffered, "macro_pin_unmet_count": unmet}
 
     def _describe_electrical(self, fields: dict) -> str:
         """Return `"N max-slew, M max-capacitance violator(s)"` for the nonzero counts, or `""` when there are none."""
@@ -5026,6 +5135,7 @@ class OpenRoadPnr:
             "wns_hold_ps": _ps(self._parse_wns(report, "min")),
             "tns_ps": _ps(self._parse_tns(report)),
             "tns_hold_ps": _ps(self._parse_tns(report, "min")),
+            **self._macro_pin_limits_fields(log_text),
         }
         if stage in pnr_checkpoints.GLOBAL_ROUTED:
             metrics["global_route_overflow"] = self._parse_gr_overflow(
@@ -5322,6 +5432,33 @@ class OpenRoadPnr:
                     f"post-route-repair needs rcx-rules on PDK "
                     f"'{platform.get_pdk_name()}': each round times the route on "
                     "extracted parasitics, and the PDK sets no rcx-rules"
+                ),
+                fail_stage="setup",
+            )
+
+        # `repair-design.wire-rc` reads and sets RC per scene, which needs OpenSTA's scenes and `est::`.
+        design = self._post_route.repair_design if self._post_route else None
+        if (
+            design is not None
+            and design.wire_rc is not None
+            and not all(
+                self._has_tcl_command(command)
+                for command in ("sta::scenes", "est::set_h_wire_signal_rc_cmd")
+            )
+        ):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.wire_rc_unsupported",
+                pnr=self.pnr_cfg.get_name(),
+                exe=self.openroad_executable,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    "post-route-repair.repair-design.wire-rc needs OpenROAD's "
+                    "sta::scenes and est:: wire RC commands (26Q2 or newer); "
+                    "this OpenROAD has none"
                 ),
                 fail_stage="setup",
             )
@@ -5714,6 +5851,7 @@ class OpenRoadPnr:
             "tns_hold_ps": tns_hold * ps_per_unit if tns_hold is not None else None,
             "drc_count": drcs,
             **self._parse_electrical(log_text),
+            **self._macro_pin_limits_fields(log_text),
         }
         corner_fields = self._corner_fields(platform, final)
 

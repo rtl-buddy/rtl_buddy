@@ -56,6 +56,24 @@ class RotatedMacroFootprint(StrEnum):
 DEFAULT_ROTATED_MACRO_FOOTPRINT = RotatedMacroFootprint.BLOCK
 
 
+#: Fraction of a macro pin's limit `placement.macro-pin-limits` keeps in hand when `margin` is unset.
+DEFAULT_MACRO_PIN_LIMIT_MARGIN = 0.05
+
+
+@serde
+class MacroPinLimitsFile:
+    """`placement.macro-pin-limits`: buffer macro pins over their Liberty max-slew or max-capacitance limit.
+
+    `buffers` are the candidate buffer cells, weakest first; `margin` is the fraction of each limit kept in hand, and `capacitance-margin`, when set, replaces it for max-capacitance checks. Typed loosely so `validate_placement` names a bad value.
+    """
+
+    buffers: str | list | None = None
+    margin: float | int | str | None = None
+    capacitance_margin: float | int | str | None = field(
+        rename="capacitance-margin", default=None
+    )
+
+
 @serde
 class PlacementFile:
     """Global-placement and macro-placement tuning as written in YAML.
@@ -79,9 +97,66 @@ class PlacementFile:
     rotated_macro_footprint: str | None = field(
         rename="rotated-macro-footprint", default=None
     )
+    # Opt-in macro pin repair on the legalized post-`repair_design` placement; `None` inherits, unset means off. A block replaces a lower level's whole.
+    macro_pin_limits: MacroPinLimitsFile | None = field(
+        rename="macro-pin-limits", default=None
+    )
 
 
-PLACEMENT_SPEC = KeySpec(PlacementFile)
+PLACEMENT_SPEC = KeySpec(
+    PlacementFile, {"macro-pin-limits": KeySpec(MacroPinLimitsFile)}
+)
+
+
+def _validate_macro_pin_limits(
+    limits: MacroPinLimitsFile | None, where: str
+) -> MacroPinLimitsFile | None:
+    """Check `placement.macro-pin-limits`; the result has a list of cell names and float margins, `capacitance-margin` defaulting to `margin`."""
+    if limits is None:
+        return None
+    key = f"{where}: placement.macro-pin-limits"
+    buffers = limits.buffers
+    if not isinstance(buffers, list) or not buffers:
+        raise FatalRtlBuddyError(
+            f"{key}.buffers must be a non-empty list of buffer cell names, "
+            f"weakest first, got {buffers!r}"
+        )
+    for cell in buffers:
+        if not isinstance(cell, str) or len(cell.split()) != 1:
+            raise FatalRtlBuddyError(
+                f"{key}.buffers entries must be single cell names, got {cell!r}"
+            )
+        # Spliced unquoted into a Tcl list.
+        bad = sorted(set(cell) & _TCL_METACHARACTERS)
+        if bad:
+            raise FatalRtlBuddyError(
+                f"{key}.buffers entry {cell!r} contains {' '.join(bad)}"
+            )
+    if len(set(buffers)) != len(buffers):
+        raise FatalRtlBuddyError(f"{key}.buffers repeats a cell")
+    margin = _margin(
+        f"{key}.margin",
+        DEFAULT_MACRO_PIN_LIMIT_MARGIN if limits.margin is None else limits.margin,
+    )
+    capacitance_margin = (
+        margin
+        if limits.capacitance_margin is None
+        else _margin(f"{key}.capacitance-margin", limits.capacitance_margin)
+    )
+    return MacroPinLimitsFile(
+        buffers=list(buffers), margin=margin, capacitance_margin=capacitance_margin
+    )
+
+
+def _margin(key: str, value) -> float:
+    """A fraction of a limit: a number from 0 up to but not including 1."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise FatalRtlBuddyError(
+            f"{key} must be a number from 0 up to but not including 1, got {value!r}"
+        )
+    if not 0.0 <= float(value) < 1.0:
+        raise FatalRtlBuddyError(f"{key} must be >= 0 and < 1, got {value}")
+    return float(value)
 
 
 def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
@@ -157,6 +232,7 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
         routability_use_grt=placement.routability_use_grt,
         timing_driven=placement.timing_driven,
         rotated_macro_footprint=rotated,
+        macro_pin_limits=_validate_macro_pin_limits(placement.macro_pin_limits, where),
     )
 
 
@@ -379,6 +455,10 @@ class PdkConfig:
     def get_placement_rotated_macro_footprint(self) -> str | None:
         """Configured `placement.rotated-macro-footprint`, or `None` when unset."""
         return self._placement.rotated_macro_footprint
+
+    def get_placement_macro_pin_limits(self) -> MacroPinLimitsFile | None:
+        """Configured `placement.macro-pin-limits`, validated, or `None` when unset."""
+        return self._placement.macro_pin_limits
 
     def get_dont_use_cells(self) -> list[str]:
         return list(self._dont_use_cells)

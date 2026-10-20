@@ -18,6 +18,7 @@ from ..config.pdk import (
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
     DEFAULT_ROTATED_MACRO_FOOTPRINT,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
+    MacroPinLimitsFile,
 )
 from ..config.pnr_repair import GlobalRouteRepair
 from ..config.pnr import (
@@ -272,6 +273,18 @@ def _repair_digest(platform) -> dict:
     pr = platform.get_post_route_repair()
     if pr is not None:
         digest["post_route_repair"] = _jsonable(asdict(pr))
+    for block in digest.values():
+        design = block.get("repair_design") if isinstance(block, dict) else None
+        if design:
+            # Emitted only when set so existing digests do not change.
+            if design["wire_rc"] is None:
+                del design["wire_rc"]
+            else:
+                design["wire_rc"] = {
+                    k: v for k, v in design["wire_rc"].items() if v is not None
+                }
+            if not design["after_timing"]:
+                del design["after_timing"]
     return digest
 
 
@@ -422,6 +435,20 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 }
                 if platform.get_placement_rotated_macro_footprint()
                 != DEFAULT_ROTATED_MACRO_FOOTPRINT
+                else {}
+            ),
+            **(
+                {
+                    "macro_pin_limits": {
+                        "buffers": list(macro_pin_limits.buffers),
+                        "margin": macro_pin_limits.margin,
+                        "capacitance_margin": macro_pin_limits.capacitance_margin,
+                    }
+                }
+                if isinstance(
+                    macro_pin_limits := platform.get_placement_macro_pin_limits(),
+                    MacroPinLimitsFile,
+                )
                 else {}
             ),
         },

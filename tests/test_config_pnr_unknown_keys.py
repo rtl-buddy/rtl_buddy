@@ -33,6 +33,11 @@ PLACEMENT_ALL = {
     "routability-use-grt": True,
     "timing-driven": True,
     "rotated-macro-footprint": "none",
+    "macro-pin-limits": {
+        "buffers": ["buf1", "buf8"],
+        "margin": 0.05,
+        "capacitance-margin": 0.5,
+    },
 }
 
 # Sized by core-margin; the second run sizes with die-area, core-area and core-cutouts instead.
@@ -44,7 +49,11 @@ GLOBAL_ROUTE_REPAIR_ALL = {
     "reroute": "full",
 }
 POST_ROUTE_REPAIR_ALL = {
-    "repair-design": dict(REPAIR_DESIGN_ALL),
+    "repair-design": {
+        **REPAIR_DESIGN_ALL,
+        "wire-rc": {"resistance": 0.06, "capacitance": 0.17},
+        "after-timing": True,
+    },
     "setup-margin": 0.05,
     "hold-margin": None,
     "rounds": 3,
@@ -181,6 +190,7 @@ RUN_DIE = {
     "stages": True,
     "global-route-hold-repair": True,
     "mode": "probe",
+    "post-route-repair": {"repair-design": {"wire-rc": {"layer": "m5"}}},
 }
 
 PDK_ALL = {
@@ -230,6 +240,7 @@ PLATFORM_CORNERS = {
     "pdk": "pdk1",
     "corners": ["typ", "my-fast_1"],
     "global-route-hold-repair": True,
+    "post-route-repair": {"repair-design": {"wire-rc": {"layer": "m5"}}},
 }
 
 
@@ -352,7 +363,12 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             ("placement",),
             "density, padding, macro-halo, macro-cell-halo, tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
-            "rotated-macro-footprint",
+            "rotated-macro-footprint, macro-pin-limits",
+        ),
+        (
+            "pnr run 'a': placement.macro-pin-limits",
+            ("placement", "macro-pin-limits"),
+            "buffers, margin, capacitance-margin",
         ),
         ("pnr run 'a': blocks[1]", ("blocks", 1), "name, pnr, pnr-path"),
         ("pnr run 'a': routing-layers", ("routing-layers",), "signal, clock"),
@@ -369,6 +385,16 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
         (
             "pnr run 'a': post-route-repair.repair-design",
             ("post-route-repair", "repair-design"),
+            "slew-margin, cap-margin, max-wire-length, wire-rc, after-timing",
+        ),
+        (
+            "pnr run 'a': post-route-repair.repair-design.wire-rc",
+            ("post-route-repair", "repair-design", "wire-rc"),
+            "resistance, capacitance, layer",
+        ),
+        (
+            "pnr run 'a': global-route-repair.repair-design",
+            ("global-route-repair", "repair-design"),
             "slew-margin, cap-margin, max-wire-length",
         ),
         ("pnr run 'a': resources", ("resources",), "cpus, mem, time, stages"),
@@ -623,7 +649,13 @@ cfg-pnr-platforms:
             "cfg-pdks 'pdk1': placement",
             "density, padding, macro-halo, macro-cell-halo, tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
-            "rotated-macro-footprint",
+            "rotated-macro-footprint, macro-pin-limits",
+        ),
+        (
+            "pdk",
+            ("placement", "macro-pin-limits"),
+            "cfg-pdks 'pdk1': placement.macro-pin-limits",
+            "buffers, margin, capacitance-margin",
         ),
         (
             "platform",
@@ -654,7 +686,13 @@ cfg-pnr-platforms:
             "cfg-pnr-platforms 'pl1': placement",
             "density, padding, macro-halo, macro-cell-halo, tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
-            "rotated-macro-footprint",
+            "rotated-macro-footprint, macro-pin-limits",
+        ),
+        (
+            "platform",
+            ("placement", "macro-pin-limits"),
+            "cfg-pnr-platforms 'pl1': placement.macro-pin-limits",
+            "buffers, margin, capacitance-margin",
         ),
     ],
 )
