@@ -233,53 +233,6 @@ Yosys `synth` runs its generic `abc` pass before the mapped-run ABC step, and th
 
 With the `default` mapped-run script, `&dch -f` choices and `&nf` area recovery under the module's one global required time rebuild Kogge-Stone and other `+/choices/` adders off the critical path as ripple chains. A run whose `synth-args` request a `+/choices/` map uses the `delay` preset unless `abc-script` is set. See [Synthesis](concepts/synthesis.md#keep-prefix-adders-log-depth-with-the-delay-preset).
 
-## OpenROAD's legalizer blocks a rotated macro's unrotated footprint
-
-OpenROAD's default `detailed_placement` legalizer treats a fixed macro turned by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) as covering its master's unrotated width and height from its lower-left corner (OpenROAD#11735). Cells that global placement put in that footprint outside the macro are moved out, some far, and the area stays empty. `rb pnr` blocks the footprint during global placement by default; `placement.rotated-macro-footprint` selects the diamond legalizer instead, or neither. See [Rotate a macro](concepts/pnr.md#rotate-a-macro).
-
-## Session state does not cross a P&R stage boundary
-
-Each stage of a staged `rb pnr` run (`stages: true`, or `--resume`) is a new OpenROAD session, and so are the post-route repair rounds and `finish` of a one-session run with `post-route-repair`. It reads the previous stage's database, SDC and saved flow variables, and rb repeats the flow's own setup. State an earlier session held only in memory is gone: Tcl variables, procedures and `rename` wrappers, `set_wire_rc`, `set_layer_rc` and `set_dont_use` that a hook ran, STA settings outside the SDC, and the resizer's in-memory state. A hook that renames, deletes or redefines an existing global Tcl command logs the warning `pnr.hook_commands_not_kept`, since later sessions run the original; one that defines new commands logs them at info as `pnr.hook_commands_added`.
-
-Move state that later stages need into a `session` hook, which runs at the start of every session. It then applies from the first stage on, so it also changes the steps that ran before the hook's original point: a `set_wire_rc` moved there from `after-cts` also changes placement. See [Run stages as separate sessions](concepts/pnr.md#run-stages-as-separate-sessions).
-
-## A staged P&R run can differ from a one-session run
-
-A staged run runs the same flow commands as a one-session run of the same configuration. Its results are identical at equal thread counts unless OpenROAD carries in-memory state over a stage boundary in the one-session run, which the staged run starts without.
-
-- The resizer keeps state from `repair_design` and `buffer_ports` in memory, so a repair in a later stage can act differently after a stage boundary. The known case is a hook that runs one of them in an earlier stage, such as `repair_design -pre_placement` in an `after-pins` hook. rb's own `buffer-ports` step runs in the `floorplan` stage and its `repair_design` in `place`, and the project template's sky130hd flat block with `buffer-ports: true` routes identically staged and in one session.
-- Without the PDK's `rcx-rules`, the final reports of the `finish` session are timed on the global route restored from the database's route guides. It can miss a few pins (`EST-0026`) that the one-session run's route reached, so slack and TNS can differ slightly. With `rcx-rules` the reports are timed on the extracted SPEF and match.
-
-Compare a staged run with a one-session run at the same `threads:` before relying on it to reproduce one. See [Run stages as separate sessions](concepts/pnr.md#run-stages-as-separate-sessions).
-
-## Post-route repair rounds work around OpenROAD routing failures
-
-Each [`post-route-repair`](concepts/pnr.md#repair-on-the-detailed-route) round that repairs runs in OpenROAD sessions of its own and orders its steps to avoid these OpenROAD 26Q4 failures:
-
-- A repair in the session that ran detailed route makes the next detailed route fail with `DRT-0218`, so each round reads the routed database in a fresh session.
-- On a routed database `repair_timing` switches to detailed-routing parasitics and builds buffer trees from the global routes. A fresh session rebuilds those from the database's route guides, they can miss pins, and the repair fails with `RSZ-0074`. An `eco` round keeps its repairs on placement parasitics; see [Eco post-route repair overrides an OpenROAD procedure](#eco-post-route-repair-overrides-an-openroad-procedure).
-- `repair_timing` on global-route or detailed-routing parasitics reroutes the nets it changes through an incremental global route of its own. A second one opened around it with `global_route -start_incremental` delivers each netlist change to the router twice; removing a buffer then adds its nets' routing usage twice, and a later rip-up fails with `GRT-0229` and `usage=65535`. A `full` round repairs first and opens the incremental route around the legalization only, as ORFS does. On placement parasitics the resizer opens none, so an `eco` round opens one before its repairs and closes it after the legalization.
-- `repair_timing` on global-route parasitics fails with `RSZ-0074` on the nets `repair_design` split until they are rerouted, so a `full` round legalizes and reroutes incrementally between them, as ORFS does. The [global-route repair](concepts/pnr.md#repair-on-the-global-route) does the same.
-- A changed net left without a global route makes detailed route fail with `DRT-1010`; the incremental routes above give every changed or moved cell's nets one.
-
-With `reroute: full` a round also removes the detailed route and routes the whole design globally before it repairs, and its detailed route routes every net again, so it costs about a global and a detailed route of the design. With `reroute: eco` its detailed route starts from the routed design and reroutes the nets the repair changed.
-
-## Eco post-route repair overrides an OpenROAD procedure
-
-An `eco` post-route repair round runs its repairs with OpenROAD's Tcl procedure `design_is_routed` replaced by one that answers 0, and restores the original after them, also when a repair fails. It relies on `repair_timing` calling `design_is_routed` to pick detailed-routing parasitics, as it does in OpenROAD 26Q4. When the session's `repair_timing` does not call it, the round runs its repairs without the override, logs that in `pnr.log`, and rb warns `pnr.post_route_eco_unguarded`. Those repairs can fail with `[ERROR RSZ-0074] Failed to build tree from global routes`; the failure then names the fix, `post-route-repair.reroute: full`, which removes the detailed route and repairs on a fresh global route.
-
-## Post-route repair keeps the last repaired round
-
-The `post_route_repair` stage keeps the last round that repaired, even when that round's extracted timing is worse than an earlier round's or its detailed route has DRC violations, and `finish` continues from it. Compare the rounds' `pnr.post_route_round` events (also in `progress.jsonl`) before relying on more than one round, and lower `rounds` or `margin-step` when a later round loses slack. See [rtl_buddy#884](https://github.com/rtl-buddy/rtl_buddy/issues/884).
-
-## Post-route repair rounds and the final report can disagree on a multi-corner platform
-
-On a multi-corner platform each post-route repair round reads its SPEF once per corner (`read_spef -corner`), but the final reports read the routed SPEF once for every corner, and OpenSTA then reuses the first corner's reduced parasitics at the others. The rounds can stop on `timing met` while the result reports negative setup at another corner. On the project template's sky130hd tt/ss/ff run the same routed database times ss setup at +190 ps per corner and at -160 ps from the shared read. Take a multi-corner verdict from the rounds' per-corner figures, or re-time the routed database with one `read_spef -corner` per corner. See [rtl_buddy#846](https://github.com/rtl-buddy/rtl_buddy/issues/846).
-
-## An unconfirmed dispatched P&R run blocks later runs
-
-A later `rb pnr` of a configuration refuses to start while an earlier [dispatched](concepts/pnr.md#dispatch-the-stages-to-slurm) run's stage jobs may still be queued and it cannot confirm they have left: while `squeue` does not answer, on a host without `squeue` while that run's `dispatch/` record changed within the total `time` its jobs asked for, and for up to 11 minutes while a submission of that run has no answer from `sbatch`. On a host without `squeue` a record older than that only warns, though a job can wait in the queue for any time before it starts. Run `rb pnr` where `squeue` answers, or, once the jobs have ended or the submission is known to have died, remove the `checkpoints/<run id>/dispatch/` directory the refusal names.
-
 ## `rb phys module` reports no power for an RTL module
 
 The physical model's synthesis half holds RTL module names and its power half holds the Liberty cell of each leaf instance, so `rb phys module u_cpu` reports cell count and area with no instances and no power. Use `rb phys instance u_cpu`, which sums the leaf rows under the instance path. See [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer).

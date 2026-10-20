@@ -1,3 +1,0 @@
-## Eco post-route repair overrides an OpenROAD procedure
-
-An `eco` post-route repair round runs its repairs with OpenROAD's Tcl procedure `design_is_routed` replaced by one that answers 0, and restores the original after them, also when a repair fails. It relies on `repair_timing` calling `design_is_routed` to pick detailed-routing parasitics, as it does in OpenROAD 26Q4. When the session's `repair_timing` does not call it, the round runs its repairs without the override, logs that in `pnr.log`, and rb warns `pnr.post_route_eco_unguarded`. Those repairs can fail with `[ERROR RSZ-0074] Failed to build tree from global routes`; the failure then names the fix, `post-route-repair.reroute: full`, which removes the detailed route and repairs on a fresh global route.

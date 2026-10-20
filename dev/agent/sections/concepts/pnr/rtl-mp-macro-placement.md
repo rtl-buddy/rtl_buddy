@@ -8,7 +8,7 @@
       macro-placement: rtl-mp
 ```
 
-RTL-MP places macros by connectivity and wirelength and may flip them (`MX`, `MY` or `R180`), but never [turns](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#rotate-a-macro) one by 90 degrees. Macros end up `LOCKED` on the track grid, and reports go to `artefacts/<run>/rtlmp/`. Use it for a flat netlist with many memories or when timing depends on macro placement; on the template's sky130hd assembly it gave about 0.8 ns better setup slack than the packer.
+RTL-MP places macros by connectivity and wirelength and may rotate them. Macros end up `LOCKED` on the track grid, and reports go to `artefacts/<run>/rtlmp/`. Use it for a flat netlist with many memories or when timing depends on macro placement; on the template's sky130hd assembly it gave about 0.8 ns better setup slack than the packer.
 
 - It keeps `placement.macro-halo` around every macro and keeps macros out of every placement blockage, including `soft` and `partial` ones that the packer lets macros sit on.
 - [`macro-cell-halo`](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#tune-the-process-dependent-steps) and the power grid apply afterwards as usual.
