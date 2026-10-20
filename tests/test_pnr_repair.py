@@ -1757,6 +1757,41 @@ def test_a_repair_design_only_block_repairs_once(tmp_path, monkeypatch):
     assert not re.search(r"^repair_timing", r1, re.MULTILINE)
 
 
+def test_a_block_that_repairs_no_side_passes_over_no_round():
+    clean = {"timing": _timing(-100.0, 0.0), "drcs": 0}
+    dirty = {"timing": _timing(-100.0, 0.0), "drcs": 2}
+    timed = {0: clean, 1: dirty}
+    assert pnr_openroad._passed_over(timed, 0, []) is None
+    # A side the rounds repair that the dirty round times better on is passed over.
+    better = {"timing": _timing(-50.0, 0.0), "drcs": 2}
+    assert pnr_openroad._passed_over({0: clean, 1: better}, 0, ["setup"]) == 1
+
+
+def test_a_repair_design_only_round_with_violations_is_not_called_better(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={"repair-design": {"slew-margin": 10}},
+        env={"RB_STUB_SETUP": "0.5", "RB_STUB_DRC": "1"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["post_route_repair"] == {
+        "kept_round": 0,
+        "repaired_rounds": 1,
+        "rounds": 1,
+        "stop": "last_round",
+        "reason": "all 1 round(s) ran",
+        "passed_over_round": None,
+    }
+    assert "post-route repair" not in (res.results["desc"] or "")
+    assert res.results["drc_count"] == 0
+
+
 def test_a_partial_platform_block_fails_only_the_run_that_leaves_it_partial(
     tmp_path, monkeypatch
 ):

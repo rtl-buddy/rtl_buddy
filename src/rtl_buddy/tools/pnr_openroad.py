@@ -1473,8 +1473,8 @@ def _round_summary(round_: dict) -> str:
 
 
 def _passed_over(timed: dict, kept: int, sides) -> int | None:
-    """The round with the best timing among those whose timing is better than the kept round's but whose route has DRC violations, when the kept round's is clean; else None."""
-    if kept not in timed or timed[kept]["drcs"]:
+    """The round with the best timing among those whose timing is better than the kept round's but whose route has DRC violations, when the kept round's is clean; else None. With no repaired side (`sides` empty) timing decides nothing, so None."""
+    if not sides or kept not in timed or timed[kept]["drcs"]:
         return None
     passed = None
     for round_, entry in timed.items():
