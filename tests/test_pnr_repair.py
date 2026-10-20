@@ -783,6 +783,7 @@ def test_rounds_repair_until_timing_is_met(tmp_path, monkeypatch, stages):
         "rounds": 3,
         "stop": "timing_met",
         "reason": "timing met",
+        "passed_over_round": None,
     }
     row = RtlBuddy._pnr_result_row(None, {"pnr_name": "demo", "results": res})
     assert row["post_route_repair"] == res.results["post_route_repair"]
@@ -1367,6 +1368,7 @@ def test_rounds_stop_after_the_last_round(tmp_path, monkeypatch):
         "rounds": 2,
         "stop": "last_round",
         "reason": "all 2 round(s) ran",
+        "passed_over_round": None,
     }
 
 
@@ -1440,6 +1442,7 @@ def test_a_round_that_worsens_timing_keeps_the_detailed_route(
         "rounds": rounds,
         "stop": "no_improvement",
         "reason": "round 1 did not improve timing",
+        "passed_over_round": None,
     }
     # The rounds stop: round 2 never repairs.
     assert not (run_dir / "06_post_route_repair.r2.repair.log").exists()
@@ -1484,6 +1487,7 @@ def test_a_better_round_then_a_worse_one_keeps_the_better(tmp_path, monkeypatch)
         "rounds": 3,
         "stop": "no_improvement",
         "reason": "round 2 did not improve timing",
+        "passed_over_round": None,
     }
     assert not (run_dir / "06_post_route_repair.r3.repair.log").exists()
     assert (run_dir / "06_post_route_repair.odb").samefile(
@@ -1562,6 +1566,7 @@ def test_a_later_round_s_unreported_timing_keeps_the_best_round(tmp_path, monkey
         "rounds": 3,
         "stop": "timing_not_reported",
         "reason": "round 2's timing was not reported",
+        "passed_over_round": None,
     }
 
 
@@ -1805,79 +1810,200 @@ def test_multi_corner_rounds_time_each_corner_on_its_own_spef_read(
         assert not re.search(r"^read_spef \[", text, re.MULTILINE)
 
 
-@pytest.mark.parametrize("round_", [1, 2])
-def test_a_round_with_drc_violations_is_never_kept(tmp_path, monkeypatch, round_):
+@pytest.mark.parametrize(
+    "new, best, improves",
+    [
+        # Better timing without more violations.
+        ((-100.0, 0), (-200.0, 0), True),
+        ((-100.0, 1), (-200.0, 1), True),
+        ((-100.0, 0), (-200.0, 2), True),
+        ((-100.0, 1), (-200.0, 0), False),
+        # Timing as good with fewer violations.
+        ((-200.0, 0), (-200.0, 1), True),
+        ((50.0, 1), (10.0, 3), True),
+        ((-200.0, 1), (-200.0, 1), False),
+        ((-300.0, 0), (-200.0, 1), False),
+    ],
+)
+def test_a_round_improves_on_timing_without_more_violations_or_on_violations(
+    new, best, improves
+):
+    def _round(setup, drcs):
+        return {"timing": _timing(setup), "drcs": drcs}
+
+    assert (
+        pnr_openroad._round_improves(_round(*new), _round(*best), _SETUP["setup"])
+        is improves
+    )
+
+
+_BOTH = {"setup-margin": 0.0, "hold-margin": 0.0}
+
+
+def test_a_better_round_with_a_short_is_not_kept_over_a_clean_one(
+    tmp_path, monkeypatch
+):
     backend, artefacts = _repair_backend(
         tmp_path,
         monkeypatch,
-        post_route=_PR,
-        env={"RB_STUB_SETUP": "-0.2 -0.1 -0.05", "RB_STUB_DRC": str(round_)},
+        post_route={**_BOTH, "rounds": 1},
+        stages=True,
+        env={
+            "RB_STUB_SETUP": "0.01 0.175",
+            "RB_STUB_HOLD": "-0.12 0.044",
+            "RB_STUB_DRC": "1",
+        },
     )
 
     res = backend.run()
 
     assert res.results["result"] == "PASS", res.results
-    (run_dir,) = _runs(artefacts)
-    rounds = _rounds(run_dir)
-    # The round's route is not timed; the round before it is kept.
-    assert [r["round"] for r in rounds] == list(range(round_ + 1))
-    assert [r["drc_count"] for r in rounds] == [0] * round_ + [1]
-    assert "wns_setup_ps" not in rounds[-1]
-    assert not (run_dir / f"06_post_route_repair.r{round_}.extract.log").exists()
-    assert res.results["post_route_repair"] == {
-        "kept_round": round_ - 1,
-        "repaired_rounds": round_,
-        "rounds": 3,
-        "stop": "drc",
-        "reason": f"round {round_}'s detailed route has 1 DRC violation(s)",
-    }
-    assert res.results["drc_count"] == 0
-    # The stage's checkpoint and the artefact directory hold the kept round's
-    # router reports; the set-aside round keeps its own.
-    maze = f"maze r{round_ - 1}"
-    assert (run_dir / "06_post_route_repair.route.drc.rpt").read_text().strip() == ""
-    assert (run_dir / "06_post_route_repair.route.maze.log").read_text().strip() == maze
-    assert (artefacts / "route.maze.log").read_text().strip() == maze
-    assert (artefacts / "route.drc.rpt").read_text().strip() == ""
-    kept = run_dir / f"06_post_route_repair.r{round_}.route.drc.rpt"
-    assert kept.read_text().startswith("violation type: Short")
-    assert kept.read_text().rstrip().endswith(f"r{round_}")
-    finish = (run_dir / "07_finish.tcl").read_text()
-    assert "read_db [file join $RB_PRED_DIR 06_post_route_repair.odb]" in finish
-    stage = (run_dir / "06_post_route_repair.odb").stat().st_ino
-    if round_ == 1:
-        assert stage == (run_dir / "05_detailed_route.odb").stat().st_ino
-    else:
-        assert stage == (run_dir / "06_post_route_repair.r1.odb").stat().st_ino
-
-
-def test_a_detailed_route_with_drc_violations_gets_no_round(tmp_path, monkeypatch):
-    backend, artefacts = _repair_backend(
-        tmp_path,
-        monkeypatch,
-        post_route=_PR,
-        env={"RB_STUB_SETUP": "-0.2 -0.1", "RB_STUB_DRC": "0"},
+    reason = (
+        "all 1 round(s) ran; round 1 times better (setup WNS 0.1750 ns, hold WNS "
+        "0.0440 ns, 1 DRC violation(s)), but the stage keeps round 0, whose route is "
+        "clean (setup WNS 0.0100 ns, hold WNS -0.1200 ns, 0 DRC violation(s)); more "
+        "`rounds` give the detailed router more passes at the violations"
     )
-
-    res = backend.run()
-
-    assert res.results["result"] == "PASS", res.results
-    (run_dir,) = _runs(artefacts)
-    (only,) = _rounds(run_dir)
-    assert only["round"] == 0 and only["drc_count"] == 1
-    assert "wns_setup_ps" not in only
-    # No session runs: not even round 0's extraction.
-    assert not list(run_dir.glob("06_post_route_repair.r[0-9]*.log"))
     assert res.results["post_route_repair"] == {
         "kept_round": 0,
-        "repaired_rounds": 0,
-        "rounds": 3,
-        "stop": "drc",
-        "reason": "the detailed route has 1 DRC violation(s)",
+        "repaired_rounds": 1,
+        "rounds": 1,
+        "stop": "last_round",
+        "reason": reason,
+        "passed_over_round": 1,
     }
-    assert res.results["drc_count"] == 1
+    assert res.results["desc"].endswith(f"; post-route repair {reason}")
+    assert res.results["drc_count"] == 0
+    (run_dir,) = _runs(artefacts)
+    assert [
+        (r["round"], r["drc_count"], r["best_round"]) for r in _rounds(run_dir)
+    ] == [
+        (0, 0, 0),
+        (1, 1, 0),
+    ]
     assert (run_dir / "06_post_route_repair.odb").samefile(
         run_dir / "05_detailed_route.odb"
+    )
+    assert (artefacts / "route.drc.rpt").read_text().strip() == ""
+    dirty = (run_dir / "06_post_route_repair.r1.route.drc.rpt").read_text()
+    assert dirty.startswith("violation type: Short")
+
+
+@pytest.mark.parametrize("stages", [False, True])
+def test_a_round_with_a_short_gets_another_round_on_its_database(
+    tmp_path, monkeypatch, stages
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_BOTH, "rounds": 2},
+        stages=stages,
+        env={
+            "RB_STUB_SETUP": "0.01 0.175 0.17",
+            "RB_STUB_HOLD": "-0.12 0.044 0.04",
+            "RB_STUB_DRC": "1",
+        },
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["post_route_repair"] == {
+        "kept_round": 2,
+        "repaired_rounds": 2,
+        "rounds": 2,
+        "stop": "timing_met",
+        "reason": "timing met",
+        "passed_over_round": None,
+    }
+    assert res.results["drc_count"] == 0
+    (run_dir,) = _runs(artefacts)
+    assert [
+        (r["round"], r["drc_count"], r["best_round"]) for r in _rounds(run_dir)
+    ] == [
+        (0, 0, 0),
+        (1, 1, 0),
+        (2, 0, 2),
+    ]
+    # Round 1 met timing, but its short gets round 2's detailed route.
+    r2 = (run_dir / "06_post_route_repair.r2.repair.tcl").read_text()
+    assert "06_post_route_repair.r1.odb]" in r2
+    assert "06_post_route_repair.r1.spef" in r2
+    assert (run_dir / "06_post_route_repair.odb").samefile(
+        run_dir / "06_post_route_repair.r2.odb"
+    )
+
+
+def test_a_clean_round_is_kept_over_a_detailed_route_with_violations(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        env={"RB_STUB_SETUP": "-0.1 -0.2", "RB_STUB_DRC": "0:2"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    # The detailed route is timed and gets a round in spite of its violations.
+    assert [(r["round"], r["drc_count"]) for r in _rounds(run_dir)] == [(0, 2), (1, 0)]
+    assert res.results["post_route_repair"] == {
+        "kept_round": 1,
+        "repaired_rounds": 1,
+        "rounds": 3,
+        "stop": "no_improvement",
+        "reason": "round 1 did not improve timing; round 0 times better (setup WNS "
+        "-0.1000 ns, hold WNS 0.0000 ns, 2 DRC violation(s)), but the stage keeps "
+        "round 1, whose route is clean (setup WNS -0.2000 ns, hold WNS 0.0000 ns, 0 "
+        "DRC violation(s))",
+        "passed_over_round": 0,
+    }
+    assert res.results["drc_count"] == 0
+    assert (run_dir / "06_post_route_repair.odb").samefile(
+        run_dir / "06_post_route_repair.r1.odb"
+    )
+
+
+def test_rounds_with_violations_keep_the_one_that_improves(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        env={
+            "RB_STUB_SETUP": "-0.2 -0.1 -0.1 -0.05",
+            "RB_STUB_DRC": "0:2 1:3 2:1 3:2",
+        },
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    # Round 1 is better but has more violations; round 2 times as round 1 with
+    # fewer than round 0; round 3 is better with more than round 2.
+    assert [
+        (r["round"], r["drc_count"], r["best_round"]) for r in _rounds(run_dir)
+    ] == [
+        (0, 2, 0),
+        (1, 3, 0),
+        (2, 1, 2),
+        (3, 2, 2),
+    ]
+    assert res.results["post_route_repair"] == {
+        "kept_round": 2,
+        "repaired_rounds": 3,
+        "rounds": 3,
+        "stop": "last_round",
+        "reason": "all 3 round(s) ran",
+        "passed_over_round": None,
+    }
+    assert res.results["drc_count"] == 1
+    assert (artefacts / "route.drc.rpt").read_text().rstrip().endswith("r2")
+    assert (run_dir / "06_post_route_repair.odb").samefile(
+        run_dir / "06_post_route_repair.r2.odb"
     )
 
 
@@ -2030,6 +2156,7 @@ def test_a_failed_repair_session_keeps_the_best_round(
         "stop": "session_failed",
         "reason": f"round {round_}'s repair session failed: OpenROAD exited with "
         "code 1: STUB-0003",
+        "passed_over_round": None,
     }
     assert res.results["desc"].endswith(
         f"; post-route repair round {round_}'s repair session failed: "
@@ -2082,6 +2209,7 @@ def test_a_repair_session_that_writes_no_database_is_set_aside(
         "rounds": 3,
         "stop": "session_failed",
         "reason": "round 2's repair session failed: it wrote no checkpoint",
+        "passed_over_round": None,
     }
     (run_dir,) = _runs(artefacts)
     assert [r["round"] for r in _rounds(run_dir)] == [0, 1]

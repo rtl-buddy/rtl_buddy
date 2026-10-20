@@ -1388,12 +1388,46 @@ def _side_slack(timing: dict, side: str) -> float:
 
 
 def _improves(timing: dict, best: dict, sides) -> bool:
-    """Whether a round with `timing` is better than the best round, with `best`: on the sides the rounds repair, no worst slack below zero is lower and one is higher, so a tie is not better. With no side (a repair-design-only block) a round is better than the one it started from."""
+    """Whether `timing` is better than `best`: on the sides the rounds repair, no worst slack below zero is lower and one is higher, so a tie is not better. With no side (a repair-design-only block) a round's timing is better than the one it started from."""
     if not sides:
         return True
     new = [_side_slack(timing, side) for side in sides]
     old = [_side_slack(best, side) for side in sides]
     return new != old and all(n >= o for n, o in zip(new, old))
+
+
+def _round_improves(new: dict, best: dict, sides) -> bool:
+    """Whether round `new` improves on the best round `best`, each `{"timing": ..., "drcs": n}`: better timing (`_improves`) without more DRC violations, or timing as good on every repaired side with fewer."""
+    if new["drcs"] <= best["drcs"] and _improves(new["timing"], best["timing"], sides):
+        return True
+    return new["drcs"] < best["drcs"] and all(
+        _side_slack(new["timing"], side) >= _side_slack(best["timing"], side)
+        for side in sides
+    )
+
+
+def _round_summary(round_: dict) -> str:
+    """A round's setup and hold WNS, in ns, and its DRC violation count, for a stop reason."""
+
+    def _wns(side: str) -> str:
+        value = round_["timing"].get(f"wns_{side}_ps")
+        if side in round_["timing"]["unconstrained"] or value is None:
+            return f"{side} unconstrained"
+        return f"{side} WNS {value / 1000:.4f} ns"
+
+    return f"{_wns('setup')}, {_wns('hold')}, {round_['drcs']} DRC violation(s)"
+
+
+def _passed_over(timed: dict, kept: int, sides) -> int | None:
+    """The round with the best timing among those whose timing is better than the kept round's but whose route has DRC violations, when the kept round's is clean; else None."""
+    if kept not in timed or timed[kept]["drcs"]:
+        return None
+    passed = None
+    for round_, entry in timed.items():
+        reference = timed[kept if passed is None else passed]["timing"]
+        if entry["drcs"] and _improves(entry["timing"], reference, sides):
+            passed = round_
+    return passed
 
 
 def _round_files(run_dir: str, round_: int) -> dict | None:
@@ -1463,7 +1497,7 @@ def run_post_route_repair(
 
     `session(path, label)` runs OpenROAD on one script and returns its exit code, stderr, resources and log; `note(line)` appends a line of rb's own to the log and returns it. Each session's part of the log begins with `_SESSION_BEGIN_MARKER`.
 
-    Round 0 is the detailed route: its extraction session extracts it and times every corner. Round k from 1 repairs round k-1's database on that round's SPEF, routes, and writes the stage's checkpoint, which rb renames `06_post_route_repair.r<k>.*` (`_round_files`); its extraction session then times the result. The rounds stop when the best round meets timing on every side they repair (setup with `setup-margin` set, hold with `hold-margin` set), when a round's timing is not reported, when a round's route has DRC violations (round 0's before any session), when a round is not better than the best (`_improves`), when a session of a later round fails, or after the last round. The stage keeps the best round's database as its checkpoint (`_keep_round`); a round whose route has DRC violations, whose timing was not reported or whose session failed is never kept.
+    Round 0 is the detailed route: its extraction session extracts it and times every corner. Round k from 1 repairs round k-1's database on that round's SPEF, routes, and writes the stage's checkpoint, which rb renames `06_post_route_repair.r<k>.*` (`_round_files`); its extraction session then times the result. Each round's DRC violations are counted from its router's report. A round becomes the best when it improves on the best (`_round_improves`), or when its route is clean and the best's is not. A round whose route has violations never stops the rounds, so the next one gets another detailed route on its database. The rounds stop when a clean round is the best and meets timing on every side they repair (setup with `setup-margin` set, hold with `hold-margin` set), when a clean round does not improve on the best, when a round's timing is not reported, when a session of a later round fails, or after the last round. The stage keeps the best round's database as its checkpoint (`_keep_round`); a round whose timing was not reported or whose session failed is never kept. When a round with violations has better timing than the clean round kept, the stop reason names both (`_passed_over`).
 
     A failed session of round k from 1 is set aside: rb warns, notes it after the session's part of the log, whose `[ERROR` lines then do not fail the run (`_error_lines`), and the stage keeps the best round. Round 0's extraction failing fails the stage, as does a failed stage report: a `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint the stage kept.
     """
@@ -1520,11 +1554,13 @@ def run_post_route_repair(
         )
 
     rounds = plan["rounds"]
-    best, best_timing = 0, None
+    sides = plan["sides"]
+    best = 0
     repaired = 0
     files: dict[int, dict | None] = {}
+    timed: dict[int, dict] = {}
 
-    def _record(round_: int, drcs: int, timing: dict | None) -> None:
+    def _record(round_: int, drcs: int, timing: dict) -> None:
         entry = rounds[round_ - 1] if round_ else {}
         fields = {
             "round": round_,
@@ -1532,7 +1568,7 @@ def run_post_route_repair(
             "setup_margin_ns": entry.get("setup_margin_ns"),
             "hold_margin_ns": entry.get("hold_margin_ns"),
             "drc_count": drcs,
-            **(timing or {}),
+            **timing,
             "best_round": best,
         }
         log_event(logger, logging.INFO, "pnr.post_route_round", pnr=run_name, **fields)
@@ -1584,13 +1620,6 @@ def run_post_route_repair(
                 break
             repaired = round_
         drcs = count_drc_violations(drc_report)
-        if drcs:
-            _record(round_, drcs, None)
-            route = (
-                f"round {round_}'s detailed route" if round_ else "the detailed route"
-            )
-            stop = "drc", f"{route} has {drcs} DRC violation(s)"
-            break
         returncode, stderr, problem, failure, section = _run(
             rounds[round_ - 1]["extract"] if round_ else plan["extract"],
             f"round {round_} extraction",
@@ -1602,7 +1631,7 @@ def run_post_route_repair(
             stop = _set_aside(round_, "extraction", failure, section)
             break
         timing = _round_timing(section.decode(errors="replace"), round_, plan)
-        met = _timing_met(timing, plan["sides"])
+        met = _timing_met(timing, sides)
         if met is None:
             _record(round_, drcs, timing)
             stop = (
@@ -1614,24 +1643,46 @@ def run_post_route_repair(
                 ),
             )
             break
-        if round_ and not _improves(timing, best_timing, plan["sides"]):
-            _record(round_, drcs, timing)
+        current = {"timing": timing, "drcs": drcs}
+        improved = True
+        if round_:
+            prior = timed[best]
+            improved = _round_improves(current, prior, sides)
+            # A clean route is never passed over for one with violations.
+            if improved or (not drcs and prior["drcs"]):
+                best = round_
+        timed[round_] = current
+        _record(round_, drcs, timing)
+        if drcs:
+            continue
+        if not improved:
             stop = "no_improvement", f"round {round_} did not improve timing"
             break
-        best, best_timing = round_, timing
-        _record(round_, drcs, timing)
         if met:
             stop = "timing_met", "timing met"
             break
     else:
         stop = "last_round", f"all {len(rounds)} round(s) ran"
+    passed = _passed_over(timed, best, sides)
+    reason = stop[1]
+    if passed is not None:
+        reason += (
+            f"; round {passed} times better ({_round_summary(timed[passed])}), "
+            f"but the stage keeps round {best}, whose route is clean "
+            f"({_round_summary(timed[best])})"
+        )
+        if stop[0] == "last_round":
+            reason += (
+                "; more `rounds` give the detailed router more passes at the violations"
+            )
     _keep_round(run_dir, plan, best, files.get(best))
     fields = {
         "kept_round": best,
         "repaired_rounds": repaired,
         "rounds": len(rounds),
         "stop": stop[0],
-        "reason": stop[1],
+        "reason": reason,
+        "passed_over_round": passed,
     }
     log_event(
         logger, logging.INFO, "pnr.post_route_repair_done", pnr=run_name, **fields
@@ -4042,7 +4093,7 @@ class OpenRoadPnr:
         return {"blocks": [b.result_row() for b in self._blocks]}
 
     def _post_route_fields(self) -> dict:
-        """Return the `post_route_repair` result field when this run ran that stage: the round whose database it kept, how many rounds repaired, the rounds configured, and why the rounds stopped (`stop` and `reason`)."""
+        """Return the `post_route_repair` result field when this run ran that stage: the round whose database it kept, how many rounds repaired, the rounds configured, why the rounds stopped (`stop` and `reason`), and the round with better timing whose DRC violations kept it from being kept (`passed_over_round`, else None)."""
         if self._ckpt_run_dir is None:
             return {}
         done = [
@@ -4055,7 +4106,14 @@ class OpenRoadPnr:
         return {
             "post_route_repair": {
                 key: done[-1].get(key)
-                for key in ("kept_round", "repaired_rounds", "rounds", "stop", "reason")
+                for key in (
+                    "kept_round",
+                    "repaired_rounds",
+                    "rounds",
+                    "stop",
+                    "reason",
+                    "passed_over_round",
+                )
             }
         }
 
@@ -5449,6 +5507,14 @@ class OpenRoadPnr:
             log=log_path,
         )
         post_route = self._post_route_fields().get("post_route_repair") or {}
+        post_route_note = ""
+        if post_route.get("passed_over_round") is not None:
+            post_route_note = f"post-route repair {post_route['reason']}"
+        elif post_route.get("stop") == "session_failed":
+            post_route_note = (
+                f"post-route repair {post_route['reason']}; kept round "
+                f"{post_route['kept_round']}"
+            )
         qualifiers = [
             q
             for q in (
@@ -5456,10 +5522,7 @@ class OpenRoadPnr:
                 pnr_abstract.stale_qualifier(self._blocks),
                 no_wire_rc,
                 f"electrical {electrical}" if electrical else "",
-                f"post-route repair {post_route['reason']}; kept round "
-                f"{post_route['kept_round']}"
-                if post_route.get("stop") == "session_failed"
-                else "",
+                post_route_note,
             )
             if q
         ]
