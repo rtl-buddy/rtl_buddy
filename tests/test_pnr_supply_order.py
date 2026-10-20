@@ -247,13 +247,25 @@ def test_liberty_pins_reads_any_brace_layout():
     assert liberty_pins(lib, "other") is None
 
 
-def test_a_failed_write_leaves_the_original(tmp_path, monkeypatch):
+@pytest.mark.parametrize("step", ["write", "rename"])
+def test_a_failed_write_leaves_the_original(tmp_path, monkeypatch, step):
     paths = _files(tmp_path)
 
-    def _fail(src, dst):
+    def _full(*_a):
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(pnr_supply_order.os, "replace", _fail)
+    def _open(path, mode="r", **kw):
+        f = open(path, mode, **kw)
+        if "w" in mode:
+            f.write("module")
+            f.close()
+            _full()
+        return f
+
+    if step == "write":
+        monkeypatch.setattr(pnr_supply_order, "open", _open, raising=False)
+    else:
+        monkeypatch.setattr(pnr_supply_order.os, "replace", _full)
     with pytest.raises(OSError, match="No space"):
         canonicalise(*map(str, paths[:2]), "top", str(paths[2]))
 
