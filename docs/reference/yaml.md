@@ -202,6 +202,8 @@ P&R keys, all optional. `placement.*` keys are set on the PDK, overridden by the
 | Key | Behavior |
 |---|---|
 | `repair-design` | `repair_design` with `slew-margin`, `cap-margin` (percent) and `max-wire-length` (µm); `{}` uses OpenROAD's defaults |
+| `repair-design.wire-rc` | `post-route-repair` only. Signal wire RC for `repair_design`: `{resistance: <kohm/um>, capacitance: <fF/um>}` or `{layer: <name>}`. The session's RC is restored for `repair_timing`. Unset uses the session's |
+| `repair-design.after-timing` | `post-route-repair` only. `true` runs `repair_design` again after timing repair in each round; needs a margin. Default `false` |
 | `setup-margin`, `hold-margin` | `repair_timing -setup` / `-hold` with that margin in ns, at least 0 |
 | `reroute` | `incremental` (default) or `full` for `global-route-repair`; `eco` (default) or `full` for `post-route-repair` |
 | `rounds` | `post-route-repair` only. Positive, default 1; above 1 needs a margin |

@@ -228,6 +228,20 @@ Each block runs `repair_design` when `repair-design` is set (`{}` for OpenROAD's
 
 **`post-route-repair`** adds the stage `post_route_repair` after detailed route. It needs the PDK's `rcx-rules`. It extracts and times the detailed route (round 0), then runs up to `rounds` (default 1) repair rounds, each in fresh OpenROAD sessions: repair on the extracted parasitics, route again, extract and time. `reroute: eco` (default) keeps the detailed route and reroutes only the changed nets; `full` routes the whole design again, costing about a global and a detailed route per round. Round k repairs with the margins plus (k − 1) × `margin-step`. `rounds` above 1 needs a margin.
 
+Two `repair-design` keys apply to `post-route-repair` only. Both are off by default:
+
+```yaml
+post-route-repair:
+  repair-design:
+    slew-margin: 20
+    wire-rc: {resistance: 0.06, capacitance: 0.17}   # kohm/um, fF/um; or {layer: M5}
+    after-timing: true
+  setup-margin: 0.05
+```
+
+- `wire-rc`: each `repair_design` estimates the nets it changes at this signal wire RC instead of the session's, which is set for placement. Routed nets that `repair_design` buffers are often longer and higher in the stack than that estimate assumes, so it can leave them over their slew limit. `{layer: M5}` takes that layer's RC per corner from `set_layer_rc`, else from the LEF. The session's signal wire RC, including one a `session` hook set, is restored right after, so `repair_timing` runs at it. Clock wire RC is not changed. Each repair line in `pnr.log` names the signal wire RC it ran at.
+- `after-timing: true`: each round runs `repair_design` again after setup and hold repair, before legalizing. `repair_timing` checks the slew of the nets it changes at the session's RC, and some end a few picoseconds over their limit. It needs `setup-margin` or `hold-margin`.
+
 The stage keeps the best round, never worse than the detailed route:
 
 - A clean route always beats one with DRCs.
