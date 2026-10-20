@@ -10,7 +10,7 @@ description: Run OpenROAD gate-level power analysis from synthesis or P&R output
 
 OpenROAD 25Q1 or newer must be on `PATH` or configured under `cfg-power-tools`. Only `tool: openroad` is supported; other tools report `SKIP`.
 
-The run's `platform` names a `cfg-pnr-platforms` entry that supplies the PDK and Liberty corner; see [Place-and-Route: Configure the physical platform](pnr.md#configure-the-physical-platform). A platform with `corners:` analyses every listed corner in one session; see [Place-and-Route: Sign off at several corners](pnr.md#sign-off-at-several-corners).
+The run's `platform` names a `cfg-pnr-platforms` entry that supplies the PDK and Liberty corner; see [Place-and-Route: Configure the physical platform](pnr.md#configure-the-physical-platform). A platform with `corners:` analyses every listed corner in one session and one SDC mode; see [Place-and-Route: Sign off at several corners](pnr.md#sign-off-at-several-corners) and [Quirks & Known Issues](../known-issues.md#rb-power-times-every-corner-in-one-sdc-mode).
 
 ## Choose the design source
 

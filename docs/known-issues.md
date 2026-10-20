@@ -274,9 +274,19 @@ With `reroute: full` a round also removes the detailed route and routes the whol
 
 An `eco` post-route repair round runs its repairs with OpenROAD's Tcl procedure `design_is_routed` replaced by one that answers 0, and restores the original after them, also when a repair fails. It relies on `repair_timing` calling `design_is_routed` to pick detailed-routing parasitics, as it does in OpenROAD 26Q4. When the session's `repair_timing` does not call it, the round runs its repairs without the override, logs that in `pnr.log`, and rb warns `pnr.post_route_eco_unguarded`. Those repairs can fail with `[ERROR RSZ-0074] Failed to build tree from global routes`; the stage then [sets the round aside](concepts/pnr.md#keep-the-best-post-route-repair-round), and its warning and the run's result name the fix, `post-route-repair.reroute: full`, which removes the detailed route and repairs on a fresh global route.
 
-## Post-route repair rounds and the final report can disagree on a multi-corner platform
+## Corners share one SDC mode on an OpenROAD without modes
 
-On a multi-corner platform each post-route repair round reads its SPEF once per corner (`read_spef -corner`), but the final reports read the routed SPEF once for every corner, and OpenSTA then reuses the first corner's reduced parasitics at the others. The rounds can stop on `timing met` while the result reports negative setup at another corner. On the project template's sky130hd tt/ss/ff run the same routed database times ss setup at +190 ps per corner and at -160 ps from the shared read. Take a multi-corner verdict from the rounds' per-corner figures, or re-time the routed database with one `read_spef -corner` per corner. See [rtl_buddy#846](https://github.com/rtl-buddy/rtl_buddy/issues/846).
+`rb pnr` gives each corner of a multi-corner platform its own SDC mode only when OpenSTA can switch back to a mode it made earlier, as in OpenROAD 26Q4; 26Q2 cannot. On such an OpenROAD the run times every corner in one mode, as `define_corners` does, and warns `pnr.corner_modes_unsupported`:
+
+- A generated clock's source latency comes from one corner at every corner, so a forwarded clock can be timed for hold at a fast corner on a slow corner's clock latency.
+- A per-corner `constraints:` fails the run at setup with `pnr.corner_constraints_unsupported`.
+- A macro with one Liberty is read into every corner, and OpenSTA logs `STA-1140 library ... already exists` once per extra corner.
+
+Upgrade OpenROAD, or time the corners as separate single-corner runs. See [Sign off at several corners](concepts/pnr.md#sign-off-at-several-corners).
+
+## rb power times every corner in one SDC mode
+
+On a multi-corner platform `rb power` reads one SDC, `<top>.routed.sdc` by default, which holds the P&R run's primary corner, and the routed SPEF once for every corner. Every corner's figures therefore use the primary corner's generated-clock latencies, and the corners after the first reuse the first corner's reduced parasitics. For one corner's own figures, run `rb power` on a single-corner platform of that corner with `constraints:` set to the P&R run's `<top>.<corner>.routed.sdc`.
 
 ## An unconfirmed dispatched P&R run blocks later runs
 

@@ -128,6 +128,19 @@ A one-session run that reaches its end without writing a checkpoint it keeps fai
 
 Every OpenROAD session runs in the run's artefact directory, `artefacts/<run>/`. In v6 it ran in the directory `rb` was started from, so a relative path in a run hook, `platform-tcl`, `layer-rc-tcl`, `tapcell-tcl`, `pin-constraints` file or `pdn-config` (`source`, `open`, `read_*`, `write_*`) resolved there. Such a path now resolves from `artefacts/<run>/`. Build paths from the script's own location instead, `[file join [file dirname [info script]] <name>]`, or from the variables the flow sets (`OUT_DIR`). See [Run Tcl hooks](concepts/pnr.md#run-tcl-hooks).
 
+### A multi-corner platform times each corner in its own SDC mode
+
+On a platform with `corners:`, `rb pnr` gives each corner an OpenSTA SDC mode and scene of its own, reads the SDC into every mode, applies `max-fanout` and the propagated clocks in every mode, and reads the routed SPEF once per corner for the final reports. In v6 every corner shared one mode and the final reports read the SPEF once, so a generated clock's source latency came from one corner and the corners after the first reused the first corner's parasitics. A multi-corner run's slack and repairs therefore change. Single-corner runs are unchanged.
+
+- `constraints:` also takes a mapping from each corner to its SDC.
+- An SDC command in a hook applies to the primary corner's mode alone. Put it in the SDC, or run it after `set_mode <corner>` for each corner and end with `set_mode <primary>`.
+- `max_fanout_violation_count` counts a violator once per corner it violates at.
+- The run writes `<top>.<corner>.routed.sdc` for each corner next to `<top>.routed.sdc`, which holds the primary corner's mode. A checkpoint's `.sdc` holds every mode.
+- A `--resume` of a multi-corner run started by v6 is refused, since its stage scripts differ; rerun it from the start.
+- On an OpenROAD that cannot switch between SDC modes, such as 26Q2, the corners keep sharing one mode and the run warns `pnr.corner_modes_unsupported`; a per-corner `constraints:` fails at setup.
+
+See [Sign off at several corners](concepts/pnr.md#sign-off-at-several-corners).
+
 ## Submodule to uv
 
 Replace the `tools/rtl_buddy` submodule and editable pip install with a `uv` dependency:

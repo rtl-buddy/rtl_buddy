@@ -77,7 +77,7 @@ A pass is qualified with `pnr.no_wire_rc` when the pre-route steps had no wire R
 
 Every run that reached the end of the flow carries `routed: true`. A run ended by [`--stop-after`](#stop-after-a-stage) or by [`mode: probe`](#probe-without-timing-repair) carries `routed: false` and `stopped_after`, and its numbers come from a stage report, not from a routed design. Every result carries the run's `mode`.
 
-`max_slew_violation_count`, `max_capacitance_violation_count` and `max_fanout_violation_count` count the routed design's pins that break a Liberty or SDC max-slew, max-capacitance or max-fanout limit, over every corner, as ORFS's `report_metrics` counts them. The summary shows them as the Slew/Cap/Fanout column, `pnr.log` prints them as `RB-ELECTRICAL: max_<check> <n>` after `>>> Final reports`, and `electrical.rpt` lists the violating pins. A pass with any violator is qualified `electrical N max-slew, ... violator(s)` and logs the warning `pnr.electrical_violators`. A count OpenROAD cannot report is left out.
+`max_slew_violation_count`, `max_capacitance_violation_count` and `max_fanout_violation_count` count the routed design's pins that break a Liberty or SDC max-slew, max-capacitance or max-fanout limit, over every corner, as ORFS's `report_metrics` counts them. The summary shows them as the Slew/Cap/Fanout column, `pnr.log` prints them as `RB-ELECTRICAL: max_<check> <n>` after `>>> Final reports`, and `electrical.rpt` lists the violating pins. A pass with any violator is qualified `electrical N max-slew, ... violator(s)` and logs the warning `pnr.electrical_violators`. A count OpenROAD cannot report is left out. On a [multi-corner platform](#sign-off-at-several-corners) a max-fanout violator counts once per corner it violates at.
 
 A run passes when OpenROAD exits 0 with no `[ERROR ...]` line, the flow ran to its end, the routed DEF keeps every located macro and exact pin where the floorplan put it, and, under `gds-mode: strict`, the requested export was delivered complete. With `fail-on-electrical: true` a run with any electrical violator also fails, with no `fail_stage`, so `xfail:` can excuse it; it keeps its routed outputs and publishes no abstract. It skips when `reglvl` filters it out or `tool:` is unsupported. A `PASS` says the flow ran to the end and wrote its outputs; it does not say the design meets timing or routes clean, even after [post-route repair](#repair-on-the-detailed-route) rounds. `wns_setup_ps`, `wns_hold_ps`, `tns_ps` and `tns_hold_ps` are the timing verdict and the DRC count the routing one; gate signoff on them in your project.
 
@@ -103,7 +103,8 @@ Outputs land under `<pnr-dir>/artefacts/<run>/`.
 | File | Purpose |
 | --- | --- |
 | `pnr.log`, `pnr.tcl` | OpenROAD output and generated flow |
-| `<top>.def`, `<top>.routed.v`, `<top>.routed.sdc` | Routed DEF, post-route netlist and constraints |
+| `<top>.def`, `<top>.routed.v`, `<top>.routed.sdc` | Routed DEF, post-route netlist and constraints (the primary corner's on a [multi-corner platform](#sign-off-at-several-corners)) |
+| `<top>.<corner>.routed.sdc` | Each corner's routed constraints; only on a multi-corner platform |
 | `<top>.routed.odb` | OpenROAD database read by post-P&R `rb power` |
 | `<top>.routed.spef` | Extracted parasitics; only when the PDK sets `rcx-rules` |
 | `timing.rpt` | Worst-path timing across all corners |
@@ -156,7 +157,30 @@ cfg-pnr-platforms:
 
 - All corners run in one OpenROAD session, so repair and the final worst-slack and TNS reports see every corner. Clock-tree synthesis uses the primary (first) corner.
 - `corner` and `corners` are mutually exclusive. The list must be non-empty, and each name must be declared in the PDK, appear once, and use only letters, digits, `_`, `.` and `-`. A one-entry list is the same run as `corner:`. A platform that sets neither uses the PDK's first corner.
-- A macro with one Liberty in `lib-paths` is read into every corner and keeps the timing of the corner it was characterised at, so a slow corner can fail because of the macro (for example `RSZ-0090` from a TT SRAM Liberty). Give such a macro a Liberty per corner. OpenSTA logs `STA-1140 library ... already exists` once per extra corner; that is expected.
+- A macro with one Liberty in `lib-paths` is timed at every corner with the Liberty of the corner it was characterised at, so a slow corner can fail because of the macro (for example `RSZ-0090` from a TT SRAM Liberty). Give such a macro a Liberty per corner.
+
+`rb pnr` times each corner in an OpenSTA SDC mode and scene of its own, both named after the corner:
+
+- The SDC is read into every mode. `max-fanout` and the propagated clocks after clock-tree synthesis apply in every mode, so a generated clock's source latency comes from the corner being timed.
+- The final reports, like each [post-route repair](#repair-on-the-detailed-route) round, read the routed SPEF once per corner (`read_spef -corner`), so each corner times its nets on its own parasitics.
+- `constraints:` can give each corner its own SDC, as a mapping that names every corner of the platform and no other; a missing or unknown corner fails the run at setup. A plain path is the SDC of every corner.
+
+  ```yaml
+  runs:
+    - name: demo_mc
+      platform: sky130hd_mc
+      constraints:
+        tt: constraints_tt.sdc
+        ss: constraints_ss.sdc   # paths relative to pnr.yaml
+  ```
+
+- The primary corner's mode is the command mode, the one that CTS and an SDC command without a mode use. An SDC command in a [hook](#run-tcl-hooks) therefore constrains the primary corner alone. To constrain every corner, put the command in the SDC, or run it after `set_mode <corner>` for each corner and end with `set_mode <primary>`.
+- `<top>.routed.sdc` holds the primary corner's mode, and `<top>.<corner>.routed.sdc` each corner's. A [checkpoint's](#keep-stage-checkpoints) SDC holds every mode.
+- OpenSTA counts a max-fanout violator once in each mode it violates, so a pin that breaks the limit at every corner adds the number of corners to `max_fanout_violation_count`.
+
+A mode per corner needs an OpenROAD whose OpenSTA can return to an SDC mode it made earlier: 26Q4 can, 26Q2 cannot. rb checks at setup. On an OpenROAD that cannot, every corner shares one mode, the run logs the warning `pnr.corner_modes_unsupported`, and a per-corner `constraints:` fails the run at setup (`pnr.corner_constraints_unsupported`). See [Quirks & Known Issues](../known-issues.md#corners-share-one-sdc-mode-on-an-openroad-without-modes).
+
+`rb power` keeps every corner in one SDC mode; see [Quirks & Known Issues](../known-issues.md#rb-power-times-every-corner-in-one-sdc-mode).
 
 ## Tune the process-dependent steps
 
@@ -288,6 +312,7 @@ runs:
 - `session` is for state the saved database does not keep, such as `set_wire_rc` on a run's own layers or extra `set_dont_use` cells. The PDK's `layer-rc-tcl` stays the wire RC rb knows about: the [no-wire-RC qualifier](#set-wire-rc) and a [`netlist-source: pnr` power run](power.md#extracted-parasitics) read only that. The post-route don't-use check covers only the configured cells, not ones a hook adds.
 - `macro-placement` runs inside the flow's macro branch, so it does not run when the netlist has no macros. The [`floorplan.macros`](#place-individual-macros) directives still apply before it, and the cell-halo blockages around every macro are still created after it. `$rb_movable_macros` lists the macros the directives leave unlocated, or every macro when there are no directives. Setting `floorplan.macro-placement` or `floorplan.macro-anchor` together with the hook is a config error, since neither would have an effect.
 - Results come from the final reports: a report a hook prints earlier does not change the result's area, slack or TNS.
+- On a multi-corner platform an SDC command in a hook applies to the primary corner's mode alone; see [Sign off at several corners](#sign-off-at-several-corners).
 - `after-pdn` runs whether or not the run has a pdn-config.
 - `pin-constraints` is unchanged: it is sourced just before `place_pins`, and `after-pins` runs after it.
 - A hook that raises a Tcl error fails the run, and the error names the point and file: `Hook after-cts (<path>): <message>`. OpenROAD stops there. An OpenROAD `[ERROR ...]` line a hook catches still fails the run, as anywhere in the flow. `exit`, a top-level `break` or `continue`, and a `return` that reaches past the hook file are such errors too, since each would end the flow unfinished.
@@ -368,7 +393,7 @@ After global route and its `after-global-route` hooks, `global-route-repair` run
 3. Otherwise repair round k in a new session: read round k-1's database and repair it on round k-1's SPEF, route, and write the stage's checkpoint, which rb renames `06_post_route_repair.r<k>.*`. With `reroute: eco` (the default) the session keeps the detailed route. It estimates placement parasitics, reads the SPEF once per corner over them, removes the fill cells and opens an incremental global route. The repairs then run with OpenROAD's `design_is_routed` answering 0, so they stay on the placement source: they time the nets they do not change on the SPEF and the nets they change on placement estimates, and build buffer trees from Steiner trees. The session legalizes and closes the incremental route, which reroutes only the nets the repair changed, runs the `before-detailed-route` hooks and routes in detail, keeping every other net's wires. With `reroute: full` it removes the fill cells and the detailed route, routes globally and reads the SPEF over the global-route estimate, so the repairs time the nets they change on the global route; as on the global route, a `repair_design` followed by a timing repair is legalized between them. It then legalizes, runs the hooks and routes every net in detail again.
 4. Time round k as in step 1, into `06_post_route_repair.r<k>.spef`. When its route has DRC violations, continue at step 3 with the next round, even when round k meets timing: that round's repairs have little to do, and its detailed route gets another pass at the violations. When its route is clean, stop if it does not [improve](#keep-the-best-post-route-repair-round) on the best round; otherwise continue at step 2.
 
-Round k repairs with the configured margins plus (k - 1) × `margin-step` (default 0). Each repairing round runs the `before-detailed-route` hooks before its detailed route. It does not run the `after-global-route` hooks: their work belongs to the `global_route` stage, and running them on each round's global route would repeat it. `finish` fills and writes the outputs from the stage's checkpoint. Quirks & Known Issues explains [why a round runs in sessions of its own and in this order](../known-issues.md#post-route-repair-rounds-work-around-openroad-routing-failures), [what an `eco` round depends on in OpenROAD](../known-issues.md#eco-post-route-repair-overrides-an-openroad-procedure) and [why a multi-corner run's rounds and final report can disagree](../known-issues.md#post-route-repair-rounds-and-the-final-report-can-disagree-on-a-multi-corner-platform).
+Round k repairs with the configured margins plus (k - 1) × `margin-step` (default 0). Each repairing round runs the `before-detailed-route` hooks before its detailed route. It does not run the `after-global-route` hooks: their work belongs to the `global_route` stage, and running them on each round's global route would repeat it. `finish` fills and writes the outputs from the stage's checkpoint. Quirks & Known Issues explains [why a round runs in sessions of its own and in this order](../known-issues.md#post-route-repair-rounds-work-around-openroad-routing-failures) and [what an `eco` round depends on in OpenROAD](../known-issues.md#eco-post-route-repair-overrides-an-openroad-procedure).
 
 ### Keep the best post-route repair round
 
@@ -733,7 +758,7 @@ runs:
 
 In a one-session run the flow ends each stage, but `global_route`, on the command the table names: on entering `global_placement`, `clock_tree_synthesis` or `global_route`, or on leaving `detailed_route`. A hook that wraps one of these commands with `rename` hides that boundary, which a one-session run does not support: a run that reaches its end without writing a checkpoint it keeps fails with `fail_stage: checkpoint`, naming the stage and the command. A [staged run](#run-stages-as-separate-sessions) ends each stage at the end of its session and has no such limit.
 
-`true` keeps every stage the run has, five or, with `post-route-repair`, six; a name or list keeps some; `[]` keeps only the progress file. Unset or `false` disables the feature. Each stage writes `<NN>_<stage>.odb`, `.def` and `.sdc` into `artefacts/<run>/checkpoints/<timestamp>-<pid>/`, and `checkpoints/latest` points at the newest run. The `global_route` checkpoint adds the route guides (`.guide`) and global-route segments (`.segments`). The `detailed_route` and `post_route_repair` checkpoints keep a copy of each report the detailed router wrote for their route, `<NN>_<stage>.route.drc.rpt` and `.route.maze.log`. The SDC is written with `write_sdc -no_timestamp -digits 9`.
+`true` keeps every stage the run has, five or, with `post-route-repair`, six; a name or list keeps some; `[]` keeps only the progress file. Unset or `false` disables the feature. Each stage writes `<NN>_<stage>.odb`, `.def` and `.sdc` into `artefacts/<run>/checkpoints/<timestamp>-<pid>/`, and `checkpoints/latest` points at the newest run. The `global_route` checkpoint adds the route guides (`.guide`) and global-route segments (`.segments`). The `detailed_route` and `post_route_repair` checkpoints keep a copy of each report the detailed router wrote for their route, `<NN>_<stage>.route.drc.rpt` and `.route.maze.log`. The SDC is written with `write_sdc -no_timestamp -digits 9`. On a [multi-corner platform](#sign-off-at-several-corners) the one `.sdc` holds every corner's mode, each after its `set_mode <corner>` and ending with the primary's, so reading it back restores every mode.
 
 - `tail -f artefacts/<run>/checkpoints/latest/progress.jsonl` follows a running flow. After a kill, the last `step_begin` with no `step_end` is the step the run was in.
 - With [`hooks:`](#run-tcl-hooks) set, `hook_begin` and `hook_end` events bracket each hook file and name its point and path. `hook_end` adds the status, the elapsed seconds and, on failure, the error. A `hook_begin` with no `hook_end` is the hook the run was in; rb's retained-checkpoints message names it as the step `hook <point>`.
@@ -760,11 +785,11 @@ A staged run's checkpoint directory also holds each session's script and log, `<
 
 Each session after `floorplan` starts with a prelude rb generates from the same flow template, so a staged run and a one-session run of the same configuration run the same flow commands. Their results are identical at equal thread counts unless OpenROAD carries in-memory state over a stage boundary in the one-session run; see [Quirks & Known Issues](../known-issues.md#a-staged-pr-run-can-differ-from-a-one-session-run). The prelude is:
 
-1. The header variables, `threads:`, `platform-tcl`, the Liberty of every corner and every LEF, including the views of `blocks:`.
-2. `read_db` and `read_sdc` of the previous stage's checkpoint, and its saved flow variables.
-3. `max-fanout`, `layer-rc-tcl`, the don't-use cells and the `session` hooks.
+1. The header variables, `threads:`, `platform-tcl`, the Liberty of every corner and every LEF, including the views of `blocks:`, and on a multi-corner platform each corner's SDC mode and scene.
+2. `read_db` and `read_sdc` of the previous stage's checkpoint, which restores every mode, and its saved flow variables.
+3. `max-fanout` in every mode, `layer-rc-tcl`, the don't-use cells and the `session` hooks.
 4. The flow's design variables (`$block`, `$macros`) and, after `place`, the detailed-placement options a rotated macro needs.
-5. `set_propagated_clock [all_clocks]` after `cts`, the routing layers and layer adjustment after `global_route`, for `detailed_route` the `global_route` checkpoint's segments (`read_global_route_segments`), and for `finish` a fanout check, without which OpenROAD crashes in the final reports' max-fanout count.
+5. `set_propagated_clock [all_clocks]` in every mode after `cts`, the routing layers and layer adjustment after `global_route`, for `detailed_route` the `global_route` checkpoint's segments (`read_global_route_segments`), and for `finish` a fanout check, without which OpenROAD crashes in the final reports' max-fanout count.
 
 The detailed router reads the route guides the database keeps, so a staged run routes exactly as a one-session run does; `read_guides` would rewrite them without their via layers. The `finish` session also takes the global route from those guides, as `rb power` does from a routed database. A routed database's pin access points can put a pin in another global-routing cell than the route reached, so OpenROAD would refuse the saved segments there. On a PDK with `rcx-rules` the final reports are timed on the extracted SPEF.
 
@@ -809,7 +834,7 @@ The resume is refused, with `fail_stage: resume` and a description that names wh
 - OpenROAD reports the same version; and
 - the run named was not a [probe](#probe-without-timing-repair), unless this run is one too.
 
-The input files are those the [checkpoint manifest](#keep-stage-checkpoints) fingerprints: the netlist, the SDC, the Liberty of every corner, the LEF, `pin-constraints`, the planner files, the `pdn-config`, the PDK's `rcx-rules` (read first by post-route repair, else by `finish`), the PDK Tcl hooks (`platform-tcl`, `layer-rc-tcl`, `tracks-tcl`, `tapcell-tcl`) and the run's `hooks:` files. A file that one of them sources or reads in turn, such as a file a hook, `platform-tcl`, a `pdn-config` or the SDC sources, is not checked, and neither are environment variables.
+The input files are those the [checkpoint manifest](#keep-stage-checkpoints) fingerprints: the netlist, the SDC (each corner's, with a per-corner `constraints:`), the Liberty of every corner, the LEF, `pin-constraints`, the planner files, the `pdn-config`, the PDK's `rcx-rules` (read first by post-route repair, else by `finish`), the PDK Tcl hooks (`platform-tcl`, `layer-rc-tcl`, `tracks-tcl`, `tapcell-tcl`) and the run's `hooks:` files. A file that one of them sources or reads in turn, such as a file a hook, `platform-tcl`, a `pdn-config` or the SDC sources, is not checked, and neither are environment variables.
 
 A stage script is compared up to its end-of-stage line, without:
 
