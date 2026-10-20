@@ -187,7 +187,7 @@ To catch hold problems from wire length before detailed routing, also set `globa
 
 ## Tune placement, clock tree and repair
 
-Process-dependent knobs live on the PDK, can be overridden on the platform, and the `placement.*` ones also on the run, field by field. Defaults suit Nangate45. Start from the problem:
+Process-dependent knobs live on the PDK, can be overridden on the platform, and most also on a run, so runs of one block on one platform can differ without a platform per variant. Which level takes each key is in the [YAML reference](../reference/yaml.md#synthesis-and-physical-design-tools). Defaults suit Nangate45. Start from the problem:
 
 | Problem | Knob |
 | --- | --- |
@@ -198,7 +198,11 @@ Process-dependent knobs live on the PDK, can be overridden on the platform, and 
 | Timing misses after routing | [`global-route-repair` or `post-route-repair`](#repair-timing-after-routing) |
 | Many fanout buffers on a library without a fanout limit (sky130hd) | `max-fanout: 100000` stops buffering for fanout alone; `repair_design` otherwise uses 50. |
 | Cells too tight | `placement.padding` (sites, default 1) |
-| Clock tree | `cts-buffer` (a list's first entry is the root buffer), `cts-sink-clustering`, `cts-apply-ndr` |
+| Clock tree | `cts-buffer` (a list's first entry is the root buffer), `cts-sink-clustering`, `cts-apply-ndr`; `cts-clock-nets` builds trees for the named clocks only |
+| Setup misses from flops on a clock branch that CTS padded to match the deepest one (`CTS-0033` and `CTS-0036` in the log), as when a clock drives a buffer as well as flops | `cts-latency-balancing: false` |
+| Long clock wires after CTS | `cts-repair-clock-nets: true` |
+| A block must leave the top layers to its parent | `routing-layers` on the run |
+| A block needs other tap spacing or endcaps than the PDK's | `tapcell-tcl` on the platform or the run |
 | Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm, default 1.0) |
 | Tie cells too close to their loads | `placement.tie-separation` (µm, default 0) |
 

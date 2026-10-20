@@ -504,6 +504,23 @@ def _cts_apply_ndr_option(platform) -> str:
     return f" -apply_ndr {ndr}" if ndr is not None else ""
 
 
+def _cts_clock_nets_option(platform) -> str:
+    """Return ` -clk_nets {<nets>}` for the CTS invocation, or `""` to let CTS find every clock."""
+    nets = platform.get_cts_clock_nets()
+    return f" -clk_nets {{{' '.join(nets)}}}" if nets else ""
+
+
+def _cts_repair_clock_nets_tcl(platform) -> str:
+    """Return `repair_clock_nets` on placement parasitics, as ORFS runs it right after CTS, or `""` when `cts-repair-clock-nets` is off."""
+    if not platform.get_cts_repair_clock_nets():
+        return ""
+    return (
+        'puts ">>> Repair clock nets"\n'
+        "estimate_parasitics -placement\n"
+        "repair_clock_nets\n"
+    )
+
+
 def max_fanout_cmd(platform) -> str:
     """Return the `set_max_fanout` command that follows each `read_sdc`, or `""` when the platform sets no max fanout."""
     fanout = platform.get_max_fanout()
@@ -2395,7 +2412,7 @@ class OpenRoadPnr:
             "make_tracks": make_tracks,
             # After macro placement and before the power grid, as ORFS `TAPCELL_TCL`, so endcaps see the placed macros.
             "tapcell_block": _hook_block(
-                "Tap and endcap cells (tapcell-tcl)", pdk.get_tapcell_tcl()
+                "Tap and endcap cells (tapcell-tcl)", platform.get_tapcell_tcl()
             ),
             "threads_block": threads_block,
             "hook_procs_block": _hook_procs_block(hooks),
@@ -2446,6 +2463,11 @@ class OpenRoadPnr:
                 "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
             ),
             "cts_ndr_option": _cts_apply_ndr_option(platform),
+            "cts_clock_nets_option": _cts_clock_nets_option(platform),
+            "cts_insertion_delay_option": (
+                "" if platform.get_cts_latency_balancing() else " -no_insertion_delay"
+            ),
+            "cts_repair_clock_nets": _cts_repair_clock_nets_tcl(platform),
             "max_fanout_block": f"{max_fanout}\n" if max_fanout else "",
             "signal_layers": platform.get_signal_layers(),
             "clock_layers": platform.get_clock_layers(),
@@ -3930,7 +3952,7 @@ class OpenRoadPnr:
             "rcx_rules": _file_fingerprint(pdk.get_rcx_rules()),
             **{
                 key.replace("-", "_"): _file_fingerprint(path)
-                for key, path in pdk.get_tcl_hooks().items()
+                for key, path in platform.get_tcl_hooks().items()
             },
             **{
                 _hook_role(point): [_file_fingerprint(p) for p in paths]
@@ -4196,7 +4218,8 @@ class OpenRoadPnr:
             **({"rcx_rules": pdk.get_rcx_rules()} if pdk.get_rcx_rules() else {}),
             # Only the configured hooks, so an abstract hardened without any records no extra roles.
             **{
-                key.replace("-", "_"): path for key, path in pdk.get_tcl_hooks().items()
+                key.replace("-", "_"): path
+                for key, path in platform.get_tcl_hooks().items()
             },
             **{
                 _hook_role(point): list(paths)
@@ -4873,6 +4896,8 @@ class OpenRoadPnr:
                 desc=f"platform lookup failed: {e}",
                 fail_stage="setup",
             )
+        if not self.pnr_cfg.get_overrides().is_empty():
+            platform = platform.with_run_overrides(self.pnr_cfg.get_overrides())
 
         # Check before OpenROAD starts; a missing snippet would otherwise fail minutes in.
         pdn_config = self._pdn_config(platform.get_pdk())
@@ -4905,7 +4930,7 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
-        for key, path in platform.get_pdk().get_tcl_hooks().items():
+        for key, path in platform.get_tcl_hooks().items():
             if not os.path.isfile(path):
                 log_event(
                     logger,

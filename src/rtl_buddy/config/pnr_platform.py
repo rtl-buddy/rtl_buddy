@@ -1,6 +1,8 @@
 import copy
 import logging
+import os
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from serde import serde, field
@@ -21,12 +23,12 @@ from .pdk import (
 )
 from .pnr_repair import (
     GLOBAL_ROUTE_REPAIR_SPEC,
-    HOLD_REPAIR_SHORTHAND,
     POST_ROUTE_REPAIR_SPEC,
     UNSET,
     GlobalRouteRepair,
     PostRouteRepair,
     read_global_route_repair,
+    read_hold_repair_shorthand,
     read_post_route_repair,
     resolve_global_route_repair,
     resolve_post_route_repair,
@@ -94,10 +96,118 @@ def _validate_port_buffer(value, where: str) -> str | None:
     return value
 
 
+def _validate_cts_buffer(value, where: str) -> list[str]:
+    cells = _as_cell_list(value) if isinstance(value, (str, list)) else None
+    if not cells or any(not isinstance(c, str) or len(c.split()) != 1 for c in cells):
+        raise FatalRtlBuddyError(
+            f"{where}: cts-buffer must be one buffer cell name or a list of them, "
+            f"got {value!r}"
+        )
+    return cells
+
+
+#: Characters a `cts-clock-nets` entry cannot hold: it is written inside a braced Tcl list.
+_TCL_LIST_BREAKERS = frozenset("{}\\")
+
+
+def _validate_cts_clock_nets(value, where: str) -> tuple[str, ...]:
+    nets = [value] if isinstance(value, str) else value
+    if (
+        not isinstance(nets, list)
+        or not nets
+        or any(
+            not isinstance(n, str)
+            or len(n.split()) != 1
+            or n != n.strip()
+            or _TCL_LIST_BREAKERS & set(n)
+            for n in nets
+        )
+    ):
+        raise FatalRtlBuddyError(
+            f"{where}: cts-clock-nets must be one clock net name or a list of them, "
+            "without whitespace, braces or backslashes, "
+            f"got {value!r}"
+        )
+    return tuple(nets)
+
+
+def _validate_tcl_path(key: str, value, where: str, config_dir: str) -> str | None:
+    """Return a Tcl hook path resolved from `config_dir`, or `None` when unset."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise FatalRtlBuddyError(
+            f"{where}: {key} must be a path to a Tcl file, got {value!r}"
+        )
+    return os.path.normpath(os.path.join(config_dir, value))
+
+
 @serde
 class PnrRoutingLayersFile:
     signal: str = ""
     clock: str = ""
+
+
+@dataclass(frozen=True)
+class PnrRunOverrides:
+    """A P&R run's own values of its platform's routing, CTS, repair and tap-cell knobs; `None` keeps the platform's.
+
+    Apply them with `PnrPlatformConfig.with_run_overrides`. `cts_clock_nets` exists on runs only.
+    """
+
+    signal_layers: str | None = None
+    clock_layers: str | None = None
+    cts_buffers: tuple[str, ...] | None = None
+    cts_clock_nets: tuple[str, ...] = ()
+    cts_repair_clock_nets: bool | None = None
+    cts_latency_balancing: bool | None = None
+    post_cts_setup_repair: bool | None = None
+    routing_layer_adjustment: float | None = None
+    port_buffer: str | None = None
+    tapcell_tcl: str | None = None
+
+    def is_empty(self) -> bool:
+        return self == PnrRunOverrides()
+
+
+def read_run_overrides(
+    where: str,
+    *,
+    routing_layers: "PnrRoutingLayersFile | None",
+    cts_buffer,
+    cts_clock_nets,
+    cts_repair_clock_nets: bool | None,
+    cts_latency_balancing: bool | None,
+    post_cts_setup_repair: bool | None,
+    routing_layer_adjustment,
+    port_buffer,
+    tapcell_tcl,
+    config_dir: str,
+) -> PnrRunOverrides:
+    """Validate a run's overrides of its platform's knobs; `where` names the run."""
+    layers = routing_layers or PnrRoutingLayersFile()
+    return PnrRunOverrides(
+        signal_layers=layers.signal or None,
+        clock_layers=layers.clock or None,
+        cts_buffers=(
+            tuple(_validate_cts_buffer(cts_buffer, where))
+            if cts_buffer is not None
+            else None
+        ),
+        cts_clock_nets=(
+            _validate_cts_clock_nets(cts_clock_nets, where)
+            if cts_clock_nets is not None
+            else ()
+        ),
+        cts_repair_clock_nets=cts_repair_clock_nets,
+        cts_latency_balancing=cts_latency_balancing,
+        post_cts_setup_repair=post_cts_setup_repair,
+        routing_layer_adjustment=_validate_layer_adjustment(
+            routing_layer_adjustment, where
+        ),
+        port_buffer=_validate_port_buffer(port_buffer, where),
+        tapcell_tcl=_validate_tcl_path("tapcell-tcl", tapcell_tcl, where, config_dir),
+    )
 
 
 @serde
@@ -110,6 +220,10 @@ class PnrPlatformConfigFile:
     # With a list, CTS gets every entry as its buffer list and the first as the root buffer.
     cts_buffer: str | list[str] = field(rename="cts-buffer", default="")
     cts_sink_clustering: bool = field(rename="cts-sink-clustering", default=True)
+    # `false` adds `clock_tree_synthesis -no_insertion_delay`.
+    cts_latency_balancing: bool = field(rename="cts-latency-balancing", default=True)
+    # `repair_clock_nets` after CTS.
+    cts_repair_clock_nets: bool = field(rename="cts-repair-clock-nets", default=False)
     # Runs `repair_timing -setup` before the post-CTS hold repair.
     post_cts_setup_repair: bool = field(rename="post-cts-setup-repair", default=False)
     # Repairs hold again after global route, on `estimate_parasitics -global_routing`, as ORFS does: shorthand for `global-route-repair: {hold-margin: 0}`.
@@ -136,6 +250,8 @@ class PnrPlatformConfigFile:
     placement: PlacementFile = field(default_factory=PlacementFile)
     # Added to the PDK's `dont-use-cells`, not replacing them.
     dont_use_cells: list[str] = field(rename="dont-use-cells", default_factory=list)
+    # Replaces the PDK's `tapcell-tcl`; relative to the root config.
+    tapcell_tcl: str | None = field(rename="tapcell-tcl", default=None)
 
 
 #: The keys of one `cfg-pnr-platforms` entry, for the unknown-key check.
@@ -153,7 +269,7 @@ PNR_PLATFORM_SPEC = KeySpec(
 class PnrPlatformConfig:
     """A PDK plus STA corner selection and P&R knobs (CTS buffer, routing layers, placement)."""
 
-    def __init__(self, cfg: PnrPlatformConfigFile, pdk_lookup):
+    def __init__(self, cfg: PnrPlatformConfigFile, pdk_lookup, config_dir: str = ""):
         self._name = cfg.name
         self._pdk_name = cfg.pdk
         self._pdk = pdk_lookup(cfg.pdk)
@@ -161,6 +277,12 @@ class PnrPlatformConfig:
         self._sta_corner = self._sta_corners[0]
         self._cts_buffers = _as_cell_list(cfg.cts_buffer)
         self._cts_sink_clustering = cfg.cts_sink_clustering
+        self._cts_latency_balancing = cfg.cts_latency_balancing
+        self._cts_repair_clock_nets = cfg.cts_repair_clock_nets
+        self._cts_clock_nets: tuple[str, ...] = ()
+        self._tapcell_tcl = _validate_tcl_path(
+            "tapcell-tcl", cfg.tapcell_tcl, f"pnr platform '{self._name}'", config_dir
+        )
         self._post_cts_setup_repair = cfg.post_cts_setup_repair
         self._read_repairs(cfg)
         self._routing_layer_adjustment = _validate_layer_adjustment(
@@ -197,15 +319,9 @@ class PnrPlatformConfig:
         """Read the platform's repair blocks into layers a run's blocks go over. They are resolved per run (see `with_run_repairs`), so a partial platform block fails only the runs that leave it partial."""
         where = f"pnr platform '{self._name}'"
         gr_layer = read_global_route_repair(where, cfg.global_route_repair)
-        if cfg.global_route_hold_repair:
-            if gr_layer is not UNSET:
-                raise FatalRtlBuddyError(
-                    f"{where}: set either global-route-hold-repair or "
-                    "global-route-repair, not both (global-route-hold-repair: true "
-                    "is global-route-repair: {hold-margin: 0})"
-                )
-            gr_layer = dict(HOLD_REPAIR_SHORTHAND)
-        self._global_route_repair_layer = gr_layer
+        self._global_route_repair_layer = read_hold_repair_shorthand(
+            where, cfg.global_route_hold_repair or None, gr_layer
+        )
         self._post_route_repair_layer = read_post_route_repair(
             where, cfg.post_route_repair
         )
@@ -298,6 +414,33 @@ class PnrPlatformConfig:
                 f"placement.routability-driven: true ({levels}); "
                 "global_placement ignores it otherwise"
             )
+
+    def with_run_overrides(
+        self, overrides: PnrRunOverrides | None
+    ) -> "PnrPlatformConfig":
+        """Return this platform with a P&R run's routing, CTS, repair and tap-cell values over its own, field by field.
+
+        `overrides` must already be validated. Without any the platform itself is returned.
+        """
+        if overrides is None or overrides.is_empty():
+            return self
+        resolved = copy.copy(self)
+        o = overrides
+        for attr, value in (
+            ("_signal_layers", o.signal_layers),
+            ("_clock_layers", o.clock_layers),
+            ("_cts_buffers", list(o.cts_buffers) if o.cts_buffers else None),
+            ("_cts_clock_nets", o.cts_clock_nets or None),
+            ("_cts_repair_clock_nets", o.cts_repair_clock_nets),
+            ("_cts_latency_balancing", o.cts_latency_balancing),
+            ("_post_cts_setup_repair", o.post_cts_setup_repair),
+            ("_routing_layer_adjustment", o.routing_layer_adjustment),
+            ("_port_buffer", o.port_buffer),
+            ("_tapcell_tcl", o.tapcell_tcl),
+        ):
+            if value is not None:
+                setattr(resolved, attr, value)
+        return resolved
 
     def with_run_placement(
         self, placement: PlacementFile | None, run: str
@@ -453,6 +596,32 @@ class PnrPlatformConfig:
 
     def get_cts_sink_clustering(self) -> bool:
         return self._cts_sink_clustering
+
+    def get_cts_latency_balancing(self) -> bool:
+        """Whether CTS balances latency between clock branches; `False` adds `-no_insertion_delay`."""
+        return self._cts_latency_balancing
+
+    def get_cts_repair_clock_nets(self) -> bool:
+        """Whether `repair_clock_nets` runs after CTS."""
+        return self._cts_repair_clock_nets
+
+    def get_cts_clock_nets(self) -> tuple[str, ...]:
+        """The clock nets CTS is restricted to (`-clk_nets`), or `()` for every clock."""
+        return self._cts_clock_nets
+
+    def get_tapcell_tcl(self) -> str:
+        """The tap and endcap Tcl: the run's, the platform's or the PDK's, resolved; `""` when none."""
+        if self._tapcell_tcl is not None:
+            return self._tapcell_tcl
+        return self._pdk.get_tapcell_tcl()
+
+    def get_tcl_hooks(self) -> dict[str, str]:
+        """The PDK's Tcl hooks as `{yaml-key: resolved path}`, with this platform's or run's `tapcell-tcl` in place of the PDK's; unset ones omitted, in flow order."""
+        hooks = dict(self._pdk.get_tcl_hooks())
+        # `tapcell-tcl` is the last hook in flow order, so a new entry keeps the order.
+        if self._tapcell_tcl is not None:
+            hooks["tapcell-tcl"] = self._tapcell_tcl
+        return hooks
 
     def get_post_cts_setup_repair(self) -> bool:
         """Whether post-CTS repair fixes setup before hold."""
