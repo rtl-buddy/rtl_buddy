@@ -6,8 +6,8 @@ Buffers and fill cells added after `pdngen` carry no supply connections until th
 from dataclasses import replace
 
 import pytest
-from test_pnr_checkpoints import _backend, _pnr_cfg, _runs
-from test_pnr_repair import _PR, _hook, _repair_backend, _with_repair
+from test_pnr_checkpoints import _backend, _pdk, _pnr_cfg, _runs
+from test_pnr_repair import _PR, _hook, _platform, _repair_backend, _with_repair
 
 from rtl_buddy.config.pnr import CHECKPOINT_STAGES
 from rtl_buddy.tools import pnr_checkpoints, pnr_openroad
@@ -149,6 +149,27 @@ def test_every_staged_session_connects_before_it_writes_its_checkpoint(
         assert scripts, stage
         for script in scripts:
             assert script.index("\nrb::global_connect\n") < script.index(end)
+
+
+@pytest.mark.parametrize("stages", [False, True])
+def test_the_global_route_stage_connects_the_cells_its_repair_added(
+    tmp_path, monkeypatch, stages
+):
+    backend, artefacts = _backend(tmp_path, monkeypatch, stages=stages, env=_RULES)
+    backend.root_cfg.get_pnr_platform_cfg.return_value = _platform(
+        _pdk(tmp_path), global_route_hold_repair=True
+    )
+
+    assert backend.run().results["result"] == "PASS"
+
+    (run_dir,) = _runs(artefacts)
+    script = (
+        (run_dir / "04_global_route.tcl") if stages else (artefacts / "pnr.tcl")
+    ).read_text()
+    tail = script[script.index(">>> Post-global-route hold repair") :]
+    connect = tail.index("\nrb::global_connect\n")
+    assert tail.rindex("\nglobal_route -end_incremental ", 0, connect) > 0
+    assert connect < tail.index("rb::ckpt::stage_end global_route")
 
 
 @pytest.mark.parametrize("reroute", ["eco", "full"])
