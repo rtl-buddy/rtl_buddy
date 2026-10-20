@@ -162,7 +162,7 @@ rb::global_connect
 puts ">>> Fill insertion"
 filler_placement $FILL_CELLS
 rb::global_connect
-{{ rcx_block }}{{ hook_before_reports_block }}
+{{ rcx_block }}{{ hook_before_reports_block }}{{ supply_ports_block }}
 puts ">>> Final reports"
 {{ final_parasitics }}
 report_design_area

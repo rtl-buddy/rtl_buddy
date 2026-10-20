@@ -84,6 +84,8 @@ _PINS_FILE = "pins.tcl"
 _PLACE_PINS_FILE = "place_pins.tcl"
 # The OpenROAD#11735 workaround for macros turned by 90 degrees; see `_global_placement_blocks`.
 _ROTATED_MACROS_FILE = "rotated_macros.tcl"
+# Makes the supply ports power and ground ports before the final reports; see `_supply_ports_block`.
+_SUPPLY_PORTS_FILE = "supply_ports.tcl"
 # Ties `blocks:` supply pins and joins top-layer ones to the parent's straps; see `_block_power_tcl`.
 _BLOCK_POWER_FILE = "block_power.tcl"
 # Sources the run's `hooks:` files; see `_hook_procs_block`.
@@ -284,6 +286,18 @@ def _final_reports(log_text: str) -> str:
 def _hook_role(point: str) -> str:
     """Return the manifest input role for a run hook point, such as `hook_after_cts`."""
     return "hook_" + point.replace("-", "_")
+
+
+def _supply_ports_block() -> str:
+    """Return the Tcl that re-asserts the top's supply bterms in the `finish` session, before the final reports.
+
+    Without it the session that ran `pdngen` writes VDD and VSS into `<top>.routed.v`, and as `inout` pins into a hardened block's timing model, and a session that read the database does not (#885).
+    """
+    return (
+        '\nputs ">>> Supply ports"\n'
+        + files(_TEMPLATE_PACKAGE).joinpath(_SUPPLY_PORTS_FILE).read_text()
+        + "rb::supply_ports::reassert\n"
+    )
 
 
 def _hook_procs_block(hooks: dict) -> str:
@@ -2131,6 +2145,7 @@ class OpenRoadPnr:
             ),
             "hook_before_reports_block": _run_hook_block("before-reports", hooks),
             "rcx_block": rcx_block,
+            "supply_ports_block": _supply_ports_block(),
             "final_parasitics": final_parasitics,
             "harden_block": (
                 pnr_abstract.harden_tcl(self.pnr_cfg.get_abstract())
