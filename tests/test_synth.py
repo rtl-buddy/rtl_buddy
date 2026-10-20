@@ -1777,6 +1777,28 @@ def test_parse_clock_period_ps_evaluates_a_variable_period(
     assert got == 20000
 
 
+def test_parse_clock_period_ps_reads_a_variable_period_beside_a_validating_proc(
+    tmp_path, tcl_backend, caplog
+):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text(
+        "proc window {kind clock patterns} {\n"
+        "  foreach p [get_ports $patterns] {\n"
+        "    if {[get_property $p direction] ne $kind} { error bad }\n"
+        "  }\n"
+        "  set_input_delay -clock $clock 0.5 [get_ports $patterns]\n"
+        "}\n"
+        "set clk_period 2.0\n"
+        "create_clock -name clk -period $clk_period [get_ports clk]\n"
+        "window input clk {a b}\n"
+    )
+    ys = _make_yosys(tmp_path)
+    with caplog.at_level(logging.WARNING):
+        got = ys._parse_clock_period_ps(str(sdc))
+    assert not caplog.records
+    assert got == 2000
+
+
 def test_parse_clock_period_ps_unresolvable_collection_is_unevaluated(
     tmp_path, tcl_backend, caplog
 ):
@@ -2069,6 +2091,26 @@ def test_synth_platform_config_lef_paths_empty_when_pdk_has_no_lef(tmp_path):
     )
     assert cfg.get_lef_paths() == []
     assert cfg.get_paths() == [str(tmp_path / "lib" / "cells.lib")]
+
+
+def test_synth_platform_config_reads_every_macro_lef_in_order(tmp_path):
+    from rtl_buddy.config.synth import SynthPlatformConfigFile, SynthPlatformConfig
+
+    root_cfg_path = str(tmp_path / "root_config.yaml")
+    pdk = _make_pdk(
+        "asap7",
+        root_cfg_path,
+        tech_lef="lef/tech.lef",
+        macro_lef=["lef/cells_R.lef", "lef/cells_L.lef"],
+    )
+    cfg = SynthPlatformConfig(
+        SynthPlatformConfigFile(name="asap7_ss", pdk="asap7"), lambda _name: pdk
+    )
+    assert cfg.get_lef_paths() == [
+        str(tmp_path / "lef" / "tech.lef"),
+        str(tmp_path / "lef" / "cells_R.lef"),
+        str(tmp_path / "lef" / "cells_L.lef"),
+    ]
 
 
 def test_synth_platform_config_lef_paths_from_pdk(tmp_path):

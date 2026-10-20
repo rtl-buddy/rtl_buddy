@@ -1875,6 +1875,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "back to the word tokenizer, which does not evaluate "
                 "$variables or [expr]"
             )
+        case "constraints.tcl_check_skipped":
+            return (
+                f'constraint file "{fields.get("source")}" line {fields.get("line")}: '
+                f"check skipped (error {fields.get('message')!r}); the reader "
+                "cannot answer design queries, so the check is assumed to pass"
+            )
         case "constraints.source_unreadable":
             return (
                 f'constraint file "{fields.get("source")}" line {fields.get("line")}: '

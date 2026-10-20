@@ -878,6 +878,72 @@ def test_lenient_queries_evaluate_a_proc_over_a_query(tcl_backend, caplog):
     assert not _events(caplog, "constraints.tcl_error")
 
 
+_VALIDATING_PROC = (
+    "proc window {kind clock max patterns} {\n"
+    "  foreach p [get_ports $patterns] {\n"
+    "    if {[get_property $p direction] ne $kind} {"
+    ' error "port [get_full_name $p] is not an $kind" }\n'
+    "  }\n"
+    "  set_input_delay -clock $clock -max $max [get_ports $patterns]\n"
+    "}\n"
+)
+
+
+def test_lenient_queries_evaluate_a_proc_that_validates_its_ports(
+    tcl_backend, tmp_path, caplog
+):
+    (tmp_path / "procs.tcl").write_text(_VALIDATING_PROC)
+    top = tmp_path / "top.sdc"
+    top.write_text(
+        "source procs.tcl\n"
+        "set clk_period 2.0\n"
+        "create_clock -name clk -period $clk_period [get_ports clk]\n"
+        "window input clk 0.5 {a b}\n"
+    )
+    with caplog.at_level(logging.DEBUG):
+        cmds, used = _read_file(
+            top,
+            interest=frozenset({"create_clock", "set_input_delay"}),
+            lenient_queries=True,
+        )
+    assert used == "tcl"
+    assert [(c.name, c.words) for c in cmds] == [
+        ("create_clock", ["-name", "clk", "-period", "2.0", "clk"]),
+        ("set_input_delay", ["-clock", "clk", "-max", "0.5", "{a b}"]),
+    ]
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    skipped = _events(caplog, "constraints.tcl_check_skipped")
+    assert [r.rtl_fields["message"] for r in skipped] == [
+        "port a is not an input",
+        "port b is not an input",
+    ]
+
+
+def test_name_accessors_answer_the_name_under_lenient_queries(tcl_backend):
+    text = (
+        "foreach p [get_ports {a b}] {\n"
+        "  set_false_path -from [get_full_name $p] -to [get_object_name $p]\n"
+        "}\n"
+    )
+    cmds, used = read_commands(
+        text, interest=frozenset({"set_false_path"}), lenient_queries=True
+    )
+    assert used == "tcl"
+    assert [c.words for c in cmds] == [
+        ["-from", "a", "-to", "a"],
+        ["-from", "b", "-to", "b"],
+    ]
+
+
+def test_a_check_still_stops_a_read_without_lenient_queries(tcl_backend, caplog):
+    text = 'error "unsupported"\ncreate_clock -period 1 c\n'
+    with caplog.at_level(logging.WARNING):
+        _cmds, used = read_commands(text, interest=CLOCK, source="e.sdc")
+    assert used == "tokenizer"
+    [rec] = _events(caplog, "constraints.tcl_error")
+    assert rec.rtl_fields["message"] == "unsupported"
+
+
 def test_lenient_queries_leave_a_file_the_interp_reads_unchanged(tcl_backend):
     text = "create_clock -period 1 [get_ports {a b}]\n"
     plain, _ = read_commands(text, interest=CLOCK)
