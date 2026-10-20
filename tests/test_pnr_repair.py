@@ -41,6 +41,7 @@ from rtl_buddy.config.pnr_repair import (
     PostRouteReroute,
     RepairDesign,
     Reroute,
+    WireRc,
     read_global_route_repair,
     read_post_route_repair,
 )
@@ -2710,3 +2711,464 @@ def test_the_abstract_digest_keeps_the_shorthand_and_names_other_repairs(tmp_pat
     assert both["global_route_repair"]["reroute"] == "full"
     assert both["post_route_repair"]["hold_margin"] == 0.0
     json.dumps(both)
+
+
+# -- repair-design wire-rc and after-timing ------------------------------------------
+
+_WIRE_RC = {"resistance": 0.06, "capacitance": 0.17}
+
+
+@pytest.mark.parametrize(
+    "wire_rc, expected",
+    [
+        (_WIRE_RC, WireRc(resistance=0.06, capacitance=0.17)),
+        ({"resistance": "0.06", "capacitance": 1}, WireRc(0.06, 1.0)),
+        ({"layer": "M5"}, WireRc(layer="M5")),
+        (None, None),
+    ],
+)
+def test_post_route_repair_design_takes_a_wire_rc(wire_rc, expected):
+    platform = _platform(
+        post_route_repair={
+            "repair-design": {"wire-rc": wire_rc, "after-timing": True},
+            "setup-margin": 0,
+        }
+    )
+    assert platform.get_post_route_repair().repair_design == RepairDesign(
+        wire_rc=expected, after_timing=True
+    )
+
+
+def test_wire_rc_and_after_timing_default_off_and_a_run_overrides_them():
+    platform = _platform(
+        post_route_repair={
+            "repair-design": {"slew-margin": 20, "wire-rc": {"layer": "M5"}},
+            "hold-margin": 0,
+        }
+    )
+    assert platform.get_post_route_repair().repair_design == RepairDesign(
+        slew_margin=20.0, wire_rc=WireRc(layer="M5")
+    )
+    run = read_post_route_repair(
+        "run", {"repair-design": {"wire-rc": None, "after-timing": None}}
+    )
+    resolved = platform.with_run_repairs(UNSET, run, "r").get_post_route_repair()
+    assert resolved.repair_design == RepairDesign(slew_margin=20.0)
+    plain = _platform(post_route_repair={"repair-design": {}, "hold-margin": 0})
+    design = plain.get_post_route_repair().repair_design
+    assert design.wire_rc is None and design.after_timing is False
+
+
+@pytest.mark.parametrize(
+    "design, words",
+    [
+        ({"wire-rc": 0.06}, r"wire-rc must be a mapping of resistance, capacitance"),
+        ({"wire-rc": {}}, "wire-rc must set resistance .kohm/um. and capacitance"),
+        ({"wire-rc": {"resistance": 0.06}}, "wire-rc must set resistance"),
+        (
+            {"wire-rc": {**_WIRE_RC, "layer": "M5"}},
+            "wire-rc must set resistance .* or layer alone",
+        ),
+        (
+            {"wire-rc": {"resistance": 0, "capacitance": 0.17}},
+            "wire-rc.resistance must be a positive number, got 0",
+        ),
+        (
+            {"wire-rc": {"resistance": 0.06, "capacitance": -1}},
+            "wire-rc.capacitance must be a number >= 0, got -1",
+        ),
+        (
+            {"wire-rc": {"resistance": 0.06, "capacitance": None}},
+            "wire-rc.capacitance must be a number",
+        ),
+        ({"wire-rc": {"layer": ""}}, "wire-rc.layer must be a routing layer name"),
+        ({"wire-rc": {"layer": 5}}, "wire-rc.layer must be a routing layer name"),
+        ({"after-timing": "yes"}, "after-timing must be true, false or null"),
+        ({"after-timing": 1}, "after-timing must be true, false or null"),
+    ],
+)
+def test_a_bad_wire_rc_or_after_timing_is_refused_naming_the_key(design, words):
+    with pytest.raises(FatalRtlBuddyError, match=words):
+        _platform(post_route_repair={"repair-design": design, "setup-margin": 0})
+
+
+def test_after_timing_without_timing_repair_is_refused_where_a_run_uses_it():
+    platform = _platform(post_route_repair={"repair-design": {"after-timing": True}})
+    with pytest.raises(
+        FatalRtlBuddyError,
+        match="pnr run 'r' on platform 'pl': post-route-repair.repair-design."
+        "after-timing runs repair_design again after timing repair, but the block "
+        "sets no setup-margin or hold-margin",
+    ):
+        platform.with_run_repairs(UNSET, UNSET, "r")
+    completed = platform.with_run_repairs(
+        UNSET, read_post_route_repair("run", {"hold-margin": 0.0}), "r"
+    )
+    assert completed.get_post_route_repair().repair_design.after_timing is True
+
+
+def test_global_route_repair_design_takes_no_wire_rc_or_after_timing(tmp_path):
+    from test_config_pnr_unknown_keys import _write_pnr
+
+    from rtl_buddy.config.pnr import PnrSuiteConfig
+
+    run = {
+        "name": "a",
+        "desc": "a",
+        "synth": "s",
+        "synth-path": "synth.yaml",
+        "platform": "p",
+        "floorplan": {"utilization": 0.5},
+        "global-route-repair": {
+            "repair-design": {"wire-rc": _WIRE_RC, "after-timing": True}
+        },
+    }
+    with pytest.raises(FatalRtlBuddyError) as exc:
+        PnrSuiteConfig(_write_pnr(tmp_path, run))
+    assert "global-route-repair.repair-design: unknown key 'wire-rc'" in str(exc.value)
+    assert "unknown key 'after-timing'" in str(exc.value)
+
+
+def test_repair_steps_without_wire_rc_or_after_timing_render_as_before():
+    steps = pnr_openroad._repair_steps_tcl(
+        "T", RepairDesign(slew_margin=20.0), 0.1, 0.0, 1000.0, "legalize\n"
+    )
+    assert steps == (
+        'puts ">>> T: repair_design -slew_margin 20"\n'
+        "repair_design -slew_margin 20\n"
+        'puts ">>> T: legalize after repair_design"\n'
+        "legalize\n"
+        'puts ">>> T: repair_timing -setup -setup_margin 0.1 (setup margin 0.1 ns '
+        'in Liberty time unit 1ns)"\n'
+        "repair_timing -setup -setup_margin 0.1\n"
+        'puts ">>> T: repair_timing -hold -setup_margin 0.1 (hold margin 0 ns, '
+        'setup margin 0.1 ns in Liberty time unit 1ns)"\n'
+        "repair_timing -hold -setup_margin 0.1\n"
+    )
+
+
+def test_repair_steps_set_the_wire_rc_around_each_repair_design_and_repeat_it():
+    steps = pnr_openroad._repair_steps_tcl(
+        "T",
+        RepairDesign(slew_margin=20.0, wire_rc=WireRc(layer="M5"), after_timing=True),
+        None,
+        0.0,
+        1.0,
+        None,
+    ).splitlines()
+    design = [
+        "rb::rc::save",
+        "rb::rc::apply {layer {M5}}",
+        "repair_design -slew_margin 20",
+        "rb::rc::restore",
+    ]
+    commands = [line for line in steps if not line.startswith("puts")]
+    assert commands == design + ["repair_timing -hold"] + design
+    logged = [line for line in steps if line.startswith("puts")]
+    assert logged == [
+        'puts ">>> T: repair_design -slew_margin 20 (wire-rc: signal wire RC '
+        '[rb::rc::describe])"',
+        'puts ">>> T: repair_timing -hold (hold margin 0 ns, signal wire RC '
+        '[rb::rc::describe] for the nets it changes)"',
+        'puts ">>> T: repair_design -slew_margin 20 after timing repair (wire-rc: '
+        'signal wire RC [rb::rc::describe])"',
+    ]
+
+
+#: OpenROAD's signal and clock wire RC per scene, horizontal and vertical apart, as `est` keeps them: two scenes whose session RC differs, a layer `M5` with RC set for scene `ss` only.
+_EST_STUBS = r"""
+namespace eval sta {}
+namespace eval est {}
+namespace eval ord {}
+proc sta::scenes {} { return {ss ff} }
+proc sta::get_name {scene} { return $scene }
+array set ::rc {
+    ss,signal,h {2e6 1e-10} ss,signal,v {4e6 3e-10}
+    ff,signal,h {1e6 1e-10} ff,signal,v {1e6 1e-10}
+    ss,clock,h {5e6 5e-10} ss,clock,v {5e6 5e-10}
+    ff,clock,h {5e6 5e-10} ff,clock,v {5e6 5e-10}
+}
+proc est::set_h_wire_signal_rc_cmd {tech scene res cap} {
+    set ::rc($scene,signal,h) [list $res $cap]
+}
+proc est::set_v_wire_signal_rc_cmd {tech scene res cap} {
+    set ::rc($scene,signal,v) [list $res $cap]
+}
+proc rc_mean {scene index} {
+    expr {([lindex $::rc($scene,signal,h) $index]
+           + [lindex $::rc($scene,signal,v) $index]) / 2.0}
+}
+proc est::wire_signal_resistance {scene} { rc_mean $scene 0 }
+proc est::wire_signal_capacitance {scene} { rc_mean $scene 1 }
+proc ord::get_db_tech {} { return tech }
+proc tech {method name} { expr {$name eq "M5" ? "layer_M5" : "NULL"} }
+proc est::layer_resistance {layer scene} { expr {$scene eq "ss" ? 9e6 : 0} }
+proc est::layer_capacitance {layer scene} { expr {$scene eq "ss" ? 9e-10 : 0} }
+proc est::dblayer_wire_rc {layer} { return {7e6 7e-10} }
+proc state {} {
+    set out {}
+    foreach scene {ss ff} {
+        foreach kind {signal clock} {
+            foreach d {h v} {
+                lassign $::rc($scene,$kind,$d) res cap
+                lappend out [format "%s %s %s %g %g" $scene $kind $d $res $cap]
+            }
+        }
+    }
+    return [join $out ", "]
+}
+set ::seen {}
+proc repair_design {args} { lappend ::seen "repair_design: [state]" }
+proc repair_timing {args} { lappend ::seen "repair_timing: [state]" }
+"""
+
+
+def _wire_rc_tcl(script: str) -> str:
+    return _tcl_eval(
+        _EST_STUBS
+        + files("rtl_buddy.pnr").joinpath("wire_rc.tcl").read_text()
+        + "set before [state]\n"
+        + script
+    )
+
+
+def _rc_state(**signal) -> str:
+    """The stub's RC, as `state` prints it, with each scene's signal RC replaced by `signal` (scene -> h and v)."""
+    rc = {
+        "ss signal h": "2e+06 1e-10",
+        "ss signal v": "4e+06 3e-10",
+        "ss clock h": "5e+06 5e-10",
+        "ss clock v": "5e+06 5e-10",
+        "ff signal h": "1e+06 1e-10",
+        "ff signal v": "1e+06 1e-10",
+        "ff clock h": "5e+06 5e-10",
+        "ff clock v": "5e+06 5e-10",
+    }
+    for scene, value in signal.items():
+        rc[f"{scene} signal h"] = rc[f"{scene} signal v"] = value
+    return ", ".join(f"{k} {v}" for k, v in rc.items())
+
+
+@pytest.mark.parametrize(
+    "wire_rc, signal",
+    [
+        (
+            WireRc(resistance=0.06, capacitance=0.17),
+            {"ss": "6e+07 1.7e-10", "ff": "6e+07 1.7e-10"},
+        ),
+        (WireRc(layer="M5"), {"ss": "9e+06 9e-10", "ff": "7e+06 7e-10"}),
+    ],
+    ids=["rc", "layer"],
+)
+def test_repair_design_runs_at_the_wire_rc_and_repair_timing_at_the_session_s(
+    wire_rc, signal
+):
+    """Each `repair_design` sees the `wire-rc` signal RC in every scene (a layer's RC for the scene, else its LEF RC); each `repair_timing`, and the session after, the RC the session had, horizontal and vertical apart. Clock RC never changes."""
+    steps = pnr_openroad._repair_steps_tcl(
+        "T", RepairDesign(wire_rc=wire_rc, after_timing=True), 0.0, 0.0, 1.0, None
+    )
+    result = _wire_rc_tcl(
+        steps + "set result [join [concat $::seen [list [state]]] \\n]\n"
+    )
+    *_printed, design, setup, hold, again, after = result.split("\n")
+    assert design == again == f"repair_design: {_rc_state(**signal)}"
+    assert setup == hold == f"repair_timing: {_rc_state()}"
+    assert after == _rc_state()
+
+
+def test_the_log_names_the_signal_wire_rc_of_each_repair_step():
+    steps = pnr_openroad._repair_steps_tcl(
+        "T",
+        RepairDesign(wire_rc=WireRc(resistance=0.06, capacitance=0.17)),
+        0.0,
+        None,
+        1.0,
+        None,
+    )
+    printed = _wire_rc_tcl(steps + "set result {}\n").strip().splitlines()
+    assert printed == [
+        ">>> T: repair_design (wire-rc: signal wire RC 0.06 kohm/um, 0.17 fF/um)",
+        ">>> T: repair_timing -setup (setup margin 0 ns, signal wire RC "
+        "ss 0.003 kohm/um, 0.2 fF/um; ff 0.001 kohm/um, 0.1 fF/um for the nets it "
+        "changes)",
+    ]
+
+
+def test_an_unknown_wire_rc_layer_fails_the_session():
+    result = _wire_rc_tcl(
+        "set result [list [catch {rb::rc::apply {layer M9}} message] $message]\n"
+    )
+    assert result == ("1 {post-route-repair.repair-design.wire-rc: no layer M9}")
+
+
+def test_a_wire_rc_the_session_shadows_fails_the_session():
+    result = _wire_rc_tcl(
+        "proc est::set_h_wire_signal_rc_cmd {args} {}\n"
+        "proc est::set_v_wire_signal_rc_cmd {args} {}\n"
+        "set result [catch {rb::rc::apply {resistance 0.06 capacitance 0.17}} m]\n"
+        "append result { } [string match {*did not take effect*} $m]\n"
+    )
+    assert result == "1 1"
+
+
+@pytest.mark.parametrize("where", ["platform", "run"])
+@pytest.mark.parametrize(
+    "missing", ["sta::scenes", "est::set_h_wire_signal_rc_cmd"], ids=["scenes", "est"]
+)
+def test_wire_rc_fails_at_setup_without_scenes_or_est_rc_commands(
+    tmp_path, monkeypatch, missing, where
+):
+    """An OpenROAD whose OpenSTA has corners rather than scenes, or no `est::` wire RC commands (before 26Q2), is refused at setup, whether the platform or the run sets `wire-rc`."""
+    design = {"repair-design": {"wire-rc": {"layer": "M5"}}}
+    backend, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**design, "hold-margin": 0.0}
+        if where == "platform"
+        else {"hold-margin": 0.0},
+    )
+    if where == "run":
+        backend.pnr_cfg = replace(
+            backend.pnr_cfg, post_route_repair=read_post_route_repair("run", design)
+        )
+    monkeypatch.setattr(backend, "_has_tcl_command", lambda cmd: cmd != missing)
+    launched = []
+    monkeypatch.setattr(
+        pnr_openroad.subprocess, "run", lambda *a, **k: launched.append(a)
+    )
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "setup"
+    assert "sta::scenes and est:: wire RC commands" in res.results["desc"]
+    assert launched == []
+    assert "upgrade OpenROAD or drop wire-rc" in _human_message(
+        "pnr.wire_rc_unsupported", {"pnr": "demo", "exe": "openroad"}
+    )
+
+
+_PR_RC = {
+    "repair-design": {"slew-margin": 20, "wire-rc": _WIRE_RC, "after-timing": True},
+    "setup-margin": 0.1,
+    "hold-margin": 0.0,
+}
+
+
+@pytest.mark.parametrize("reroute", ["eco", "full"])
+def test_a_round_repairs_design_at_the_wire_rc_and_again_before_legalizing(
+    tmp_path, monkeypatch, reroute
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_PR_RC, "reroute": reroute},
+        env={"RB_STUB_SETUP": "-0.2"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    r1 = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
+    assert files("rtl_buddy.pnr").joinpath("wire_rc.tcl").read_text() in r1
+    apply = "rb::rc::apply {resistance 0.06 capacitance 0.17}\n"
+    order = [
+        "\nrb::rc::save\n" + apply,
+        "repair_design -slew_margin 20\nrb::rc::restore\n",
+        "\nrepair_timing -setup -setup_margin 0.1\n",
+        "\nrepair_timing -hold -setup_margin 0.1\n",
+        "rb::rc::save\n" + apply,
+        "after timing repair (wire-rc",
+        "repair_design -slew_margin 20\nrb::rc::restore\n",
+    ]
+    at = 0
+    for text in order:
+        at = r1.index(text, at) + len(text)
+    # Legalized after the second repair_design, then routed.
+    tail = r1[at:]
+    assert tail.index("\ndetailed_placement") < tail.index("\ndetailed_route \\")
+    log = (artefacts / "pnr.log").read_text()
+    assert "after timing repair (wire-rc: signal wire RC" in log
+
+
+def test_a_round_without_wire_rc_or_after_timing_sets_no_wire_rc(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={"repair-design": {"slew-margin": 20}, "setup-margin": 0.1},
+        env={"RB_STUB_SETUP": "-0.2"},
+    )
+
+    assert backend.run().results["result"] == "PASS"
+    (run_dir,) = _runs(artefacts)
+    r1 = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
+    assert "rb::rc" not in r1
+    assert r1.count("\nrepair_design") == 1
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"wire-rc": {"layer": "M5"}},
+        {"wire-rc": None},
+        {"after-timing": False},
+    ],
+)
+def test_a_resume_after_post_route_repair_refuses_a_changed_wire_rc_or_after_timing(
+    tmp_path, monkeypatch, changed
+):
+    first, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR_RC,
+        stages=True,
+        env={"RB_STUB_SETUP": "-0.2 0.01"},
+    )
+    assert first.run().results["result"] == "PASS"
+    (first_dir,) = _runs(artefacts)
+    design = {**_PR_RC["repair-design"], **changed}
+
+    def _again(post_route):
+        backend, _artefacts = _repair_backend(
+            tmp_path,
+            monkeypatch,
+            post_route=post_route,
+            stages=True,
+            resume=str(first_dir),
+            resume_from="finish",
+            env={"RB_STUB_SETUP": "-0.2 0.01"},
+        )
+        return backend.run().results
+
+    refused = _again({**_PR_RC, "repair-design": design})
+    assert refused["fail_stage"] == "resume", refused
+    assert "06_post_route_repair.tcl script generated now differs" in refused["desc"]
+    assert _again(_PR_RC)["result"] == "PASS"
+
+
+def test_the_abstract_digest_names_wire_rc_and_after_timing_only_when_set(tmp_path):
+    from rtl_buddy.tools import pnr_abstract
+
+    pnr_cfg = _pnr_cfg(tmp_path, ())
+
+    def _digest(design):
+        platform = _real_platform(
+            tmp_path,
+            post_route_repair={"repair-design": design, "setup-margin": 0.1},
+        )
+        return pnr_abstract.abstract_config(pnr_cfg, platform)["post_route_repair"]
+
+    assert _digest({"slew-margin": 20})["repair_design"] == {
+        "slew_margin": 20.0,
+        "cap_margin": None,
+        "max_wire_length": None,
+    }
+    assert _digest({"wire-rc": _WIRE_RC})["repair_design"]["wire_rc"] == {
+        "resistance": 0.06,
+        "capacitance": 0.17,
+    }
+    assert _digest({"wire-rc": {"layer": "M5"}})["repair_design"]["wire_rc"] == {
+        "layer": "M5"
+    }
+    assert _digest({"after-timing": True})["repair_design"]["after_timing"] is True
+    assert "after_timing" not in _digest({"after-timing": False})["repair_design"]

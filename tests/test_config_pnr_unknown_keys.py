@@ -49,7 +49,11 @@ GLOBAL_ROUTE_REPAIR_ALL = {
     "reroute": "full",
 }
 POST_ROUTE_REPAIR_ALL = {
-    "repair-design": dict(REPAIR_DESIGN_ALL),
+    "repair-design": {
+        **REPAIR_DESIGN_ALL,
+        "wire-rc": {"resistance": 0.06, "capacitance": 0.17},
+        "after-timing": True,
+    },
     "setup-margin": 0.05,
     "hold-margin": None,
     "rounds": 3,
@@ -186,6 +190,7 @@ RUN_DIE = {
     "stages": True,
     "global-route-hold-repair": True,
     "mode": "probe",
+    "post-route-repair": {"repair-design": {"wire-rc": {"layer": "m5"}}},
 }
 
 PDK_ALL = {
@@ -235,6 +240,7 @@ PLATFORM_CORNERS = {
     "pdk": "pdk1",
     "corners": ["typ", "my-fast_1"],
     "global-route-hold-repair": True,
+    "post-route-repair": {"repair-design": {"wire-rc": {"layer": "m5"}}},
 }
 
 
@@ -379,6 +385,16 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
         (
             "pnr run 'a': post-route-repair.repair-design",
             ("post-route-repair", "repair-design"),
+            "slew-margin, cap-margin, max-wire-length, wire-rc, after-timing",
+        ),
+        (
+            "pnr run 'a': post-route-repair.repair-design.wire-rc",
+            ("post-route-repair", "repair-design", "wire-rc"),
+            "resistance, capacitance, layer",
+        ),
+        (
+            "pnr run 'a': global-route-repair.repair-design",
+            ("global-route-repair", "repair-design"),
             "slew-margin, cap-margin, max-wire-length",
         ),
         ("pnr run 'a': resources", ("resources",), "cpus, mem, time, stages"),
