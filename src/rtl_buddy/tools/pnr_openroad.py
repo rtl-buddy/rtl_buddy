@@ -3817,10 +3817,11 @@ class OpenRoadPnr:
                 desc=lib_problem,
                 fail_stage="setup",
             )
-        self.pnr_cfg = replace(
-            self.pnr_cfg,
-            lib_paths=fit_lib_paths(self.pnr_cfg.get_lib_path_entries(), corners),
-        )
+        entries = self.pnr_cfg.get_lib_path_entries()
+        if any(isinstance(entry, dict) for entry in entries):
+            self.pnr_cfg = replace(
+                self.pnr_cfg, lib_paths=fit_lib_paths(entries, corners)
+            )
         problem = self.pnr_cfg.constraints_problem(corners)
         if problem is not None:
             log_event(
