@@ -469,6 +469,11 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 if isinstance(platform.get_routing_layer_adjustment(), float)
                 else {}
             ),
+            **(
+                {"global_route": digest}
+                if (digest := platform.get_global_route().digest())
+                else {}
+            ),
         },
         "cts_buffers": list(platform.get_cts_buffers()),
         "dont_use_cells": list(platform.get_dont_use_cells()),

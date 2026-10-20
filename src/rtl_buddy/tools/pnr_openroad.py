@@ -33,6 +33,7 @@ from ..config.pnr import (
     PnrFloorplan,
     with_planner_files,
 )
+from ..config.pnr_global_route import GlobalRoute
 from ..config.pnr_repair import (
     GlobalRouteRepair,
     PnrMode,
@@ -141,7 +142,7 @@ _FIXED_OUTPUT_NAMES = tuple(
 # An input, not an output: cleared up front only (see `_clear_stale_outputs`).
 _SCRIPT_NAME = "pnr.tcl"
 
-# Written by global routing only when it overflows. It explains a failed route, so like the script it is cleared up front only.
+# Written by global routing only when it overflows, with a `congestion-<i>.rpt` per reported iteration (`congestion-report-iter-step`). They explain a failed route, so like the script they are cleared up front only.
 _CONGESTION_REPORT_NAME = "congestion.rpt"
 
 # Where `harden: true` elaborates the top to record its parameter values; see `_record_block_parameters`.
@@ -421,15 +422,49 @@ def _macro_pin_limits_tcl(platform, dpl_options: str = "") -> str:
     )
 
 
-#: The flow's global route; a `reroute: full` global-route repair runs it again.
+#: The flow's global route without `global-route:` options; a `reroute: full` global-route repair runs it again.
 _GLOBAL_ROUTE_CMD = (
     "global_route -congestion_iterations 20 "
     "-congestion_report_file $CONGESTION_RPT -verbose\n"
 )
-#: Closes an incremental global route around a repair; it logs the usage table again.
+#: Closes an incremental global route around a repair without `global-route:` options; it logs the usage table again.
 _END_INCREMENTAL_CMD = (
     "global_route -end_incremental -congestion_report_file $CONGESTION_RPT -verbose\n"
 )
+
+
+def _global_route_cmd(gr: GlobalRoute) -> str:
+    """A full global route with the `global-route:` options."""
+    return (
+        f"global_route{gr.full_options()} "
+        "-congestion_report_file $CONGESTION_RPT -verbose\n"
+    )
+
+
+def _start_incremental_cmd(gr: GlobalRoute) -> str:
+    return f"global_route -start_incremental{gr.every_call_options()}\n"
+
+
+def _end_incremental_cmd(gr: GlobalRoute) -> str:
+    return (
+        f"global_route -end_incremental{gr.every_call_options()} "
+        "-congestion_report_file $CONGESTION_RPT -verbose\n"
+    )
+
+
+def _grid_origin_guides_tcl(gr: GlobalRoute) -> str:
+    """Rebuild the GCell grid from the guides before detailed route, `""` without a grid origin.
+
+    Every `global_route`, full or incremental, writes the GCell grid at the die origin while `-grid_origin` offsets only the guides; detailed route then fails (DRT-0155). `read_guides` rebuilds the grid from the guides.
+    """
+    if gr.grid_origin is None:
+        return ""
+    return (
+        'puts ">>> Global route: rebuild the GCell grid at the grid origin"\n'
+        "write_guides $OUT_DIR/grid_origin.guide\n"
+        "read_guides $OUT_DIR/grid_origin.guide\n"
+        "file delete $OUT_DIR/grid_origin.guide\n"
+    )
 
 
 def _fmt_number(value: float) -> str:
@@ -437,12 +472,12 @@ def _fmt_number(value: float) -> str:
     return f"{value:.10g}"
 
 
-def _legalize_tcl(dpl_options: str) -> str:
+def _legalize_tcl(dpl_options: str, gr: GlobalRoute = GlobalRoute()) -> str:
     """Legalize the cells a repair added or moved inside an incremental global route, which reroutes their nets, as ORFS does after each repair."""
     return (
-        "global_route -start_incremental\n"
-        f"detailed_placement{dpl_options}\n"
-        + _END_INCREMENTAL_CMD
+        _start_incremental_cmd(gr)
+        + f"detailed_placement{dpl_options}\n"
+        + _end_incremental_cmd(gr)
         + "check_placement -verbose\n"
     )
 
@@ -544,6 +579,7 @@ def _global_route_repair_tcl(
     mode: PnrMode,
     ps_per_unit: float | None,
     dpl_options: str = "",
+    gr: GlobalRoute = GlobalRoute(),
     timing: bool = False,
 ) -> str:
     """Return the repair on global-route parasitics, as ORFS runs it, or `""` when the platform and run leave it off. A probe skips it. With `timing` (checkpoints armed) the repair starts by timing the router's result, the stage's `before_repair` event.
@@ -551,6 +587,8 @@ def _global_route_repair_tcl(
     The global-route estimate includes the wires that post-CTS repair (on placement parasitics) could not see. The resizer reroutes the nets it changes; the cells it adds are legalized, then `reroute: incremental` reroutes their nets incrementally and `full` runs the flow's global route again. The closing route is `-verbose`, so the log repeats the congestion table after the repair. `dpl_options` follows its `detailed_placement`, as it does the flow's others.
 
     A hold-only repair with no margin is what `global-route-hold-repair: true` stands for, and renders as that key always has, so its scripts and checkpoints compare equal.
+
+    `gr` holds the `global-route:` options: a full reroute takes them all, the incremental calls the grid origin and `allow-congestion`.
     """
     if repair is None:
         return ""
@@ -562,13 +600,13 @@ def _global_route_repair_tcl(
             before + 'puts ">>> Post-global-route hold repair"\n'
             "estimate_parasitics -global_routing\n"
             "repair_timing -hold\n"
-            "global_route -start_incremental\n"
-            f"detailed_placement{dpl_options}\n"
-            + _END_INCREMENTAL_CMD
+            + _start_incremental_cmd(gr)
+            + f"detailed_placement{dpl_options}\n"
+            + _end_incremental_cmd(gr)
             + "check_placement -verbose\n"
         )
     title = "Global-route repair"
-    legalize = _legalize_tcl(dpl_options)
+    legalize = _legalize_tcl(dpl_options, gr)
     steps = _repair_steps_tcl(
         title,
         repair.repair_design,
@@ -588,17 +626,22 @@ def _global_route_repair_tcl(
             + f"detailed_placement{dpl_options}\n"
             + "check_placement -verbose\n"
             + f'puts ">>> {title}: global route"\n'
-            + _GLOBAL_ROUTE_CMD
+            + _global_route_cmd(gr)
         )
     return head + steps + legalize
 
 
 def _layer_adjustment_tcl(platform) -> str:
-    """Return the `set_global_routing_layer_adjustment` line over the signal layers, as ORFS does, or `""` when the platform sets no adjustment."""
+    """Return the `set_global_routing_layer_adjustment` line over the signal layers, as ORFS does, then one per `global-route.layer-adjustment` entry, or `""` when neither is set."""
     adjustment = platform.get_routing_layer_adjustment()
-    if adjustment is None:
-        return ""
-    return f"set_global_routing_layer_adjustment $SIGNAL_LAYERS {adjustment:g}\n"
+    lines = (
+        f"set_global_routing_layer_adjustment $SIGNAL_LAYERS {adjustment:g}\n"
+        if adjustment is not None
+        else ""
+    )
+    for layer, value in platform.get_global_route().layer_adjustment or ():
+        lines += f"set_global_routing_layer_adjustment {layer} {value:g}\n"
+    return lines
 
 
 def _reference_hpwl_option(platform) -> str:
@@ -688,11 +731,16 @@ def run_output_paths(artefact_dir: str, design: str) -> list[str]:
 
 
 def clear_run_outputs(
-    artefact_dir: str, *, owner: str, design: str | None, include_script: bool = False
+    artefact_dir: str,
+    *,
+    owner: str,
+    design: str | None,
+    include_script: bool = False,
+    keep_failed_global_route: bool = False,
 ) -> list[str]:
     """Remove a P&R run's outputs from `artefact_dir` and return the paths removed (see `OpenRoadPnr._clear_stale_outputs`).
 
-    `owner` names the run in errors. `design` is the run's top, whose outputs are removed even when their names match a protected pattern; None removes by suffix only. A stage job whose run was given up while its stage ran removes the same set (`pnr_dispatch.run_stage_job`).
+    `owner` names the run in errors. `design` is the run's top, whose outputs are removed even when their names match a protected pattern; None removes by suffix only. `keep_failed_global_route` leaves a failed global route's database that could not be filed. A stage job whose run was given up while its stage ran removes the same set (`pnr_dispatch.run_stage_job`).
     """
     stale = clear_stale_artefacts(
         [
@@ -706,7 +754,12 @@ def clear_run_outputs(
                         _SCRIPT_NAME,
                         _DEF2STREAM_INPUTS_NAME,
                         _BLOCK_NETLIST_NAME,
-                        _CONGESTION_REPORT_NAME,
+                        *(
+                            name
+                            for _kind, name in pnr_checkpoints.congestion_reports(
+                                artefact_dir
+                            )
+                        ),
                     )
                     if include_script
                     else ()
@@ -727,6 +780,11 @@ def clear_run_outputs(
     )
     # The abstract is cut from the result being replaced, whether or not this run hardens.
     stale += pnr_abstract.clear_abstract(artefact_dir)
+    # Filed as a checkpoint when the run fails (`_keep_failed_global_route`); anything left is stale.
+    failed_gr = os.path.join(artefact_dir, pnr_checkpoints.FAILED_GLOBAL_ROUTE_DIRNAME)
+    if os.path.isdir(failed_gr) and not keep_failed_global_route:
+        shutil.rmtree(failed_gr, ignore_errors=True)
+        stale.append(failed_gr)
     # The parameter probe's scratch files belong to the abstract.
     probe_dir = os.path.join(artefact_dir, _PARAM_PROBE_DIR)
     if include_script and os.path.isdir(probe_dir):
@@ -2876,11 +2934,18 @@ class OpenRoadPnr:
             ),
             "post_cts_repair": _post_cts_repair_tcl(platform, self._mode),
             "layer_adjustment": _layer_adjustment_tcl(platform),
+            "global_route_cmd": _global_route_cmd(platform.get_global_route()),
+            "grid_origin_guides": _grid_origin_guides_tcl(platform.get_global_route()),
+            # `_mode_checkpoint_sdc_tcl` defines it with an SDC mode per corner.
+            "failed_global_route_write_sdc": (
+                "rb::ckpt::write_sdc" if self._mode_corners else "write_sdc"
+            ),
             "global_route_repair": _global_route_repair_tcl(
                 platform.get_global_route_repair(),
                 self._mode,
                 self._ps_per_unit,
                 gp_blocks.dpl_options,
+                platform.get_global_route(),
                 timing=self._ckpt_run_dir is not None,
             ),
             "gp_blockages_create": gp_blocks.create,
@@ -3138,6 +3203,7 @@ class OpenRoadPnr:
         design = repair.repair_design
         setup, hold = repair.margins(round_)
         title = self._round_title(round_)
+        gr = self._platform.get_global_route()
         if round_ == self._electrical_round():
             # Only `repair_design`, on the best round's database (`run_post_route_repair`).
             design = repair.electrical_design()
@@ -3157,12 +3223,12 @@ class OpenRoadPnr:
         if design is not None and design.wire_rc:
             parts.append(files(_TEMPLATE_PACKAGE).joinpath(_WIRE_RC_FILE).read_text())
         if repair.reroute is PostRouteReroute.FULL:
-            legalize = _legalize_tcl("{{ dpl_options }}")
+            legalize = _legalize_tcl("{{ dpl_options }}", gr)
             parts += [
                 "remove_fillers\n",
                 "[ord::get_db_block] destroyNetWires\n",
                 f'puts ">>> {title}: global route"\n',
-                _GLOBAL_ROUTE_CMD,
+                _global_route_cmd(gr),
                 "estimate_parasitics -global_routing\n",
                 spef,
                 _repair_steps_tcl(
@@ -3179,13 +3245,14 @@ class OpenRoadPnr:
                 "estimate_parasitics -placement\n",
                 spef,
                 "remove_fillers\n",
-                "global_route -start_incremental\n",
+                _start_incremental_cmd(gr),
                 f"rb::eco::repair {round_} {{\n{steps}}}\n",
                 "detailed_placement{{ dpl_options }}\n",
                 "check_placement -verbose\n",
-                _END_INCREMENTAL_CMD,
+                _end_incremental_cmd(gr),
             ]
         parts += [
+            _grid_origin_guides_tcl(gr),
             "rb::global_connect\n",
             "{{ hook_before_detailed_route_block }}",
             "# Again for cells a before-detailed-route hook added.\n",
@@ -4375,12 +4442,14 @@ class OpenRoadPnr:
             fields=fields,
         )
 
-    def _clear_stale_outputs(self, *, include_script: bool = False) -> None:
+    def _clear_stale_outputs(
+        self, *, include_script: bool = False, keep_failed_global_route: bool = False
+    ) -> None:
         """Remove the previous run's outputs; the first thing `run` does.
 
         Every exit from `run` must leave them absent: the DRC count, `rb power` and the GDS/PNG checks all trust presence. The one exception is a `--resume` run that ends before it is accepted, which leaves the previous run's outputs and `latest` as they were. Design-named outputs are matched by suffix so this needs no synth back-reference and strands nothing from a previous design. The stream-out report and any `rb pnr-export` record go too. `pnr.log` is truncated when OpenROAD launches.
 
-        `include_script` also clears `pnr.tcl`, the stream-out input manifest and `congestion.rpt` so a rerun that dies before `_write_script` leaves no stale script. Only `run` sets it; `_fail_after_openroad` keeps them because they are what the tools read and why a route failed.
+        `include_script` also clears `pnr.tcl`, the stream-out input manifest and the congestion reports so a rerun that dies before `_write_script` leaves no stale script. Only `run` sets it; `_fail_after_openroad` keeps them because they are what the tools read and why a route failed. `keep_failed_global_route` leaves a failed global route's database that could not be filed.
         """
         try:
             design = self.pnr_cfg.resolve_synth_cfg().get_top()
@@ -4391,6 +4460,7 @@ class OpenRoadPnr:
             owner=self.pnr_cfg.get_name(),
             design=design,
             include_script=include_script,
+            keep_failed_global_route=keep_failed_global_route,
         )
         if stale:
             log_event(
@@ -4463,24 +4533,121 @@ class OpenRoadPnr:
             f"({', '.join(causes)}); see {_NO_WIRE_RC_DOCS}"
         )
 
+    def _allow_congestion_qualifier(self, platform, log_text: str) -> str:
+        """Warn that `global-route.allow-congestion` let global route keep its overflow, and return the result qualifier, or `""` when it is off.
+
+        A diagnosis run: it is never reported as a clean pass, whatever the overflow.
+        """
+        if platform.get_global_route().allow_congestion is not True:
+            return ""
+        overflow = self._parse_gr_overflow(log_text)
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.allow_congestion",
+            pnr=self.pnr_cfg.get_name(),
+            global_route_overflow=overflow,
+            log=self._log_path(),
+        )
+        return (
+            "global-route.allow-congestion (diagnosis only): global route overflow "
+            f"{overflow if overflow is not None else 'unknown'}"
+        )
+
+    def _allow_congestion_fields(self, platform, log_text: str) -> dict:
+        """`allow_congestion` and the final `global_route_overflow` of a run with `global-route.allow-congestion`, else nothing."""
+        if platform.get_global_route().allow_congestion is not True:
+            return {}
+        return {
+            "allow_congestion": True,
+            "global_route_overflow": self._parse_gr_overflow(log_text),
+        }
+
     def _fail_after_openroad(
         self, desc: str, fail_stage: str | None = None
     ) -> PnrFailResults:
         """Return a FAIL for a run that already invoked OpenROAD, after removing its outputs.
 
         OpenROAD may leave a partial `<top>.routed.odb`, which `rb power` would accept by existence. Every post-OpenROAD failure return must go through here. `fail_stage` marks a failure that is not a verdict on the design, so `xfail:` does not excuse it.
+
+        A database a failed global route left is filed as a checkpoint first; `failed_global_route` names it. One that could not be filed stays where the flow wrote it.
         """
-        self._clear_stale_outputs()
+        kept, unfiled = self._keep_failed_global_route()
+        self._clear_stale_outputs(keep_failed_global_route=unfiled)
         return PnrFailResults(
             name=self.name + "/results",
             desc=desc,
             fail_stage=fail_stage,
             fields={
+                **({"failed_global_route": kept} if kept else {}),
                 **self._blocks_fields(),
                 **self._post_route_fields(),
                 **self._threads_fields(),
                 **(self._close_checkpoints("FAIL", desc, announce=True) or {}),
             },
+        )
+
+    def _keep_failed_global_route(self) -> tuple[str, bool]:
+        """File the database a failed global route wrote as this run's `global_route` checkpoint, marked failed. Return its `<run-id>/global_route`, or `""` when nothing was filed, and whether a database that could not be filed is left in place.
+
+        Only a run OpenROAD failed in its global route files one: the flow drops the database when a later route passes or the stage ends. An incomplete database (no `done` marker) or one that cannot be filed stays where the flow wrote it, and a warning names it. A run without checkpoints gets a checkpoint directory for it, and `latest` points there.
+        """
+        source = os.path.join(
+            self.artefact_dir, pnr_checkpoints.FAILED_GLOBAL_ROUTE_DIRNAME
+        )
+        if not os.path.isdir(source) or self._openroad_returncode == 0:
+            return "", False
+        if not pnr_checkpoints.failed_global_route_complete(self.artefact_dir):
+            self._warn_failed_global_route_not_kept(
+                source, "the flow did not finish writing it"
+            )
+            return "", True
+        try:
+            design = self.pnr_cfg.resolve_synth_cfg().get_top()
+        except Exception:
+            design = None
+        run_dir = self._ckpt_run_dir
+        allocated = run_dir is None
+        try:
+            if allocated:
+                run_dir = pnr_checkpoints.allocate_run_dir(self.artefact_dir)
+            files = pnr_checkpoints.keep_failed_global_route(
+                self.artefact_dir, run_dir, design=design
+            )
+        except (OSError, RuntimeError) as e:
+            if allocated and run_dir is not None:
+                shutil.rmtree(run_dir, ignore_errors=True)
+            self._warn_failed_global_route_not_kept(source, str(e))
+            return "", True
+        if not files:
+            if allocated:
+                shutil.rmtree(run_dir, ignore_errors=True)
+            return "", False
+        if allocated:
+            pnr_checkpoints.point_latest(
+                self.artefact_dir, run_dir, run=self.pnr_cfg.get_name()
+            )
+            self._ckpt_run_dir = run_dir
+        spec = f"{os.path.basename(run_dir)}/global_route"
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.failed_global_route_kept",
+            pnr=self.pnr_cfg.get_name(),
+            checkpoint=os.path.join(run_dir, _checkpoint_name("global_route")),
+            spec=spec,
+            files=sorted(files),
+        )
+        return spec, False
+
+    def _warn_failed_global_route_not_kept(self, source: str, error: str) -> None:
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.failed_global_route_not_kept",
+            pnr=self.pnr_cfg.get_name(),
+            dir=source,
+            error=error,
         )
 
     def _check_routed_placement(self, log_text: str) -> str | None:
@@ -5460,6 +5627,14 @@ class OpenRoadPnr:
         )
         probe = "probe " if self._mode is PnrMode.PROBE else ""
         desc = f"P&R {probe}stopped after {stage} (not routed)"
+        if stage in pnr_checkpoints.GLOBAL_ROUTED and (
+            congested := self._allow_congestion_qualifier(
+                platform,
+                log_text[: log_text.rfind(f"{_STAGE_REPORT_MARKER}{stage}")],
+            )
+        ):
+            desc += f"; {congested}"
+            metrics["allow_congestion"] = True
         if note := self._post_route_note():
             desc += f"; {note}"
         return PnrPassResults(
@@ -5555,6 +5730,24 @@ class OpenRoadPnr:
             )
         if not self.pnr_cfg.get_overrides().is_empty():
             platform = platform.with_run_overrides(self.pnr_cfg.get_overrides())
+        if (
+            platform.get_global_route().allow_congestion is True
+            and self.pnr_cfg.get_harden()
+        ):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.allow_congestion_harden",
+                pnr=self.pnr_cfg.get_name(),
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    "global-route.allow-congestion is for diagnosis and publishes "
+                    "no abstract, so the run cannot be harden: true"
+                ),
+                fail_stage="setup",
+            )
 
         # Check before OpenROAD starts; a missing snippet would otherwise fail minutes in.
         pdn_config = self._pdn_config(platform.get_pdk())
@@ -6135,6 +6328,7 @@ class OpenRoadPnr:
 
         # Logged for every run that got this far; only a pass carries it in the result description.
         no_wire_rc = self._no_wire_rc_qualifier(platform, log_text)
+        congested = self._allow_congestion_qualifier(platform, log_text)
 
         final = _final_reports(log_text)
         area = self._parse_area_um2(final)
@@ -6160,6 +6354,7 @@ class OpenRoadPnr:
             "tns_hold_ps": tns_hold * ps_per_unit if tns_hold is not None else None,
             "drc_count": drcs,
             **self._parse_electrical(final),
+            **self._allow_congestion_fields(platform, log_text),
             **self._macro_pin_limits_fields(log_text),
         }
         corner_fields = self._corner_fields(platform, final)
@@ -6278,6 +6473,7 @@ class OpenRoadPnr:
                 export.desc if export else "",
                 pnr_abstract.stale_qualifier(self._blocks),
                 no_wire_rc,
+                congested,
                 f"electrical {electrical}" if electrical else "",
                 self._post_route_note(),
             )

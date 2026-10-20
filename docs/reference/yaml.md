@@ -202,6 +202,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `global-route-repair` | platform, run | Repair after global route. See below |
 | `post-route-repair` | platform, run | Repair rounds after detailed route. See below |
 | `routing-layer-adjustment` | platform, run | 0 to 1: signal-layer capacity withheld from the global router. Unset keeps the router's default |
+| `global-route` | platform, run | `global_route` options. See below |
 | `max-fanout` | platform | Positive integer; `set_max_fanout` after each `read_sdc` in `rb pnr` and `rb power` |
 | `keep-sizing-vt` | platform, run | `true` runs `set_opt_config -keep_sizing_vt true` after `set_dont_use` in every OpenROAD session of the run: resizing keeps each cell's threshold-voltage flavour. Default `false` |
 
@@ -219,6 +220,20 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `electrical-repair` | `post-route-repair` only. `{slew-margin, cap-margin}` (percent): one more round runs `repair_design` alone when the best round has max-slew or max-capacitance violators. Unset runs none |
 
 The block a run ends up with must set at least one of `repair-design`, `setup-margin` and `hold-margin`. A run's block overrides the platform's field by field; `null` turns a field or the block off. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing).
+
+`global-route` takes the keys below; a run's block overrides the platform's field by field, and an unset key keeps OpenROAD's default. A full global route is the flow's first, a `reroute: full` global-route repair's and a `reroute: full` post-route round's. See [Tune global routing](../concepts/pnr.md#tune-global-routing).
+
+| Key | Behavior |
+|---|---|
+| `congestion-iterations` | Positive integer: `-congestion_iterations` of every full global route. Default `20` |
+| `congestion-report-iter-step` | Non-negative integer: `-congestion_report_iter_step` of every full global route. An overflowing route writes `congestion-<i>.rpt` beside `congestion.rpt` every that many iterations |
+| `grid-origin` | `[x, y]` in DBU: `-grid_origin` of every `global_route` call, incremental ones included. Before each detailed route the flow writes and reads back the guides, which rebuilds the GCell grid at the origin. `[0, 0]` is set too: it adds the option and the round trip |
+| `layer-adjustment` | Map of routing layer to 0–1: `set_global_routing_layer_adjustment <layer>` after the all-layers `routing-layer-adjustment` |
+| `critical-nets-percentage` | 0 to 100: `-critical_nets_percentage` of every full global route |
+| `resistance-aware` | `true` adds `-resistance_aware` to every full global route |
+| `allow-congestion` | `true` adds `-allow_congestion` to every `global_route` call. Diagnosis only: the run is never reported as a clean pass, and cannot be `harden: true` |
+
+On a run, `null` is the same as leaving the key out: the platform's value stands, so a run cannot clear a platform's `grid-origin` or `critical-nets-percentage`. A run's `layer-adjustment` replaces the platform's whole map.
 
 `dont-use-cells` scope: the PDK's list applies to synthesis and P&R, a synth or P&R platform's list is added to it for that flow only, and P&R fails a run whose routed design still uses an excluded cell.
 
@@ -858,6 +873,7 @@ runs:
 | `pdn` | — | Core grid in YAML; see below |
 | `placement` | Platform's | Any `placement.*` key, overriding the platform for this run |
 | `routing-layers`, `routing-layer-adjustment`, `cts-buffer`, `cts-clock-nets`, `cts-latency-balancing`, `cts-repair-clock-nets`, `cts-dont-use-cells`, `post-cts-setup-repair`, `global-route-hold-repair`, `port-buffer`, `keep-sizing-vt`, `tapcell-tcl` | Platform's | Override the platform's value for this run. See [P&R keys](#synthesis-and-physical-design-tools) |
+| `global-route` | Platform's | Overrides the platform's block field by field. See [P&R keys](#synthesis-and-physical-design-tools) |
 | `global-route-repair`, `post-route-repair` | Platform's | Overrides the platform's block field by field; `null` turns it off. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing) |
 | `mode` | `closure` | `probe` skips timing repair and stops after global route. Not with `harden: true`. See [Probe a floorplan](../concepts/pnr.md#probe-a-floorplan) |
 | `fail-on-electrical` | `false` | `true` fails a routed run with any max-slew, max-capacitance or max-fanout violator, and post-route repair prefers a round without max-slew or max-capacitance violators |
