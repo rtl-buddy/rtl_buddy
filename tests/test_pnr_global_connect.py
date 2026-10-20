@@ -6,10 +6,11 @@ Buffers and fill cells added after `pdngen` carry no supply connections until th
 from dataclasses import replace
 
 import pytest
-from test_pnr_checkpoints import _backend, _pnr_cfg, _runs
+from test_pnr_checkpoints import _backend, _pdk, _pnr_cfg, _runs
+from test_pnr_repair import _PR, _hook, _platform, _repair_backend, _with_repair
 
 from rtl_buddy.config.pnr import CHECKPOINT_STAGES
-from rtl_buddy.tools import pnr_checkpoints
+from rtl_buddy.tools import pnr_checkpoints, pnr_openroad
 
 _RULES = {"RB_STUB_RULES": "1"}
 _CONNECT = "stub: global_connect"
@@ -23,17 +24,39 @@ def _after(lines: list[str], marker: str) -> list[str]:
     return [lines[i + 1] for i, line in enumerate(lines[:-1]) if line == marker]
 
 
+#: A post-route repair block whose one round repairs: setup misses its margin.
+_ROUND = {"post_route": {**_PR, "rounds": 1}}
+_ROUND_ENV = {**_RULES, "RB_STUB_SETUP": "-0.2"}
+
+
+def _run_backend(tmp_path, monkeypatch, *, post_route: bool, **kw):
+    """A stub-harness backend with the rules stored, and with a repairing post-route round when `post_route`."""
+    if post_route:
+        return _repair_backend(tmp_path, monkeypatch, env=_ROUND_ENV, **_ROUND, **kw)
+    return _backend(tmp_path, monkeypatch, env=_RULES, **kw)
+
+
+def _checkpoint_stages(backend) -> list[str]:
+    """The stages of the run `backend` ran that end on a checkpoint: all but `finish`."""
+    return [stage for stage in backend._stages if stage != "finish"]
+
+
+@pytest.mark.parametrize("post_route", [False, True])
 @pytest.mark.parametrize("stages", [False, True])
 def test_every_checkpoint_is_written_after_the_connections_are_made(
-    tmp_path, monkeypatch, stages
+    tmp_path, monkeypatch, stages, post_route
 ):
-    backend, artefacts = _backend(tmp_path, monkeypatch, stages=stages, env=_RULES)
+    backend, artefacts = _run_backend(
+        tmp_path, monkeypatch, stages=stages, post_route=post_route
+    )
 
     res = backend.run()
 
     assert res.results["result"] == "PASS", res.results
     lines = _log(artefacts)
-    for stage in CHECKPOINT_STAGES:
+    stages_run = _checkpoint_stages(backend)
+    assert ("post_route_repair" in stages_run) == post_route
+    for stage in stages_run:
         name = f"{pnr_checkpoints.STAGE_INDEX[stage]}_{stage}"
         (following,) = _after(lines, f">>> Checkpoint {name}")
         assert following == _CONNECT
@@ -105,20 +128,95 @@ def test_a_run_without_checkpoints_connects_at_every_stage_end_and_after_fill(
     assert connects[6] > lines.index(">>> Fill insertion")
 
 
+@pytest.mark.parametrize("post_route", [False, True])
 def test_every_staged_session_connects_before_it_writes_its_checkpoint(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, post_route
 ):
-    backend, artefacts = _backend(tmp_path, monkeypatch, stages=True, env=_RULES)
+    backend, artefacts = _run_backend(
+        tmp_path, monkeypatch, stages=True, post_route=post_route
+    )
 
     assert backend.run().results["result"] == "PASS"
 
     (run_dir,) = _runs(artefacts)
-    for stage in CHECKPOINT_STAGES:
-        name = f"{pnr_checkpoints.STAGE_INDEX[stage]}_{stage}"
-        script = (run_dir / f"{name}.tcl").read_text()
-        assert script.index("\nrb::global_connect\n") < script.index(
-            f"rb::ckpt::stage_end {stage}"
-        )
+    for stage in _checkpoint_stages(backend):
+        end = f"rb::ckpt::stage_end {stage}"
+        scripts = [
+            text
+            for path in pnr_openroad.stage_scripts(str(run_dir), stage)
+            if end in (text := open(path).read())
+        ]
+        assert scripts, stage
+        for script in scripts:
+            assert script.index("\nrb::global_connect\n") < script.index(end)
+
+
+@pytest.mark.parametrize("stages", [False, True])
+def test_the_global_route_stage_connects_the_cells_its_repair_added(
+    tmp_path, monkeypatch, stages
+):
+    backend, artefacts = _backend(tmp_path, monkeypatch, stages=stages, env=_RULES)
+    backend.root_cfg.get_pnr_platform_cfg.return_value = _platform(
+        _pdk(tmp_path), global_route_hold_repair=True
+    )
+
+    assert backend.run().results["result"] == "PASS"
+
+    (run_dir,) = _runs(artefacts)
+    script = (
+        (run_dir / "04_global_route.tcl") if stages else (artefacts / "pnr.tcl")
+    ).read_text()
+    tail = script[script.index(">>> Post-global-route hold repair") :]
+    connect = tail.index("\nrb::global_connect\n")
+    assert tail.rindex("\nglobal_route -end_incremental ", 0, connect) > 0
+    assert connect < tail.index("rb::ckpt::stage_end global_route")
+
+
+@pytest.mark.parametrize("reroute", ["eco", "full"])
+@pytest.mark.parametrize("stages", [False, True])
+def test_a_post_route_repair_round_connects_the_cells_it_added_before_its_hooks(
+    tmp_path, monkeypatch, stages, reroute
+):
+    cfg = replace(
+        _pnr_cfg(tmp_path, stages=stages),
+        hooks={
+            "before-detailed-route": _hook(
+                tmp_path, "bdr", 'puts "MARK before-detailed-route"\n'
+            )
+        },
+    )
+    backend, artefacts = _backend(
+        tmp_path, monkeypatch, pnr_cfg=cfg, stages=stages, env=_ROUND_ENV
+    )
+    _with_repair(
+        backend, tmp_path, post_route={**_ROUND["post_route"], "reroute": reroute}
+    )
+
+    assert backend.run().results["result"] == "PASS"
+
+    (run_dir,) = _runs(artefacts)
+    script = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
+    hook = script.index("\nrb::hook::run before-detailed-route ")
+    route = script.index("\ndetailed_route \\")
+    legalized = max(
+        script.rindex("\ncheck_placement -verbose\n", 0, hook),
+        script.rindex("\nglobal_route -end_incremental ", 0, hook),
+    )
+    connects = [
+        i
+        for i in range(len(script))
+        if script.startswith("\nrb::global_connect\n", i) and legalized < i < route
+    ]
+    assert len(connects) == 2
+    assert connects[0] < hook < connects[1]
+    log = (run_dir / "06_post_route_repair.r1.repair.log").read_text().splitlines()
+    marked = log.index("MARK before-detailed-route")
+    assert log[marked - 1].startswith(">>> Hook before-detailed-route: ")
+    assert log[marked - 2] == _CONNECT
+    assert log[marked + 1 : marked + 3] == [
+        _CONNECT,
+        ">>> Post-route repair round 1: detailed route",
+    ]
 
 
 @pytest.mark.parametrize("stages", [False, True])
