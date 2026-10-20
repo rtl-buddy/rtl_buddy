@@ -7,9 +7,8 @@ import hashlib
 import json
 import os
 import shutil
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from datetime import datetime
-from enum import Enum
 from importlib.metadata import version
 from pathlib import Path
 
@@ -19,7 +18,6 @@ from ..config.pdk import (
     DEFAULT_ROTATED_MACRO_FOOTPRINT,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
 )
-from ..config.pnr_repair import GlobalRouteRepair
 from ..config.pnr import (
     ABSTRACT_BLOAT_OCCUPIED,
     BlockageLifetime,
@@ -258,32 +256,6 @@ def _pdn_config(pdn) -> dict:
     }
 
 
-def _repair_digest(platform) -> dict:
-    """The timing repairs after global and detailed route, each emitted only when set so existing digests do not change.
-
-    A hold-only global-route repair with no margin is what `global-route-hold-repair: true` always ran, so it keeps that key.
-    """
-    digest = {}
-    gr = platform.get_global_route_repair()
-    if gr == GlobalRouteRepair(hold_margin=0.0):
-        digest["global_route_hold_repair"] = True
-    elif gr is not None:
-        digest["global_route_repair"] = _jsonable(asdict(gr))
-    pr = platform.get_post_route_repair()
-    if pr is not None:
-        digest["post_route_repair"] = _jsonable(asdict(pr))
-    return digest
-
-
-def _jsonable(value):
-    """`value` with every enum as its string, for a digest."""
-    if isinstance(value, dict):
-        return {k: _jsonable(v) for k, v in value.items()}
-    if isinstance(value, Enum):
-        return value.value
-    return value
-
-
 def abstract_config(pnr_cfg, platform) -> dict:
     """Return the configuration a hardened result depends on, with project-relative paths.
 
@@ -296,9 +268,6 @@ def abstract_config(pnr_cfg, platform) -> dict:
 
     fp = pnr_cfg.get_floorplan()
     platform = platform.with_run_placement(pnr_cfg.get_placement(), pnr_cfg.get_name())
-    platform = platform.with_run_repairs(
-        pnr_cfg.global_route_repair, pnr_cfg.post_route_repair, pnr_cfg.get_name()
-    )
     hooks = dict(platform.get_pdk().get_tcl_hooks())
     return {
         "platform": pnr_cfg.get_platform(),
@@ -426,7 +395,11 @@ def abstract_config(pnr_cfg, platform) -> dict:
             if platform.get_post_cts_setup_repair() is True
             else {}
         ),
-        **_repair_digest(platform),
+        **(
+            {"global_route_hold_repair": True}
+            if platform.get_global_route_hold_repair() is True
+            else {}
+        ),
         **(
             {"cts_apply_ndr": platform.get_cts_apply_ndr()}
             if isinstance(platform.get_cts_apply_ndr(), str)

@@ -1,8 +1,6 @@
 
-# Sessions a later session follows (a staged run's but `finish`, and a
-# one-session run's first session and post-route repair rounds): a global Tcl
-# command that a hook defines, renames, deletes or redefines exists only in its
-# own session. Each hook but a
+# Staged sessions but `finish`: a global Tcl command that a hook defines,
+# renames, deletes or redefines exists only in its own session. Each hook but a
 # `session` one is checked, and one that changed any is recorded as a
 # `hook_commands` progress event: `changed` names the commands that existed
 # before the hook, which later sessions have in their original form, and

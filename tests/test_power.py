@@ -3,7 +3,6 @@
 import hashlib
 import json
 import os
-import re
 from contextlib import nullcontext
 from pathlib import Path
 from textwrap import dedent
@@ -3763,26 +3762,3 @@ def test_a_spef_timed_power_run_does_not_digest_the_layer_rc(tmp_path):
     identity = backend._upstream_identity()
     assert identity["parasitics"] == "spef"
     assert "layer_rc_tcl_sha256" not in identity
-
-
-@pytest.mark.parametrize(
-    "mode, words",
-    [
-        ("probe", "pnr run 'demo_pnr' is a probe (mode: probe)"),
-        ("closure", "older runs predate the .routed.odb artefact"),
-    ],
-)
-def test_a_missing_routed_odb_names_a_probe_run(tmp_path, mode, words):
-    from unittest.mock import MagicMock
-
-    from rtl_buddy.config.pnr_repair import PnrMode
-
-    backend, _routed = _make_pnr_power_backend(tmp_path, "")
-    odb = backend._resolve_inputs()["odb"]
-    os.remove(odb)
-    backend.power_cfg.resolve_pnr_cfg = lambda: MagicMock(
-        get_name=lambda: "demo_pnr", get_mode=lambda: PnrMode(mode)
-    )
-
-    with pytest.raises(RuntimeError, match=re.escape(words)):
-        backend._write_script()

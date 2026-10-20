@@ -42,7 +42,6 @@ from rtl_buddy.config.pnr_platform import (
 )
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.tools import pnr_checkpoints
-from rtl_buddy.tools.pnr_stages import TEMPLATE_STAGES
 
 DESIGN = "demo_top"
 
@@ -51,7 +50,7 @@ DESIGN = "demo_top"
 # `RB_STUB_FAIL=<cmd>` raises an OpenROAD-style error in that command;
 # `RB_STUB_KILL=<cmd>` SIGKILLs the interpreter on entry;
 # `RB_STUB_EXIT=<cmd>` exits 0 on entry, as a flow that ends early by accident;
-# `RB_STUB_DRC=<n>` makes `detailed_route` report n DRC violations and write a maze log;
+# `RB_STUB_DRC=<n>` makes `detailed_route` report n DRC lines and write a maze log;
 # `RB_STUB_ERRLINE=<cmd>` prints an OpenROAD `[ERROR` line in that command, which returns.
 # `RB_STUB_CKPT_FAIL=<NN_stage>` makes `write_db` of that checkpoint fail without an `[ERROR` line.
 _HARNESS = r"""
@@ -90,14 +89,11 @@ foreach cmd {link_design read_sdc initialize_floorplan place_pins
 proc detailed_route {args} {
     global env
     if {[info exists env(RB_STUB_DRC)]} {
-        set fh [open [lindex $args [expr {[lsearch -exact $args -output_drc] + 1}]] w]
-        for {set i 0} {$i < $env(RB_STUB_DRC)} {incr i} {
-            puts $fh "violation type: Short\n\tsrcs: net:a$i net:b$i\n\tbbox = ($i.0, 0.0) - ($i.1, 0.1) on Layer met1"
+        foreach {flag lines} [list -output_drc $env(RB_STUB_DRC) -output_maze 1] {
+            set fh [open [lindex $args [expr {[lsearch -exact $args $flag] + 1}]] w]
+            for {set i 0} {$i < $lines} {incr i} { puts $fh "$flag $i" }
+            close $fh
         }
-        close $fh
-        set fh [open [lindex $args [expr {[lsearch -exact $args -output_maze] + 1}]] w]
-        puts $fh "-output_maze 0"
-        close $fh
     }
     rb_stub detailed_route
 }
@@ -420,7 +416,7 @@ def test_successful_run_writes_every_checkpoint_and_a_complete_manifest(
     (run_dir,) = _runs(artefacts)
     assert os.readlink(artefacts / "checkpoints" / "latest") == run_dir.name
     assert res.results["checkpoint_dir"] == str(run_dir)
-    assert res.results["checkpoint_stages"] == list(TEMPLATE_STAGES[:-1])
+    assert res.results["checkpoint_stages"] == list(CHECKPOINT_STAGES)
     names = sorted(p.name for p in run_dir.iterdir())
     assert names == sorted(
         [
@@ -496,7 +492,7 @@ def test_failure_before_detailed_routing_leaves_labelled_pre_route_checkpoints(
     res = backend.run()
 
     assert res.results["result"] == "FAIL"
-    assert res.results["checkpoint_stages"] == list(TEMPLATE_STAGES[:-2])
+    assert res.results["checkpoint_stages"] == list(CHECKPOINT_STAGES[:-1])
     assert res.results["last_step"]["step"] == "detailed_route"
     assert res.results["last_step"]["status"] == "error"
     for name in _ROUTED:
