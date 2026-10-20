@@ -12,7 +12,7 @@ Use `rb --machine`. Field definitions: `rb --machine docs show reference/yaml#pn
 ## Set up a run
 
 - A `pnr.yaml` run needs `name`, `desc`, `synth` + `synth-path` (that synthesis must have written its netlist), `constraints` (SDC) and `platform` (a `cfg-pnr-platforms` entry in `root_config.yaml`). Paths are relative to `pnr.yaml`.
-- Process files and defaults live on the `cfg-pdks` entry (`pdn-config`, `rcx-rules`, `layer-rc-tcl`, `placement.*`, `dont-use-cells`); the platform picks `corner` or `corners` and overrides knobs; the run overrides `placement:` and the repair blocks.
+- Process files and defaults live on the `cfg-pdks` entry (`pdn-config`, `rcx-rules`, `layer-rc-tcl`, `placement.*`, `dont-use-cells`); the platform picks `corner` or `corners` and overrides knobs; the run overrides `placement:`, the repair blocks and the routing, CTS and tap-cell knobs.
 - Copy an existing run in the project before writing one from scratch. Find names with `rb --machine pnr --list -c <pnr.yaml>`.
 - Put extra Tcl in `hooks:` (fixed flow points) or `pin-constraints`, never in an edited `pnr.tcl` or the SDC.
 - Multi-corner (`corners:`): each corner is timed in its own SDC mode (OpenROAD 26Q4+). `constraints:` may map each corner to its SDC. An SDC command in a hook constrains only the primary (first) corner; put per-corner constraints in the SDCs.
