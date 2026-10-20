@@ -82,19 +82,19 @@ Rename `budget.per_module_cap` to `budget.per_file_cap` in every `mut.yaml`. The
 
 ### Machine output and reservation keys
 
-Machine-mode summaries on stderr omit `PASS`, `SKIP`, and `XFAIL` rows by default and retain the tally of all verdicts. Read the stdout result or the `summary` log event's `rows` for the complete list. Human-mode summaries retain their full default; `--print-failures-only` filters them.
-
-Machine mode also suppresses per-phase status lines such as `Compiling ...` and `Running simulation ...` at default verbosity. Use `--verbose` or `--debug` to display them. Dispatch heartbeats, job announcements, hook output, warnings, and errors remain visible.
+Machine-mode stderr summaries omit `PASS`, `SKIP`, and `XFAIL` rows but retain the full tally. Read stdout results or `summary.rows` for every row. Human mode still shows all rows unless `--print-failures-only` is set. Per-phase status lines require `--verbose` or `--debug`; dispatch progress, job announcements, hooks, warnings, and errors remain visible.
 
 Update consumers of `payload.reservation_advice`:
 
-- Remove checks for `event: reservation-advice`; array elements no longer include `event`.
-- Treat missing `reg_level`, `allocated`, `suggested_total`, and `aggregate_delta` as null. These fields are omitted when inapplicable. A present `reg_level` remains per finding; build-job findings do not inherit the simulation filter.
-- Continue applying the explicit `edit_hint.file` and `edit_hint.path`. Files remain absolute, and an environment override has `path: env` without a file. Field names, units, ordering, and edit provenance are unchanged.
+- Stop reading `event`; findings omit it.
+- Treat missing `reg_level`, `allocated`, `suggested_total`, and `aggregate_delta` as null. Regression levels remain per finding, absent on build-job advice.
+- Keep applying the explicit `edit_hint`; names, units, ordering, and provenance are unchanged. See [Apply reservation advice](concepts/dispatch.md#apply-reservation-advice) for the payload contract.
 
-Individual `rightsize.advice` log events move from INFO to DEBUG. Run with `--debug` to collect them. At normal verbosity, read the complete machine payload or the INFO `rightsize.summary` event, whose `total` and `counts` (`raise`, `reduce`) describe a nonempty advice list.
+`rightsize.advice` moves from INFO to DEBUG. Use `--debug` for individual events or read the complete machine payload. A nonempty list logs INFO `rightsize.summary` with `total` and direction `counts` (`raise`, `reduce`).
 
-Unknown keys in reservation and dispatch configuration are fatal instead of warnings. Correct or remove unknown keys in `cfg-dispatch`, its `resources`, `compile`, `compile.verilate`, `coverage`, `retry`, and `rightsize` blocks, suite/testbench `compile` blocks (including `verilate`), test/testbench `resources`, and elaboration-profile `resources`. Configuration loading exits with code 2 before execution. Log consumers must handle ERROR `config.unknown_key_rejected` in place of WARNING `config.unknown_key`. The error names the file, block, key, and nearest known spelling. Nested block locations use the P&R validator's syntax, such as `cfg-dispatch: compile.verilate` in place of `cfg-dispatch.compile.verilate`. Free-form mode names remain allowed; unknown keys inside a mode remain fatal.
+Unknown reservation and dispatch keys now stop loading with exit code 2. Correct or remove every reported key; the [YAML reference](reference/yaml.md#parallel-dispatch) lists checked blocks. Mode names remain free-form; mode contents remain strict.
+
+Log consumers must replace WARNING `config.unknown_key` with ERROR `config.unknown_key_rejected`. Diagnostics include the file, block, key, nearest spelling, and valid keys. Nested locations use `cfg-dispatch: compile.verilate` instead of `cfg-dispatch.compile.verilate`.
 
 ### Unknown P&R keys are errors
 

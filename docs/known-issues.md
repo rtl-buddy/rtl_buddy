@@ -4,7 +4,7 @@ description: Current rtl_buddy limitations, surprising behavior, and required wo
 
 # Quirks & Known Issues
 
-Use this page when behavior differs from what you expect. Each section states the effect and the action to take. Sections run in workflow order, from CDC and simulation through dispatch, synthesis, formal, FPGA and tools.
+Find limitations and workarounds by workflow, from CDC and simulation through dispatch, synthesis, formal, FPGA and tools.
 
 ## XPM CDC macros require rtl-buddy-cdc 0.4 or later
 

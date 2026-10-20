@@ -5,70 +5,60 @@ description: Run and diagnose rtl_buddy Slurm or local-parallel dispatch; use fo
 
 # rtl_buddy dispatch
 
-Report `rb --version` at the top of every run summary.
-
-Use `rb --machine`. For the full scheduler contract and YAML fields, run `rb --machine docs show concepts/dispatch`.
+Report `rb --version` at the top of every run summary. Use `rb --machine`; read `rb --machine docs show concepts/dispatch` for scheduler procedures and `reference/yaml#parallel-dispatch` for fields.
 
 ## Choose the backend
 
-- `--dispatch local` runs in-process and sequentially.
-- `--dispatch local-parallel -j N` runs local subprocesses. It has no `resources:` enforcement, accounting, or right-sizing advice.
-- `--dispatch slurm` submits shared build jobs and dependent simulation jobs. Gate it with `rb --machine tool-check --explain slurm`.
+- `--dispatch local` runs sequentially in-process.
+- `--dispatch local-parallel -j N` runs subprocesses without reservation enforcement, accounting, or advice.
+- `--dispatch slurm` submits builds and dependent simulations. Check prerequisites with `rb --machine tool-check --explain slurm`.
 
-Dispatch implies shared builds. A simulation starts only after its compile-key build succeeds, so one failed or undersized build can block a whole group.
+Dispatch implies shared builds. A failed build fails its dependent tests. Exit 0 means no real failure; 1 means failed jobs or missing, stale, or invalid results; 2 means fatal configuration or orchestration error.
 
-Dispatched `test`, `randtest`, `regression` exit 0 with no real failure, 1 when a job fails or its result envelope is missing, stale, or invalid, 2 on a fatal orchestration or configuration error.
+## Size builds and arrays
 
-## Know the build job
+- Each suite compiles distinct builds `compile.parallel` at a time (default 1). Suite `compile:` overrides root defaults. Above 1, all preprocessing runs before compilation; hooks must not change another config's inputs.
+- Slurm splits Verilator work into verilation (`compile.verilate`) and C++ compilation (`compile`). Set `compile.split-verilate: false` for one job. `compile.build_phase_fallback` means correct but unsplit compilation because emitted sources are unavailable or unusable.
+- `parallel` and `split-verilate` are valid only in root or suite `compile:`, never testbench or mode blocks.
+- Size suite `compile.mem` for concurrent builds and `time` for the whole batch. Only per-testbench blocks are aggregated automatically. Keep `parallel` within the distinct build count and VCS license pool.
+- Each test with a `preproc` hook counts as a build unless `preproc-sets-plusdefines: false` declares otherwise. Use that declaration for stimulus-only hooks. `build_job.preproc_changed_compile_key` means the hook violated it and reservations may be short.
+- Large resource groups split into arrays; `max-jobs-per-array` throttles each slice, not the fleet. If probing fails or sbatch refuses the size, set `cfg-dispatch.max-array-size` and, where needed, `max-array-tasks`.
 
-- One build job per suite compiles its distinct builds, `compile.parallel` at a time (default 1; a suite's `compile:` overrides `cfg-dispatch`).
-- Above 1, every config's `preproc` runs before any builder starts, so no hook may mutate another config's inputs.
-- Under Slurm, a Verilator suite splits the job in two. `rb-verilate-<hash>` (reserved from `compile.verilate`) emits C++ only, then `rb-build-<hash>` (reserved from `compile`) builds it on `afterok`. `compile.split-verilate: false` runs one job.
-- `compile.build_phase_fallback` (WARNING): the build job verilated a key itself (marker missing, stale or another checkout's, or no `--no-verilate`). Correct but unsplit.
-- A group larger than the cluster's array limit is split into arrays with logs under `slice-N/`. `max-jobs-per-array` throttles each slice, so peak concurrency is the cap times the slice count.
-- If the submit host cannot run `scontrol`, or Slurm answers `Invalid job array specification`, set `cfg-dispatch.max-array-size`, and `max-array-tasks` where tasks per array are capped lower.
+## Apply reservation advice
 
-## Size resources from evidence
+Read `payload.reservation_advice` and apply each explicit `edit_hint`. Its `file` is absolute; `path: env` has no file. Never infer the target from the test: inheritance, modes, and sbatch overrides can point elsewhere. For optional fields and logging, read `concepts/dispatch#apply-reservation-advice`.
 
-In machine mode, apply `payload.reservation_advice[*].edit_hint` exactly. `file` is absolute; `path: env` has no file. Findings omit `event` and null optional fields. INFO `rightsize.summary` counts advice; use `--debug` for individual events. A hint may name test/testbench `resources`, suite/testbench `compile`, or `cfg-dispatch.compile`; never derive it from the test. `parallel` and `split-verilate` belong only at suite level or above.
-
-- Slurm `OUT_OF_MEMORY`, or a local Verilator or compiler SIGKILL or `Killed`: raise the governing `mem` (for elaboration, `compile.verilate.mem`), never `sim_timeout`.
-- Scheduler `TIMEOUT`: raise the governing job `time`. `Sim hit timeout` in a completed job points at the test's `sim_timeout`.
-- A `modes.<mode>` block on any of those layers sizes that builder mode alone and beats every base field. A `-M cov` OOM is a `modes.cov.mem` edit.
-- Apply `raise` before `reduce`; under-reservation fails work.
-- Size the suite `compile.mem` and `time` for the whole job at `compile.parallel: N`: N concurrent elaborations, with N at or below the site's VCS license pool. Only per-testbench blocks are aggregated for you, counted once per planned compile.
-- A `(build job)` row (`phase: compile`) is the C++ build job. A `(verilate job)` row (`phase: verilate`) hints at `compile.verilate.<field>`. Their `cpus` suggestion is per build while `reserved` is the scaled product; read `edit_hint.note`.
-- The build-job `cpus` row is withheld as `parallel-utilization-ambiguous` above `compile.parallel: 1`. Size `parallel` against the suite's distinct compile keys, then read `cpus` from a `parallel: 1` run.
-- A build-job `reduce` is withheld (`rightsize.build_advice_withheld`) when nothing compiled or the job left no record. Right-size from a run that rebuilt.
-- A misspelt key in a reservation block or in `cfg-dispatch` (and its `coverage`, `retry`, `rightsize`) is fatal (exit 2), with ERROR `config.unknown_key_rejected` naming the nearest key. Correct every reported key before rerunning.
-- The head reserves one build per test with a `preproc` hook, since it may set plusdefines. If the hook only writes stimulus, set `preproc-sets-plusdefines: false` on the test or suite so identical tests share one build. A hook that moves the key anyway logs `build_job.preproc_changed_compile_key` (`changed=[...]`); the reservation may be short.
-- Right-size from representative levels and seeds; rerun until the advice retires. rtl_buddy never edits YAML.
+- Apply `raise` before `reduce`; size from representative levels and seeds, then rerun to confirm. rtl_buddy never edits YAML.
+- Slurm `OUT_OF_MEMORY` or compiler `Killed`/SIGKILL needs more governing `mem`, usually `compile.verilate.mem` for elaboration. Raising `sim_timeout` cannot help.
+- Scheduler `TIMEOUT` needs more job `time`; `Sim hit timeout` in a completed job concerns the test's `sim_timeout`.
+- Mode overrides beat base fields. A coverage-only OOM usually needs `modes.cov.mem` in the controlling block.
+- `(build job)` and `(verilate job)` rows size different phases. Read `edit_hint.note`: suggested `cpus` is per build; `reserved` can include the parallel multiplier. CPU advice is withheld above `parallel: 1`; size concurrency first, then measure a serial run.
+- Build reductions can be withheld when builds were reused or accounting/records are insufficient. Measure a representative rebuild.
+- ERROR `config.unknown_key_rejected` (exit 2) names misspelt or misplaced reservation/dispatch keys. Correct every reported key before rerunning.
 
 ## Size the coverage tail
 
-Under Slurm, the coverage tail of `test`, `regression` and `randtest` (merge, `coverage-model.json`, LCOV exports, manifest) runs as one `rb:coverage` job after the fleet, logging to `.dispatch/coverage/`. Without Slurm, or for `randtest -r`, it runs in the head. A still-running tail job from an earlier run is waited for first; `--orphans cancel` cancels it.
+Slurm submits one `rb:coverage` job after simulations, logging to `.dispatch/coverage/`. Reserve it with `cfg-dispatch.coverage`, usually `modes.cov`, which inherits root `resources`. Without Slurm, including `randtest -r`, the tail runs in the head.
 
-- Reserve it with `cfg-dispatch.coverage` (inherits `resources`; `modes.cov` is the usual place). A merge OOM is an edit there.
-- `Coverage tail FAILED` (`tail_failed`) keeps every test result, writes no model or manifest, and exits 1.
-- `cfg-coverage` `merge-timeout` (seconds; unset is no limit) stops a hung merge, reported as a failed merge.
+- `tail_failed` exits 1, preserving test results but writing no model or manifest.
+- Set `cfg-coverage.merge-timeout` to bound a hung raw merge; unset means no limit.
+- A discovered orphan tail must finish before this run writes coverage; `--orphans cancel` cancels it. Records are per artefact tree, while `cov_dir/` is shared across tags. See `concepts/dispatch#interrupted-runs-warn-cancel-adopt`.
 
-## Read cpu advice under sbatch-args
+## Interpret CPU overrides
 
-- `cpus` advice is judged against the cpus requested, not allocated; the table then reads `Reserved 4 (8 allocated)`. Edit the figure named in `Field`.
-- A cpu override in `cfg-dispatch.sbatch-args` supersedes the resolved reservation: `-c` / `--cpus-per-task`, or a count that raises `ReqCPUS` (`-n` / `--ntasks`, `--ntasks-per-node`, `-N` / `--nodes`). The exported `SBATCH_NTASKS`, `SBATCH_NTASKS_PER_NODE`, and `SBATCH_NODES` count the same way; `SBATCH_CPUS_PER_TASK` does not.
-- The `cpus` `edit_hint` then points at `cfg-dispatch.sbatch-args` (`env` with no `file` for an environment-only override) and names the field it masks. Edit the argument, not the field.
-- `suggested` is the whole-job cpu count; only a single `--cpus-per-task` takes it directly.
-- A direct `--cpus-per-task` disables the compile `cpus` floor. A task or node count does not.
+CPU advice uses requested CPUs, not allocated CPUs. An override in `sbatch-args` or the environment can mask the YAML reservation; edit the target in `edit_hint`.
+
+- `suggested` is the whole-job count. Only a single `--cpus-per-task` takes it directly; task/node multipliers require decomposition.
+- A direct `--cpus-per-task` disables the compile CPU floor; task/node counts do not.
+- `SBATCH_CPUS_PER_TASK` is not an override. Read `reference/yaml#sbatch-args-behavior` for recognized arguments and variables.
 
 ## Debug shared builds
 
-Any tracked compile input change invalidates a shared build, compared by content (a byte-identical regeneration does not). An added or removed file in a `+incdir+` or `-y` directory rebuilds. An edited header rebuilds on VCS and Icarus, and on Verilator only if the build read it. Runtime-only plusargs, seeds, and sim timeout do not. Batch edits before a large build.
+Read `concepts/tests#sharing-compiled-builds-across-tests` for invalidation rules. Batch compile-input edits before an expensive build; runtime plusargs, seeds, and timeouts do not rebuild.
 
-Same-key configs in a build job adopt the first Verilator build when its consumed inputs are unchanged and no new file can alter resolution (a `-y` file or shadowing header). A consumed input that differs is `build_job.group_input_drift`.
+- Suspicious reuse: inspect `compile.build_reused` and the test's `compile.log` for the directory and stamp age. Use `--rebuild`, never delete a build during a run. Dropping `--share-build` under dispatch does not disable reuse.
+- `build_job.group_input_drift`: same-key configs consumed different inputs. Fix preprocessing or give them distinct builds.
+- `compile.build_lock_wait`: another process is compiling into that directory.
+- `dispatch.build_job_deduped`: this suite and job tag wait on an earlier build through `singleton`, then revalidate it. Inspect `squeue -j <ids> -O JobID,State,Reason`; cancel only a confirmed held, unschedulable, or abandoned job.
 
-- An edit that seems ignored, or a suspicious PASS after one: read `compile.build_reused` (run log; console once per build directory) and the test's `compile.log` breadcrumb. Both name the reused directory and the stamp's age.
-- `--rebuild` forces a fresh compile, once per build directory per invocation. Prefer it to deleting `artefacts/.shared-builds/`. Dropping `--share-build` does not stop reuse.
-- `compile.build_lock_wait` is another process compiling the same directory, not a hang.
-- `dispatch.build_job_deduped`: an earlier run's build job for this suite and job tag (`rb-build-<hash>`) is still queued or running, so this one waits on it (`--dependency=singleton`), then revalidates the build. Unchanged inputs reuse it; an edit or `--rebuild` recompiles. Expected after an interrupt. If it stays PENDING, inspect it with `squeue -j <ids> -O JobID,State,Reason`; `scancel` only a held or stale one.
-
-For missing envelopes, retries, license queues, accounting gaps, and builders that compile inside simulation jobs, read `concepts/dispatch` and `known-issues`.
+For missing results, license retries, and unusable prebuilt stamps, read `concepts/dispatch#troubleshoot-builds` and `known-issues`.
