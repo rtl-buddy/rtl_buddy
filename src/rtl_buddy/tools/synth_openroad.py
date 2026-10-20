@@ -49,6 +49,7 @@ from .synth_yosys import (
     slang_handles_params,
     validate_frontend,
     warn_abc_driving_cell_missing,
+    warn_icg_split_skipped,
     warn_mapped_abc_args,
     yosys_env,
     yosys_read_lib_paths,
@@ -290,7 +291,7 @@ class OpenRoadSynth:
         cell_libs = liberty_args(self._resolve_cell_lib_paths())
         lines.extend(
             clock_gating_cmds(
-                resolve_clock_gating(opts, self.synth_cfg, self.root_cfg),
+                resolve_clock_gating(opts, self.synth_cfg, self.root_cfg, warn=True),
                 cell_libs,
                 dont_use,
                 self.synth_cfg.get_name(),
@@ -435,6 +436,7 @@ class OpenRoadSynth:
         warn_abc_driving_cell_missing(
             log_text, self._abc_constr, self.synth_cfg.get_name(), log_path
         )
+        warn_icg_split_skipped(log_text, self.synth_cfg.get_name(), log_path)
 
         conflicting = find_conflicting_driver_warnings(log_text)
         if conflicting and conflicting_mode == "error":

@@ -1826,6 +1826,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('min_flops')} is ignored on an unmapped run "
                 "(no Liberty to take an ICG from); set a platform or lib-paths"
             )
+        case "synth.clock_gating_max_ignored":
+            return (
+                f"synth {fields.get('synth')}: clock-gating-max-flops "
+                f"{fields.get('max_flops')} is ignored without "
+                "clock-gating-min-flops, which turns clock gating on"
+            )
+        case "synth.icg_not_split":
+            return (
+                f"synth {fields.get('synth')}: clock-gating-max-flops could not "
+                f"split an ICG: {fields.get('detail')}; see {fields.get('log')}"
+            )
         case "synth.yosys_abc_missing":
             return (
                 f"abc-persistent: false needs yosys-abc, but none was found next to "
