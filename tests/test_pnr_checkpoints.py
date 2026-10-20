@@ -549,12 +549,8 @@ def test_failure_during_global_route_keeps_the_cts_checkpoint(tmp_path, monkeypa
     res = backend.run()
 
     assert res.results["result"] == "FAIL"
-    assert res.results["checkpoint_stages"] == [
-        "floorplan",
-        "place",
-        "cts",
-        "global_route",
-    ]
+    # The failed route is kept, but it is no stage the run reached.
+    assert res.results["checkpoint_stages"] == ["floorplan", "place", "cts"]
     (run_dir,) = _runs(artefacts)
     assert (run_dir / "03_cts.odb").is_file()
     assert (run_dir / "03_cts.sdc").is_file()
@@ -835,8 +831,8 @@ def test_a_failed_run_logs_where_it_stopped_and_what_it_kept(tmp_path, monkeypat
     )
     assert level == logging.WARNING
     assert fields["step"] == "global_route" and fields["step_status"] == "error"
-    # The failed global route's database is kept as its checkpoint.
-    assert fields["stages"] == ["floorplan", "place", "cts", "global_route"]
+    # The failed global route's database is kept, but the last checkpoint is cts.
+    assert fields["stages"] == ["floorplan", "place", "cts"]
     (run_dir,) = _runs(artefacts)
     assert fields["dir"] == str(run_dir)
 

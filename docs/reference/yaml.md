@@ -222,12 +222,14 @@ The block a run ends up with must set at least one of `repair-design`, `setup-ma
 | Key | Behavior |
 |---|---|
 | `congestion-iterations` | Positive integer: `-congestion_iterations` of every full global route. Default `20` |
-| `congestion-report-iter-step` | Non-negative integer: `-congestion_report_iter_step` of every full global route |
-| `grid-origin` | `[x, y]` in DBU: `-grid_origin` of every `global_route` call, incremental ones included. Before each detailed route the flow writes and reads back the guides, which rebuilds the GCell grid at the origin |
+| `congestion-report-iter-step` | Non-negative integer: `-congestion_report_iter_step` of every full global route. An overflowing route writes `congestion-<i>.rpt` beside `congestion.rpt` every that many iterations |
+| `grid-origin` | `[x, y]` in DBU: `-grid_origin` of every `global_route` call, incremental ones included. Before each detailed route the flow writes and reads back the guides, which rebuilds the GCell grid at the origin. `[0, 0]` is set too: it adds the option and the round trip |
 | `layer-adjustment` | Map of routing layer to 0–1: `set_global_routing_layer_adjustment <layer>` after the all-layers `routing-layer-adjustment` |
 | `critical-nets-percentage` | 0 to 100: `-critical_nets_percentage` of every full global route |
 | `resistance-aware` | `true` adds `-resistance_aware` to every full global route |
 | `allow-congestion` | `true` adds `-allow_congestion` to every `global_route` call. Diagnosis only: the run is never reported as a clean pass, and cannot be `harden: true` |
+
+On a run, `null` is the same as leaving the key out: the platform's value stands, so a run cannot clear a platform's `grid-origin` or `critical-nets-percentage`. A run's `layer-adjustment` replaces the platform's whole map.
 
 `dont-use-cells` scope: the PDK's list applies to synthesis and P&R, a synth or P&R platform's list is added to it for that flow only, and P&R fails a run whose routed design still uses an excluded cell.
 

@@ -462,8 +462,8 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 else {}
             ),
             **(
-                {"global_route": platform.get_global_route().digest()}
-                if not platform.get_global_route().is_empty()
+                {"global_route": digest}
+                if (digest := platform.get_global_route().digest())
                 else {}
             ),
         },

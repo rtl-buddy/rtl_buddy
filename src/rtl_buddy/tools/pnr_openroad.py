@@ -142,7 +142,7 @@ _FIXED_OUTPUT_NAMES = tuple(
 # An input, not an output: cleared up front only (see `_clear_stale_outputs`).
 _SCRIPT_NAME = "pnr.tcl"
 
-# Written by global routing only when it overflows. It explains a failed route, so like the script it is cleared up front only.
+# Written by global routing only when it overflows, with a `congestion-<i>.rpt` per reported iteration (`congestion-report-iter-step`). They explain a failed route, so like the script they are cleared up front only.
 _CONGESTION_REPORT_NAME = "congestion.rpt"
 
 # Where `harden: true` elaborates the top to record its parameter values; see `_record_block_parameters`.
@@ -650,11 +650,16 @@ def run_output_paths(artefact_dir: str, design: str) -> list[str]:
 
 
 def clear_run_outputs(
-    artefact_dir: str, *, owner: str, design: str | None, include_script: bool = False
+    artefact_dir: str,
+    *,
+    owner: str,
+    design: str | None,
+    include_script: bool = False,
+    keep_failed_global_route: bool = False,
 ) -> list[str]:
     """Remove a P&R run's outputs from `artefact_dir` and return the paths removed (see `OpenRoadPnr._clear_stale_outputs`).
 
-    `owner` names the run in errors. `design` is the run's top, whose outputs are removed even when their names match a protected pattern; None removes by suffix only. A stage job whose run was given up while its stage ran removes the same set (`pnr_dispatch.run_stage_job`).
+    `owner` names the run in errors. `design` is the run's top, whose outputs are removed even when their names match a protected pattern; None removes by suffix only. `keep_failed_global_route` leaves a failed global route's database that could not be filed. A stage job whose run was given up while its stage ran removes the same set (`pnr_dispatch.run_stage_job`).
     """
     stale = clear_stale_artefacts(
         [
@@ -668,7 +673,12 @@ def clear_run_outputs(
                         _SCRIPT_NAME,
                         _DEF2STREAM_INPUTS_NAME,
                         _BLOCK_NETLIST_NAME,
-                        _CONGESTION_REPORT_NAME,
+                        *(
+                            name
+                            for _kind, name in pnr_checkpoints.congestion_reports(
+                                artefact_dir
+                            )
+                        ),
                     )
                     if include_script
                     else ()
@@ -691,7 +701,7 @@ def clear_run_outputs(
     stale += pnr_abstract.clear_abstract(artefact_dir)
     # Filed as a checkpoint when the run fails (`_keep_failed_global_route`); anything left is stale.
     failed_gr = os.path.join(artefact_dir, pnr_checkpoints.FAILED_GLOBAL_ROUTE_DIRNAME)
-    if os.path.isdir(failed_gr):
+    if os.path.isdir(failed_gr) and not keep_failed_global_route:
         shutil.rmtree(failed_gr, ignore_errors=True)
         stale.append(failed_gr)
     # The parameter probe's scratch files belong to the abstract.
@@ -4145,12 +4155,14 @@ class OpenRoadPnr:
             fields=fields,
         )
 
-    def _clear_stale_outputs(self, *, include_script: bool = False) -> None:
+    def _clear_stale_outputs(
+        self, *, include_script: bool = False, keep_failed_global_route: bool = False
+    ) -> None:
         """Remove the previous run's outputs; the first thing `run` does.
 
         Every exit from `run` must leave them absent: the DRC count, `rb power` and the GDS/PNG checks all trust presence. The one exception is a `--resume` run that ends before it is accepted, which leaves the previous run's outputs and `latest` as they were. Design-named outputs are matched by suffix so this needs no synth back-reference and strands nothing from a previous design. The stream-out report and any `rb pnr-export` record go too. `pnr.log` is truncated when OpenROAD launches.
 
-        `include_script` also clears `pnr.tcl`, the stream-out input manifest and `congestion.rpt` so a rerun that dies before `_write_script` leaves no stale script. Only `run` sets it; `_fail_after_openroad` keeps them because they are what the tools read and why a route failed.
+        `include_script` also clears `pnr.tcl`, the stream-out input manifest and the congestion reports so a rerun that dies before `_write_script` leaves no stale script. Only `run` sets it; `_fail_after_openroad` keeps them because they are what the tools read and why a route failed. `keep_failed_global_route` leaves a failed global route's database that could not be filed.
         """
         try:
             design = self.pnr_cfg.resolve_synth_cfg().get_top()
@@ -4161,6 +4173,7 @@ class OpenRoadPnr:
             owner=self.pnr_cfg.get_name(),
             design=design,
             include_script=include_script,
+            keep_failed_global_route=keep_failed_global_route,
         )
         if stale:
             log_event(
@@ -4270,10 +4283,10 @@ class OpenRoadPnr:
 
         OpenROAD may leave a partial `<top>.routed.odb`, which `rb power` would accept by existence. Every post-OpenROAD failure return must go through here. `fail_stage` marks a failure that is not a verdict on the design, so `xfail:` does not excuse it.
 
-        A database a failed global route left is filed as a checkpoint first; `failed_global_route` names it.
+        A database a failed global route left is filed as a checkpoint first; `failed_global_route` names it. One that could not be filed stays where the flow wrote it.
         """
-        kept = self._keep_failed_global_route()
-        self._clear_stale_outputs()
+        kept, unfiled = self._keep_failed_global_route()
+        self._clear_stale_outputs(keep_failed_global_route=unfiled)
         return PnrFailResults(
             name=self.name + "/results",
             desc=desc,
@@ -4287,43 +4300,47 @@ class OpenRoadPnr:
             },
         )
 
-    def _keep_failed_global_route(self) -> str:
-        """File the database a failed global route wrote as this run's `global_route` checkpoint, marked failed, and return its `<run-id>/global_route`, or `""` when there is none.
+    def _keep_failed_global_route(self) -> tuple[str, bool]:
+        """File the database a failed global route wrote as this run's `global_route` checkpoint, marked failed. Return its `<run-id>/global_route`, or `""` when nothing was filed, and whether a database that could not be filed is left in place.
 
-        A run without checkpoints gets a checkpoint directory for it, and `latest` points there.
+        Only a run OpenROAD failed in its global route files one: the flow drops the database when a later route passes or the stage ends. An incomplete database (no `done` marker) or one that cannot be filed stays where the flow wrote it, and a warning names it. A run without checkpoints gets a checkpoint directory for it, and `latest` points there.
         """
-        if not os.path.isfile(
-            os.path.join(
-                self.artefact_dir,
-                pnr_checkpoints.FAILED_GLOBAL_ROUTE_DIRNAME,
-                "global_route.odb",
+        source = os.path.join(
+            self.artefact_dir, pnr_checkpoints.FAILED_GLOBAL_ROUTE_DIRNAME
+        )
+        if not os.path.isdir(source) or self._openroad_returncode == 0:
+            return "", False
+        if not pnr_checkpoints.failed_global_route_complete(self.artefact_dir):
+            self._warn_failed_global_route_not_kept(
+                source, "the flow did not finish writing it"
             )
-        ):
-            return ""
+            return "", True
         try:
             design = self.pnr_cfg.resolve_synth_cfg().get_top()
         except Exception:
             design = None
         run_dir = self._ckpt_run_dir
+        allocated = run_dir is None
         try:
-            if run_dir is None:
+            if allocated:
                 run_dir = pnr_checkpoints.allocate_run_dir(self.artefact_dir)
-                pnr_checkpoints.point_latest(self.artefact_dir, run_dir)
-                self._ckpt_run_dir = run_dir
             files = pnr_checkpoints.keep_failed_global_route(
                 self.artefact_dir, run_dir, design=design
             )
         except (OSError, RuntimeError) as e:
-            log_event(
-                logger,
-                logging.WARNING,
-                "pnr.failed_global_route_not_kept",
-                pnr=self.pnr_cfg.get_name(),
-                error=str(e),
-            )
-            return ""
+            if allocated and run_dir is not None:
+                shutil.rmtree(run_dir, ignore_errors=True)
+            self._warn_failed_global_route_not_kept(source, str(e))
+            return "", True
         if not files:
-            return ""
+            if allocated:
+                shutil.rmtree(run_dir, ignore_errors=True)
+            return "", False
+        if allocated:
+            pnr_checkpoints.point_latest(
+                self.artefact_dir, run_dir, run=self.pnr_cfg.get_name()
+            )
+            self._ckpt_run_dir = run_dir
         spec = f"{os.path.basename(run_dir)}/global_route"
         log_event(
             logger,
@@ -4334,7 +4351,17 @@ class OpenRoadPnr:
             spec=spec,
             files=sorted(files),
         )
-        return spec
+        return spec, False
+
+    def _warn_failed_global_route_not_kept(self, source: str, error: str) -> None:
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.failed_global_route_not_kept",
+            pnr=self.pnr_cfg.get_name(),
+            dir=source,
+            error=error,
+        )
 
     def _check_routed_placement(self, log_text: str) -> str | None:
         """Compare the routed DEF with the macros and pins the floorplan fixed; return the failure description, or None when they agree.

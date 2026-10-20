@@ -34,6 +34,16 @@ GLOBAL_ROUTE_SPEC = KeySpec(PnrGlobalRouteFile)
 #: The congestion iterations of a full route when `congestion-iterations` is unset.
 DEFAULT_CONGESTION_ITERATIONS = 20
 
+#: What these fields route as when unset; the digest leaves such a value out.
+_ROUTE_DEFAULTS = {
+    "congestion_iterations": DEFAULT_CONGESTION_ITERATIONS,
+    "allow_congestion": False,
+    "resistance_aware": False,
+}
+
+#: Fields that change only what global route reports, left out of the digest.
+_REPORTING_ONLY = ("congestion_report_iter_step",)
+
 #: Characters a layer name cannot hold: it is written as a bare Tcl word.
 _TCL_WORD_BREAKERS = frozenset('{}[]$"\\;')
 
@@ -97,11 +107,18 @@ class GlobalRoute:
         return options
 
     def digest(self) -> dict:
-        """The set values, by YAML key, for a hardened block's config digest."""
+        """The values that change the route, by YAML key, for a hardened block's config digest.
+
+        The report step changes only what is reported, and a value equal to rb's default routes as leaving it unset does, so neither is in it.
+        """
         out: dict = {}
         for f in fields(self):
             value = getattr(self, f.name)
-            if value is None:
+            if (
+                value is None
+                or f.name in _REPORTING_ONLY
+                or (f.name in _ROUTE_DEFAULTS and value == _ROUTE_DEFAULTS[f.name])
+            ):
                 continue
             if f.name == "grid_origin":
                 value = list(value)

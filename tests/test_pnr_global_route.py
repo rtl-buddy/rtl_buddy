@@ -383,7 +383,8 @@ def test_unset_options_add_nothing_to_the_digest(tmp_path):
             GlobalRoute(layer_adjustment=(("metal2", 0.9),)),
             {"layer-adjustment": {"metal2": 0.9}},
         ),
-        (GlobalRoute(resistance_aware=False), {"resistance-aware": False}),
+        (GlobalRoute(resistance_aware=True), {"resistance-aware": True}),
+        (GlobalRoute(congestion_iterations=5), {"congestion-iterations": 5}),
         (
             GlobalRoute(critical_nets_percentage=30.0),
             {"critical-nets-percentage": 30.0},
@@ -398,6 +399,32 @@ def test_a_set_option_joins_the_digest(tmp_path, gr, expected):
     )
     assert over["routing"]["global_route"] == expected
     assert pnr_abstract.config_digest(over) != pnr_abstract.config_digest(plain)
+
+
+@pytest.mark.parametrize(
+    "gr",
+    [
+        GlobalRoute(congestion_report_iter_step=10),
+        GlobalRoute(resistance_aware=False),
+        GlobalRoute(allow_congestion=False),
+        GlobalRoute(congestion_iterations=20),
+        GlobalRoute(
+            congestion_iterations=20,
+            congestion_report_iter_step=5,
+            resistance_aware=False,
+            allow_congestion=False,
+        ),
+    ],
+)
+def test_reporting_and_default_values_leave_the_digest_alone(tmp_path, gr):
+    """The report step changes only what is reported, and rb's defaults written out change nothing, so neither marks an abstract stale."""
+    platform = _gr_platform(tmp_path)
+    plain = pnr_abstract.abstract_config(_digest_cfg(tmp_path), platform)
+    over = pnr_abstract.abstract_config(
+        _digest_cfg(tmp_path, PnrRunOverrides(global_route=gr)), platform
+    )
+    assert "global_route" not in over["routing"]
+    assert pnr_abstract.config_digest(over) == pnr_abstract.config_digest(plain)
 
 
 def test_a_platform_option_joins_the_digest(tmp_path):
@@ -454,22 +481,31 @@ def test_a_run_without_checkpoints_keeps_the_failed_database(tmp_path, monkeypat
     assert (artefacts / "checkpoints" / "latest").resolve() == runs[0].resolve()
     _assert_kept(artefacts, runs[0], res)
     assert res.results["checkpoint_dir"] == str(runs[0])
-    assert res.results["checkpoint_stages"] == ["global_route"]
+    # A failed route is no checkpoint a run reached; `failed_global_route` names it.
+    assert not res.results.get("checkpoint_stages")
 
 
 @pytest.mark.parametrize("stages", [False, True])
 def test_a_checkpointed_run_files_the_failed_database_with_its_checkpoints(
-    tmp_path, monkeypatch, stages
+    tmp_path, monkeypatch, caplog, stages
 ):
     backend, artefacts = _failing(tmp_path, monkeypatch, stages=stages)
 
-    res = backend.run()
+    with caplog.at_level("WARNING"):
+        res = backend.run()
 
     run_dir = Path(backend._ckpt_run_dir)
     _assert_kept(artefacts, run_dir, res)
     manifest = pnr_checkpoints.read_manifest(str(run_dir))
     assert manifest["checkpoints"]["global_route"]["failed"] is True
     assert "failed" not in manifest["checkpoints"]["cts"]
+    assert res.results["checkpoint_stages"] == ["floorplan", "place", "cts"]
+    (retained,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "pnr.checkpoints_retained"
+    ]
+    assert "last checkpoint cts" in retained.getMessage()
 
 
 def test_a_failure_elsewhere_files_nothing(tmp_path, monkeypatch):
@@ -567,6 +603,256 @@ def test_the_flow_installs_the_keeper_before_the_first_route(tmp_path):
     assert keeper < text.index(_GLOBAL_ROUTE_CMD)
 
 
+def test_the_global_route_stage_ends_by_dropping_the_keeper(tmp_path):
+    text = _render(tmp_path, _gr_platform(tmp_path, {"grid_origin": [3, 3]}))
+    drop = text.index(
+        "trace remove execution global_route leave rb::keep_failed_global_route\n"
+    )
+    clear = text.index("file delete -force [file join $OUT_DIR global_route_failed]\n")
+    assert text.index(_GUIDES) < drop < clear < text.index(">>> Detail route")
+
+
+def _hook(tmp_path, point: str, text: str) -> dict:
+    path = tmp_path / "hooks" / f"{point}.tcl"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(text)
+    return {point: (str(path),)}
+
+
+#: A hook catches the failure of its own global route; detailed route then fails.
+_CAUGHT_THEN_DR_FAILS = (
+    "set ::env(RB_STUB_FAIL) global_route\n"
+    "catch {global_route}\n"
+    "set ::env(RB_STUB_FAIL) detailed_route\n"
+)
+
+
+@pytest.mark.parametrize("checkpoints", [None, CHECKPOINT_STAGES])
+@pytest.mark.parametrize("point", ["after-global-route", "before-detailed-route"])
+def test_a_caught_route_failure_then_a_later_failure_names_no_failed_route(
+    tmp_path, monkeypatch, point, checkpoints
+):
+    """A hook that catches a failed global route, in the global-route stage or after it, leaves nothing to file when a later stage fails; the 04 checkpoint stays the routed one."""
+    cfg = replace(
+        _pnr_cfg(tmp_path, checkpoints),
+        hooks=_hook(tmp_path, point, _CAUGHT_THEN_DR_FAILS),
+    )
+    backend, artefacts = _backend(tmp_path, monkeypatch, pnr_cfg=cfg)
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert "detailed_route failed" in res.results["desc"]
+    assert "failed_global_route" not in res.results
+    assert not (artefacts / pnr_checkpoints.FAILED_GLOBAL_ROUTE_DIRNAME).exists()
+    if checkpoints is None:
+        assert backend._ckpt_run_dir is None
+        assert not (artefacts / "checkpoints").exists()
+        return
+    run_dir = Path(backend._ckpt_run_dir)
+    assert pnr_checkpoints.written_checkpoint(str(run_dir), "global_route") == {
+        "odb": "04_global_route.odb",
+        "def": "04_global_route.def",
+        "sdc": "04_global_route.sdc",
+        "guides": "04_global_route.guide",
+        "segments": "04_global_route.segments",
+    }
+    assert (run_dir / "04_global_route.odb").read_text() == "odb\n"
+    assert not (run_dir / "04_global_route.congestion.rpt").exists()
+    assert not any(e.get("failed") for e in _events(run_dir))
+    assert res.results["checkpoint_stages"][-1] == "global_route"
+
+
+def test_a_route_that_passes_after_a_caught_failure_clears_it(tmp_path, monkeypatch):
+    """Only the stage's last global route counts: one that passes after a caught failure leaves nothing to file when the stage then fails."""
+    hook = (
+        "set ::env(RB_STUB_FAIL) global_route\n"
+        "catch {global_route}\n"
+        "unset ::env(RB_STUB_FAIL)\n"
+        "global_route\n"
+        "error {hook failed}\n"
+    )
+    cfg = replace(
+        _pnr_cfg(tmp_path, None), hooks=_hook(tmp_path, "after-global-route", hook)
+    )
+    backend, artefacts = _backend(tmp_path, monkeypatch, pnr_cfg=cfg)
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert "failed_global_route" not in res.results
+    assert not (artefacts / "checkpoints").exists()
+    assert not (artefacts / pnr_checkpoints.FAILED_GLOBAL_ROUTE_DIRNAME).exists()
+
+
+@pytest.mark.parametrize(("returncode", "filed"), [(0, False), (1, True), (None, True)])
+def test_only_a_run_openroad_failed_files_its_failed_route(
+    tmp_path, monkeypatch, returncode, filed
+):
+    """A run OpenROAD ended cleanly did not fail in global route, whatever a caught failure left behind."""
+    backend, artefacts = _backend(tmp_path, monkeypatch, checkpoints=None)
+    source = artefacts / pnr_checkpoints.FAILED_GLOBAL_ROUTE_DIRNAME
+    source.mkdir(parents=True)
+    for name in ("global_route.odb", "global_route.def", "global_route.sdc", "done"):
+        (source / name).write_text("x")
+    backend._openroad_returncode = returncode
+
+    spec, unfiled = backend._keep_failed_global_route()
+
+    assert bool(spec) is filed
+    assert unfiled is False
+
+
+def _failed_source(tmp_path, *, done=True) -> tuple[Path, Path]:
+    artefacts = tmp_path / "a"
+    source = artefacts / pnr_checkpoints.FAILED_GLOBAL_ROUTE_DIRNAME
+    source.mkdir(parents=True)
+    for ext in ("odb", "def", "sdc"):
+        (source / f"global_route.{ext}").write_text(ext)
+    if done:
+        (source / "done").write_text("")
+    return artefacts, source
+
+
+def test_a_failed_route_is_never_filed_over_a_written_checkpoint(tmp_path):
+    artefacts, source = _failed_source(tmp_path)
+    run_dir = artefacts / "checkpoints" / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "04_global_route.odb").write_text("routed")
+    good = {"odb": "04_global_route.odb"}
+    pnr_checkpoints._append_event(
+        str(run_dir),
+        "checkpoint",
+        stage="global_route",
+        index="04",
+        status="ok",
+        files=good,
+    )
+
+    assert (
+        pnr_checkpoints.keep_failed_global_route(
+            str(artefacts), str(run_dir), design="top"
+        )
+        is None
+    )
+
+    assert (run_dir / "04_global_route.odb").read_text() == "routed"
+    assert not any(e.get("failed") for e in _events(run_dir))
+    # A failed event after a good one never takes its place.
+    pnr_checkpoints._append_event(
+        str(run_dir),
+        "checkpoint",
+        stage="global_route",
+        index="04",
+        status="ok",
+        failed=True,
+        files={"odb": "x"},
+    )
+    entry = pnr_checkpoints._written_checkpoints(_events(run_dir), failed=True)
+    assert entry["global_route"]["files"] == good
+
+
+def _not_kept(caplog) -> list:
+    return [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "pnr.failed_global_route_not_kept"
+    ]
+
+
+def test_a_partly_written_failed_route_is_left_in_place(tmp_path, monkeypatch, caplog):
+    """Without the flow's done marker the database is incomplete: rb leaves it where it is and names it."""
+    backend, artefacts = _backend(
+        tmp_path,
+        monkeypatch,
+        checkpoints=None,
+        env={"RB_STUB_FAIL": "global_route", "RB_STUB_CKPT_FAIL": "global_route"},
+    )
+
+    with caplog.at_level("WARNING"):
+        res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert "failed_global_route" not in res.results
+    source = artefacts / pnr_checkpoints.FAILED_GLOBAL_ROUTE_DIRNAME
+    assert source.is_dir()
+    assert not (source / "done").exists()
+    (record,) = _not_kept(caplog)
+    assert record.rtl_fields["dir"] == str(source)
+    assert str(source) in record.getMessage()
+    assert not (artefacts / "checkpoints").exists()
+
+
+@pytest.mark.parametrize("checkpoints", [None, CHECKPOINT_STAGES])
+def test_a_filing_error_leaves_the_failed_route_in_place(
+    tmp_path, monkeypatch, caplog, checkpoints
+):
+    backend, artefacts = _failing(tmp_path, monkeypatch, checkpoints=checkpoints)
+    real = pnr_checkpoints._link_or_copy
+    calls = []
+
+    def _flaky(src, dst):
+        calls.append(src)
+        if len(calls) > 1:
+            raise OSError("No space left on device")
+        real(src, dst)
+
+    monkeypatch.setattr(pnr_checkpoints, "_link_or_copy", _flaky)
+
+    with caplog.at_level("WARNING"):
+        res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert "failed_global_route" not in res.results
+    source = artefacts / pnr_checkpoints.FAILED_GLOBAL_ROUTE_DIRNAME
+    for name in ("global_route.odb", "global_route.def", "global_route.sdc", "done"):
+        assert (source / name).is_file(), name
+    (record,) = _not_kept(caplog)
+    assert record.rtl_fields["dir"] == str(source)
+    assert "No space left on device" in record.getMessage()
+    if checkpoints is None:
+        root = artefacts / "checkpoints"
+        assert not root.exists() or not any(root.iterdir())
+        return
+    run_dir = Path(backend._ckpt_run_dir)
+    assert not list(run_dir.glob("04_global_route.*"))
+    assert not any(e.get("failed") for e in _events(run_dir))
+    assert res.results["checkpoint_stages"] == ["floorplan", "place", "cts"]
+
+
+def test_the_iteration_congestion_reports_are_copied_into_the_checkpoint(tmp_path):
+    artefacts, source = _failed_source(tmp_path)
+    (artefacts / "congestion.rpt").write_text("final")
+    (artefacts / "congestion-10.rpt").write_text("ten")
+    (artefacts / "congestion-20.rpt").write_text("twenty")
+    run_dir = artefacts / "checkpoints" / "run"
+
+    files = pnr_checkpoints.keep_failed_global_route(
+        str(artefacts), str(run_dir), design="top"
+    )
+
+    assert files["congestion"] == "04_global_route.congestion.rpt"
+    assert files["congestion_10"] == "04_global_route.congestion-10.rpt"
+    assert files["congestion_20"] == "04_global_route.congestion-20.rpt"
+    assert (run_dir / "04_global_route.congestion-20.rpt").read_text() == "twenty"
+    assert (artefacts / "congestion-10.rpt").is_file()
+
+
+def test_stale_iteration_congestion_reports_are_cleared_before_a_run(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _backend(tmp_path, monkeypatch, checkpoints=None)
+    artefacts.mkdir(parents=True, exist_ok=True)
+    stale = [artefacts / "congestion.rpt", artefacts / "congestion-5.rpt"]
+    for path in stale:
+        path.write_text("old")
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS"
+    assert not any(path.exists() for path in stale)
+
+
 # -- allow-congestion is never a clean pass ---------------------------------------
 
 
@@ -661,3 +947,38 @@ def test_allow_congestion_cannot_harden(tmp_path, monkeypatch):
     assert res.results["result"] == "FAIL"
     assert res.results["fail_stage"] == "setup"
     assert "cannot be harden: true" in res.results["desc"]
+
+
+# -- human messages -----------------------------------------------------------------
+
+
+def test_the_global_route_warnings_and_errors_have_dedicated_human_messages():
+    from rtl_buddy.logging_utils import _human_message
+
+    not_kept = _human_message(
+        "pnr.failed_global_route_not_kept",
+        {"pnr": "r", "dir": "/a/global_route_failed", "error": "disk full"},
+    )
+    assert "/a/global_route_failed" in not_kept and "disk full" in not_kept
+    assert not not_kept.startswith("pnr failed_global_route_not_kept")
+
+    harden = _human_message("pnr.allow_congestion_harden", {"pnr": "r"})
+    assert "allow-congestion" in harden and "harden" in harden
+    assert not harden.startswith("pnr allow_congestion_harden")
+
+    kept = _human_message(
+        "pnr.failed_global_route_kept",
+        {"pnr": "r", "checkpoint": "/c/04_global_route", "spec": "run/global_route"},
+    )
+    assert "rb pnr-export --checkpoint run/global_route" in kept
+
+    congested = _human_message(
+        "pnr.allow_congestion", {"pnr": "r", "global_route_overflow": 7}
+    )
+    assert "overflow 7" in congested
+
+    latest = _human_message(
+        "pnr.checkpoint_latest_failed",
+        {"run": "r", "dir": "/c/run", "error": "no symlinks"},
+    )
+    assert '"r"' in latest and "/c/run" in latest

@@ -63,7 +63,7 @@ Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previo
 | `post_route_repair` | The rounds of [post-route repair](#repair-timing-after-routing): `kept_round`, `rounds`, `repaired_rounds`, `stop`, `reason`, `passed_over_round`. |
 | `openroad_threads` | Requested and effective [thread counts](#openroad-threads). |
 | `gds_status`, `gds_missing_cells` | [Stream-out](#stream-out-gds-and-png) outcome. |
-| `checkpoint_dir`, `checkpoint_stages`, `last_step` | With [checkpoints](#keep-stage-checkpoints): where they are, which stages were written, and the last step reached. |
+| `checkpoint_dir`, `checkpoint_stages`, `last_step` | With [checkpoints](#keep-stage-checkpoints): where they are, which stages the run reached and checkpointed (never a failed global route), and the last step reached. |
 | `failed_global_route` | `<run-id>/global_route`: the checkpoint holding a failed global route's database, for `rb pnr-export --checkpoint`. |
 | `allow_congestion` | `true` on a [diagnosis run](#tune-global-routing) that let global route keep its overflow; `global_route_overflow` is then the final overflow. |
 
@@ -92,10 +92,11 @@ A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in 
 | `timing.rpt`, `electrical.rpt` | Worst paths and electrical violators, all corners |
 | `route.drc.rpt`, `route.maze.log` | Detailed-route DRCs and router log |
 | `congestion.rpt` | Overflowing global-route tiles, only when global routing overflows. Loads in the OpenROAD GUI's DRC viewer. |
+| `congestion-<i>.rpt` | The same at iteration `i`, every `global-route.congestion-report-iter-step` iterations of an overflowing route |
 | `<top>.gds`, `<top>.png`, `klayout.*.log`, `def2stream.inputs.json` | Stream-out outputs, logs and the inputs it read |
 | `checkpoints/`, `abstract/` | [Stage checkpoints](#keep-stage-checkpoints) and a [hardened block's](#harden-a-block) views |
 
-When OpenROAD fails, the run removes the routed database so `rb power` never reads a stale one; `pnr.log`, `pnr.tcl` and `congestion.rpt` stay. A failed global route also leaves its database as a [checkpoint](#keep-stage-checkpoints). A run that fails a later check (`routed_check`, `fail-on-electrical`, `export`, `abstract`) keeps its routed outputs for inspection.
+When OpenROAD fails, the run removes the routed database so `rb power` never reads a stale one; `pnr.log`, `pnr.tcl` and the congestion reports stay. A failed global route also leaves its database as a [checkpoint](#keep-stage-checkpoints). A run that fails a later check (`routed_check`, `fail-on-electrical`, `export`, `abstract`) keeps its routed outputs for inspection.
 
 ## Follow a running flow
 
@@ -448,7 +449,7 @@ On a multi-corner platform the `.sdc` holds every corner's SDC mode, and `<NN>_<
 
 Look at a checkpoint in OpenROAD or with `rb pnr-export --checkpoint`. It is never a final result. Old run directories are not pruned.
 
-A global route that fails writes its database as the `global_route` checkpoint, marked `failed`, with a copy of `congestion.rpt` (`04_global_route.congestion.rpt`), whether or not the run sets `checkpoints`; a run without them gets a run directory for it. The run still fails, and its `failed_global_route` field names the checkpoint as `<run-id>/global_route`. `rb pnr-export --checkpoint` opens it; no `--resume` starts from it.
+A run that fails in global route keeps that route's database as the `global_route` checkpoint, marked `failed`, with a copy of each congestion report (`04_global_route.congestion.rpt`, `04_global_route.congestion-<i>.rpt`), whether or not the run sets `checkpoints`; a run without them gets a run directory for it. The run still fails, and its `failed_global_route` field names the checkpoint as `<run-id>/global_route`. `rb pnr-export --checkpoint` opens it; no `--resume` starts from it, and `checkpoint_stages` does not list it. A failure a hook catches is dropped when a later global route passes or the `global_route` stage ends. A database OpenROAD did not finish writing, or that rb could not file, stays in `global_route_failed/` until the next run, and the `pnr.failed_global_route_not_kept` warning names it.
 
 ## Compare timing across stages
 
