@@ -31,15 +31,17 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   allocation). A count above the Slurm or affinity allocation is clamped with
   `openroad.threads_capped`. Quote `openroad_threads.effective`, not the
   configured value.
-- **Checkpoints.** For a long or failing P&R, set `checkpoints: true` in
-  `pnr.yaml`. A `FAIL` row then carries `checkpoint_dir`, `checkpoint_stages`
-  and `last_step`, and `checkpoints/latest/progress.jsonl` shows the step a
-  running or killed flow is in. A checkpoint is never a routed or final result:
-  report it as the stage it names. `pnr-export --checkpoint <stage>` labels its
-  layout `checkpoint_final: false`.
+- **Checkpoints.** For a long or failing P&R, set `checkpoints: true` (or
+  `stages: true`, one session per stage) in `pnr.yaml`. A `FAIL` row then
+  carries `checkpoint_dir`, `checkpoint_stages` and `last_step`;
+  `checkpoints/latest/progress.jsonl` shows the step a flow is in. A
+  checkpoint is never routed or final: report it as its stage. A `--stop-after`
+  `PASS` has `routed: false`: quote it as that stage, not as a routed result.
+  `--resume <run> --from <stage>` retries later stages of a staged run.
 - **Run hooks.** Extra steps go in `hooks:` of the `pnr.yaml` run: Tcl files
   sourced at fixed flow points (`session`, `after-cts`, `macro-placement`, ...),
-  never in an edited `pnr.tcl`. A failing hook names its point and file. See
+  never in an edited `pnr.tcl`. A failing hook names its point and file. Staged:
+  `pnr.hook_commands_not_kept` means use `session`. See
   `rb docs show concepts/pnr#run-tcl-hooks`.
 - **Route progress.** `pnr.log` is written live. Before calling a long route
   hung, check its detailed-route iterations and violation counts (`DRT-0195`,

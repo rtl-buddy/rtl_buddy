@@ -8,16 +8,20 @@ Layout under the run's artefact directory::
       latest -> 20260925T101500-4242      # the run that started last
       20260925T101500-4242/
         manifest.json                     # inputs + tool identity (Python)
-        progress.jsonl                    # step / checkpoint events (Tcl)
+        progress.jsonl                    # step / stage / checkpoint events
         01_floorplan.{odb,def,sdc}
         02_place.{odb,def,sdc}
         03_cts.{odb,def,sdc}
         04_global_route.{odb,def,sdc,guide,segments}
+        05_detailed_route.{odb,def,sdc}
+        05_detailed_route.route.{drc.rpt,maze.log}  # the router's reports, when written
         export/03_cts/...                 # `rb pnr-export --checkpoint`
+
+A staged run (`stages: true`) adds each stage's session script and log, `NN_<stage>.{tcl,log}`, and a `NN_<stage>.state.tcl` per checkpoint with the flow globals the next session needs.
 
 - Checkpoints are never final outputs. They live below `checkpoints/`, out of reach of the up-front clear and of `rb power`'s `<top>.routed.odb` path.
 - Each run writes its own run-id directory, which later runs never overwrite or delete. Every `rb pnr` run removes `latest` first; a checkpointed run re-points it when it launches OpenROAD.
-- Python writes the manifest (input hashes, `pnr.tcl` hash, OpenROAD version, requested stages) before OpenROAD starts and completes it after exit. Tcl only appends events, closing the file after each, so `progress.jsonl` is complete up to a kill.
+- Python writes the manifest (input hashes, script hashes, OpenROAD version, requested stages) before OpenROAD starts and completes it after exit. Tcl only appends events, closing the file after each, so `progress.jsonl` is complete up to a kill.
 """
 
 import json
@@ -30,6 +34,7 @@ from importlib.metadata import version
 from importlib.resources import files
 from pathlib import Path
 
+from ..config.pnr import CHECKPOINT_STAGES, PNR_STAGES
 from ..logging_utils import log_event
 from .artifact_paths import project_relative, project_root_or_none
 
@@ -47,13 +52,38 @@ CHECKPOINT_SCHEMA = 1
 
 _TCL_FILE = "checkpoints.tcl"
 
-#: stage -> (file index, flow command, trace edge). A stage is written on entering the next stage's first command, or for global routing on leaving the router, so the database is exactly what the stage left.
-STAGE_ANCHORS = {
-    "floorplan": ("01", "global_placement", "enter"),
-    "place": ("02", "clock_tree_synthesis", "enter"),
-    "cts": ("03", "global_route", "enter"),
-    "global_route": ("04", "global_route", "leave"),
+#: Each stage's file index. Indexes are fixed per stage, so a file name names its stage whatever stages a run has; 06 is kept for a stage between detailed route and finish.
+STAGE_INDEX = {
+    "floorplan": "01",
+    "place": "02",
+    "cts": "03",
+    "global_route": "04",
+    "detailed_route": "05",
+    "finish": "07",
 }
+
+#: How a one-session run ends each stage: on entering the next stage's first command, on leaving the detailed router, or (None) where the flow calls `rb::ckpt::stage_end` after any global-route repair. The database at that point is exactly what the stage left.
+STAGE_ANCHORS = {
+    "floorplan": ("global_placement", "enter"),
+    "place": ("clock_tree_synthesis", "enter"),
+    "cts": ("global_route", "enter"),
+    "global_route": None,
+    "detailed_route": ("detailed_route", "leave"),
+}
+
+#: Checkpoints whose database holds a global route.
+GLOBAL_ROUTED = ("global_route", "detailed_route")
+
+#: Checkpoints that also carry the route guides and global-route segments; the detailed-route session reads the segments. A routed database's pin access points no longer match the segments, which OpenROAD then refuses (GRT-0263), so a later session takes the global route from the guides the database keeps.
+ROUTE_FILES = ("global_route",)
+
+#: Reports in the artefact directory a stage's checkpoint keeps a copy of, as `kind: file name`: the detailed router's DRC report and log, which a run resumed from `finish` restores (see `inherited_reports`).
+STAGE_REPORTS = {
+    "detailed_route": {"drc": "route.drc.rpt", "maze": "route.maze.log"},
+}
+
+#: Flow globals a staged checkpoint saves for the next session: per-macro cell halos from `floorplan.macros`, which the rotated-macro blockages read in the place session.
+SESSION_STATE = ("MACRO_CELL_HALOS",)
 
 #: Flow commands whose start and end are progress events.
 PROGRESS_STEPS = (
@@ -120,22 +150,96 @@ def _tcl_quote(value: str) -> str:
     return f'"{escaped}"'
 
 
-def render_tcl_block(run_dir: str, stages: tuple[str, ...]) -> str:
-    """Return the Tcl block the flow template splices in when checkpoints are on.
-
-    The block carries its own leading newline so a run without checkpoints renders the template byte-identically.
-    """
-    anchors = " ".join(
-        "{" + f"{stage} {{{' '.join(STAGE_ANCHORS[stage])}}}" + "}" for stage in stages
-    )
-    procs = files("rtl_buddy.pnr").joinpath(_TCL_FILE).read_text()
+def _arm_config(*, anchors: dict, wanted, account: bool, strict: bool, state=()) -> str:
+    """Return the braced Tcl dict `rb::ckpt::arm` takes; every name in it is a plain identifier."""
     return (
-        f'\nputs ">>> Stage checkpoints (#653)"\n{procs}\n'
+        "{"
+        + " ".join(
+            [
+                "anchors {"
+                + " ".join(
+                    f"{stage} {{{cmd} {edge}}}"
+                    for stage, (cmd, edge) in anchors.items()
+                )
+                + "}",
+                f"wanted {{{' '.join(wanted)}}}",
+                "order {"
+                + " ".join(f"{stage} {index}" for stage, index in STAGE_INDEX.items())
+                + "}",
+                f"routed {{{' '.join(ROUTE_FILES)}}}",
+                "reports {"
+                + " ".join(
+                    f"{stage} {{{' '.join(f'{k} {v}' for k, v in kinds.items())}}}"
+                    for stage, kinds in STAGE_REPORTS.items()
+                )
+                + "}",
+                f"state {{{' '.join(state)}}}",
+                f"account {int(account)}",
+                f"strict {int(strict)}",
+            ]
+        )
+        + "}"
+    )
+
+
+def _procs() -> str:
+    return files("rtl_buddy.pnr").joinpath(_TCL_FILE).read_text()
+
+
+def render_tcl_block(
+    run_dir: str, stages: tuple[str, ...], *, stop_after: str | None = None
+) -> str:
+    """Return the Tcl block the flow template splices in when checkpoints are on, for a one-session run.
+
+    Every stage boundary is armed, so each stage's resources are recorded; only `stages`, and the `stop_after` stage, write a checkpoint. The `stop_after` stage is ended by the flow's explicit stop, not by its anchor, so its checkpoint is strict and no later stage starts. The block carries its own leading newline so a run without checkpoints renders the template byte-identically.
+    """
+    wanted = [s for s in CHECKPOINT_STAGES if s in stages or s == stop_after]
+    anchors = {
+        stage: a
+        for stage, a in STAGE_ANCHORS.items()
+        if a is not None and stage != stop_after
+    }
+    config = _arm_config(anchors=anchors, wanted=wanted, account=True, strict=False)
+    return (
+        f'\nputs ">>> Stage checkpoints (#653)"\n{_procs()}\n'
         f"rb::ckpt::arm {_tcl_quote(run_dir)} "
         f"{_tcl_quote(os.path.join(run_dir, PROGRESS_NAME))} "
         f"{{{' '.join(PROGRESS_STEPS)}}} "
-        f"[concat {anchors}]\n"
+        f"{config}\n"
     )
+
+
+#: The lines of a stage script that bind it to its run; script identity ignores them.
+RUN_BINDING_RE = re.compile(r"^set RB_(RUN|PRED)_DIR .*$", re.MULTILINE)
+
+
+def render_staged_block(stage: str, run_dir: str, pred_dir: str | None) -> str:
+    """Return the checkpoint block of one staged session.
+
+    `RB_RUN_DIR` is where the session writes its checkpoint and events; `RB_PRED_DIR` holds the checkpoint it starts from. They are the only run-specific lines, so two runs' scripts of a stage compare equal apart from them (see `RUN_BINDING_RE`). A checkpoint that cannot be written fails the session.
+    """
+    index = STAGE_INDEX[stage]
+    lines = [
+        "",
+        f'puts ">>> Stage {index}_{stage} (staged run)"',
+        f"set RB_RUN_DIR {_tcl_quote(run_dir)}",
+    ]
+    if pred_dir is not None:
+        lines.append(f"set RB_PRED_DIR {_tcl_quote(pred_dir)}")
+    config = _arm_config(
+        anchors={},
+        wanted=[stage] if stage in CHECKPOINT_STAGES else [],
+        account=False,
+        strict=True,
+        state=SESSION_STATE,
+    )
+    lines += [
+        _procs().rstrip("\n"),
+        f"rb::ckpt::arm $RB_RUN_DIR [file join $RB_RUN_DIR {PROGRESS_NAME}] "
+        f"{{{' '.join(PROGRESS_STEPS)}}} {config}",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def _now() -> str:
@@ -146,6 +250,60 @@ def _append_event(run_dir: str, event: str, **fields) -> None:
     record = {"event": event, "t": _now(), **fields}
     with open(os.path.join(run_dir, PROGRESS_NAME), "a") as f:
         f.write(json.dumps(record) + "\n")
+
+
+def stage_begin(run_dir: str, stage: str) -> None:
+    """Record that rb launched a staged session."""
+    _append_event(run_dir, "stage_begin", stage=stage, index=STAGE_INDEX[stage])
+
+
+def stage_end(
+    run_dir: str,
+    stage: str,
+    *,
+    returncode: int,
+    resources: dict,
+    status: str,
+    checkpoint: dict | None = None,
+) -> None:
+    """Record a staged session's exit, the resources rb measured for it and, when it wrote one, its checkpoint's files with their fingerprints.
+
+    The fingerprints are recorded here, not only in the manifest, so a run rb did not see finish can still be resumed.
+    """
+    root = project_root_or_none(run_dir)
+    _append_event(
+        run_dir,
+        "stage_end",
+        stage=stage,
+        index=STAGE_INDEX[stage],
+        status=status,
+        returncode=returncode,
+        **resources,
+        **({"checkpoint": _relativise(checkpoint, root)} if checkpoint else {}),
+    )
+
+
+def written_checkpoint(run_dir: str, stage: str) -> dict | None:
+    """Return `{kind: file name}` of `stage`'s checkpoint if this run's progress file records it complete."""
+    event = _written_checkpoints(read_progress(run_dir)).get(stage)
+    return dict(event.get("files") or {}) if event else None
+
+
+#: Fields of a `stage_end` event that describe what the stage used; a staged session's also has `threads`.
+_RESOURCE_FIELDS = ("status", "wall_s", "cpu_s", "peak_rss_kb", "measured_by")
+
+
+def stage_resources(events: list[dict]) -> dict[str, dict]:
+    """Map each stage that ended to its status, wall time, CPU time, peak RSS and how they were measured, and a staged session's thread count, in flow order."""
+    ended = {
+        str(e.get("stage")): {
+            **{k: e.get(k) for k in _RESOURCE_FIELDS},
+            **({"threads": e["threads"]} if "threads" in e else {}),
+        }
+        for e in events
+        if e.get("event") == "stage_end"
+    }
+    return {stage: ended[stage] for stage in PNR_STAGES if stage in ended}
 
 
 def read_progress(run_dir: str) -> list[dict]:
@@ -209,11 +367,11 @@ def last_step(events: list[dict]) -> dict | None:
 
 
 def checkpoint_label(stage: str) -> dict:
-    """Return the flags stating a checkpoint is not final and whether it is global-routed."""
-    global_routed = stage == "global_route"
+    """Return the flags stating a checkpoint is not final and whether it is global- and detail-routed."""
+    global_routed = stage in GLOBAL_ROUTED
     return {
         "final": False,
-        "detail_routed": False,
+        "detail_routed": stage == "detailed_route",
         "global_routed": global_routed,
         "congestion": {
             "available": False,
@@ -235,12 +393,14 @@ def begin_run(
     stages: tuple[str, ...],
     openroad: dict,
     inputs: dict,
+    staged: dict | None = None,
 ) -> str:
     """Write the manifest and first event, point `latest` here, and return the manifest path.
 
-    Call after the flow script exists and just before OpenROAD starts, so `inputs.script` hashes the exact `pnr.tcl` OpenROAD runs.
+    Call after the flow scripts exist and just before OpenROAD starts, so `inputs.script` hashes the exact `pnr.tcl` OpenROAD runs. A staged run passes `staged`: its `chain` of stage sessions (script and log per stage, including stages a resume inherits), `resumed_from`, and the checkpoints it inherits, which `finish_run` keeps beside the ones it writes. `stop_after` is recorded for either kind of run.
     """
     root = project_root_or_none(artefact_dir)
+    staged = staged or {}
     document = {
         "schema_version": CHECKPOINT_SCHEMA,
         "generator": f"rtl-buddy {version('rtl-buddy')}",
@@ -252,16 +412,22 @@ def begin_run(
         "tool": openroad,
         "stages": {
             stage: {
-                "index": STAGE_ANCHORS[stage][0],
-                "name": f"{STAGE_ANCHORS[stage][0]}_{stage}",
+                "index": STAGE_INDEX[stage],
+                "name": f"{STAGE_INDEX[stage]}_{stage}",
                 **checkpoint_label(stage),
             }
             for stage in stages
         },
         "inputs": _relativise(inputs, root),
+        **{
+            key: _relativise(staged[key], root)
+            for key in ("staged", "stop_after", "resumed_from", "chain")
+            if staged.get(key) is not None
+        },
         # Set by `finish_run`; stays None if rb itself is killed.
         "outcome": None,
-        "checkpoints": {},
+        "checkpoints": _relativise(staged.get("inherited_checkpoints") or {}, root),
+        "resources": {},
     }
     _write_manifest(run_dir, document)
     _append_event(
@@ -332,7 +498,12 @@ def finish_run(
     step = last_step(events)
     manifest = read_manifest(run_dir) or {}
     root = project_root_or_none(run_dir)
-    checkpoints = {}
+    # Inherited checkpoints, from `begin_run`, stay listed beside this run's own.
+    checkpoints = {
+        stage: entry
+        for stage, entry in (manifest.get("checkpoints") or {}).items()
+        if isinstance(entry, dict) and entry.get("inherited_from")
+    }
     for stage, event in written.items():
         entry_files = {}
         for kind, name in (event.get("files") or {}).items():
@@ -346,7 +517,10 @@ def finish_run(
             "files": entry_files,
             **checkpoint_label(stage),
         }
-    manifest["checkpoints"] = checkpoints
+    manifest["checkpoints"] = {
+        stage: checkpoints[stage] for stage in PNR_STAGES if stage in checkpoints
+    }
+    manifest["resources"] = stage_resources(events)
     manifest["outcome"] = {
         "finished_at": _now(),
         "openroad_returncode": returncode,
@@ -393,13 +567,39 @@ class CheckpointRef:
 
 
 def _stage_of(token: str) -> str | None:
-    """Map `cts` or `03_cts` to `cts`; anything else to None."""
-    if token in STAGE_ANCHORS:
+    """Map `cts` or `03_cts` to `cts`; anything that is not a checkpoint stage to None."""
+    if token in CHECKPOINT_STAGES:
         return token
-    for stage, (index, _cmd, _edge) in STAGE_ANCHORS.items():
-        if token == f"{index}_{stage}":
+    for stage in CHECKPOINT_STAGES:
+        if token == f"{STAGE_INDEX[stage]}_{stage}":
             return stage
     return None
+
+
+def _inherited_checkpoint(run_dir: str, stage: str, entry: dict) -> CheckpointRef | str:
+    """A checkpoint a resumed run inherited, from the DEF its manifest records."""
+    index = STAGE_INDEX[stage]
+    record = (entry.get("files") or {}).get("def")
+    path = record.get("path") if isinstance(record, dict) else None
+    root = project_root_or_none(run_dir)
+    if path and not os.path.isabs(path) and root is not None:
+        path = os.path.join(root, path)
+    if not path or not os.path.isfile(path):
+        return (
+            f"checkpoint {index}_{stage} of resumed run {os.path.basename(run_dir)} "
+            f"was written by run {entry.get('inherited_from')}, and its DEF "
+            f"{path or '(not recorded)'} is gone"
+        )
+    source_dir = os.path.dirname(path)
+    event = _written_checkpoints(read_progress(source_dir)).get(stage) or {}
+    return CheckpointRef(
+        run_dir=source_dir,
+        run_id=os.path.basename(source_dir),
+        stage=stage,
+        index=index,
+        def_path=path,
+        design=event.get("design"),
+    )
 
 
 def resolve_checkpoint(artefact_dir: str, spec: str) -> CheckpointRef | str:
@@ -421,7 +621,7 @@ def resolve_checkpoint(artefact_dir: str, spec: str) -> CheckpointRef | str:
         if stage is None:
             return (
                 f"unknown checkpoint {spec!r}: name a stage "
-                f"({', '.join(STAGE_ANCHORS)}), <run-id>/<stage>, or a "
+                f"({', '.join(CHECKPOINT_STAGES)}), <run-id>/<stage>, or a "
                 "checkpoint file"
             )
         if head:
@@ -441,8 +641,12 @@ def resolve_checkpoint(artefact_dir: str, spec: str) -> CheckpointRef | str:
         return f"no checkpoint run directory at {run_dir}"
     written = _written_checkpoints(read_progress(run_dir))
     event = written.get(stage)
-    index = STAGE_ANCHORS[stage][0]
+    index = STAGE_INDEX[stage]
     if event is None:
+        manifest = read_manifest(run_dir) or {}
+        entry = (manifest.get("checkpoints") or {}).get(stage) or {}
+        if entry.get("inherited_from"):
+            return _inherited_checkpoint(run_dir, stage, entry)
         return (
             f"checkpoint {index}_{stage} was not written by run "
             f"{os.path.basename(run_dir)} (see {os.path.join(run_dir, PROGRESS_NAME)})"

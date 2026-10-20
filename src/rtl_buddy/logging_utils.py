@@ -324,6 +324,15 @@ def _sim_exit_phrase(fields: Mapping[str, Any]) -> str:
     return f"exited {code}"
 
 
+def _capped_names(names: Any, cap: int = 10) -> str:
+    """The first ``cap`` of ``names`` joined by commas, then ``and N more``."""
+    names = [str(n) for n in names or []]
+    shown = ", ".join(names[:cap])
+    if len(names) > cap:
+        shown += f" and {len(names) - cap} more"
+    return shown
+
+
 def _human_message(event: str, fields: Mapping[str, Any]) -> str:
     test = fields.get("test")
     run_id = fields.get("run_id")
@@ -2064,6 +2073,31 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f'P&R "{fields.get("pnr")}" failed {where}; {saved}; '
                 f"checkpoints kept in {fields.get('dir')}"
+            )
+        case "pnr.resume_refused":
+            return (
+                f'P&R "{fields.get("pnr")}": --resume {fields.get("resume")} '
+                f"--from {fields.get('from_stage')} refused: {fields.get('reason')}"
+            )
+        case "pnr.hook_commands_not_kept":
+            return (
+                f'P&R "{fields.get("pnr")}": hook {fields.get("point")} '
+                f"({fields.get('path')}) redefined, renamed or deleted the Tcl "
+                f"command(s) {_capped_names(fields.get('commands'))}, which "
+                "later stage sessions have in their original form; move it to a "
+                "session hook"
+            )
+        case "pnr.hook_commands_added":
+            return (
+                f'P&R "{fields.get("pnr")}": hook {fields.get("point")} '
+                f"({fields.get('path')}) defined the Tcl command(s) "
+                f"{_capped_names(fields.get('commands'))}, which later stage "
+                "sessions do not have"
+            )
+        case "pnr.stopped":
+            return (
+                f'P&R "{fields.get("pnr")}" stopped after {fields.get("stage")} '
+                f"(--stop-after, not routed); checkpoint {fields.get('checkpoint')}"
             )
         case "pnr.checkpoint_manifest_failed":
             return (

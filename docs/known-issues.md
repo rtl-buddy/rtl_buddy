@@ -237,6 +237,21 @@ With the `default` mapped-run script, `&dch -f` choices and `&nf` area recovery 
 
 OpenROAD's default `detailed_placement` legalizer treats a fixed macro turned by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) as covering its master's unrotated width and height from its lower-left corner (OpenROAD#11735). Cells that global placement put in that footprint outside the macro are moved out, some far, and the area stays empty. `rb pnr` blocks the footprint during global placement by default; `placement.rotated-macro-footprint` selects the diamond legalizer instead, or neither. See [Rotate a macro](concepts/pnr.md#rotate-a-macro).
 
+## Session state does not cross a P&R stage boundary
+
+Each stage of a staged `rb pnr` run (`stages: true`, or `--resume`) is a new OpenROAD session. It reads the previous stage's database, SDC and saved flow variables, and rb repeats the flow's own setup. State an earlier session held only in memory is gone: Tcl variables, procedures and `rename` wrappers, `set_wire_rc`, `set_layer_rc` and `set_dont_use` that a hook ran, STA settings outside the SDC, and the resizer's in-memory state. A hook that renames, deletes or redefines an existing global Tcl command logs the warning `pnr.hook_commands_not_kept`, since later sessions run the original; one that defines new commands logs them at info as `pnr.hook_commands_added`.
+
+Move state that later stages need into a `session` hook, which runs at the start of every session. It then applies from the first stage on, so it also changes the steps that ran before the hook's original point: a `set_wire_rc` moved there from `after-cts` also changes placement. See [Run stages as separate sessions](concepts/pnr.md#run-stages-as-separate-sessions).
+
+## A staged P&R run can differ from a one-session run
+
+A staged run runs the same flow commands as a one-session run of the same configuration. Its results are identical at equal thread counts unless OpenROAD carries in-memory state over a stage boundary in the one-session run, which the staged run starts without.
+
+- The resizer keeps state from `repair_design` and `buffer_ports` in memory, so a repair in a later stage can act differently after a stage boundary. The known case is a hook that runs one of them in an earlier stage, such as `repair_design -pre_placement` in an `after-pins` hook. rb's own `buffer-ports` step runs in the `floorplan` stage and its `repair_design` in `place`, and the project template's sky130hd flat block with `buffer-ports: true` routes identically staged and in one session.
+- Without the PDK's `rcx-rules`, the final reports of the `finish` session are timed on the global route restored from the database's route guides. It can miss a few pins (`EST-0026`) that the one-session run's route reached, so slack and TNS can differ slightly. With `rcx-rules` the reports are timed on the extracted SPEF and match.
+
+Compare a staged run with a one-session run at the same `threads:` before relying on it to reproduce one. See [Run stages as separate sessions](concepts/pnr.md#run-stages-as-separate-sessions).
+
 ## `rb phys module` reports no power for an RTL module
 
 The physical model's synthesis half holds RTL module names and its power half holds the Liberty cell of each leaf instance, so `rb phys module u_cpu` reports cell count and area with no instances and no power. Use `rb phys instance u_cpu`, which sums the leaf rows under the instance path. See [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer).
