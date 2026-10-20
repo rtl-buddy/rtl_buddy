@@ -103,15 +103,14 @@ foreach cmd {link_design read_sdc initialize_floorplan place_pins
 proc detailed_route {args} {
     global env
     if {[info exists env(RB_STUB_DRC)]} {
-        foreach {flag lines} [list -output_drc $env(RB_STUB_DRC) -output_maze 1] {
-            set fh [open [lindex $args [expr {[lsearch -exact $args $flag] + 1}]] w]
-            for {set i 0} {$i < $lines} {incr i} {
-                puts $fh [expr {$flag eq "-output_drc"
-                    ? "violation type: Short\n\tbbox = ($i.0, 0.0) - ($i.1, 0.1) on Layer M1"
-                    : "$flag $i"}]
-            }
-            close $fh
+        set fh [open [lindex $args [expr {[lsearch -exact $args -output_drc] + 1}]] w]
+        for {set i 0} {$i < $env(RB_STUB_DRC)} {incr i} {
+            puts $fh "violation type: Short\n\tsrcs: net:a$i net:b$i\n\tbbox = ($i.0, 0.0) - ($i.1, 0.1) on Layer met1"
         }
+        close $fh
+        set fh [open [lindex $args [expr {[lsearch -exact $args -output_maze] + 1}]] w]
+        puts $fh "-output_maze 0"
+        close $fh
     }
     rb_stub detailed_route
 }
