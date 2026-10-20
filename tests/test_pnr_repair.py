@@ -2370,6 +2370,86 @@ def test_a_repair_session_that_writes_no_database_is_set_aside(
     )
 
 
+@pytest.mark.parametrize("stages", [False, True])
+def test_an_error_after_a_set_aside_round_still_fails_the_run(
+    tmp_path, monkeypatch, stages
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        stages=stages,
+        env={
+            "RB_STUB_SETUP": "-0.2 -0.1 -0.05",
+            "RB_STUB_REPAIR_FAIL": "1",
+            "RB_STUB_ERRLINE": "filler_placement",
+        },
+    )
+
+    res = backend.run()
+
+    # Round 1's error is set aside; finish's is counted, and only it.
+    assert res.results["result"] == "FAIL", res.results
+    assert "stage 07_finish: 1 ERROR(s)" in res.results["desc"]
+    assert res.results["post_route_repair"]["stop"] == "session_failed"
+    log = (artefacts / "pnr.log").read_text()
+    assert log.index("[ERROR STUB-0003]") < log.index(">>> rb: set aside ")
+    assert log.index(">>> rb: set aside ") < log.index("[ERROR STUB-0002]")
+
+
+def test_error_lines_leave_out_only_the_sessions_set_aside():
+    log = "\n".join(
+        [
+            "[ERROR A-1] before any session",
+            ">>> rb: begin 06_post_route_repair round 1 repair",
+            "[ERROR B-2] in a session set aside",
+            ">>> rb: set aside 06_post_route_repair round 1 repair: failed",
+            "[ERROR C-3] after the session set aside",
+            ">>> rb: begin 06_post_route_repair round 2 extraction",
+            "[ERROR D-4] in a session that was not set aside",
+            ">>> rb: begin 06_post_route_repair round 2 repair",
+            "[ERROR E-5] in a session without an end",
+        ]
+    )
+
+    assert pnr_openroad._error_lines(log) == [
+        "[ERROR A-1] before any session",
+        "[ERROR C-3] after the session set aside",
+        "[ERROR D-4] in a session that was not set aside",
+        "[ERROR E-5] in a session without an end",
+    ]
+
+
+@pytest.mark.parametrize("has_report", [False, True])
+def test_a_kept_round_without_a_drc_report_removes_a_stale_one(tmp_path, has_report):
+    run_dir, out_dir = tmp_path / "run", tmp_path / "out"
+    run_dir.mkdir()
+    out_dir.mkdir()
+    files = {"odb": "06_post_route_repair.r1.odb"}
+    (run_dir / files["odb"]).write_text("odb")
+    if has_report:
+        files["drc"] = "06_post_route_repair.r1.route.drc.rpt"
+        (run_dir / files["drc"]).write_text("kept")
+    (out_dir / "route.drc.rpt").write_text("stale")
+    (out_dir / "route.maze.log").write_text("stale")
+    plan = {
+        "out_dir": str(out_dir),
+        "carry": {
+            "dir": str(run_dir),
+            "stage": "detailed_route",
+            "name": "05_detailed_route",
+            "design": "top",
+        },
+    }
+
+    pnr_openroad._keep_round(str(run_dir), plan, 1, files)
+
+    assert (out_dir / "route.drc.rpt").is_file() is has_report
+    if has_report:
+        assert (out_dir / "route.drc.rpt").read_text() == "kept"
+    assert not (out_dir / "route.maze.log").exists()
+
+
 @pytest.mark.parametrize("setup, kept", [("-0.2 0.0", 1), ("-0.2 -0.3", 0)])
 def test_stop_after_post_route_repair_reports_on_extracted_parasitics(
     tmp_path, monkeypatch, setup, kept
