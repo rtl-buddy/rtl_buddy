@@ -5010,6 +5010,38 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
+        # `repair-design.wire-rc` reads and sets RC per scene, which needs OpenSTA's scenes and `est::`.
+        post_route = (
+            platform.get_post_route_repair()
+            if self._mode is PnrMode.CLOSURE
+            else None
+        )
+        if (
+            post_route is not None
+            and post_route.repair_design is not None
+            and post_route.repair_design.wire_rc is not None
+            and not all(
+                self._has_tcl_command(command)
+                for command in ("sta::scenes", "est::set_h_wire_signal_rc_cmd")
+            )
+        ):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.wire_rc_unsupported",
+                pnr=self.pnr_cfg.get_name(),
+                exe=self.openroad_executable,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    "post-route-repair.repair-design.wire-rc needs OpenROAD's "
+                    "sta::scenes and est:: wire RC commands (26Q2 or newer); "
+                    "this OpenROAD has none"
+                ),
+                fail_stage="setup",
+            )
+
         # An abstract carries one corner's Liberty model, which a parent would read as the whole block.
         if self.pnr_cfg.get_harden() and platform.is_multi_corner():
             log_event(
