@@ -15,6 +15,7 @@ import threading
 import time
 import json
 import uuid
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -46,6 +47,7 @@ from .config.fpv import FpvRegConfig, FpvSuiteConfig
 from .config.mut import MutSuiteConfig
 from .config.model import ModelConfig, ModelConfigLoader
 from .config.pnr import GdsMode, PnrSuiteConfig
+from .config.pnr_repair import PnrMode
 from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .cov import model as cov_model
@@ -240,6 +242,7 @@ from .tools.hier_rtl_buddy_view import (
     RtlBuddyViewQuery,
     probe_view_version,
 )
+from .tools import pnr_dispatch, pnr_stages
 from .tools.pnr_openroad import DEFAULT_PNG_HEIGHT, DEFAULT_PNG_WIDTH
 from .tools.spec_trace import (
     all_spec_blocks,
@@ -622,6 +625,13 @@ class RtlBuddy:
             hidden=True,
             help="internal: run a dispatched run's coverage tail and write its result JSON",
         )(self.do_cmd_cov_job)
+        # Remote-dispatch P&R stage: runs one stage of a staged run's checkpoint
+        # directory on a compute node.
+        self.app.command(
+            "_pnr-stage-job",
+            hidden=True,
+            help="internal: run one stage of a dispatched staged P&R run",
+        )(self.do_cmd_pnr_stage_job)
         self.app.command("filelist", help="generate filelists using models.yaml")(
             self.do_gen_model_filelist
         )
@@ -1243,6 +1253,7 @@ class RtlBuddy:
             "_build-job",
             "_elab-job",
             "_cov-job",
+            "_pnr-stage-job",
         ):
             self._artifact_locks.acquire(
                 ctx.artifact_root,
@@ -3133,6 +3144,63 @@ class RtlBuddy:
                 ],
                 include_run_id=run_id is not None,
                 metadata=[f"Builder: {self.builder}"],
+            )
+        raise typer.Exit(exit_code)
+
+    def do_cmd_pnr_stage_job(
+        self,
+        command_root: Annotated[
+            str,
+            typer.Option(
+                "--command-root",
+                help="the pnr.yaml directory; root_config.yaml is found from it",
+            ),
+        ],
+        run_dir: Annotated[
+            str,
+            typer.Option("--run-dir", help="the staged run's checkpoint directory"),
+        ],
+        stage: Annotated[str, typer.Option("--stage", help="the stage to run")],
+        openroad: Annotated[
+            str, typer.Option("--openroad", help="the OpenROAD the head resolved")
+        ],
+        log: Annotated[
+            str, typer.Option("--log", help="the run's pnr.log, appended to")
+        ],
+    ):
+        """internal: run one stage of a dispatched staged P&R run"""
+        run_dir = str(self._abs_invocation_path(run_dir))
+        if stage not in pnr_stages.PNR_STAGES:
+            raise FatalRtlBuddyError(
+                f"_pnr-stage-job: unknown stage {stage!r} "
+                f"(expected any of {', '.join(pnr_stages.PNR_STAGES)})"
+            )
+        # Log beside the stage's job files, never into the head's rtl_buddy.log.
+        self._enter_command_context(
+            command_root=self._abs_invocation_path(command_root),
+            log_path=pnr_dispatch.job_file(run_dir, stage, "rtl_buddy.log"),
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "command.pnr_stage_job",
+            command="_pnr-stage-job",
+            run_dir=run_dir,
+            stage=stage,
+        )
+        ok = pnr_dispatch.run_stage_job(
+            run_dir,
+            stage,
+            openroad=openroad,
+            pnr_log=str(self._abs_invocation_path(log)),
+        )
+        exit_code = 0 if ok else 1
+        if self.machine:
+            self._emit_machine_result(
+                "_pnr-stage-job",
+                exit_code,
+                stage=stage,
+                result_json=pnr_dispatch.job_file(run_dir, stage, "result.json"),
             )
         raise typer.Exit(exit_code)
 
@@ -10950,6 +11018,12 @@ class RtlBuddy:
             "gds_allowed_empty_cells",
             "export_provenance",
             "openroad_threads",
+            "routed",
+            "stopped_after",
+            "mode",
+            "global_route_overflow",
+            "post_route_repair",
+            "resumed_from",
             "checkpoint_dir",
             "checkpoint_stages",
             "last_step",
@@ -11325,6 +11399,65 @@ class RtlBuddy:
                 ),
             ),
         ] = False,
+        stop_after: Annotated[
+            str,
+            typer.Option(
+                "--stop-after",
+                metavar="STAGE",
+                help=(
+                    "end the run after STAGE (floorplan, place, cts, "
+                    "global_route, detailed_route, or post_route_repair when "
+                    "the run sets post-route-repair): write its checkpoint and "
+                    "a stage report; the result is a PASS with routed: false, "
+                    "and no routed outputs or abstract. Needs a single named run"
+                ),
+                show_default="run to the end",
+            ),
+        ] = None,
+        resume: Annotated[
+            str,
+            typer.Option(
+                "--resume",
+                metavar="RUN",
+                help=(
+                    "resume a staged run (stages: true) in a new checkpoint run "
+                    "directory: latest, a run id under the run's checkpoints/, "
+                    "or a checkpoint run directory. Needs --from and a single "
+                    "named run; refused when the scripts, input files or "
+                    "OpenROAD of the stages before --from have changed. Files "
+                    "that hooks, platform-tcl, a pdn-config or the SDC source "
+                    "themselves, and environment variables, are not checked"
+                ),
+            ),
+        ] = None,
+        resume_from: Annotated[
+            str,
+            typer.Option(
+                "--from",
+                metavar="STAGE",
+                help=(
+                    "the first stage a --resume runs (place, cts, global_route, "
+                    "detailed_route, post_route_repair when the run sets "
+                    "post-route-repair, finish); it starts from the resumed "
+                    "run's checkpoint of the stage before"
+                ),
+            ),
+        ] = None,
+        dispatch: Annotated[
+            str,
+            typer.Option(
+                "--dispatch",
+                metavar="BACKEND",
+                help=(
+                    "slurm: run each stage as its own job, each held until the "
+                    "one before succeeds, sized by the run's resources: block "
+                    "over cfg-dispatch.resources; implies stages: true. Blocks "
+                    "until the last stage ends; Ctrl-C, SIGTERM or SIGHUP "
+                    "cancels the jobs. local runs here"
+                ),
+                show_default="local",
+            ),
+        ] = None,
     ):
         """run place-and-route"""
         ctx = self._enter_command_context(
@@ -11340,6 +11473,7 @@ class RtlBuddy:
             command="pnr",
             pnr=pnr_name or "all",
             pnr_config=pnr_config,
+            dispatch=dispatch,
         )
 
         if list_runs:
@@ -11351,17 +11485,27 @@ class RtlBuddy:
                 emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
             raise typer.Exit(0)
 
-        results = self._do_pnr_suite(
-            suite_cfg,
-            pnr_name=pnr_name,
-            reg_level=reg_level,
-            emit_gds=emit_gds,
-            emit_png=emit_png,
-            gds_mode=gds_mode,
-            accept_stale=accept_stale,
-            run_synth=run_synth,
-            jobs=jobs,
-        )
+        backend = self._pnr_dispatch_backend(dispatch)
+        with pnr_dispatch.cancel_on_interrupt() if backend else nullcontext():
+            results = self._do_pnr_suite(
+                suite_cfg,
+                pnr_name=pnr_name,
+                reg_level=reg_level,
+                emit_gds=emit_gds,
+                emit_png=emit_png,
+                gds_mode=gds_mode,
+                accept_stale=accept_stale,
+                run_synth=run_synth,
+                jobs=jobs,
+                stop_after=stop_after,
+                resume=(
+                    resume
+                    if resume is None or pnr_stages.is_run_name(resume)
+                    else str(self._abs_invocation_path(resume))
+                ),
+                resume_from=resume_from,
+                dispatch=backend,
+            )
         exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
         if self.machine:
             self._emit_machine_result(
@@ -11375,6 +11519,26 @@ class RtlBuddy:
             self._render_pnr_summary("P&R Results Summary", results)
         raise typer.Exit(exit_code)
 
+    def _pnr_dispatch_backend(self, name: str | None):
+        """The backend `rb pnr --dispatch` runs stages on, or None to run them here.
+
+        Only `--dispatch` selects one; `cfg-dispatch.backend` does not apply to `rb pnr`.
+        """
+        if name is None or name == "local":
+            return None
+        if name != "slurm":
+            validate_backend_name(name)
+            raise FatalRtlBuddyError(
+                f"rb pnr --dispatch {name}: P&R stages run on slurm or here "
+                "(local); a staged run's stages run one after another, so "
+                "local-parallel has nothing to run side by side"
+            )
+        return create_dispatch_backend(
+            name,
+            self.root_cfg.get_dispatch_cfg(),
+            config_path=getattr(self.root_cfg, "root_cfg_path", None),
+        )
+
     def _do_pnr_suite(
         self,
         suite_cfg,
@@ -11387,8 +11551,20 @@ class RtlBuddy:
         accept_stale: bool = False,
         run_synth: bool = False,
         jobs: int = 1,
+        stop_after: str | None = None,
+        resume: str | None = None,
+        resume_from: str | None = None,
+        dispatch=None,
     ):
         suite_path = suite_cfg.get_path()
+        if stop_after is not None or resume is not None or resume_from is not None:
+            if pnr_name is None:
+                raise FatalRtlBuddyError(
+                    "--stop-after, --resume and --from need a single named pnr run"
+                )
+            problem = pnr_stages.option_error(stop_after, resume, resume_from)
+            if problem is not None:
+                raise FatalRtlBuddyError(problem)
 
         def _selected(run):
             level = run.get_reglvl(run.get_tool_name())
@@ -11445,6 +11621,10 @@ class RtlBuddy:
                 emit_png=emit_png,
                 gds_mode=gds_mode,
                 accept_stale=accept_stale,
+                stop_after=stop_after,
+                resume=resume,
+                resume_from=resume_from,
+                dispatch=dispatch,
             )
 
         def _error(planned, exc):
@@ -11465,6 +11645,7 @@ class RtlBuddy:
                     name=f"{planned.name}/results",
                     desc=f"did not finish: {exc}",
                     fail_stage="error",
+                    fields={"mode": planned.cfg.get_mode().value},
                 ),
             }
 
@@ -11482,6 +11663,10 @@ class RtlBuddy:
         emit_png,
         gds_mode,
         accept_stale,
+        stop_after=None,
+        resume=None,
+        resume_from=None,
+        dispatch=None,
     ) -> dict:
         """One planned run of `_do_pnr_suite`: blocked, skipped, or run.
 
@@ -11509,6 +11694,7 @@ class RtlBuddy:
                 name=f"{run.get_name()}/results",
                 desc=(f"reglvl {pnr_level} above {reg_level}"),
             )
+            res.results["mode"] = run.get_mode().value
             return {**row, "results": res}
         # An XFAIL passes the suite but delivers no abstract.
         blocked_by = [
@@ -11534,7 +11720,10 @@ class RtlBuddy:
                 name=f"{run.get_name()}/results",
                 desc=f"blocked: {noun} {names} did not pass",
                 fail_stage="blocked",
-                fields={"blocked_by": [dep.block for dep in blocked_by]},
+                fields={
+                    "blocked_by": [dep.block for dep in blocked_by],
+                    "mode": run.get_mode().value,
+                },
             )
             return {**row, "results": res}
         synth_row = None
@@ -11549,7 +11738,7 @@ class RtlBuddy:
                         f"{synth_row['desc']}"
                     ),
                     fail_stage="synth",
-                    fields={"synth": synth_row},
+                    fields={"synth": synth_row, "mode": run.get_mode().value},
                 )
                 return {**row, "results": res}
         runner = PnrRunner(
@@ -11562,9 +11751,15 @@ class RtlBuddy:
             emit_png=emit_png,
             gds_mode=gds_mode,
             accept_stale=accept_stale,
+            stop_after=stop_after,
+            resume=resume,
+            resume_from=resume_from,
+            dispatch=dispatch,
         )
         res = runner.run()
-        if run.is_xfail():
+        res.results.setdefault("mode", run.get_mode().value)
+        # A stopped run, which a probe is, is no verdict on the routed design, so `xfail` applies neither way.
+        if run.is_xfail() and stop_after is None and run.get_mode() is PnrMode.CLOSURE:
             self._apply_xfail_logged(res, run, "pnr_suite.xfail")
         if synth_row is not None:
             res.results["synth"] = synth_row
@@ -11750,7 +11945,8 @@ class RtlBuddy:
                 help=(
                     "export a stage checkpoint (checkpoints: in pnr.yaml) "
                     "instead of the routed result: a stage (floorplan, place, "
-                    "cts, global_route) of the latest run, <run-id>/<stage>, "
+                    "cts, global_route, detailed_route) of the latest run, "
+                    "<run-id>/<stage>, "
                     "or a checkpoint file; output goes under the checkpoint "
                     "and is labelled not final"
                 ),

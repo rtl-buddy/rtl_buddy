@@ -12,7 +12,7 @@ from textwrap import dedent
 import pytest
 from serde.yaml import from_yaml
 
-from rtl_buddy.config.pdk import MacroPinLimitsFile, PlacementFile
+from rtl_buddy.config.pdk import MacroPinLimitsFile, PlacementFile, validate_placement
 from rtl_buddy.config.pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.logging_utils import _human_message
@@ -155,13 +155,14 @@ def test_the_block_joins_the_hardened_config_digest_only_when_set(tmp_path):
 # --- rendered flow ------------------------------------------------------------
 
 _LEGALIZED = 'puts ">>> Detail placement (legalize)"\ndetailed_placement\n'
+_PLACE_END = 'rb::global_connect\n\nputs ">>> Clock tree synthesis"'
 _CTS = 'puts ">>> Clock tree synthesis"'
 
 
-def _block(tmp_path, platform) -> str:
+def _block(tmp_path, platform, dpl_options="") -> str:
     from rtl_buddy.tools.pnr_openroad import _macro_pin_limits_tcl
 
-    return _macro_pin_limits_tcl(platform)
+    return _macro_pin_limits_tcl(platform, dpl_options)
 
 
 def test_an_unset_key_renders_the_flow_byte_identically(tmp_path):
@@ -175,27 +176,29 @@ def test_an_unset_key_renders_the_flow_byte_identically(tmp_path):
     assert on.replace(block, "", 1) == off
     assert "rb::macro_pins" not in off
     assert "Macro pin limits" not in off
-    assert f"{_LEGALIZED}\n{_CTS}" in off
+    assert f"{_LEGALIZED}{_PLACE_END}" in off
 
 
 def test_the_step_runs_on_the_legalised_post_repair_placement_before_cts(tmp_path):
-    """After `repair_design` and its legalisation: legalisation moves a macro output's
-    loads, so checks read before it miss pins.
+    """After `repair_design`, its hook and its legalisation, at the end of the place
+    stage: legalisation moves a macro output's loads, so checks read before it miss pins.
     """
     platform = _on(tmp_path, margin=0.1)
     text = _render_flow(tmp_path, platform)
     block = _block(tmp_path, platform)
 
-    assert f"repair_design\n\n{_LEGALIZED}{block}\n{_CTS}" in text
+    assert f"repair_design\n\n{_LEGALIZED}{block}{_PLACE_END}" in text
     assert text.count('puts ">>> Macro pin limits"') == 1
     assert text.index("global_placement -density") < text.index(block)
     assert text.index(block) < text.index("clock_tree_synthesis")
-    # Buffers weakest first, the two margins, the global-placement padding, the tag.
+    # Buffers weakest first, the two margins, the global-placement padding, the tag
+    # and the flow's legalizer options.
     assert block.endswith(
-        "rb::macro_pins::repair {BUF_X1 BUF_X4 BUF_X8} 0.1 0.1 1 RB-MACRO-PIN-LIMITS:\n"
+        "rb::macro_pins::repair {BUF_X1 BUF_X4 BUF_X8} 0.1 0.1 1 "
+        "RB-MACRO-PIN-LIMITS: [list]\n"
     )
     assert _block(tmp_path, _on(tmp_path, capacitance_margin=0.5)).endswith(
-        "{BUF_X1 BUF_X4 BUF_X8} 0.05 0.5 1 RB-MACRO-PIN-LIMITS:\n"
+        "{BUF_X1 BUF_X4 BUF_X8} 0.05 0.5 1 RB-MACRO-PIN-LIMITS: [list]\n"
     )
 
 
@@ -205,6 +208,27 @@ def test_the_placement_padding_reaches_the_site_search(tmp_path):
         pdk, placement=PlacementFile(padding=3, macro_pin_limits=_BLOCK)
     )
     assert "{BUF_X1} 0.05 0.05 3 RB-MACRO-PIN-LIMITS:" in _block(tmp_path, platform)
+
+
+def test_the_step_legalizes_with_the_flow_s_detailed_placement_options(tmp_path):
+    """With `rotated-macro-footprint: diamond-legalizer` every `detailed_placement`
+    of the flow takes `-use_diamond_legalizer`, the step's own included.
+    """
+    block = _block(tmp_path, _on(tmp_path), " {*}$RB_DPL_OPTIONS")
+    assert block.endswith(" RB-MACRO-PIN-LIMITS: [list {*}$RB_DPL_OPTIONS]\n")
+    assert "\n    detailed_placement {*}$dpl_args\n" in _repair_body(block)
+
+
+def test_a_run_placement_block_replaces_the_platform_s_whole(tmp_path):
+    platform = _on(tmp_path, margin=0.1)
+    run = platform.with_run_placement(
+        validate_placement(_limits(buffers=["BUF_X16"]), "pnr run 'demo'"), "demo"
+    )
+    limits = run.get_placement_macro_pin_limits()
+    assert (limits.buffers, limits.margin) == (["BUF_X16"], 0.05)
+    # A run block without the key keeps the platform's.
+    kept = platform.with_run_placement(PlacementFile(density=0.5), "demo")
+    assert kept.get_placement_macro_pin_limits().margin == 0.1
 
 
 _BLOCK = MacroPinLimitsFile(buffers=["BUF_X1"])
@@ -225,11 +249,11 @@ def test_supplies_are_connected_before_dont_touch_in_the_documented_order(tmp_pa
         body.index(estimate),
         body.index("set before [measure $pin]"),
         body.index("insert_buffer -load_pins"),
-        body.index("\n    global_connect\n"),
-        body.index("\n    detailed_placement\n"),
+        body.index("\n    ::rb::global_connect\n"),
+        body.index("\n    detailed_placement {*}$dpl_args\n"),
         body.rindex(estimate),
         body.index("replace_cell $final $final_cell"),
-        body.rindex("\n    global_connect\n"),
+        body.rindex("\n    ::rb::global_connect\n"),
         body.index("set_dont_touch $dont_touch"),
     ]
     assert order == sorted(order)
@@ -425,12 +449,12 @@ def test_the_count_line_is_parsed_from_the_log(tmp_path):
         ">>>   u_sram/addr0[2] (input): slew 0.1439 ns (limit 0.0400) -> ...\n"
         "RB-MACRO-PIN-LIMITS: buffered 9 unmet 1\n"
     )
-    assert backend._parse_macro_pin_limits(log) == {
+    assert backend._macro_pin_limits_fields(log) == {
         "macro_pin_buffered_count": 9,
         "macro_pin_unmet_count": 1,
     }
     # The step did not run: no fields, rather than zeros.
-    assert backend._parse_macro_pin_limits("RB-ELECTRICAL: max_slew 0\n") == {}
+    assert backend._macro_pin_limits_fields("RB-ELECTRICAL: max_slew 0\n") == {}
 
 
 _RAN = (
@@ -489,3 +513,117 @@ def test_the_unmet_warning_has_a_human_message():
     )
     assert message.startswith("pnr blk: 3 macro pin(s) stayed over")
     assert "pnr.log" in message
+
+
+# --- staged runs ----------------------------------------------------------------
+
+
+def test_the_step_belongs_to_the_place_stage_of_a_staged_run(tmp_path):
+    """Its cells and dont_touch marks are in the place checkpoint, which CTS reads."""
+    from test_pnr_checkpoints import _pnr_cfg as _ckpt_pnr_cfg
+    from test_pnr_checkpoints import _render as _ckpt_render
+
+    from rtl_buddy.config.pnr import CHECKPOINT_STAGES
+    from rtl_buddy.tools import pnr_checkpoints, pnr_stages
+
+    run_dir = tmp_path / "ck" / "run"
+    run_dir.mkdir(parents=True)
+    _ckpt_render(
+        tmp_path,
+        CHECKPOINT_STAGES,
+        pnr_cfg=_ckpt_pnr_cfg(tmp_path, stages=True),
+        placement=_limits(buffers=list(_BUFFERS)),
+    )
+    scripts = {
+        stage: (
+            run_dir / f"{pnr_checkpoints.STAGE_INDEX[stage]}_{stage}.tcl"
+        ).read_text()
+        for stage in pnr_stages.TEMPLATE_STAGES
+    }
+    call = "rb::macro_pins::repair {BUF_X1 BUF_X4 BUF_X8} "
+    assert [s for s, text in scripts.items() if call in text] == ["place"]
+    place = scripts["place"]
+    assert place.index("repair_design\n") < place.index(call)
+    assert place.index(call) < place.index("rb::ckpt::stage_end place")
+
+
+def _stubbed_step(monkeypatch, buffered=3, unmet=1):
+    """Run the step's real block under the stub OpenROAD, its OpenROAD half replaced by the count line."""
+    import re
+
+    from rtl_buddy.tools import pnr_openroad
+
+    real = pnr_openroad._macro_pin_limits_tcl
+
+    def _block(platform, dpl_options=""):
+        return re.sub(
+            r"^rb::macro_pins::repair .*$",
+            f'puts "RB-MACRO-PIN-LIMITS: buffered {buffered} unmet {unmet}"',
+            real(platform, dpl_options),
+            flags=re.M,
+        )
+
+    monkeypatch.setattr(pnr_openroad, "_macro_pin_limits_tcl", _block)
+
+
+def _staged_backend(tmp_path, monkeypatch, **options):
+    from test_pnr_checkpoints import _backend
+
+    return _backend(
+        tmp_path,
+        monkeypatch,
+        stages=True,
+        pdk_fields={"placement": _limits(buffers=["BUF_X1"])},
+        **options,
+    )
+
+
+def test_a_staged_run_reports_the_counts_of_its_place_session(
+    tmp_path, monkeypatch, caplog
+):
+    from test_pnr_checkpoints import _runs
+
+    _stubbed_step(monkeypatch)
+    backend, artefacts = _staged_backend(tmp_path, monkeypatch)
+    with caplog.at_level(logging.WARNING):
+        res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["macro_pin_buffered_count"] == 3
+    assert res.results["macro_pin_unmet_count"] == 1
+    assert any("1 macro pin(s) stayed over" in r.getMessage() for r in caplog.records)
+    (run_dir,) = _runs(artefacts)
+    logs = [
+        p.name for p in sorted(run_dir.glob("*.log")) if "RB-MACRO" in p.read_text()
+    ]
+    assert logs == ["02_place.log"]
+
+
+def test_a_run_stopped_after_place_reports_the_counts(tmp_path, monkeypatch):
+    _stubbed_step(monkeypatch, unmet=0)
+    backend, _ = _staged_backend(tmp_path, monkeypatch, stop_after="place")
+
+    res = backend.run()
+
+    assert res.results["stopped_after"] == "place", res.results
+    assert res.results["macro_pin_buffered_count"] == 3
+    assert res.results["macro_pin_unmet_count"] == 0
+
+
+def test_a_run_resumed_after_place_reports_the_inherited_counts(tmp_path, monkeypatch):
+    from test_pnr_checkpoints import _runs
+
+    _stubbed_step(monkeypatch)
+    backend, artefacts = _staged_backend(tmp_path, monkeypatch, stop_after="cts")
+    assert backend.run().results["result"] == "PASS"
+    (first,) = _runs(artefacts)
+
+    backend, _ = _staged_backend(
+        tmp_path, monkeypatch, resume=first.name, resume_from="global_route"
+    )
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["macro_pin_buffered_count"] == 3
+    (second,) = [r for r in _runs(artefacts) if r != first]
+    assert not (second / "02_place.log").exists()

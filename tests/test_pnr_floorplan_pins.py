@@ -215,3 +215,265 @@ def test_pins_enter_the_config_digest_only_when_set(tmp_path):
     assert pnr_abstract.config_digest(constrained) != pnr_abstract.config_digest(
         default
     )
+
+
+# ── place_pins is skipped when every signal port already has a fixed pin ──────
+
+_PLACE_PINS = "place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V"
+
+
+def test_exact_pins_guard_place_pins_with_a_run_time_check(tmp_path):
+    pins_file = tmp_path / "pins.tcl"
+    pins_file.write_text("# pins\n")
+    text = _render(
+        tmp_path,
+        _floorplan(
+            pins=[
+                PnrPin(names=("req_*",), side=PinSide.LEFT),
+                PnrPin(names=("irq",), location=(0.0, 42.5)),
+            ]
+        ),
+        pin_constraints=str(pins_file),
+    )
+
+    guarded = (
+        "if {[rb::pins::all_placed]} {\n"
+        '    puts ">>>   floorplan.pins: every signal port has a placed pin; '
+        'skipping place_pins"\n'
+        "} else {\n"
+        f"    {_PLACE_PINS}\n"
+        "}\n"
+    )
+    assert guarded in text
+    assert text.count(_PLACE_PINS) == 1
+    assert (
+        text.index(f'source "{pins_file}"')
+        < text.index("proc rb::pins::all_placed")
+        < text.index(guarded)
+        < text.index("global_placement -density")
+    )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {},
+        {"pins": [PnrPin(names=("req_*",), side=PinSide.LEFT)]},
+        {"pins": [PnrPin(names=("d*",), group=True, order=True)]},
+        {"pins_complete": True},
+    ],
+    ids=["no-pins", "side-rule", "group-rule", "pins-complete-only"],
+)
+def test_a_run_without_an_exact_pin_renders_the_bare_place_pins(tmp_path, fields):
+    text = _render(tmp_path, _floorplan(**fields))
+
+    assert f"\n{_PLACE_PINS}\n" in text
+    assert text.count(_PLACE_PINS) == 1
+    assert "all_placed" not in text
+    assert "skipping place_pins" not in text
+
+
+def _all_placed(*ports: tuple[str, str, str]) -> str:
+    """`rb::pins::all_placed` over a stub database; each port is (name, sigType, status)."""
+    handles = " ".join(f"term_{i}" for i in range(len(ports)))
+    procs = "\n".join(
+        f"proc term_{i} {{cmd}} {{ return [dict get {{getSigType {sig} "
+        f"getFirstPinPlacementStatus {status}}} $cmd] }}"
+        for i, (_name, sig, status) in enumerate(ports)
+    )
+    source = files("rtl_buddy.pnr").joinpath("place_pins.tcl").read_text()
+    return _tcl_eval(
+        f"""
+namespace eval ord {{}}
+proc ord::get_db_block {{}} {{ return stub_block }}
+proc stub_block {{cmd}} {{ return {{{handles}}} }}
+{procs}
+{source}
+set result [rb::pins::all_placed]
+"""
+    )
+
+
+@pytest.mark.parametrize(
+    ("ports", "expected"),
+    [
+        ([("a", "SIGNAL", "FIRM"), ("b", "CLOCK", "FIRM")], "1"),
+        ([("a", "SIGNAL", "LOCKED"), ("b", "SIGNAL", "COVER")], "1"),
+        ([("a", "SIGNAL", "FIRM"), ("b", "SIGNAL", "NONE")], "0"),
+        ([("a", "SIGNAL", "FIRM"), ("b", "SIGNAL", "PLACED")], "0"),
+        ([("a", "SIGNAL", "FIRM"), ("b", "SIGNAL", "UNPLACED")], "0"),
+        # Supply ports never count, placed or not.
+        (
+            [
+                ("a", "SIGNAL", "FIRM"),
+                ("vdd", "POWER", "NONE"),
+                ("vss", "GROUND", "NONE"),
+            ],
+            "1",
+        ),
+        # Nothing to place: place_pins stays.
+        ([("vdd", "POWER", "FIRM")], "0"),
+        ([], "0"),
+    ],
+    ids=[
+        "all-firm",
+        "locked-and-cover",
+        "one-unplaced",
+        "placed-is-not-fixed",
+        "unplaced",
+        "supply-ignored",
+        "supply-only",
+        "no-ports",
+    ],
+)
+def test_all_placed_counts_fixed_signal_pins_only(ports, expected):
+    assert _all_placed(*ports) == expected
+
+
+# Stub OpenROAD ports: `RB_STUB_PORTS` is a space-separated `name:SIGTYPE:STATUS` list.
+_PORT_STUBS = r"""
+namespace eval sta {}
+namespace eval ord {}
+set ::rb_sig [dict create]
+set ::rb_status [dict create]
+foreach spec [split $env(RB_STUB_PORTS) " "] {
+    lassign [split $spec :] n sig st
+    dict set ::rb_sig $n $sig
+    dict set ::rb_status $n $st
+    proc bterm:$n {cmd args} [format {
+        switch $cmd {
+            getName { return %1$s }
+            getSigType { return [dict get $::rb_sig %1$s] }
+            getFirstPinPlacementStatus { return [dict get $::rb_status %1$s] }
+            getBPins { return bpin:%1$s }
+            default { return "" }
+        }
+    } $n]
+    proc bpin:$n {cmd args} [format {
+        if {$cmd eq "getBoxes"} { return box:%1$s }
+        return ""
+    } $n]
+    proc box:$n {cmd args} {
+        switch $cmd {
+            getTechLayer { return stub_layer }
+            default { return 1000 }
+        }
+    }
+}
+proc stub_layer {cmd args} { return met2 }
+proc ord::get_db_block {} { return stub_block }
+proc stub_block {cmd args} {
+    switch $cmd {
+        getBTerms { return [lmap n [dict keys $::rb_sig] { string cat bterm: $n }] }
+        getDbUnitsPerMicron { return 1000 }
+        default { return "" }
+    }
+}
+proc get_ports {args} {
+    set out {}
+    foreach n [dict keys $::rb_sig] {
+        if {[string match [lindex $args end] $n]} { lappend out port:$n }
+    }
+    return $out
+}
+proc sta::sta_to_db_port {port} { return bterm:[string range $port 5 end] }
+proc place_pin {args} {
+    set n [lindex $args [expr {[lsearch -exact $args -pin_name] + 1}]]
+    dict set ::rb_status $n FIRM
+    puts "stub: place_pin $n"
+}
+proc place_pins {args} { puts "stub: place_pins" }
+"""
+
+
+def _ported_backend(tmp_path, monkeypatch, ports, pins, *, hooks=None):
+    """A stub-OpenROAD backend whose design has `ports` and whose run has exact `pins`."""
+    from test_pnr_checkpoints import _HARNESS, _backend
+
+    backend, artefacts = _backend(
+        tmp_path, monkeypatch, checkpoints=None, env={"RB_STUB_PORTS": ports}
+    )
+    backend.pnr_cfg.floorplan = _floorplan(
+        pins=[PnrPin(names=(n,), location=(1.0, 2.0), layer="met2") for n in pins]
+    )
+    if hooks:
+        backend.pnr_cfg.hooks = hooks
+    (tmp_path / "harness.tcl").write_text(
+        _HARNESS.replace(
+            "source [lindex $argv 0]", _PORT_STUBS + "source [lindex $argv 0]"
+        )
+    )
+    return backend, artefacts
+
+
+def _log(artefacts) -> list[str]:
+    return (artefacts / "pnr.log").read_text().splitlines()
+
+
+def test_the_flow_skips_place_pins_when_every_port_has_an_exact_pin(
+    tmp_path, monkeypatch
+):
+    constrain = tmp_path / "constrain.tcl"
+    constrain.write_text('puts "SOURCED pin-constraints"\n')
+    hook = tmp_path / "after_pins.tcl"
+    hook.write_text('puts "MARK after-pins"\n')
+    backend, artefacts = _ported_backend(
+        tmp_path,
+        monkeypatch,
+        "a:SIGNAL:NONE b:SIGNAL:NONE vdd:POWER:FIRM",
+        ["a", "b"],
+        hooks={"after-pins": (str(hook),)},
+    )
+    backend.pnr_cfg.pin_constraints = str(constrain)
+
+    backend.run()
+
+    log = _log(artefacts)
+    skipped = (
+        ">>>   floorplan.pins: every signal port has a placed pin; skipping place_pins"
+    )
+    assert log.count(skipped) == 1
+    assert "stub: place_pins" not in log
+    # The pin-constraints file and the after-pins hook still run, around the skip.
+    ordered = [
+        "stub: place_pin a",
+        "stub: place_pin b",
+        "SOURCED pin-constraints",
+        skipped,
+        "MARK after-pins",
+        ">>> Global placement",
+    ]
+    positions = [log.index(line) for line in ordered]
+    assert positions == sorted(positions)
+
+
+def test_the_flow_places_the_remaining_pins_when_a_port_has_no_exact_pin(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _ported_backend(
+        tmp_path, monkeypatch, "a:SIGNAL:NONE b:SIGNAL:NONE", ["a"]
+    )
+
+    backend.run()
+
+    log = _log(artefacts)
+    assert log.count("stub: place_pins") == 1
+    assert not [line for line in log if "skipping place_pins" in line]
+
+
+def test_a_pin_a_hook_places_counts_toward_the_skip(tmp_path, monkeypatch):
+    hook = tmp_path / "after_pdn.tcl"
+    hook.write_text("place_pin -pin_name b -layer met2 -location {3 4}\n")
+    backend, artefacts = _ported_backend(
+        tmp_path,
+        monkeypatch,
+        "a:SIGNAL:NONE b:SIGNAL:NONE",
+        ["a"],
+        hooks={"after-pdn": (str(hook),)},
+    )
+
+    backend.run()
+
+    log = _log(artefacts)
+    assert "stub: place_pins" not in log
+    assert any("skipping place_pins" in line for line in log)

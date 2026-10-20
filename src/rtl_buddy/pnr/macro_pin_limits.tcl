@@ -1,8 +1,9 @@
 # Macro pin-limit repair for the `rb pnr` OpenROAD flow (rtl_buddy#838).
 #
-# Substituted into pnr.tcl only when the platform sets
-# `placement.macro-pin-limits`, and called after the post-placement
-# `repair_design` and the legalisation that follows it, before CTS.
+# Substituted into pnr.tcl only when the run's resolved placement sets
+# `placement.macro-pin-limits`, and called at the end of the `place` stage:
+# after the post-placement `repair_design`, the `after-repair-design` hook and
+# the legalisation that follows them, before CTS.
 # `repair_design` sizes its repeaters for the library-wide target slew, so a
 # macro input whose Liberty `max_transition` sits far below that target
 # (OpenRAM SKY130 SRAMs: 0.04 ns) stays over its limit after every repair pass.
@@ -272,8 +273,9 @@ proc rb::macro_pins::describe {measured kinds} {
 #
 # `buffers` are the candidate buffer cells, weakest first. `pad_sites` is the
 # placement padding in sites on each side of a cell, as global placement uses
-# it. `tag` prefixes the count line Python parses.
-proc rb::macro_pins::repair {buffers margin cap_margin pad_sites tag} {
+# it. `tag` prefixes the count line Python parses. `dpl_args` are the flow's
+# `detailed_placement` options.
+proc rb::macro_pins::repair {buffers margin cap_margin pad_sites tag dpl_args} {
     set margins [list $margin $cap_margin]
     set db [ord::get_db]
     set block [ord::get_db_block]
@@ -407,8 +409,8 @@ proc rb::macro_pins::repair {buffers margin cap_margin pad_sites tag} {
     }
 
     # Supplies first: `global_connect` skips dont_touch instances (ODB-0383).
-    global_connect
-    detailed_placement
+    ::rb::global_connect
+    detailed_placement {*}$dpl_args
     estimate_parasitics -placement
 
     # Weakest first: the final buffer, then for each final buffer the weakest
@@ -454,7 +456,7 @@ proc rb::macro_pins::repair {buffers margin cap_margin pad_sites tag} {
     }
 
     # Sizing swapped masters; connect the supplies again before dont_touch.
-    global_connect
+    ::rb::global_connect
     if {[llength $dont_touch] > 0} {
         set_dont_touch $dont_touch
     }

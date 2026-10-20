@@ -1,9 +1,11 @@
 import logging
 import os
+from enum import StrEnum
 
 from serde import serde, field
 
 from ..errors import FatalRtlBuddyError
+from .unknown_keys import KeySpec
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,20 @@ DEFAULT_PLACEMENT_MACRO_CELL_HALO = 1.0
 
 #: Distance in microns from each constant-driven load to the tie cell `repair_tie_fanout` gives it.
 DEFAULT_PLACEMENT_TIE_SEPARATION = 0.0
+
+
+class RotatedMacroFootprint(StrEnum):
+    """How the flow keeps OpenROAD's default legalizer from evicting cells around a macro rotated by 90 degrees (OpenROAD#11735).
+
+    The legalizer reserves such a macro's unrotated footprint. ``BLOCK`` keeps global placement out of that footprint with a global-placement-only hard blockage; ``DIAMOND_LEGALIZER`` passes `-use_diamond_legalizer` to every `detailed_placement`; ``NONE`` does neither.
+    """
+
+    BLOCK = "block"
+    DIAMOND_LEGALIZER = "diamond-legalizer"
+    NONE = "none"
+
+
+DEFAULT_ROTATED_MACRO_FOOTPRINT = RotatedMacroFootprint.BLOCK
 
 
 #: Fraction of a macro pin's limit `placement.macro-pin-limits` keeps in hand when `margin` is unset.
@@ -75,10 +91,21 @@ class PlacementFile:
     # `global_placement -routability_driven` / `-routability_use_grt`; `None` inherits, unset means off.
     routability_driven: bool | None = field(rename="routability-driven", default=None)
     routability_use_grt: bool | None = field(rename="routability-use-grt", default=None)
-    # Opt-in macro pin repair on the legalized post-`repair_design` placement; `None` is off. A platform's block replaces the PDK's whole.
+    # `global_placement -timing_driven`; `None` inherits, unset means off.
+    timing_driven: bool | None = field(rename="timing-driven", default=None)
+    # `block`, `diamond-legalizer` or `none`; `None` inherits, unset means `block`.
+    rotated_macro_footprint: str | None = field(
+        rename="rotated-macro-footprint", default=None
+    )
+    # Opt-in macro pin repair on the legalized post-`repair_design` placement; `None` inherits, unset means off. A block replaces a lower level's whole.
     macro_pin_limits: MacroPinLimitsFile | None = field(
         rename="macro-pin-limits", default=None
     )
+
+
+PLACEMENT_SPEC = KeySpec(
+    PlacementFile, {"macro-pin-limits": KeySpec(MacroPinLimitsFile)}
+)
 
 
 def _validate_macro_pin_limits(
@@ -185,6 +212,15 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
                 f"got {reference_hpwl!r}"
             )
         reference_hpwl = float(reference_hpwl)
+    rotated = placement.rotated_macro_footprint
+    if rotated is not None:
+        try:
+            rotated = RotatedMacroFootprint(rotated).value
+        except ValueError:
+            raise FatalRtlBuddyError(
+                f"{where}: placement.rotated-macro-footprint must be one of "
+                f"{', '.join(r.value for r in RotatedMacroFootprint)}, got {rotated!r}"
+            ) from None
     return PlacementFile(
         density=density,
         padding=padding,
@@ -194,6 +230,8 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
         reference_hpwl=reference_hpwl,
         routability_driven=placement.routability_driven,
         routability_use_grt=placement.routability_use_grt,
+        timing_driven=placement.timing_driven,
+        rotated_macro_footprint=rotated,
         macro_pin_limits=_validate_macro_pin_limits(placement.macro_pin_limits, where),
     )
 
@@ -268,6 +306,13 @@ class PdkConfigFile:
     layer_rc_tcl: str = field(rename="layer-rc-tcl", default="")
     tapcell_tcl: str = field(rename="tapcell-tcl", default="")
     platform_tcl: str = field(rename="platform-tcl", default="")
+
+
+#: The keys of one `cfg-pdks` entry, for the unknown-key check.
+PDK_SPEC = KeySpec(
+    PdkConfigFile,
+    {"pin-layers": KeySpec(PdkPinLayersFile), "placement": PLACEMENT_SPEC},
+)
 
 
 class PdkConfig:
@@ -401,6 +446,14 @@ class PdkConfig:
     def get_placement_routability_use_grt(self) -> bool | None:
         """Configured `global_placement -routability_use_grt`, or `None` when unset."""
         return self._placement.routability_use_grt
+
+    def get_placement_timing_driven(self) -> bool | None:
+        """Configured `global_placement -timing_driven`, or `None` when unset."""
+        return self._placement.timing_driven
+
+    def get_placement_rotated_macro_footprint(self) -> str | None:
+        """Configured `placement.rotated-macro-footprint`, or `None` when unset."""
+        return self._placement.rotated_macro_footprint
 
     def get_placement_macro_pin_limits(self) -> MacroPinLimitsFile | None:
         """Configured `placement.macro-pin-limits`, validated, or `None` when unset."""

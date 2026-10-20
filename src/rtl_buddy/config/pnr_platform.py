@@ -1,21 +1,38 @@
+import copy
 import logging
 import re
+from typing import Any
 
 from serde import serde, field
 
 from ..errors import FatalRtlBuddyError
 from .pdk import (
+    PLACEMENT_SPEC,
     DEFAULT_PLACEMENT_DENSITY,
     DEFAULT_PLACEMENT_MACRO_HALO,
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
     DEFAULT_PLACEMENT_PADDING,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
+    DEFAULT_ROTATED_MACRO_FOOTPRINT,
     MacroPinLimitsFile,
     PlacementFile,
     _validate_dont_use_cells,
     merge_dont_use_cells,
     validate_placement,
 )
+from .pnr_repair import (
+    GLOBAL_ROUTE_REPAIR_SPEC,
+    HOLD_REPAIR_SHORTHAND,
+    POST_ROUTE_REPAIR_SPEC,
+    UNSET,
+    GlobalRouteRepair,
+    PostRouteRepair,
+    read_global_route_repair,
+    read_post_route_repair,
+    resolve_global_route_repair,
+    resolve_post_route_repair,
+)
+from .unknown_keys import KeySpec
 
 logger = logging.getLogger(__name__)
 
@@ -78,11 +95,6 @@ def _validate_port_buffer(value, where: str) -> str | None:
     return value
 
 
-def _first_set(*values):
-    """Return the first value that is not `None`."""
-    return next(v for v in values if v is not None)
-
-
 @serde
 class PnrRoutingLayersFile:
     signal: str = ""
@@ -101,10 +113,13 @@ class PnrPlatformConfigFile:
     cts_sink_clustering: bool = field(rename="cts-sink-clustering", default=True)
     # Runs `repair_timing -setup` before the post-CTS hold repair.
     post_cts_setup_repair: bool = field(rename="post-cts-setup-repair", default=False)
-    # Repairs hold again after global route, on `estimate_parasitics -global_routing`, as ORFS does.
+    # Repairs hold again after global route, on `estimate_parasitics -global_routing`, as ORFS does: shorthand for `global-route-repair: {hold-margin: 0}`.
     global_route_hold_repair: bool = field(
         rename="global-route-hold-repair", default=False
     )
+    # Repair after global route and after detailed route; a run overrides them field by field. Read by `pnr_repair`.
+    global_route_repair: Any = field(rename="global-route-repair", default=UNSET)
+    post_route_repair: Any = field(rename="post-route-repair", default=UNSET)
     # `set_global_routing_layer_adjustment` over the signal layers; `None` leaves the router's default.
     routing_layer_adjustment: float | None = field(
         rename="routing-layer-adjustment", default=None
@@ -124,6 +139,18 @@ class PnrPlatformConfigFile:
     dont_use_cells: list[str] = field(rename="dont-use-cells", default_factory=list)
 
 
+#: The keys of one `cfg-pnr-platforms` entry, for the unknown-key check.
+PNR_PLATFORM_SPEC = KeySpec(
+    PnrPlatformConfigFile,
+    {
+        "routing-layers": KeySpec(PnrRoutingLayersFile),
+        "placement": PLACEMENT_SPEC,
+        "global-route-repair": GLOBAL_ROUTE_REPAIR_SPEC,
+        "post-route-repair": POST_ROUTE_REPAIR_SPEC,
+    },
+)
+
+
 class PnrPlatformConfig:
     """A PDK plus STA corner selection and P&R knobs (CTS buffer, routing layers, placement)."""
 
@@ -136,7 +163,7 @@ class PnrPlatformConfig:
         self._cts_buffers = _as_cell_list(cfg.cts_buffer)
         self._cts_sink_clustering = cfg.cts_sink_clustering
         self._post_cts_setup_repair = cfg.post_cts_setup_repair
-        self._global_route_hold_repair = cfg.global_route_hold_repair
+        self._read_repairs(cfg)
         self._routing_layer_adjustment = _validate_layer_adjustment(
             cfg.routing_layer_adjustment, f"pnr platform '{self._name}'"
         )
@@ -158,52 +185,113 @@ class PnrPlatformConfig:
             ),
         )
 
-        placement = validate_placement(cfg.placement, f"pnr platform '{self._name}'")
-        self._placement_density = _first_set(
-            placement.density,
-            self._pdk.get_placement_density(),
-            DEFAULT_PLACEMENT_DENSITY,
+        self._platform_placement = validate_placement(
+            cfg.placement, f"pnr platform '{self._name}'"
         )
-        self._placement_padding = _first_set(
-            placement.padding,
-            self._pdk.get_placement_padding(),
-            DEFAULT_PLACEMENT_PADDING,
+        self._resolve_placement(
+            [self._platform_placement],
+            f"pnr platform '{self._name}'",
+            "set on the platform or its PDK",
         )
-        self._placement_macro_halo = _first_set(
-            placement.macro_halo,
-            self._pdk.get_placement_macro_halo(),
-            DEFAULT_PLACEMENT_MACRO_HALO,
+
+    def _read_repairs(self, cfg: PnrPlatformConfigFile) -> None:
+        """Read the platform's repair blocks into layers a run's blocks go over. They are resolved per run (see `with_run_repairs`), so a partial platform block fails only the runs that leave it partial."""
+        where = f"pnr platform '{self._name}'"
+        gr_layer = read_global_route_repair(where, cfg.global_route_repair)
+        if cfg.global_route_hold_repair:
+            if gr_layer is not UNSET:
+                raise FatalRtlBuddyError(
+                    f"{where}: set either global-route-hold-repair or "
+                    "global-route-repair, not both (global-route-hold-repair: true "
+                    "is global-route-repair: {hold-margin: 0})"
+                )
+            gr_layer = dict(HOLD_REPAIR_SHORTHAND)
+        self._global_route_repair_layer = gr_layer
+        self._post_route_repair_layer = read_post_route_repair(
+            where, cfg.post_route_repair
         )
-        self._placement_macro_cell_halo = _first_set(
-            placement.macro_cell_halo,
-            self._pdk.get_placement_macro_cell_halo(),
+        # Resolved on first use, or by `with_run_repairs`.
+        self._repairs: (
+            tuple[GlobalRouteRepair | None, PostRouteRepair | None] | None
+        ) = None
+
+    def _resolve_repairs(self, gr_run, pr_run, where: str) -> None:
+        self._repairs = (
+            resolve_global_route_repair(
+                where, [self._global_route_repair_layer, gr_run]
+            ),
+            resolve_post_route_repair(where, [self._post_route_repair_layer, pr_run]),
+        )
+
+    def with_run_repairs(
+        self, global_route_repair, post_route_repair, run: str
+    ) -> "PnrPlatformConfig":
+        """Return this platform with a P&R run's repair layers (see `pnr_repair`) over its own, field by field; raise when the merged block is incomplete."""
+        resolved = copy.copy(self)
+        resolved._resolve_repairs(
+            global_route_repair,
+            post_route_repair,
+            f"pnr run '{run}' on platform '{self._name}'",
+        )
+        return resolved
+
+    def _resolved_repairs(self):
+        if self._repairs is None:
+            self._resolve_repairs(UNSET, UNSET, f"pnr platform '{self._name}'")
+        return self._repairs
+
+    def _resolve_placement(
+        self, layers: list[PlacementFile], where: str, levels: str
+    ) -> None:
+        """Resolve each `placement:` key from `layers` (highest first), then the PDK, then the default."""
+
+        def _pick(key: str, pdk_value, default):
+            for layer in layers:
+                value = getattr(layer, key)
+                if value is not None:
+                    return value
+            return pdk_value if pdk_value is not None else default
+
+        pdk = self._pdk
+        self._placement_density = _pick(
+            "density", pdk.get_placement_density(), DEFAULT_PLACEMENT_DENSITY
+        )
+        self._placement_padding = _pick(
+            "padding", pdk.get_placement_padding(), DEFAULT_PLACEMENT_PADDING
+        )
+        self._placement_macro_halo = _pick(
+            "macro_halo", pdk.get_placement_macro_halo(), DEFAULT_PLACEMENT_MACRO_HALO
+        )
+        self._placement_macro_cell_halo = _pick(
+            "macro_cell_halo",
+            pdk.get_placement_macro_cell_halo(),
             DEFAULT_PLACEMENT_MACRO_CELL_HALO,
         )
-        self._placement_reference_hpwl = (
-            placement.reference_hpwl
-            if placement.reference_hpwl is not None
-            else self._pdk.get_placement_reference_hpwl()
+        self._placement_reference_hpwl = _pick(
+            "reference_hpwl", pdk.get_placement_reference_hpwl(), None
         )
-        self._placement_tie_separation = _first_set(
-            placement.tie_separation,
-            self._pdk.get_placement_tie_separation(),
+        self._placement_tie_separation = _pick(
+            "tie_separation",
+            pdk.get_placement_tie_separation(),
             DEFAULT_PLACEMENT_TIE_SEPARATION,
         )
-        self._placement_routability_driven = _first_set(
-            placement.routability_driven,
-            self._pdk.get_placement_routability_driven(),
-            False,
+        self._placement_routability_driven = _pick(
+            "routability_driven", pdk.get_placement_routability_driven(), False
         )
-        self._placement_routability_use_grt = _first_set(
-            placement.routability_use_grt,
-            self._pdk.get_placement_routability_use_grt(),
-            False,
+        self._placement_routability_use_grt = _pick(
+            "routability_use_grt", pdk.get_placement_routability_use_grt(), False
         )
-        # A whole block: a platform's `macro-pin-limits` replaces its PDK's.
-        self._placement_macro_pin_limits = (
-            placement.macro_pin_limits
-            if placement.macro_pin_limits is not None
-            else self._pdk.get_placement_macro_pin_limits()
+        self._placement_timing_driven = _pick(
+            "timing_driven", pdk.get_placement_timing_driven(), False
+        )
+        self._placement_rotated_macro_footprint = _pick(
+            "rotated_macro_footprint",
+            pdk.get_placement_rotated_macro_footprint(),
+            DEFAULT_ROTATED_MACRO_FOOTPRINT.value,
+        )
+        # A whole block: a higher level's `macro-pin-limits` replaces a lower one's.
+        self._placement_macro_pin_limits = _pick(
+            "macro_pin_limits", pdk.get_placement_macro_pin_limits(), None
         )
         # The placer reads `-routability_use_grt` only in routability mode, so alone it would be silently ignored.
         if (
@@ -211,10 +299,27 @@ class PnrPlatformConfig:
             and not self._placement_routability_driven
         ):
             raise FatalRtlBuddyError(
-                f"pnr platform '{self._name}': placement.routability-use-grt "
-                "needs placement.routability-driven: true (set on the platform "
-                "or its PDK); global_placement ignores it otherwise"
+                f"{where}: placement.routability-use-grt needs "
+                f"placement.routability-driven: true ({levels}); "
+                "global_placement ignores it otherwise"
             )
+
+    def with_run_placement(
+        self, placement: PlacementFile | None, run: str
+    ) -> "PnrPlatformConfig":
+        """Return this platform with a P&R run's `placement:` block over its own, field by field.
+
+        `placement` must already be validated. Without one the platform itself is returned.
+        """
+        if placement is None:
+            return self
+        resolved = copy.copy(self)
+        resolved._resolve_placement(
+            [placement, self._platform_placement],
+            f"pnr run '{run}' on platform '{self._name}'",
+            "set on the run, the platform or its PDK",
+        )
+        return resolved
 
     def _resolve_sta_corners(self, cfg: PnrPlatformConfigFile) -> list[str]:
         """Return the analysis corners, primary first, validated against the PDK.
@@ -339,8 +444,16 @@ class PnrPlatformConfig:
         """Whether global placement passes `-routability_use_grt`, platform over PDK, default `False`."""
         return self._placement_routability_use_grt
 
+    def get_placement_timing_driven(self) -> bool:
+        """Whether global placement runs `-timing_driven`, run over platform over PDK, default `False`."""
+        return self._placement_timing_driven
+
+    def get_placement_rotated_macro_footprint(self) -> str:
+        """How the flow handles a macro rotated by 90 degrees (`block`, `diamond-legalizer` or `none`), platform over PDK, default `block`."""
+        return self._placement_rotated_macro_footprint
+
     def get_placement_macro_pin_limits(self) -> MacroPinLimitsFile | None:
-        """`placement.macro-pin-limits`, platform over PDK, or `None` when the step is off."""
+        """`placement.macro-pin-limits`, run over platform over PDK, or `None` when the step is off."""
         return self._placement_macro_pin_limits
 
     def get_dont_use_cells(self) -> list[str]:
@@ -354,9 +467,13 @@ class PnrPlatformConfig:
         """Whether post-CTS repair fixes setup before hold."""
         return self._post_cts_setup_repair
 
-    def get_global_route_hold_repair(self) -> bool:
-        """Whether hold is repaired again on global-route parasitics, before detail route."""
-        return self._global_route_hold_repair
+    def get_global_route_repair(self) -> GlobalRouteRepair | None:
+        """The repair after global route, platform under run, or None when off."""
+        return self._resolved_repairs()[0]
+
+    def get_post_route_repair(self) -> PostRouteRepair | None:
+        """The repair rounds after detailed route, platform under run, or None when off."""
+        return self._resolved_repairs()[1]
 
     def get_routing_layer_adjustment(self) -> float | None:
         """Global-route capacity adjustment, 0 to 1, or `None` for the router's default."""
