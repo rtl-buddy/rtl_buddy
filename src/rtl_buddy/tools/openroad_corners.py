@@ -5,10 +5,14 @@ A platform with two or more `corners:` is analysed in one OpenROAD session, so r
 Per-corner numbers have no user command, so the generated Tcl calls `sta::` functions, using the OpenSTA 3.0 names (`find_scene`, `worst_slack_scene`) when present and the earlier ones (`find_corner`, `worst_slack_corner`) otherwise.
 
 `rb pnr` gives each corner an SDC mode of its own (`scenes_tcl`) when OpenSTA can switch between modes (`MODES_PROBE_TCL`); otherwise, and in `rb power`, `define_corners` puts every corner in one mode (`liberty_tcl`).
+
+A macro Liberty (`lib-paths`) entry is one path, timed at every corner, or a mapping of corner to path, each file timed at its corner only.
 """
 
 import math
 import re
+
+from ..config.lib_paths import LibPath, corner_lib_file
 
 #: Tcl proc `rb_find_corner`: resolves a corner name to the OpenSTA `Scene` (3.0) or `Corner` object.
 FIND_CORNER_PROC = """\
@@ -20,10 +24,12 @@ proc rb_find_corner {name} {
 }"""
 
 
-def liberty_tcl(corner_libs: dict[str, list[str]], macro_libs: list[str]) -> list[str]:
+def liberty_tcl(
+    corner_libs: dict[str, list[str]], macro_libs: list[LibPath]
+) -> list[str]:
     """Return Tcl that defines the corners and reads each Liberty into its corner.
 
-    `corner_libs` maps corner to its Liberty files, primary first; that order makes the first corner the command corner. Each macro Liberty is read into every corner. OpenSTA warns `STA-1140 library ... already exists` on the second read, which is harmless.
+    `corner_libs` maps corner to its Liberty files, primary first; that order makes the first corner the command corner. Macro Liberty is read as `macro_corner_liberty_tcl` reads it.
     """
     lines = [f"define_corners {' '.join(corner_libs)}"]
     lines.extend(
@@ -31,9 +37,36 @@ def liberty_tcl(corner_libs: dict[str, list[str]], macro_libs: list[str]) -> lis
         for c, libs in corner_libs.items()
         for lib in libs
     )
-    for lib in macro_libs:
-        lines.extend(f"read_liberty -corner {c} {lib}" for c in corner_libs)
+    lines.extend(macro_corner_liberty_tcl(list(corner_libs), macro_libs))
     return lines
+
+
+def macro_corner_liberty_tcl(
+    corners: list[str], macro_libs: list[LibPath]
+) -> list[str]:
+    """Return Tcl that reads each macro Liberty entry into the `define_corners` corners: a path into every corner, a per-corner mapping each corner's file into that corner only.
+
+    OpenSTA warns `STA-1140 library ... already exists` on the second read of a path, which is harmless.
+    """
+    return [
+        f"read_liberty -corner {c} {corner_lib_file(entry, c)}"
+        for entry in macro_libs
+        for c in corners
+    ]
+
+
+def macro_mode_liberty_tcl(macro_libs: list[LibPath]) -> list[str]:
+    """Return Tcl that reads each macro Liberty file once, for `scenes_tcl` to assign to the scenes: a path, or each distinct file of a per-corner mapping.
+
+    `define_scene -liberty` names Liberty already read; it does not read a file. A scene's Liberty is fixed when the scene is defined, so every file is read before it.
+    """
+    return [
+        f"read_liberty {lib}"
+        for entry in macro_libs
+        for lib in (
+            [entry] if isinstance(entry, str) else dict.fromkeys(entry.values())
+        )
+    ]
 
 
 #: Prints `RB_STA_MODES:yes` when OpenSTA can define scenes and switch back to an SDC mode it made earlier, which the per-corner modes of `scenes_tcl` need; OpenROAD 26Q2's `set_mode` stays on the newest mode.
@@ -60,17 +93,20 @@ def mode_liberty_tcl(corner_libs: dict[str, list[str]]) -> list[str]:
     return [f"read_liberty {lib}" for lib in paths]
 
 
-def scenes_tcl(corner_libs: dict[str, list[str]], macro_libs: list[str]) -> list[str]:
+def scenes_tcl(
+    corner_libs: dict[str, list[str]], macro_libs: list[LibPath]
+) -> list[str]:
     """Return Tcl that makes one SDC mode and one scene per corner, both named after the corner, after every Liberty is read.
 
-    Each scene times its corner's Liberty and every macro Liberty. The primary corner's mode is left the command mode, the one an SDC command without a mode, CTS and `write_sdc` use.
+    Each scene times its corner's Liberty and each macro Liberty entry's file for that corner: a path in every scene, a per-corner mapping's file in its corner's scene only. The primary corner's mode is left the command mode, the one an SDC command without a mode, CTS and `write_sdc` use.
     """
     lines = []
     for corner, libs in corner_libs.items():
+        macros = [corner_lib_file(entry, corner) for entry in macro_libs]
         lines.append(f"set_mode {corner}")
         lines.append(
             f"define_scene {corner} -mode {corner} "
-            f"-liberty {{{' '.join([*libs, *macro_libs])}}}"
+            f"-liberty {{{' '.join([*libs, *macros])}}}"
         )
     lines.append(f"set_mode {next(iter(corner_libs))}")
     return lines

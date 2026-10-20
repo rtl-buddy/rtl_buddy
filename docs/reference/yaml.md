@@ -872,7 +872,8 @@ runs:
 | `constraints` | Required | SDC file, or on a multi-corner platform a map of each corner to its SDC file. A map that misses a corner or names another fails setup. See [Sign off at several corners](../concepts/pnr.md#sign-off-at-several-corners) |
 | `platform` | Required | `cfg-pnr-platforms` entry |
 | `tool` | `openroad` | Only `openroad` runs; anything else is `SKIP` |
-| `lef-paths`, `lib-paths` | — | Extra macro LEF and Liberty |
+| `lef-paths` | — | Extra macro LEF |
+| `lib-paths` | — | Extra macro Liberty. Each entry is a path, timed at every corner, or a map of each platform corner to its Liberty. A map that misses a corner or names another fails setup, as does a file listed both as a plain path and in a map. See [Sign off at several corners](../concepts/pnr.md#sign-off-at-several-corners) |
 | `gds-paths` | — | Macro layouts for stream-out |
 | `gds-mode` | `preview` | `strict` fails the run when a requested export is incomplete. `--gds-mode` overrides. See [Stream out GDS and PNG](../concepts/pnr.md#stream-out-gds-and-png) |
 | `gds-allow-empty` | — | Cell names or case-sensitive globs that have no layout on purpose |
@@ -978,7 +979,7 @@ runs:
 | `phys-run` | Optional, synth source only | Synthesis run in `synth-path` whose artefact directory receives this run's `phys-model.json`. A run name, never a path |
 | `constraints` | Required for synth source | SDC path. For P&R source it defaults to the routed SDC, the primary corner's on a multi-corner platform |
 | `platform` | Required | `cfg-pnr-platforms` entry |
-| `lib-paths` | Optional | Extra macro Liberty files relative to `power.yaml`, appended after what the referenced run declares |
+| `lib-paths` | Optional | Extra macro Liberty files relative to `power.yaml`, appended after what the referenced run declares. An entry can map each platform corner to its Liberty, as in `pnr.yaml`, here or inherited from the P&R run. A map must name every corner of the platform; corners the platform lacks are ignored, and on a single-corner platform the entry is that corner's file. A file listed both as a plain entry and in a map fails setup |
 | `threads` | Default unset (1) | OpenROAD worker threads, as in `pnr.yaml`. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `activity.saif` / `.vcd` | Mutually exclusive | Activity trace path |
 | `activity.scope` | Only with a trace | OpenROAD trace scope; invalid without SAIF or VCD |

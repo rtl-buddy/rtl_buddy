@@ -699,6 +699,9 @@ class _FakePlatform:
     def is_multi_corner(self):
         return bool(self._corners) and len(self._corners) > 1
 
+    def get_sta_corners(self):
+        return list(self._corners) if self._corners else ["typ"]
+
     def get_sta_corner_lib_paths(self):
         return {c: [lib] for c, lib in (self._corners or {}).items()}
 

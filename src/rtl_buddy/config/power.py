@@ -9,6 +9,7 @@ from .yaml_loader import config_from_yaml
 
 from ..errors import FatalRtlBuddyError
 from ..runner.xfail import compile_xfail_match
+from .lib_paths import LibPath, lib_files, load_lib_paths
 from .openroad_threads import validate_threads
 from ..logging_utils import log_event
 from .pnr import PnrSuiteConfig
@@ -84,8 +85,8 @@ class PowerConfigFile:
     phys_run: str = field(rename="phys-run", default="")
     constraints: str | None = None
     platform: str = ""
-    # Macro Liberty appended after the synth or pnr run's own list. A macro with no Liberty here reports zero power.
-    lib_paths: list[str] = field(rename="lib-paths", default_factory=list)
+    # Macro Liberty appended after the synth or pnr run's own list. A macro with no Liberty here reports zero power. Each a path or a mapping of corner to path; typed loosely so `initialise` names a bad entry.
+    lib_paths: list[str | dict] = field(rename="lib-paths", default_factory=list)
     activity: PowerActivityFile = field(default_factory=PowerActivityFile)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
@@ -191,9 +192,9 @@ class PowerConfigFile:
             pnr_suite_path=_resolve(self.pnr_path) if self.pnr_path else None,
             constraints=constraints,
             platform=self.platform,
-            lib_paths=[
-                os.path.normpath(os.path.join(config_dir, p)) for p in self.lib_paths
-            ],
+            lib_paths=load_lib_paths(
+                f"power run '{self.name}'", self.lib_paths, config_dir
+            ),
             activity=activity,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
@@ -221,8 +222,8 @@ class PowerConfig:
     activity: PowerActivity
     _reglvl: int | dict | None
     tool_overrides: dict | None
-    # Macro Liberty added to the referenced run's list, resolved against the `power.yaml` directory.
-    lib_paths: list[str] = dc_field(default_factory=list)
+    # Macro Liberty added to the referenced run's list, resolved against the `power.yaml` directory: each a path, or corner name -> path.
+    lib_paths: list[LibPath] = dc_field(default_factory=list)
     phys_run: str | None = None
     threads: int | str | None = None
     xfail: bool = False
@@ -285,7 +286,11 @@ class PowerConfig:
         return self.platform
 
     def get_lib_paths(self) -> list[str]:
-        """This run's own macro Liberty, added to the inherited list."""
+        """Every file of this run's own macro Liberty, a per-corner mapping's included."""
+        return lib_files(self.lib_paths)
+
+    def get_lib_path_entries(self) -> list[LibPath]:
+        """This run's own `lib-paths` entries, added to the inherited list: a path read into every corner, or corner name -> path."""
         return list(self.lib_paths)
 
     def get_activity(self) -> PowerActivity:
