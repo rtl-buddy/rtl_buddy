@@ -563,13 +563,17 @@ def test_a_probe_skips_timing_repair_and_stops_after_global_route(tmp_path):
 
 # -- runs under the stub harness -------------------------------------------------
 
-# Each round's extraction session reports the round's setup and hold worst
-# slack from `RB_STUB_SETUP` and `RB_STUB_HOLD` (one value per round, in the
-# Liberty unit; hold defaults to 0), and each corner's from
-# `RB_STUB_SETUP_<corner>` and `RB_STUB_HOLD_<corner>`; `RB_STUB_DRC=<round>`
-# makes that round's detailed route report a violation; `RB_STUB_RSZ0074=<round>`
-# makes that round's `repair_timing` fail as OpenROAD's does without usable routes.
-# `repair_timing` and `detailed_route` log what `design_is_routed` answers them.
+# Round k's extraction session reports round k's setup and hold worst slack
+# (round 0 is the detailed route) from `RB_STUB_SETUP` and `RB_STUB_HOLD` (one
+# value per round from round 0, in the Liberty unit; hold defaults to 0, a
+# missing setup value is not reported), and each corner's from
+# `RB_STUB_SETUP_<corner>` and `RB_STUB_HOLD_<corner>`. `RB_STUB_DRC` lists the
+# rounds whose detailed route reports a violation (0: the flow's detailed
+# route); `RB_STUB_RSZ0074=<round>` makes that round's `repair_timing` fail as
+# OpenROAD's does without usable routes; `RB_STUB_REPAIR_FAIL=<round>` makes
+# that round's `remove_fillers` fail; `RB_STUB_ERROR=<round>` prints an
+# `[ERROR` line in that round's extraction. `repair_timing` and
+# `detailed_route` log what `design_is_routed` answers them.
 _ROUND_STUBS = r"""
 proc design_is_routed {args} { return 1 }
 proc rb_round {} {
@@ -577,17 +581,20 @@ proc rb_round {} {
     if {[regexp {\.r(\d+)\.(extract|repair)\.tcl$} [lindex $argv 0] -> round]} {
         return $round
     }
-    return 0
+    return ""
 }
 proc rb_slack {var {default ""}} {
     global env
     if {![info exists env($var)]} { return $default }
-    return [lindex $env($var) [expr {[rb_round] - 1}]]
+    return [lindex $env($var) [rb_round]]
+}
+proc rb_stub_round {var} {
+    global env
+    return [expr {[info exists env($var)] && $env($var) eq [rb_round]}]
 }
 proc report_worst_slack {args} {
     global env
-    set round [rb_round]
-    if {$round == 0 || ![info exists env(RB_STUB_SETUP)]} { return }
+    if {[rb_round] eq "" || ![info exists env(RB_STUB_SETUP)]} { return }
     if {[lsearch $args -max] >= 0} {
         puts "worst slack max [rb_slack RB_STUB_SETUP]"
     } else {
@@ -604,18 +611,22 @@ proc sta::worst_slack_scene {scene min_max} {
 }
 proc sta::total_negative_slack_scene_cmd {scene min_max} { return 0.0 }
 proc report_tns {args} {
-    global env
-    if {[rb_round] == 0} { return }
-    if {[info exists env(RB_STUB_ERROR)] && $env(RB_STUB_ERROR) == [rb_round]} {
+    if {[rb_round] eq ""} { return }
+    if {[rb_stub_round RB_STUB_ERROR]} {
         puts "\[ERROR STA-0001\] stub"
     }
     if {[lsearch $args -min] >= 0} { puts "tns min 0.0" } else { puts "tns max -1.5" }
 }
-proc remove_fillers {args} { rb_stub remove_fillers }
+proc remove_fillers {args} {
+    if {[rb_stub_round RB_STUB_REPAIR_FAIL]} {
+        puts "\[ERROR STUB-0003\] remove_fillers failed in round [rb_round]"
+        error "STUB-0003"
+    }
+    rb_stub remove_fillers
+}
 proc repair_timing {args} {
-    global env
     puts "stub: repair_timing routed [design_is_routed]"
-    if {[info exists env(RB_STUB_RSZ0074)] && $env(RB_STUB_RSZ0074) == [rb_round]} {
+    if {[rb_stub_round RB_STUB_RSZ0074]} {
         puts "\[ERROR RSZ-0074\] Failed to build tree from global routes"
         error "RSZ-0074"
     }
@@ -625,12 +636,18 @@ proc detailed_route {args} {
     global env
     puts "stub: detailed_route routed [design_is_routed]"
     rb_stub detailed_route
+    set round [expr {[rb_round] eq "" ? 0 : [rb_round]}]
     set i [lsearch $args -output_drc]
-    if {$i >= 0 && [info exists env(RB_STUB_DRC)] && $env(RB_STUB_DRC) == [rb_round]} {
-        rb_write [lindex $args [expr {$i + 1}]] "violation"
+    if {$i >= 0} {
+        set drc [lindex $args [expr {$i + 1}]]
+        if {[info exists env(RB_STUB_DRC)] && [lsearch $env(RB_STUB_DRC) $round] >= 0} {
+            rb_write $drc "violation r$round"
+        } else {
+            rb_write $drc ""
+        }
     }
     set i [lsearch $args -output_maze]
-    if {$i >= 0} { rb_write [lindex $args [expr {$i + 1}]] "maze r[rb_round]" }
+    if {$i >= 0} { rb_write [lindex $args [expr {$i + 1}]] "maze r$round" }
 }
 """
 
@@ -702,6 +719,19 @@ def _done(run_dir) -> dict:
     return event
 
 
+def _logged(monkeypatch) -> list[tuple[int, str, dict]]:
+    """Record every event the backend logs, as (level, event, fields)."""
+    logged = []
+    real_log_event = pnr_openroad.log_event
+
+    def _log_event(logger, level, event, /, **fields):
+        logged.append((level, event, fields))
+        return real_log_event(logger, level, event, **fields)
+
+    monkeypatch.setattr(pnr_openroad, "log_event", _log_event)
+    return logged
+
+
 _PR = {"setup-margin": 0.1, "rounds": 3, "margin-step": 0.05}
 
 
@@ -721,21 +751,53 @@ def test_rounds_repair_until_timing_is_met(tmp_path, monkeypatch, stages):
     assert res.results["routed"] is True
     (run_dir,) = _runs(artefacts)
     rounds = _rounds(run_dir)
-    assert [r["round"] for r in rounds] == [1, 2, 3]
-    assert [r["repair"] for r in rounds] == [True, True, False]
+    # Round 0 is the detailed route; each later round is timed after its repair.
+    assert [r["round"] for r in rounds] == [0, 1, 2]
     # The default Liberty unit is 1ns; the margin steps each round.
-    assert [r["setup_margin_ns"] for r in rounds] == [0.1, 0.15, None]
+    assert [r["setup_margin_ns"] for r in rounds] == [None, 0.1, 0.15]
     assert [r["wns_setup_ps"] for r in rounds] == [-200.0, -100.0, 10.0]
-    assert _done(run_dir)["repaired_rounds"] == 2
-    assert _done(run_dir)["reason"] == "timing met"
+    assert [r["drc_count"] for r in rounds] == [0, 0, 0]
+    assert [r["best_round"] for r in rounds] == [0, 1, 2]
+    assert _done(run_dir) | {
+        "kept_round": 2,
+        "repaired_rounds": 2,
+        "rounds": 3,
+        "stop": "timing_met",
+        "reason": "timing met",
+    } == _done(run_dir)
+    assert res.results["post_route_repair"] == {
+        "kept_round": 2,
+        "repaired_rounds": 2,
+        "rounds": 3,
+        "stop": "timing_met",
+        "reason": "timing met",
+    }
+    assert res.results["desc"] is None or "post-route" not in res.results["desc"]
     assert (run_dir / "06_post_route_repair.r2.repair.log").is_file()
     assert not (run_dir / "06_post_route_repair.r3.repair.log").exists()
     r2 = (run_dir / "06_post_route_repair.r2.repair.tcl").read_text()
     assert "repair_timing -setup -setup_margin 0.15\n" in r2
     assert "remove_fillers\n" in r2
-    assert "read_db [file join $RB_RUN_DIR 06_post_route_repair.odb]" in r2
+    assert "read_db [file join $RB_RUN_DIR 06_post_route_repair.r1.odb]" in r2
+    assert re.search(r"^read_spef .*\.r1\.spef\]$", r2, re.MULTILINE)
     r1 = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
     assert "read_db [file join $RB_PRED_DIR 05_detailed_route.odb]" in r1
+    assert re.search(r"^read_spef .*\.r0\.spef\]$", r1, re.MULTILINE)
+    e2 = (run_dir / "06_post_route_repair.r2.extract.tcl").read_text()
+    assert "read_db [file join $RB_RUN_DIR 06_post_route_repair.r2.odb]" in e2
+    assert "write_spef [file join $RB_RUN_DIR 06_post_route_repair.r2.spef]" in e2
+    assert "\nset ::sta_report_default_digits 4\nreport_worst_slack -max\n" in e2
+    e0 = (run_dir / "06_post_route_repair.r0.extract.tcl").read_text()
+    assert "read_db [file join $RB_PRED_DIR 05_detailed_route.odb]" in e0
+    # Each round's checkpoint is set aside; the stage's is the kept round's.
+    for round_ in (1, 2):
+        assert (run_dir / f"06_post_route_repair.r{round_}.odb").is_file()
+    assert (run_dir / "06_post_route_repair.odb").samefile(
+        run_dir / "06_post_route_repair.r2.odb"
+    )
+    log = (artefacts / "pnr.log").read_text()
+    assert ">>> rb: begin 06_post_route_repair round 0 extraction\n" in log
+    assert ">>> rb: begin 06_post_route_repair round 2 repair\n" in log
     # `reroute: eco` keeps the detailed route: no unrouting, no full global route,
     # and the repairs on placement parasitics under the SPEF, inside one
     # incremental global route that legalization closes.
@@ -767,7 +829,6 @@ def test_rounds_repair_until_timing_is_met(tmp_path, monkeypatch, stages):
     assert "stub: detailed_route routed 1" in r1_log
     assert "stub: detailed_route routed 0" not in r1_log
     assert "post_route_eco_unguarded" not in {e["event"] for e in _events(run_dir)}
-    log = (artefacts / "pnr.log").read_text()
     assert (
         ">>> Post-route repair round 2: repair_timing -setup -setup_margin 0.15 " in log
     )
@@ -776,7 +837,7 @@ def test_rounds_repair_until_timing_is_met(tmp_path, monkeypatch, stages):
     assert "post_route_repair" in manifest["resources"]
     ended = [e["stage"] for e in _events(run_dir) if e["event"] == "stage_end"]
     assert ended[-2:] == ["post_route_repair", "finish"]
-    # Finish starts from the last repair.
+    # Finish starts from the kept round.
     finish = (run_dir / "07_finish.tcl").read_text()
     assert "read_db [file join $RB_PRED_DIR 06_post_route_repair.odb]" in finish
 
@@ -851,11 +912,18 @@ def test_an_eco_round_that_cannot_rebuffer_names_reroute_full(
         env={"RB_STUB_SETUP": "-0.2", "RB_STUB_RSZ0074": "1"},
     )
 
+    logged = _logged(monkeypatch)
+
     res = backend.run()
 
-    assert res.results["result"] == "FAIL"
-    assert "06_post_route_repair" in res.results["desc"]
+    # The detailed route stands; the warning and the result name the fix.
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["post_route_repair"]["kept_round"] == 0
+    assert res.results["post_route_repair"]["stop"] == "session_failed"
+    assert "post-route repair round 1's repair session failed" in res.results["desc"]
     assert ("set post-route-repair.reroute: full" in res.results["desc"]) is named
+    (warning,) = [f for _l, e, f in logged if e == "pnr.post_route_round_failed"]
+    assert ("set post-route-repair.reroute: full" in warning["error"]) is named
 
 
 def test_a_dispatched_eco_round_that_cannot_rebuffer_names_reroute_full(
@@ -868,11 +936,27 @@ def test_a_dispatched_eco_round_that_cannot_rebuffer_names_reroute_full(
     backend, _artefacts, _slurm = _dispatched(tmp_path, monkeypatch)
     _with_repair(backend, tmp_path, post_route={**_PR, "rounds": 1})
 
+    logged = _logged(monkeypatch)
+
     res = backend.run()
 
-    assert res.results["result"] == "FAIL"
-    assert "06_post_route_repair" in res.results["desc"]
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["post_route_repair"]["kept_round"] == 0
     assert "set post-route-repair.reroute: full" in res.results["desc"]
+    # The head logs the stage job's warning from the progress events; this job
+    # runs in the test's process, so its own warning is logged too.
+    warnings = [
+        (level, fields)
+        for level, event, fields in logged
+        if event == "pnr.post_route_round_failed"
+    ]
+    assert len(warnings) == 2 and warnings[0] == warnings[1]
+    warning = warnings[-1]
+    assert warning[0] == logging.WARNING
+    assert warning[1]["round"] == 1 and warning[1]["kept_round"] == 0
+    message = _human_message("pnr.post_route_round_failed", warning[1])
+    assert "round 1's repair session failed" in message
+    assert "post-route-repair.reroute: full" in message
 
 
 def test_an_eco_round_that_ends_early_after_rsz_0074_names_reroute_full(
@@ -892,8 +976,8 @@ def test_an_eco_round_that_ends_early_after_rsz_0074_names_reroute_full(
 
     res = backend.run()
 
-    assert res.results["result"] == "FAIL"
-    assert "before the end of round 1" in res.results["desc"]
+    assert res.results["result"] == "PASS", res.results
+    assert "OpenROAD exited before the end of the session" in res.results["desc"]
     assert "set post-route-repair.reroute: full" in res.results["desc"]
 
 
@@ -1179,8 +1263,8 @@ def test_a_dispatched_run_runs_every_round_in_the_stage_job(tmp_path, monkeypatc
     res = backend.run()
 
     once = [
+        ("pnr.post_route_round", 0),
         ("pnr.post_route_round", 1),
-        ("pnr.post_route_round", 2),
         ("pnr.post_route_repair_done", None),
     ]
     # The fake Slurm runs the stage job in this process, then the head logs the rounds again from the run's progress events.
@@ -1190,7 +1274,8 @@ def test_a_dispatched_run_runs_every_round_in_the_stage_job(tmp_path, monkeypatc
     stages = [job["stage"] for job in slurm.submitted()]
     assert stages == list(PNR_STAGES)
     (run_dir,) = _runs(artefacts)
-    assert [r["repair"] for r in _rounds(run_dir)] == [True, False]
+    assert [r["best_round"] for r in _rounds(run_dir)] == [0, 1]
+    assert res.results["post_route_repair"]["kept_round"] == 1
     manifest = json.loads((run_dir / "manifest.json").read_text())
     assert "post_route_repair" in manifest["dispatch"]["stages"]
     assert "post_route_repair" in manifest["resources"]
@@ -1219,7 +1304,8 @@ def test_a_dispatched_round_runs_on_the_cpus_its_job_received(tmp_path, monkeypa
     assert res.results["result"] == "PASS", res.results
     (run_dir,) = _runs(artefacts)
     sessions = pnr_openroad.stage_scripts(str(run_dir), "post_route_repair")
-    assert len(sessions) == 1 + 2 * _PR["rounds"]
+    # The record, round 0's extraction, then each round's repair and extraction.
+    assert len(sessions) == 2 + 2 * _PR["rounds"]
     # The job ran a copy of each session's script; the recorded ones keep the head's count.
     for path in sessions:
         recorded = Path(path).read_text()
@@ -1250,16 +1336,271 @@ def test_rounds_stop_after_the_last_round(tmp_path, monkeypatch):
         tmp_path,
         monkeypatch,
         post_route={**_PR, "rounds": 2},
-        env={"RB_STUB_SETUP": "-0.2 -0.1"},
+        env={"RB_STUB_SETUP": "-0.2 -0.1 -0.05"},
     )
 
     res = backend.run()
 
     assert res.results["result"] == "PASS", res.results
     (run_dir,) = _runs(artefacts)
-    assert [r["repair"] for r in _rounds(run_dir)] == [True, True]
-    assert _done(run_dir)["repaired_rounds"] == 2
-    assert _done(run_dir)["reason"] == "2 round(s) repaired"
+    assert [r["best_round"] for r in _rounds(run_dir)] == [0, 1, 2]
+    assert res.results["post_route_repair"] == {
+        "kept_round": 2,
+        "repaired_rounds": 2,
+        "rounds": 2,
+        "stop": "last_round",
+        "reason": "all 2 round(s) ran",
+    }
+
+
+# -- the round the stage keeps ----------------------------------------------------
+
+_SETUP = {"setup": ["setup"], "hold": ["hold"], "both": ["setup", "hold"], "none": []}
+
+
+def _timing(setup=None, hold=None, unconstrained=()):
+    return {
+        "wns_setup_ps": setup,
+        "wns_hold_ps": hold,
+        "unconstrained": list(unconstrained),
+    }
+
+
+@pytest.mark.parametrize(
+    "new, best, sides, better",
+    [
+        # Worse, better, tied.
+        (_timing(-190.0), _timing(-110.0), "setup", False),
+        (_timing(-100.0), _timing(-110.0), "setup", True),
+        (_timing(-110.0), _timing(-110.0), "setup", False),
+        # Met slack counts as 0: more of it is no better, less of it no worse.
+        (_timing(50.0), _timing(10.0), "setup", False),
+        (_timing(10.0), _timing(-10.0), "setup", True),
+        # Setup better while hold, which met, breaks.
+        (_timing(-100.0, -5.0), _timing(-200.0, 10.0), "both", False),
+        # Hold that still meets with less slack does not count against it.
+        (_timing(-100.0, 1.0), _timing(-200.0, 50.0), "both", True),
+        # A side the rounds do not repair does not count.
+        (_timing(-100.0, -50.0), _timing(-200.0, 10.0), "setup", True),
+        (_timing(-300.0, -5.0), _timing(-200.0, -10.0), "hold", True),
+        # Both sides must hold their ground.
+        (_timing(-100.0, -20.0), _timing(-200.0, -10.0), "both", False),
+        (_timing(-200.0, -5.0), _timing(-200.0, -10.0), "both", True),
+        # Unconstrained counts as met.
+        (_timing(-100.0, unconstrained=["hold"]), _timing(-200.0, -1.0), "both", True),
+        # A repair-design-only block judges no timing.
+        (_timing(-300.0), _timing(-100.0), "none", True),
+    ],
+)
+def test_a_round_is_better_only_when_no_repaired_side_loses_slack(
+    new, best, sides, better
+):
+    assert pnr_openroad._improves(new, best, _SETUP[sides]) is better
+
+
+@pytest.mark.parametrize("reroute", ["eco", "full"])
+@pytest.mark.parametrize("rounds", [1, 2])
+def test_a_round_that_worsens_timing_keeps_the_detailed_route(
+    tmp_path, monkeypatch, reroute, rounds
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_PR, "rounds": rounds, "reroute": reroute},
+        env={"RB_STUB_SETUP": "-0.11 -0.19 -0.05"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    rounds_ = _rounds(run_dir)
+    assert [r["wns_setup_ps"] for r in rounds_] == [-110.0, -190.0]
+    assert [r["best_round"] for r in rounds_] == [0, 0]
+    assert res.results["post_route_repair"] == {
+        "kept_round": 0,
+        "repaired_rounds": 1,
+        "rounds": rounds,
+        "stop": "no_improvement",
+        "reason": "round 1 did not improve timing",
+    }
+    # The rounds stop: round 2 never repairs.
+    assert not (run_dir / "06_post_route_repair.r2.repair.log").exists()
+    assert (run_dir / "06_post_route_repair.odb").samefile(
+        run_dir / "05_detailed_route.odb"
+    )
+    assert (artefacts / "route.maze.log").read_text().strip() == "maze r0"
+    (checkpoint,) = [
+        e
+        for e in _events(run_dir)
+        if e["event"] == "checkpoint"
+        and e["stage"] == "post_route_repair"
+        and e.get("source")
+    ]
+    assert checkpoint["source"] == "05_detailed_route"
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    odb = manifest["checkpoints"]["post_route_repair"]["files"]["odb"]
+    assert (
+        odb["sha256"]
+        == pnr_openroad._file_fingerprint(str(run_dir / "05_detailed_route.odb"))[
+            "sha256"
+        ]
+    )
+
+
+def test_a_better_round_then_a_worse_one_keeps_the_better(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        env={"RB_STUB_SETUP": "-0.2 -0.1 -0.15 0.5"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    assert [r["best_round"] for r in _rounds(run_dir)] == [0, 1, 1]
+    assert res.results["post_route_repair"] == {
+        "kept_round": 1,
+        "repaired_rounds": 2,
+        "rounds": 3,
+        "stop": "no_improvement",
+        "reason": "round 2 did not improve timing",
+    }
+    assert not (run_dir / "06_post_route_repair.r3.repair.log").exists()
+    assert (run_dir / "06_post_route_repair.odb").samefile(
+        run_dir / "06_post_route_repair.r1.odb"
+    )
+    assert (run_dir / "06_post_route_repair.route.maze.log").read_text().strip() == (
+        "maze r1"
+    )
+    assert (artefacts / "route.maze.log").read_text().strip() == "maze r1"
+    # Round 2 started from round 1's database and SPEF.
+    r2 = (run_dir / "06_post_route_repair.r2.repair.tcl").read_text()
+    assert "read_db [file join $RB_RUN_DIR 06_post_route_repair.r1.odb]" in r2
+    assert "read_sdc [file join $RB_RUN_DIR 06_post_route_repair.r1.sdc]" in r2
+
+
+def test_a_tie_keeps_the_earlier_round(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path, monkeypatch, post_route=_PR, env={"RB_STUB_SETUP": "-0.2 -0.2"}
+    )
+
+    res = backend.run()
+
+    assert res.results["post_route_repair"]["kept_round"] == 0
+    assert res.results["post_route_repair"]["stop"] == "no_improvement"
+
+
+@pytest.mark.parametrize(
+    "hold, kept",
+    [
+        # Hold met before and breaks: setup's gain does not count.
+        ("0.01 -0.005", 0),
+        # Hold still met with less slack: setup's gain counts.
+        ("0.05 0.001", 1),
+    ],
+)
+def test_a_round_that_breaks_hold_to_gain_setup_is_not_better(
+    tmp_path, monkeypatch, hold, kept
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={"setup-margin": 0.1, "hold-margin": 0.0, "rounds": 1},
+        env={"RB_STUB_SETUP": "-0.2 -0.1", "RB_STUB_HOLD": hold},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["post_route_repair"]["kept_round"] == kept
+
+
+def test_hold_the_block_does_not_repair_does_not_judge_a_round(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_PR, "rounds": 1},
+        env={"RB_STUB_SETUP": "-0.2 -0.1", "RB_STUB_HOLD": "0.01 -0.05"},
+    )
+
+    res = backend.run()
+
+    assert res.results["post_route_repair"]["kept_round"] == 1
+    assert res.results["post_route_repair"]["stop"] == "last_round"
+
+
+def test_a_later_round_s_unreported_timing_keeps_the_best_round(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path, monkeypatch, post_route=_PR, env={"RB_STUB_SETUP": "-0.2 -0.1"}
+    )
+
+    res = backend.run()
+
+    assert res.results["post_route_repair"] == {
+        "kept_round": 1,
+        "repaired_rounds": 2,
+        "rounds": 3,
+        "stop": "timing_not_reported",
+        "reason": "round 2's timing was not reported",
+    }
+
+
+def test_a_failed_later_stage_still_names_the_kept_round(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        stages=True,
+        env={"RB_STUB_SETUP": "-0.2 -0.3", "RB_STUB_FAIL": "filler_placement"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL", res.results
+    assert "07_finish" in res.results["desc"]
+    assert res.results["post_route_repair"]["kept_round"] == 0
+
+
+def test_round_messages_name_the_round_its_timing_and_the_best_round():
+    measured = {
+        "pnr": "blk",
+        "round": 1,
+        "rounds": 3,
+        "setup_margin_ns": 0.1,
+        "hold_margin_ns": None,
+        "drc_count": 0,
+        "wns_setup_ps": -190.0,
+        "wns_hold_ps": 12.0,
+        "tns_ps": -1500.0,
+        "tns_hold_ps": 0.0,
+        "unconstrained": [],
+        "best_round": 0,
+    }
+    assert _human_message("pnr.post_route_round", measured) == (
+        'P&R "blk" post-route repair round 1/3 (repaired with setup margin 0.1 ns): '
+        "setup WNS -0.1900 ns TNS -1.5000 ns, hold WNS 0.0120 ns TNS 0.0000 ns, "
+        "0 DRC report line(s); best round 0"
+    )
+    drc = {"pnr": "blk", "round": 0, "rounds": 3, "drc_count": 4, "best_round": 0}
+    assert _human_message("pnr.post_route_round", drc) == (
+        'P&R "blk" post-route repair round 0/3 (the detailed route): not timed, '
+        "4 DRC report line(s); best round 0"
+    )
+    done = {
+        "pnr": "blk",
+        "kept_round": 0,
+        "repaired_rounds": 1,
+        "rounds": 3,
+        "stop": "no_improvement",
+        "reason": "round 1 did not improve timing",
+    }
+    assert _human_message("pnr.post_route_repair_done", done) == (
+        'P&R "blk" post-route repair: kept round 0 (the detailed route); 1 of 3 '
+        "round(s) repaired; stopped: round 1 did not improve timing"
+    )
 
 
 def test_met_timing_keeps_the_detailed_route_as_the_stage_checkpoint(
@@ -1273,11 +1614,16 @@ def test_met_timing_keeps_the_detailed_route_as_the_stage_checkpoint(
 
     assert res.results["result"] == "PASS", res.results
     (run_dir,) = _runs(artefacts)
-    assert [r["repair"] for r in _rounds(run_dir)] == [False]
-    assert _done(run_dir)["repaired_rounds"] == 0
+    assert [r["round"] for r in _rounds(run_dir)] == [0]
+    assert _done(run_dir) | {
+        "kept_round": 0,
+        "repaired_rounds": 0,
+        "stop": "timing_met",
+    } == _done(run_dir)
+    assert (run_dir / "06_post_route_repair.r0.extract.log").is_file()
     assert not (run_dir / "06_post_route_repair.r1.repair.log").exists()
     odb = run_dir / "06_post_route_repair.odb"
-    assert odb.read_bytes() == (run_dir / "05_detailed_route.odb").read_bytes()
+    assert odb.samefile(run_dir / "05_detailed_route.odb")
     # The detailed route's report copies come along.
     maze = run_dir / "06_post_route_repair.route.maze.log"
     assert maze.read_text().strip() == "maze r0"
@@ -1293,8 +1639,13 @@ def test_unreadable_timing_stops_the_rounds(tmp_path, monkeypatch):
     assert res.results["result"] == "PASS", res.results
     (run_dir,) = _runs(artefacts)
     (only,) = _rounds(run_dir)
-    assert only["wns_setup_ps"] is None and only["repair"] is False
-    assert _done(run_dir)["reason"] == "timing was not reported"
+    assert only["round"] == 0 and only["wns_setup_ps"] is None
+    assert _done(run_dir) | {
+        "kept_round": 0,
+        "stop": "timing_not_reported",
+        "reason": "timing was not reported",
+    } == _done(run_dir)
+    assert not (run_dir / "06_post_route_repair.r1.repair.log").exists()
 
 
 def test_negative_hold_repairs_when_the_block_repairs_hold(tmp_path, monkeypatch):
@@ -1310,10 +1661,11 @@ def test_negative_hold_repairs_when_the_block_repairs_hold(tmp_path, monkeypatch
     assert res.results["result"] == "PASS", res.results
     (run_dir,) = _runs(artefacts)
     rounds = _rounds(run_dir)
-    # Setup is not repaired, so its violation does not keep the rounds going.
-    assert [r["repair"] for r in rounds] == [True, True, False]
+    # Setup is not repaired, so its violation neither keeps the rounds going
+    # nor makes a round worse.
+    assert [r["best_round"] for r in rounds] == [0, 1, 2]
     assert [r["wns_hold_ps"] for r in rounds] == [-20.0, -10.0, 0.0]
-    assert [r["hold_margin_ns"] for r in rounds] == [0.01, 0.02, None]
+    assert [r["hold_margin_ns"] for r in rounds] == [None, 0.01, 0.02]
     assert [r["setup_margin_ns"] for r in rounds] == [None, None, None]
     assert _done(run_dir)["reason"] == "timing met"
     r1 = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
@@ -1334,7 +1686,7 @@ def test_a_side_the_block_does_not_repair_does_not_start_a_round(tmp_path, monke
     assert res.results["result"] == "PASS", res.results
     (run_dir,) = _runs(artefacts)
     (only,) = _rounds(run_dir)
-    assert only["repair"] is False and only["wns_hold_ps"] == -200.0
+    assert only["round"] == 0 and only["wns_hold_ps"] == -200.0
     assert _done(run_dir) | {"reason": "timing met", "repaired_rounds": 0} == _done(
         run_dir
     )
@@ -1353,7 +1705,7 @@ def test_an_unconstrained_side_counts_as_met(tmp_path, monkeypatch):
     assert res.results["result"] == "PASS", res.results
     (run_dir,) = _runs(artefacts)
     rounds = _rounds(run_dir)
-    assert [r["repair"] for r in rounds] == [True, False]
+    assert [r["best_round"] for r in rounds] == [0, 1]
     assert [r["unconstrained"] for r in rounds] == [["hold"], ["hold"]]
     assert [r["wns_hold_ps"] for r in rounds] == [None, None]
     assert _done(run_dir)["reason"] == "timing met"
@@ -1371,9 +1723,13 @@ def test_a_repair_design_only_block_repairs_once(tmp_path, monkeypatch):
 
     assert res.results["result"] == "PASS", res.results
     (run_dir,) = _runs(artefacts)
-    (only,) = _rounds(run_dir)
-    assert only["repair"] is True
-    assert _done(run_dir)["repaired_rounds"] == 1
+    # With no timing side to judge, the clean round is kept.
+    assert [r["best_round"] for r in _rounds(run_dir)] == [0, 1]
+    assert _done(run_dir) | {
+        "kept_round": 1,
+        "repaired_rounds": 1,
+        "stop": "last_round",
+    } == _done(run_dir)
     r1 = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
     assert "\nrepair_design -slew_margin 10\n" in r1
     assert not re.search(r"^repair_timing", r1, re.MULTILINE)
@@ -1420,46 +1776,100 @@ def test_multi_corner_rounds_time_each_corner_on_its_own_spef_read(
     assert res.results["result"] == "PASS", res.results
     (run_dir,) = _runs(artefacts)
     rounds = _rounds(run_dir)
-    # Round 2 meets setup on every corner, but hold fails at ff.
-    assert [r["repair"] for r in rounds] == [True, True, False]
     assert rounds[0]["corners"]["ss"]["wns_setup_ps"] == -300.0
+    # Round 1 meets setup on every corner, but breaks hold at ff, which met.
     assert rounds[1]["corners"]["ff"]["wns_hold_ps"] == -20.0
-    for script in ("r1.extract", "r1.repair"):
+    assert [r["best_round"] for r in rounds] == [0, 0]
+    assert _done(run_dir)["stop"] == "no_improvement"
+    for script in ("r0.extract", "r1.repair"):
         text = (run_dir / f"06_post_route_repair.{script}.tcl").read_text()
-        assert re.search(r"^read_spef -corner ss .*\.r1\.spef\]$", text, re.MULTILINE)
-        assert re.search(r"^read_spef -corner ff .*\.r1\.spef\]$", text, re.MULTILINE)
+        assert re.search(r"^read_spef -corner ss .*\.r0\.spef\]$", text, re.MULTILINE)
+        assert re.search(r"^read_spef -corner ff .*\.r0\.spef\]$", text, re.MULTILINE)
         assert not re.search(r"^read_spef \[", text, re.MULTILINE)
 
 
-def test_a_round_with_drc_violations_stops_the_rounds(tmp_path, monkeypatch):
+@pytest.mark.parametrize("round_", [1, 2])
+def test_a_round_with_drc_violations_is_never_kept(tmp_path, monkeypatch, round_):
     backend, artefacts = _repair_backend(
         tmp_path,
         monkeypatch,
         post_route=_PR,
-        env={"RB_STUB_SETUP": "-0.2 -0.1 -0.1", "RB_STUB_DRC": "1"},
+        env={"RB_STUB_SETUP": "-0.2 -0.1 -0.05", "RB_STUB_DRC": str(round_)},
     )
 
     res = backend.run()
 
+    assert res.results["result"] == "PASS", res.results
     (run_dir,) = _runs(artefacts)
-    assert [r["round"] for r in _rounds(run_dir)] == [1]
-    assert _done(run_dir)["repaired_rounds"] == 1
-    assert "DRC" in _done(run_dir)["reason"]
+    rounds = _rounds(run_dir)
+    # The round's route is not timed; the round before it is kept.
+    assert [r["round"] for r in rounds] == list(range(round_ + 1))
+    assert [r["drc_count"] for r in rounds] == [0] * round_ + [1]
+    assert "wns_setup_ps" not in rounds[-1]
+    assert not (run_dir / f"06_post_route_repair.r{round_}.extract.log").exists()
+    assert res.results["post_route_repair"] == {
+        "kept_round": round_ - 1,
+        "repaired_rounds": round_,
+        "rounds": 3,
+        "stop": "drc",
+        "reason": f"round {round_}'s detailed route has 1 DRC report line(s)",
+    }
+    assert res.results["drc_count"] == 0
+    # The stage's checkpoint and the artefact directory hold the kept round's
+    # router reports; the set-aside round keeps its own.
+    maze = f"maze r{round_ - 1}"
+    assert (run_dir / "06_post_route_repair.route.drc.rpt").read_text().strip() == ""
+    assert (run_dir / "06_post_route_repair.route.maze.log").read_text().strip() == maze
+    assert (artefacts / "route.maze.log").read_text().strip() == maze
+    assert (artefacts / "route.drc.rpt").read_text().strip() == ""
+    kept = run_dir / f"06_post_route_repair.r{round_}.route.drc.rpt"
+    assert kept.read_text().strip() == f"violation r{round_}"
+    finish = (run_dir / "07_finish.tcl").read_text()
+    assert "read_db [file join $RB_PRED_DIR 06_post_route_repair.odb]" in finish
+    stage = (run_dir / "06_post_route_repair.odb").stat().st_ino
+    if round_ == 1:
+        assert stage == (run_dir / "05_detailed_route.odb").stat().st_ino
+    else:
+        assert stage == (run_dir / "06_post_route_repair.r1.odb").stat().st_ino
+
+
+def test_a_detailed_route_with_drc_violations_gets_no_round(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        env={"RB_STUB_SETUP": "-0.2 -0.1", "RB_STUB_DRC": "0"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    (only,) = _rounds(run_dir)
+    assert only["round"] == 0 and only["drc_count"] == 1
+    assert "wns_setup_ps" not in only
+    # No session runs: not even round 0's extraction.
+    assert not list(run_dir.glob("06_post_route_repair.r[0-9]*.log"))
+    assert res.results["post_route_repair"] == {
+        "kept_round": 0,
+        "repaired_rounds": 0,
+        "rounds": 3,
+        "stop": "drc",
+        "reason": "the detailed route has 1 DRC report line(s)",
+    }
     assert res.results["drc_count"] == 1
-    # The stage's checkpoint keeps the last round's router reports.
-    kept = run_dir / "06_post_route_repair.route.drc.rpt"
-    assert kept.read_text().strip() == "violation"
-    maze = run_dir / "06_post_route_repair.route.maze.log"
-    assert maze.read_text().strip() == "maze r1"
+    assert (run_dir / "06_post_route_repair.odb").samefile(
+        run_dir / "05_detailed_route.odb"
+    )
 
 
-def test_an_error_line_in_a_round_ends_the_stage(tmp_path, monkeypatch):
+def test_an_error_line_in_round_0_s_extraction_fails_the_stage(tmp_path, monkeypatch):
     backend, artefacts = _repair_backend(
         tmp_path,
         monkeypatch,
         post_route=_PR,
         stages=True,
-        env={"RB_STUB_SETUP": "-0.2 -0.1", "RB_STUB_ERROR": "1"},
+        env={"RB_STUB_SETUP": "-0.2 -0.1", "RB_STUB_ERROR": "0"},
     )
 
     res = backend.run()
@@ -1467,10 +1877,47 @@ def test_an_error_line_in_a_round_ends_the_stage(tmp_path, monkeypatch):
     assert res.results["result"] == "FAIL", res.results
     assert "06_post_route_repair" in res.results["desc"]
     assert "ERROR" in res.results["desc"]
+    assert "post_route_repair" not in res.results
     (run_dir,) = _runs(artefacts)
     assert _rounds(run_dir) == []
     assert not (run_dir / "06_post_route_repair.r1.repair.log").exists()
     assert not (run_dir / "07_finish.log").exists()
+
+
+@pytest.mark.parametrize("stages", [False, True])
+def test_an_error_line_in_a_later_extraction_sets_the_round_aside(
+    tmp_path, monkeypatch, stages
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        stages=stages,
+        env={"RB_STUB_SETUP": "-0.2 -0.1 -0.05", "RB_STUB_ERROR": "2"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["post_route_repair"]["kept_round"] == 1
+    assert res.results["post_route_repair"]["stop"] == "session_failed"
+    assert res.results["post_route_repair"]["reason"].startswith(
+        "round 2's extraction session failed: 2 ERROR(s) in its log, the first: "
+        "[ERROR STA-0001] stub"
+    )
+    # The error stays in the logs, after the session's begin line and before
+    # the line that sets it aside.
+    (run_dir,) = _runs(artefacts)
+    log = (artefacts / "pnr.log").read_text()
+    begin = log.index(">>> rb: begin 06_post_route_repair round 2 extraction\n")
+    error = log.index("[ERROR STA-0001] stub", begin)
+    aside = log.index(
+        ">>> rb: set aside 06_post_route_repair round 2 extraction: ", error
+    )
+    assert "the stage keeps round 1\n" in log[aside:]
+    stage_log = (run_dir / "06_post_route_repair.log").read_text()
+    assert stage_log.index("[ERROR STA-0001]") < stage_log.index(">>> rb: set aside")
+    assert (run_dir / "07_finish.log").is_file()
 
 
 def test_a_resume_from_finish_restores_the_last_round_s_reports(tmp_path, monkeypatch):
@@ -1500,33 +1947,77 @@ def test_a_resume_from_finish_restores_the_last_round_s_reports(tmp_path, monkey
     assert (artefacts / "route.maze.log").read_text().strip() == "maze r1"
 
 
-def test_a_failed_repair_session_fails_the_stage(tmp_path, monkeypatch):
-    backend, artefacts = _repair_backend(
-        tmp_path,
-        monkeypatch,
-        post_route=_PR,
-        env={"RB_STUB_SETUP": "-0.2 -0.1 -0.1", "RB_STUB_FAIL": "remove_fillers"},
-    )
+@pytest.mark.parametrize("how", ["one session", "staged", "dispatched"])
+@pytest.mark.parametrize("round_", [1, 2])
+def test_a_failed_repair_session_keeps_the_best_round(
+    tmp_path, monkeypatch, how, round_
+):
+    env = {"RB_STUB_SETUP": "-0.2 -0.1 -0.05", "RB_STUB_REPAIR_FAIL": str(round_)}
+    if how == "dispatched":
+        from test_pnr_dispatch import _dispatched
+
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        backend, artefacts, _slurm = _dispatched(tmp_path, monkeypatch)
+        _with_repair(backend, tmp_path, post_route=_PR)
+    else:
+        backend, artefacts = _repair_backend(
+            tmp_path, monkeypatch, post_route=_PR, stages=how == "staged", env=env
+        )
+    logged = _logged(monkeypatch)
 
     res = backend.run()
 
-    assert res.results["result"] == "FAIL"
-    assert "06_post_route_repair" in res.results["desc"]
+    # Post-route repair is an optimisation: the routed design stands.
+    assert res.results["result"] == "PASS", res.results
+    kept = round_ - 1
+    assert res.results["post_route_repair"] == {
+        "kept_round": kept,
+        "repaired_rounds": kept,
+        "rounds": 3,
+        "stop": "session_failed",
+        "reason": f"round {round_}'s repair session failed: OpenROAD exited with "
+        "code 1: STUB-0003",
+    }
+    assert res.results["desc"].endswith(
+        f"; post-route repair round {round_}'s repair session failed: "
+        f"OpenROAD exited with code 1: STUB-0003; kept round {kept}"
+    )
     (run_dir,) = _runs(artefacts)
+    assert [r["round"] for r in _rounds(run_dir)] == list(range(round_))
+    (failed,) = [e for e in _events(run_dir) if e["event"] == "post_route_round_failed"]
+    assert failed | {"round": round_, "session": "repair", "kept_round": kept} == failed
+    warnings = [
+        (level, fields)
+        for level, event, fields in logged
+        if event == "pnr.post_route_round_failed"
+    ]
+    assert warnings and all(level == logging.WARNING for level, _f in warnings)
     ended = [e for e in _events(run_dir) if e["event"] == "stage_end"]
-    assert ended[-1]["stage"] == "post_route_repair"
-    assert ended[-1]["status"] == "error"
-    assert not [e for e in _events(run_dir) if e["event"] == "post_route_repair_done"]
+    assert [e["stage"] for e in ended][-2:] == ["post_route_repair", "finish"]
+    assert all(e["status"] == "ok" for e in ended)
+    assert "[ERROR STUB-0003]" in (artefacts / "pnr.log").read_text()
+    source = "05_detailed_route" if kept == 0 else "06_post_route_repair.r1"
+    assert (run_dir / "06_post_route_repair.odb").samefile(run_dir / f"{source}.odb")
+    (checkpoint,) = [
+        e
+        for e in _events(run_dir)
+        if e["event"] == "checkpoint"
+        and e["stage"] == "post_route_repair"
+        and e.get("source")
+    ]
+    assert checkpoint["source"] == source
 
 
+@pytest.mark.parametrize("setup, kept", [("-0.2 0.0", 1), ("-0.2 -0.3", 0)])
 def test_stop_after_post_route_repair_reports_on_extracted_parasitics(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, setup, kept
 ):
     backend, artefacts = _repair_backend(
         tmp_path,
         monkeypatch,
         post_route=_PR,
-        env={"RB_STUB_SETUP": "-0.2 0.0"},
+        env={"RB_STUB_SETUP": setup},
         stop_after="post_route_repair",
     )
 
@@ -1535,10 +2026,15 @@ def test_stop_after_post_route_repair_reports_on_extracted_parasitics(
     assert res.results["result"] == "PASS", res.results
     assert res.results["routed"] is False
     assert res.results["stopped_after"] == "post_route_repair"
+    assert res.results["post_route_repair"]["kept_round"] == kept
     (run_dir,) = _runs(artefacts)
     report = (run_dir / "06_post_route_repair.report.tcl").read_text()
     assert "extract_parasitics" in report
     assert "read_db [file join $RB_RUN_DIR 06_post_route_repair.odb]" in report
+    # The report times the round the stage kept.
+    kept_odb = "05_detailed_route.odb" if kept == 0 else "06_post_route_repair.r1.odb"
+    assert (run_dir / "06_post_route_repair.odb").samefile(run_dir / kept_odb)
+    assert (run_dir / "06_post_route_repair.report.log").is_file()
     assert not (run_dir / "07_finish.tcl").exists()
 
 
@@ -1651,8 +2147,9 @@ def test_a_probe_cannot_be_resumed_into_a_closure_run(tmp_path, monkeypatch):
     assert len(_runs(artefacts)) == 1
 
 
+@pytest.mark.parametrize("setup, kept", [("-0.2 0.01", 1), ("-0.2 -0.3", 0)])
 def test_a_staged_run_without_repair_resumes_into_post_route_repair(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, setup, kept
 ):
     plain, artefacts = _repair_backend(tmp_path, monkeypatch, stages=True)
     assert plain.run().results["result"] == "PASS"
@@ -1665,15 +2162,21 @@ def test_a_staged_run_without_repair_resumes_into_post_route_repair(
         stages=True,
         resume=str(plain_dir),
         resume_from="post_route_repair",
-        env={"RB_STUB_SETUP": "-0.2 0.01"},
+        env={"RB_STUB_SETUP": setup},
     )
     res = repair.run()
 
     assert res.results["result"] == "PASS", res.results
+    assert res.results["post_route_repair"]["kept_round"] == kept
     resumed = next(p for p in _runs(artefacts) if p != plain_dir)
-    assert [r["round"] for r in _rounds(resumed)] == [1, 2]
+    assert [r["round"] for r in _rounds(resumed)] == [0, 1]
     r1 = (resumed / "06_post_route_repair.r1.repair.tcl").read_text()
     assert f'set RB_PRED_DIR "{plain_dir}"' in r1
+    # Round 0 is the inherited detailed route, which the stage then keeps.
+    source = plain_dir / "05_detailed_route.odb" if kept == 0 else None
+    source = source or resumed / "06_post_route_repair.r1.odb"
+    assert (resumed / "06_post_route_repair.odb").samefile(source)
+    assert (artefacts / "route.maze.log").read_text().strip() == f"maze r{kept}"
 
 
 def test_the_abstract_digest_keeps_the_shorthand_and_names_other_repairs(tmp_path):
