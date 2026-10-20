@@ -726,7 +726,7 @@ def test_a_stage_whose_job_did_not_complete_fails_though_it_wrote_its_result(
         f"the stage succeeded and wrote its result (see {log})"
     )
     assert res.results["fail_stage"] == "dispatch"
-    later = PNR_STAGES[PNR_STAGES.index(stage) + 1 :]
+    later = _STAGES[_STAGES.index(stage) + 1 :]
     assert [jobs[s]["state"] for s in later] == ["CANCELLED"] * len(later)
     apply_xfail(res)
     assert res.results["result"] == "FAIL"
@@ -753,11 +753,11 @@ def test_a_result_is_taken_as_written_when_accounting_has_no_state(
     ]
     ids = [j["id"] for j in slurm.submitted()]
     assert warning.rtl_fields["job_ids"] == ids
-    assert warning.rtl_fields["stages"] == [_NAMES[s] for s in PNR_STAGES]
+    assert warning.rtl_fields["stages"] == [_NAMES[s] for s in _STAGES]
     assert warning.getMessage() == (
         f'P&R "demo_pnr": Slurm accounting has no end state for stage job(s) '
         f"{' '.join(ids)}, so the results of "
-        f"{', '.join(_NAMES[s] for s in PNR_STAGES)} are taken as the jobs wrote them"
+        f"{', '.join(_NAMES[s] for s in _STAGES)} are taken as the jobs wrote them"
     )
 
 
