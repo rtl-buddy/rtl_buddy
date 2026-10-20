@@ -277,6 +277,9 @@ def _format_duration(duration: Any) -> str | None:
         return str(duration)
 
 
+_BACKEND_NAMES = {"slurm": "Slurm"}
+
+
 def _format_elapsed(seconds: Any) -> str:
     """Compact wall-clock duration: ``45s`` / ``12m34s`` / ``1h02m03s``."""
     try:
@@ -2093,6 +2096,155 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"({fields.get('path')}) defined the Tcl command(s) "
                 f"{_capped_names(fields.get('commands'))}, which later stage "
                 "sessions do not have"
+            )
+        case "pnr.stage_job_submitted":
+            after = fields.get("dependency")
+            return (
+                f'P&R "{fields.get("pnr")}": stage {fields.get("stage")} is '
+                f"{_BACKEND_NAMES.get(fields.get('backend'), fields.get('backend'))} "
+                f"job {fields.get('job_id')}"
+                + (f", held until job {after} succeeds" if after else "")
+            )
+        case "pnr.stage_job_waiting":
+            return (
+                f'P&R "{fields.get("pnr")}": stage {fields.get("stage")} '
+                f"(job {fields.get('job_id')}) {fields.get('state')}, "
+                f"{fields.get('stages_left')} stage job(s) left, "
+                f"{_format_elapsed(fields.get('elapsed_s'))} elapsed"
+            )
+        case "pnr.stage_jobs_drained":
+            jobs = fields.get("jobs")
+            return (
+                f'P&R "{fields.get("pnr")}": '
+                + ("its stage job has" if jobs == 1 else f"all {jobs} stage jobs have")
+                + f" left the queue ({_format_elapsed(fields.get('elapsed_s'))})"
+            )
+        case "pnr.stage_job_failed":
+            state = fields.get("state")
+            return (
+                f"P&R stage {fields.get('stage')}: job {fields.get('job_id')} "
+                + (f"ended {state}" if state else "ended")
+                + ("" if fields.get("started") else " without finishing its stage")
+                + f"; its output is in {fields.get('log')}"
+            )
+        case "pnr.stage_job_refused":
+            return (
+                f"P&R stage job refused stage {fields.get('stage')} of "
+                f"{fields.get('run_dir')}: {fields.get('reason')}"
+            )
+        case "pnr.stage_job_given_up":
+            if fields.get("error"):
+                return (
+                    f"P&R stage job: rb gave {fields.get('run_dir')} up while stage "
+                    f"{fields.get('stage')} ran, and the job could not remove the "
+                    f"outputs the stage wrote: {fields.get('error')}"
+                )
+            return (
+                f"P&R stage job: rb gave {fields.get('run_dir')} up while stage "
+                f"{fields.get('stage')} ran; removed the "
+                f"{len(fields.get('removed') or [])} output(s) the stage wrote"
+            )
+        case "pnr.given_up_unrecorded":
+            return (
+                f'P&R "{fields.get("pnr")}": could not write {fields.get("path")} '
+                f"({fields.get('error')}); a stage job still running does not "
+                "learn that rb gave the run up, and may leave outputs that look "
+                "valid when its stage ends"
+            )
+        case "pnr.stage_job_script_unchanged":
+            return (
+                f"P&R stage job could not write its copy of {fields.get('script')} "
+                f"({fields.get('error')}); it runs the script as the head wrote it"
+            )
+        case "pnr.stage_jobs_survived_cancel":
+            ids = " ".join(map(str, fields.get("job_ids") or []))
+            how = (
+                "after rb cancelled them"
+                if fields.get("cancelled")
+                else "and Slurm did not take rb's cancel"
+            )
+            return (
+                f'P&R "{fields.get("pnr")}": stage job(s) {ids} are still queued '
+                f"{how}; one that is running its stage removes the outputs the "
+                "stage wrote when it ends, and the next rb pnr of this "
+                f"configuration waits for them; cancel them with "
+                f"`{fields.get('command')}`"
+            )
+        case "pnr.stage_jobs_orphaned":
+            ids = " ".join(map(str, fields.get("job_ids") or []))
+            clear = " ".join(map(str, fields.get("clear") or []))
+            if fields.get("error"):
+                return (
+                    f"P&R: cannot tell whether stage job(s) {ids} of an earlier "
+                    f"dispatched run in {fields.get('artefact_dir')} are still "
+                    f"queued ({fields.get('error')}); not starting; once they have "
+                    f"ended, remove {clear} to run without them"
+                )
+            return (
+                f"P&R: stage job(s) {ids} of an earlier dispatched run in "
+                f"{fields.get('artefact_dir')} are still queued or running; not "
+                f"starting; cancel them with `{fields.get('command')}`"
+            )
+        case "pnr.stage_jobs_unchecked":
+            ids = " ".join(map(str, fields.get("job_ids") or []))
+            return (
+                f"P&R: stage job(s) {ids} of the earlier dispatched run "
+                f"{fields.get('run_dir')} are not looked up: {fields.get('reason')}; "
+                f"its record last changed {_format_elapsed(fields.get('quiet_s'))} "
+                f"ago, more than the {_format_elapsed(fields.get('chain_s'))} its "
+                "jobs asked for, so they are taken to have ended; remove "
+                f"{fields.get('clear')} to stop this warning"
+            )
+        case "pnr.stage_submission_unanswered":
+            files = " ".join(map(str, fields.get("files") or []))
+            clear = " ".join(map(str, fields.get("clear") or []))
+            return (
+                f"P&R: sbatch has not answered stage job submission(s) {files} of an "
+                f"earlier dispatched run in {fields.get('artefact_dir')}; not "
+                "starting; once the submission is known to have died, remove "
+                f"{clear} to run without it"
+            )
+        case "pnr.stage_submission_presumed_failed":
+            return (
+                f"P&R: stage job submission {fields.get('file')} of the earlier "
+                f"dispatched run {fields.get('run_dir')} has had no answer from "
+                f"sbatch for {_format_elapsed(fields.get('age_s'))}, more than the "
+                f"{_format_elapsed(fields.get('after_s'))} a submission is given, "
+                "so it is taken to have failed"
+            )
+        case "pnr.stage_jobs_unaccounted":
+            ids = " ".join(map(str, fields.get("job_ids") or []))
+            stages = ", ".join(map(str, fields.get("stages") or []))
+            backend = _BACKEND_NAMES.get(fields.get("backend"), fields.get("backend"))
+            return (
+                f'P&R "{fields.get("pnr")}": {backend} accounting has no end state '
+                f"for stage job(s) {ids}, so the results of {stages} are taken as "
+                "the jobs wrote them"
+            )
+        case "pnr.dispatch_resources_default":
+            return (
+                f'P&R "{fields.get("pnr")}" has no resources: block, so every stage '
+                f"job gets {fields.get('cpus')} CPU(s), {fields.get('mem')} of memory "
+                f"and {fields.get('time')} from cfg-dispatch.resources and the "
+                "defaults; size the stages with resources:"
+            )
+        case "dispatch.pnr_stage_submission_abandoned":
+            job = fields.get("job_id")
+            if not job:
+                done = ""
+            elif fields.get("cancelled"):
+                done = f"; cancelled job {job}, which it had accepted"
+            else:
+                cluster = fields.get("cluster")
+                done = (
+                    f"; it had accepted job {job}, and scancel did not take the "
+                    f"cancel: run `scancel {f'-M {cluster} ' if cluster else ''}{job}`"
+                )
+            return (
+                f"dispatch: gave up submitting stage {fields.get('stage')} of P&R "
+                f'"{fields.get("pnr")}"'
+                + done
+                + (f" ({fields.get('error')})" if fields.get("error") else "")
             )
         case "pnr.stopped":
             return (

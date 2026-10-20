@@ -600,7 +600,7 @@ runs:
 - Unset gives 1 thread. A positive integer gives that many. `auto` gives the CPUs of the allocation the run is in, or 1 with none; never the host's core count.
 - Zero, negative numbers, booleans, quoted numbers and other strings fail configuration loading.
 
-`rb pnr` is not dispatched. Run it inside an allocation (`srun -c 8 rb pnr ...` or an `sbatch` script) to give OpenROAD CPUs. The allocation is `SLURM_CPUS_PER_TASK` (else `SLURM_CPUS_ON_NODE`) in a Slurm job, or a smaller CPU affinity mask on Linux. A container CPU quota (`docker --cpus`) is not visible.
+Without `--dispatch`, `rb pnr` runs OpenROAD where it is started. Run it inside an allocation (`srun -c 8 rb pnr ...` or an `sbatch` script) to give OpenROAD CPUs, or give each stage a job of its own with [`--dispatch slurm`](#dispatch-the-stages-to-slurm). The allocation is `SLURM_CPUS_PER_TASK` (else `SLURM_CPUS_ON_NODE`) in a Slurm job, or a smaller CPU affinity mask on Linux. A container CPU quota (`docker --cpus`) is not visible.
 
 A count above the allocation is clamped to it with an `openroad.threads_capped` warning naming both numbers. Outside an allocation an explicit count is used as given.
 
@@ -716,11 +716,63 @@ So a setting that only `--from` and later stages read may change between the run
 
 A resume is checked before anything is cleared or written. A refused resume, or one that fails setup before it is checked, leaves `checkpoints/latest` and the previous run's outputs as they were, so the same `--resume latest` can be retried once the configuration is put back.
 
+### Dispatch the stages to Slurm
+
+`--dispatch slurm` runs each stage of a staged run as its own Slurm job:
+
+```bash
+rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --dispatch slurm
+```
+
+rb writes every stage's script into the run directory first, so the jobs run the configuration as it was when the run started. It then submits one job per stage, each held until the one before it succeeds (`--dependency=afterok`), and waits until the last one has left the queue. Each job runs its stage as a local staged run does and adds to the same `pnr.log`, `progress.jsonl` and checkpoints, so the result, manifest and outputs are those of the same run staged locally. `--dispatch slurm` makes a run staged whatever its `stages:` setting. With `--stop-after` or `--resume` it submits only the stages the run runs. `--dispatch local`, the default, runs the stages where `rb pnr` runs; `cfg-dispatch.backend` does not apply to `rb pnr`.
+
+Each job's reservation is resolved field by field, most specific first, from the run's `resources.stages.<stage>`, the run's `resources:`, `cfg-dispatch.resources`, then the built-in defaults:
+
+```yaml
+runs:
+  - name: demo_pnr_nangate45
+    # ...
+    threads: auto
+    resources:
+      cpus: 4
+      mem: 8G
+      time: "02:00:00"
+      stages:
+        detailed_route: {cpus: 16, mem: 32G, time: "12:00:00"}
+```
+
+`threads: auto` takes each job's CPUs, so here detailed routing runs on 16 threads and every other stage on 4. A fixed `threads:` count is the same in every stage, clamped to the CPUs of a smaller job. Each job counts the CPUs it received when it starts, as a run inside an allocation does (see [OpenROAD threads](#openroad-threads)), so a `--cpus-per-task` in `cfg-dispatch.sbatch-args` or a site that grants a different count sets the thread count too. A run that is not dispatched ignores `resources:`. A dispatched run without a `resources:` block warns (`pnr.dispatch_resources_default`) with the CPUs, memory and time every job then gets.
+
+Every job asks for one task (`--ntasks=1`); `cfg-dispatch.sbatch-args` come after the reservation and apply to every job. The jobs are named `rb:pnr:<run>:<stage>`, tagged by `RTL_BUDDY_JOB_TAG` (see [Tag job names for one caller](dispatch.md#tag-job-names-for-one-caller)). The console shows each job id as Slurm accepts it, then the stage `rb pnr` waits on and its state.
+
+`rb pnr` itself stays on the submitting host. It writes the scripts, submits the jobs and waits for them, then runs there every check a local run makes on the routed result. The stream-out for `--gds`, `--png` or `harden: true` also runs there: KLayout reads the whole routed layout, so give the submitting host, or the allocation `rb pnr` runs in, memory to match.
+
+A stage whose job fails, is cancelled, runs out of time or is killed for memory fails the run, and Slurm removes the jobs after it. The description names the stage and how the job ended, for example `stage 05_detailed_route: OpenROAD exited with code -9 (Slurm job 1234 ended OUT_OF_MEMORY)`. A job killed inside its stage gets the stage's `stage_end` from Slurm's accounting, and the stage's log is cut from `pnr.log` when the job had not written it. A stage succeeds only when its job wrote a successful result and Slurm's accounting records the job `COMPLETED`, so a job that Slurm ended after its stage succeeded, for example when its `time` ran out as it exited, fails the run at that stage. When accounting gives no end state for a job, its result is taken as written, with the warning `pnr.stage_jobs_unaccounted`.
+
+`cfg-dispatch.max-wait` bounds how long each job waits in the queue before it starts: the first from its submission, each later one from when the job before it ends. How long a job runs is bounded by its own `time`. A job that waits longer, or one that cannot be submitted, fails the run and cancels the jobs; `sbatch` gets 10 minutes to answer a submission before it is stopped and the submission fails. The wait counts while `squeue` does not answer, and each `squeue` of the wait gets at most 30 seconds, so one that hangs counts as not answering. A job past `max-wait` then is given up only when Slurm's accounting (`sacct`) records it as still pending; when accounting has no answer either, only once it has been queued longer than `max-wait` plus its own `time`, so a job that started while the queue could not be read is never cancelled as unstarted. A job that `squeue` shows pending on a dependency that can never be met is cancelled by the wait, and that `scancel` gets at most 30 seconds too; one that hangs leaves the job counted as queued, and a later poll cancels it again.
+
+A failed stage carries its own `fail_stage` only when its job ran the stage and ended itself; it then fails as it would in a local staged run. Every other failure is the scheduler's and carries `fail_stage: dispatch`, which `xfail:` never excuses, as for an `rb test` job the scheduler lost:
+
+| How the stage's job ended | `fail_stage` |
+| --- | --- |
+| Ran its stage, which failed, and ended `COMPLETED` or `FAILED` | The stage's own: none, `incomplete` or `checkpoint` |
+| Ran its stage, which succeeded, and ended in any state but `COMPLETED` | `dispatch` |
+| Ran its stage and ended in any other state: `OUT_OF_MEMORY`, `TIMEOUT`, `CANCELLED`, `NODE_FAIL`, `PREEMPTED` | `dispatch` |
+| Refused its stage, never started it, or left no result | `dispatch` |
+| Could not be submitted, or waited in the queue longer than `max-wait` | `dispatch` |
+| Refused because an earlier dispatched run's jobs are still queued (below) | `dispatch` |
+
+Ctrl-C, SIGTERM or SIGHUP cancels the run's own jobs, and no others, including a job whose submission is still waiting on `sbatch`. `rb pnr` then waits up to 30 seconds for them to leave the queue, closes the stage a cancelled job was running as for a killed job, finishes the manifest and exits. A second Ctrl-C ends that wait early, in every run under `-j`; one that arrives while Slurm is asked to cancel takes effect once the request is done, and each `squeue` and `scancel` of the cancel gets at most 10 seconds. Under `-j`, every run being dispatched stops the same way and no further run starts. Jobs still queued after the wait are named with the `scancel` command that cancels them. Any other error before the chain has left the queue, such as a full disk, cancels the jobs and finishes the manifest the same way before rb reports it. Either way, `rb pnr` marks the run given up (`dispatch/given_up`) before it cancels the jobs, and clears the run's outputs after the wait. A job that starts after the mark refuses its stage, and one already running its stage removes the run's outputs again when the stage ends and fails it, so a job that outlives the cancel leaves no routed result that looks valid. A signal that arrives after the chain has left the queue takes effect once rb has read how the chain ended; the run then fails as interrupted.
+
+An `rb pnr` killed outright (SIGKILL, or the end of the allocation it runs in) leaves its jobs to run the rest of the chain unattended: the checks it makes after the last job never run and its manifest is never finished. While a job of an earlier dispatched run of the same configuration is queued or running, every `rb pnr` of it, dispatched or not, refuses to start before it clears anything, naming the jobs and the `scancel` command. It looks up only your own jobs, and refuses too while `squeue` does not answer, since it cannot tell. On a host without `squeue`, a run that is not dispatched refuses while the earlier run's `dispatch/` has changed within the total `time` its jobs asked for; after that it warns (`pnr.stage_jobs_unchecked`) and runs. That age is no proof that the jobs have ended, since a job can wait in the queue for any time before it starts. A submission that `sbatch` has not answered yet, such as one that was running when its `rb pnr` was killed, has no job id to look up, so it refuses every `rb pnr` of the configuration, naming its `dispatch/<NN>_<stage>.sbatch.tmp` (or `.sbatch.cancel`), until it is 11 minutes old: `sbatch` is stopped after 10 minutes, so a submission with no answer for longer has failed, and `rb pnr` warns (`pnr.stage_submission_presumed_failed`) and runs. Once the jobs have ended, or the submission is known to have died, removing the earlier run's `checkpoints/<run id>/dispatch/` directory lets `rb pnr` run without looking them up; a refusal that could not confirm the jobs names the directory. A job refuses its stage when its run has already finished or been given up, or when it runs another rtl_buddy version than the `rb pnr` that started the run.
+
+The run directory's `dispatch/` holds `jobs.json`, with each stage's job id, dependency and reservation and whether all have left the queue, `given_up` once `rb pnr` has given the run up, and for each stage Slurm's answer to the submission (`<NN>_<stage>.sbatch`, `<NN>_<stage>.sbatch.tmp` until `sbatch` answers), the job's Slurm output (`<NN>_<stage>.slurm.log`), its rtl_buddy log (`<NN>_<stage>.rtl_buddy.log`) and how it ended (`<NN>_<stage>.result.json`). A job whose CPUs give another thread count than the head wrote runs a copy of the stage script with that count, `<NN>_<stage>.tcl` there; the stage script in the run directory stays as the manifest records it. The manifest's `dispatch` entry records the backend and, for each stage, its reservation, `threads:` and the thread count that reservation gives. Each stage's `stage_begin` and `stage_end` record the count its job set (`thread_plan`), and the run's `openroad_threads` result is the last stage job's.
+
 ### Stage resources
 
 Each stage's wall time, CPU time (user plus system) and peak resident memory are recorded as `stage_end` events in `progress.jsonl` and under `resources` in the manifest, with `measured_by` naming how:
 
-- In a staged run rb measures each session as a process (`measured_by: process`) and also records its thread count (`threads`, the count OpenROAD reported, else the one `threads:` set).
+- In a staged run rb measures each session as a process (`measured_by: process`) and also records its thread count (`threads`, the count OpenROAD reported, else the one `threads:` set). A [dispatched](#dispatch-the-stages-to-slurm) stage is measured the same way inside its job, and its `stage_begin` and `stage_end` name the job (`slurm_job`) and `host`. A job killed inside its stage gets a `stage_end` with Slurm's accounting (`measured_by: scheduler`, and the job's `slurm_state`).
 - In a one-session run with `checkpoints:` or `--stop-after`, the flow measures each stage from inside OpenROAD (`measured_by: session`) at the stage boundaries of the [checkpoint table](#keep-stage-checkpoints): wall time from the Tcl clock, CPU time from `/proc/self/stat`, and peak memory from `VmHWM`, reset at each stage boundary through `/proc/self/clear_refs`. The reset starts from the memory the process already holds, so a stage's peak includes what earlier stages left resident (the `finish` stage after detailed routing, for example). Without `/proc` the CPU time and peak memory are `null`, and the peak memory is `null` after the first stage when the reset is refused.
 
 ## Stream-out inputs
@@ -944,5 +996,6 @@ rb pnr -c pnr/top/pnr.yaml --synth
 - **`block power: ... is not on a parent <net> strap`, `no single parent power net`, or `PDN-0233` on a block's macro grid.** A block's supply pins are off the parent's straps or cannot be tied. See [Blocks with supply pins on the top strap layer](#blocks-with-supply-pins-on-the-top-strap-layer).
 - **`instance '<inst>' ... of block '<blk>' sets <P>=...`, `port '<p>' is connected to N bit(s)`, `instances of block '<blk>' have different parameters`, or `... named by a hash`.** The parent instances a block with parameters or ports it was not hardened with. See [Instance a parameterised block](#instance-a-parameterised-block).
 - **`fail_stage: checkpoint`.** A stage checkpoint that a staged run or `--stop-after` needs could not be written (the `checkpoint` event in `progress.jsonl` has the error), or a one-session run never ended the stage the description names because a hook wrapped its command with `rename`. Free disk space, or remove the wrapper or set `stages: true`. See [Keep stage checkpoints](#keep-stage-checkpoints).
+- **`fail_stage: dispatch`.** A [dispatched](#dispatch-the-stages-to-slurm) stage's job was ended by Slurm, refused or never started its stage, or could not be submitted or waited in the queue past `max-wait`. The description names the stage, the job and its Slurm state; the job's `dispatch/<NN>_<stage>.slurm.log` has its output. Raise the stage's `resources:` for `OUT_OF_MEMORY` or `TIMEOUT`. A run refused before it started names the jobs of an earlier dispatched run that are still queued: wait for them, or cancel them with the `scancel` command it prints. When it could not look them up (`squeue` did not answer, or the host has none), run where `squeue` answers, or remove the `dispatch/` directory it names once the jobs have ended. When it names a submission `sbatch` has not answered, run again once `sbatch` answers, at most 11 minutes after the submission began, or remove the `dispatch/` directory it names once the submission is known to have died.
 - **`fail_stage: resume`.** `--resume` was refused; the description names the stage script, input file, checkpoint or OpenROAD version that differs. Rerun the stages from that point, or resume from an earlier stage. See [Resume a staged run](#resume-a-staged-run).
 - **`fail_stage: error`.** The run crashed; the exception is in the row description. Its consumers are blocked and other runs still report.
