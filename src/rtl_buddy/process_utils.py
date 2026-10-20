@@ -5,7 +5,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from typing import IO, Any, Callable
+from typing import IO, Callable
 
 
 @dataclass
@@ -14,8 +14,6 @@ class ManagedProcessResult:
     stdout: str | bytes | None = None
     stderr: str | bytes | None = None
     timed_out: bool = False
-    # The process's `resource.struct_rusage`, with `rusage=True`.
-    rusage: Any = None
 
 
 DEFAULT_KILL_TIMEOUT = 5
@@ -178,39 +176,6 @@ def _timeout_result(
     )
 
 
-def _reap_with_rusage(proc: subprocess.Popen) -> ManagedProcessResult:
-    """Read the one piped stream to its end, then reap ``proc`` with ``os.wait4`` for its resource usage."""
-    stdout_data = proc.stdout.read() if proc.stdout else None
-    stderr_data = proc.stderr.read() if proc.stderr else None
-    for stream in (proc.stdout, proc.stderr):
-        if stream:
-            stream.close()
-    usage = None
-    # Block until the exit without reaping and without Popen's lock: a signal
-    # handler in this thread waits on `proc` and would deadlock on that lock.
-    try:
-        os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)
-    except ChildProcessError:
-        pass
-    # Popen.wait() takes this lock too, so a concurrent reaper either reaped
-    # first (the return code is set) or waits for this reap.
-    with getattr(proc, "_waitpid_lock", threading.Lock()):
-        if proc.returncode is None:
-            try:
-                pid, status, usage = os.wait4(proc.pid, os.WNOHANG)
-                if pid:
-                    proc.returncode = os.waitstatus_to_exitcode(status)
-                else:
-                    usage = None
-            except ChildProcessError:
-                pass
-    if proc.returncode is None:
-        proc.wait()
-    return ManagedProcessResult(
-        returncode=proc.returncode, stdout=stdout_data, stderr=stderr_data, rusage=usage
-    )
-
-
 def run_managed_process(
     cmd: list[str],
     *,
@@ -225,7 +190,6 @@ def run_managed_process(
     terminate_signal: int = signal.SIGTERM,
     kill_timeout: float = 5,
     timeout_pauser: Callable[[], bool] | None = None,
-    rusage: bool = False,
 ) -> ManagedProcessResult:
     """Run a long-lived tool process with consistent cleanup.
 
@@ -236,22 +200,10 @@ def run_managed_process(
     returns ``True`` the tick does not count against ``timeout``, for expected
     waits such as a VCS license queue. It cannot be combined with
     ``capture_output=True`` or a ``subprocess.PIPE`` stream.
-
-    ``rusage`` reaps the process with ``os.wait4`` and returns its resource
-    usage in ``ManagedProcessResult.rusage`` (``None`` where ``os.wait4`` or
-    ``os.waitid`` is missing). It cannot be combined with ``timeout`` or with both streams piped.
     """
     if capture_output:
         stdout = subprocess.PIPE
         stderr = subprocess.PIPE
-
-    if rusage and (
-        timeout is not None or (stdout == subprocess.PIPE and stderr == subprocess.PIPE)
-    ):
-        raise ValueError(
-            "rusage cannot be combined with a timeout or with both streams piped"
-        )
-    rusage = rusage and all(hasattr(os, n) for n in ("wait4", "waitid", "WNOWAIT"))
 
     if timeout_pauser is not None and (
         stdout == subprocess.PIPE or stderr == subprocess.PIPE
@@ -334,8 +286,6 @@ def run_managed_process(
                         stdout=stdout_data,
                         stderr=stderr_data,
                     )
-        if rusage:
-            return _reap_with_rusage(proc)
         try:
             stdout_data, stderr_data = proc.communicate(timeout=timeout)
             return ManagedProcessResult(

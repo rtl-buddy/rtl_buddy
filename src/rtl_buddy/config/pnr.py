@@ -648,18 +648,8 @@ def with_planner_files(run: str, fp: PnrFloorplan) -> PnrFloorplan:
     return replace(fp, macros=macros, pins=pins)
 
 
-#: The flow's stages in order. A staged run (`stages: true`) runs each in its own OpenROAD session; `--stop-after`, `--resume` and `--from` name them.
-PNR_STAGES = (
-    "floorplan",
-    "place",
-    "cts",
-    "global_route",
-    "detailed_route",
-    "finish",
-)
-
-#: Stages `checkpoints:` can name, in flow order: every stage but `finish`. Each is written when its stage finishes.
-CHECKPOINT_STAGES = PNR_STAGES[:-1]
+#: Stages `checkpoints:` can name, in flow order. Each is written when its stage finishes; none is detail-routed.
+CHECKPOINT_STAGES = ("floorplan", "place", "cts", "global_route")
 
 
 def _normalise_checkpoints(run: str, value) -> tuple[str, ...] | None:
@@ -1097,8 +1087,6 @@ class PnrConfigFile:
     gds_allow_empty: list[str] = field(rename="gds-allow-empty", default_factory=list)
     # `str` precedes the list so a single stage name is not read as characters.
     checkpoints: bool | str | list[str] = False
-    # One OpenROAD session per stage, chained through the stage checkpoints.
-    stages: bool = False
     # Tcl files sourced at fixed flow points: point -> a path or a list of paths. Typed loosely so `initialise` names a bad value.
     hooks: Any = None
     # Publish a hard-macro abstract (LEF, Liberty, GDS, manifest) under `abstract/`; forces a strict GDS export.
@@ -1231,11 +1219,6 @@ class PnrConfigFile:
             else None
         )
         checkpoints = _normalise_checkpoints(self.name, self.checkpoints)
-        if self.stages and checkpoints not in (None, CHECKPOINT_STAGES):
-            raise FatalRtlBuddyError(
-                f"pnr run '{self.name}': 'stages: true' writes every stage "
-                "checkpoint; remove 'checkpoints' or set it to true"
-            )
         hooks = _normalise_hooks(self.name, self.hooks, config_dir)
         if "macro-placement" in hooks:
             for key, is_default in (
@@ -1319,8 +1302,7 @@ class PnrConfigFile:
             gds_paths=gds_paths,
             gds_mode=gds_mode,
             gds_allow_empty=list(self.gds_allow_empty),
-            checkpoints=CHECKPOINT_STAGES if self.stages else checkpoints,
-            stages=bool(self.stages),
+            checkpoints=checkpoints,
             hooks=hooks,
             harden=bool(self.harden),
             abstract=_load_abstract(self.name, self.abstract, bool(self.harden)),
@@ -1389,7 +1371,6 @@ class PnrConfig:
     threads: int | str | None = None
     detailed_route_verbose: int = DEFAULT_DETAILED_ROUTE_VERBOSE
     checkpoints: tuple[str, ...] | None = None
-    stages: bool = False
     # Absolute paths by flow point, in flow order; only points with a file.
     hooks: dict[str, tuple[str, ...]] = dc_field(default_factory=dict)
     harden: bool = False
@@ -1473,10 +1454,6 @@ class PnrConfig:
     def get_checkpoints(self) -> tuple[str, ...] | None:
         """The stages to checkpoint, in flow order; ``None`` when off."""
         return self.checkpoints
-
-    def get_stages(self) -> bool:
-        """Whether the run is staged: one OpenROAD session per stage."""
-        return self.stages
 
     def get_hooks(self) -> dict[str, tuple[str, ...]]:
         """The run's Tcl hook files by flow point, in flow order; empty when none."""

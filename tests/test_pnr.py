@@ -3,7 +3,6 @@
 import json
 import logging
 import os
-import re
 from contextlib import nullcontext
 from pathlib import Path
 from textwrap import dedent
@@ -2231,8 +2230,6 @@ def test_pnr_template_legalizes_after_every_cell_inserting_repair():
     from importlib.resources import files
 
     template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
-    # Stage markers render as nothing in a one-session run.
-    template = re.sub(r"\{\{ @/?\w+ \}\}", "", template)
     # `{{ dpl_options }}` adds options to `detailed_placement`, not passes.
     commands = [
         line.strip().replace("{{ dpl_options }}", "")

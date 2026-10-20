@@ -136,7 +136,6 @@ RUN_DIE = {
         "core-area": [10, 10, 90, 90],
         "core-cutouts": [[20, 20, 30, 30]],
     },
-    "stages": True,
 }
 
 PDK_ALL = {
@@ -247,7 +246,7 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             (),
             "name, desc, tool, synth, synth-path, constraints, pin-constraints, "
             "pdn-config, pdn, platform, floorplan, lef-paths, lib-paths, gds-paths, "
-            "gds-mode, gds-allow-empty, checkpoints, stages, hooks, harden, abstract, "
+            "gds-mode, gds-allow-empty, checkpoints, hooks, harden, abstract, "
             "buffer-ports, fail-on-electrical, blocks, placement, reglvl, "
             "tool_overrides, threads, detailed-route-verbose, xfail, xfail_strict, "
             "xfail_match",

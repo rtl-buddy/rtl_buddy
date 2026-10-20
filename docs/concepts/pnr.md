@@ -4,7 +4,7 @@ description: Run OpenROAD place-and-route from a mapped synthesis result, config
 
 # Place-and-Route
 
-`rb pnr` takes a technology-mapped `rb synth` result, runs OpenROAD placement, clock-tree synthesis and routing, and reports area, timing and DRCs. It can also stream the layout to GDS and PNG with KLayout, harden a block for reuse in a larger design, keep stage checkpoints, and run each stage as its own OpenROAD session that a later run can resume.
+`rb pnr` takes a technology-mapped `rb synth` result, runs OpenROAD placement, clock-tree synthesis and routing, and reports area, timing and DRCs. It can also stream the layout to GDS and PNG with KLayout, harden a block for reuse in a larger design, and keep stage checkpoints.
 
 ## Install the tools
 
@@ -43,7 +43,7 @@ rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml -l 1000
 rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --png --gds-mode strict
 ```
 
-`--png` and `--gds-mode` imply `--gds`. `--stop-after`, `--resume` and `--from` end a run early or resume a staged one; see [Run stages as separate sessions](#run-stages-as-separate-sessions). KLayout runs after a successful OpenROAD run. In the default `preview` mode a KLayout failure logs a warning and leaves the P&R verdict unchanged. In `strict` mode an undelivered export fails the run; see [Stream-out completeness](#stream-out-completeness).
+`--png` and `--gds-mode` imply `--gds`. KLayout runs after a successful OpenROAD run. In the default `preview` mode a KLayout failure logs a warning and leaves the P&R verdict unchanged. In `strict` mode an undelivered export fails the run; see [Stream-out completeness](#stream-out-completeness).
 
 ## Flow steps
 
@@ -75,8 +75,6 @@ The flow prints the last two after `>>> Final reports` as `RB-CELL-COUNT: routed
 
 A pass is qualified with `pnr.no_wire_rc` when the pre-route steps had no wire RC; see [Set wire RC](#set-wire-rc).
 
-Every run that reached the end of the flow carries `routed: true`. A run ended by [`--stop-after`](#stop-after-a-stage) carries `routed: false` and `stopped_after`, and its numbers come from a stage report, not from a routed design.
-
 `max_slew_violation_count`, `max_capacitance_violation_count` and `max_fanout_violation_count` count the routed design's pins that break a Liberty or SDC max-slew, max-capacitance or max-fanout limit, over every corner, as ORFS's `report_metrics` counts them. The summary shows them as the Slew/Cap/Fanout column, `pnr.log` prints them as `RB-ELECTRICAL: max_<check> <n>` after `>>> Final reports`, and `electrical.rpt` lists the violating pins. A pass with any violator is qualified `electrical N max-slew, ... violator(s)` and logs the warning `pnr.electrical_violators`. A count OpenROAD cannot report is left out.
 
 A run passes when OpenROAD exits 0 with no `[ERROR ...]` line, the routed DEF keeps every located macro and exact pin where the floorplan put it, and, under `gds-mode: strict`, the requested export was delivered complete. With `fail-on-electrical: true` a run with any electrical violator also fails, with no `fail_stage`, so `xfail:` can excuse it; it keeps its routed outputs and publishes no abstract. It skips when `reglvl` filters it out or `tool:` is unsupported. Timing violations and DRC counts are metrics only; gate signoff on them in your project.
@@ -99,7 +97,7 @@ Outputs land under `<pnr-dir>/artefacts/<run>/`.
 | `congestion.rpt` | Overflowing global-route tiles; written only when global routing overflows |
 | `<top>.gds`, `<top>.png`, `klayout.*.log` | Optional KLayout outputs and logs |
 | `export.provenance.json` | What the last `rb pnr-export` read and produced |
-| `checkpoints/`, `abstract/` | Optional [stage checkpoints](#keep-stage-checkpoints), with a [staged run's](#run-stages-as-separate-sessions) stage scripts and logs, and [hardened-block abstract](#harden-a-block) |
+| `checkpoints/`, `abstract/` | Optional [stage checkpoints](#keep-stage-checkpoints) and [hardened-block abstract](#harden-a-block) |
 
 Each run deletes the previous run's outputs first, and a run that fails after writing the routed database removes it again, so `rb power` never reads a stale one. `pnr.log`, `pnr.tcl` and `congestion.rpt` are kept from a failed run.
 
@@ -268,7 +266,7 @@ runs:
 | `before-reports` | After fill insertion and parasitic extraction, before the final reports |
 
 - The files of a point are sourced in list order at Tcl global scope, so the flow's variables are visible to them: `$OUT_DIR` and `$DESIGN` throughout, `$block` and `$macros` from macro placement on. A variable one file sets is still set in the next. `pnr.log` announces each file as `>>> Hook <point>: <path>`.
-- OpenROAD runs in the run's artefact directory, `artefacts/<run>/`, so a hook reaches files next to itself through `[file dirname [info script]]`.
+- OpenROAD runs in the directory `rb` was started from, so a hook reaches files next to itself through `[file dirname [info script]]`.
 - `session` is for state the saved database does not keep, such as `set_wire_rc` on a run's own layers or extra `set_dont_use` cells. The PDK's `layer-rc-tcl` stays the wire RC rb knows about: the [no-wire-RC qualifier](#set-wire-rc) and a [`netlist-source: pnr` power run](power.md#extracted-parasitics) read only that. The post-route don't-use check covers only the configured cells, not ones a hook adds.
 - `macro-placement` runs inside the flow's macro branch, so it does not run when the netlist has no macros. The [`floorplan.macros`](#place-individual-macros) directives still apply before it, and the cell-halo blockages around every macro are still created after it. `$rb_movable_macros` lists the macros the directives leave unlocated, or every macro when there are no directives. Setting `floorplan.macro-placement` or `floorplan.macro-anchor` together with the hook is a config error, since neither would have an effect.
 - Results come from the final reports: a report a hook prints earlier does not change the result's area, slack or TNS.
@@ -278,8 +276,6 @@ runs:
 - A configured file missing from disk fails the run at `setup`, naming `hooks.<point>[<index>]`, before OpenROAD starts.
 - Every hook file is an input to [stage checkpoints](#keep-stage-checkpoints) and to a [hardened block's](#harden-a-block) abstract, so editing one makes the abstract stale. `hooks` is part of the block's configuration only when set.
 - Commands a hook runs report their progress like the flow's own, but they do not move a stage checkpoint: a `global_placement` inside a hook leaves the `floorplan` checkpoint to the flow's own `global_placement`.
-- In a [staged run](#run-stages-as-separate-sessions) each hook point is sourced in the session of the stage that contains it, and `session` hooks are sourced again in every session. Session state a hook sets, such as a Tcl procedure, a `rename` wrapper or `set_wire_rc`, is gone in the next session; see [what a session keeps](#run-stages-as-separate-sessions). A `session` hook keeps it in every session, but from the first one on, so it also changes the steps before the hook point that it was written for.
-- `after-pins` runs before rb's `buffer_ports`. A hook that buffers the ports itself needs `buffer-ports: false`, or rb buffers them again after it.
 
 ## Set wire RC
 
@@ -622,106 +618,16 @@ runs:
 | `floorplan` | before `global_placement` | floorplan, pins, tie cells, placed macros, PDN; no global-placement-only blockage |
 | `place` | before `clock_tree_synthesis` | legalized global placement |
 | `cts` | before `global_route` | clock tree, hold repair, legalization |
-| `global_route` | after `global_route`, the `after-global-route` hooks and the global-route hold repair, before the `before-detailed-route` hooks | the global route |
-| `detailed_route` | after `detailed_route` | the detailed route, before fill |
+| `global_route` | after a successful `global_route` | the global route |
 
-In a one-session run the flow ends each stage, but `global_route`, on the command the table names: on entering `global_placement`, `clock_tree_synthesis` or `global_route`, or on leaving `detailed_route`. A hook that wraps one of these commands with `rename` hides that boundary, which a one-session run does not support: a run that reaches its end without writing a checkpoint it keeps fails with `fail_stage: checkpoint`, naming the stage and the command. A [staged run](#run-stages-as-separate-sessions) ends each stage at the end of its session and has no such limit.
-
-`true` keeps all five stages; a name or list keeps some; `[]` keeps only the progress file. Unset or `false` disables the feature. Each stage writes `<NN>_<stage>.odb`, `.def` and `.sdc` into `artefacts/<run>/checkpoints/<timestamp>-<pid>/`, and `checkpoints/latest` points at the newest run. The `global_route` checkpoint adds the route guides (`.guide`) and global-route segments (`.segments`). The `detailed_route` checkpoint keeps a copy of each report the detailed router wrote, `<NN>_detailed_route.route.drc.rpt` and `.route.maze.log`. The SDC is written with `write_sdc -no_timestamp -digits 9`.
+`true` keeps all four stages; a name or list keeps some; `[]` keeps only the progress file. Unset or `false` disables the feature. Each stage writes `<NN>_<stage>.odb`, `.def` and `.sdc` into `artefacts/<run>/checkpoints/<timestamp>-<pid>/`, and `checkpoints/latest` points at the newest run.
 
 - `tail -f artefacts/<run>/checkpoints/latest/progress.jsonl` follows a running flow. After a kill, the last `step_begin` with no `step_end` is the step the run was in.
 - With [`hooks:`](#run-tcl-hooks) set, `hook_begin` and `hook_end` events bracket each hook file and name its point and path. `hook_end` adds the status, the elapsed seconds and, on failure, the error. A `hook_begin` with no `hook_end` is the hook the run was in; rb's retained-checkpoints message names it as the step `hook <point>`.
-- Each stage's wall time, CPU time and peak memory are recorded; see [Stage resources](#stage-resources).
 - A checkpoint is never final. `rb power` and a plain `rb pnr-export` never read it.
 - Old run directories are not pruned. Delete the ones you no longer need.
 
-To look at a checkpoint, open its ODB in OpenROAD or stream it out with [`rb pnr-export --checkpoint`](#export-a-saved-result). To continue from one, the run must be staged; see [Resume a staged run](#resume-a-staged-run).
-
-## Run stages as separate sessions
-
-Set `stages: true` on a run to run each stage in its own OpenROAD session, one after another:
-
-```yaml
-runs:
-  - name: demo_pnr_nangate45
-    # ...
-    stages: true
-```
-
-The stages are `floorplan`, `place`, `cts`, `global_route`, `detailed_route` and `finish` (fill, parasitic extraction, the `before-reports` hooks, the final reports and the outputs). Each session but `finish` ends by writing its stage's [checkpoint](#keep-stage-checkpoints), which the next session reads, so a staged run writes every checkpoint. `stages: true` with a `checkpoints:` list that leaves a stage out is a config error.
-
-A staged run's checkpoint directory also holds each session's script and log, `<NN>_<stage>.tcl` and `<NN>_<stage>.log`, and with each checkpoint a `<NN>_<stage>.state.tcl` of the flow variables a later stage reads (the `floorplan.macros` cell halos). The run keeps one `progress.jsonl` and one `manifest.json`. `artefacts/<run>/pnr.log` is the sessions' logs in order, written as each session runs, and `pnr.tcl` is their scripts in order.
-
-Each session after `floorplan` starts with a prelude rb generates from the same flow template, so a staged run and a one-session run of the same configuration run the same flow commands. Their results are identical at equal thread counts unless OpenROAD carries in-memory state over a stage boundary in the one-session run; see [Quirks & Known Issues](../known-issues.md#a-staged-pr-run-can-differ-from-a-one-session-run). The prelude is:
-
-1. The header variables, `threads:`, `platform-tcl`, the Liberty of every corner and every LEF, including the views of `blocks:`.
-2. `read_db` and `read_sdc` of the previous stage's checkpoint, and its saved flow variables.
-3. `max-fanout`, `layer-rc-tcl`, the don't-use cells and the `session` hooks.
-4. The flow's design variables (`$block`, `$macros`) and, after `place`, the detailed-placement options a rotated macro needs.
-5. `set_propagated_clock [all_clocks]` after `cts`, the routing layers and layer adjustment after `global_route`, for `detailed_route` the `global_route` checkpoint's segments (`read_global_route_segments`), and for `finish` a fanout check, without which OpenROAD crashes in the final reports' max-fanout count.
-
-The detailed router reads the route guides the database keeps, so a staged run routes exactly as a one-session run does; `read_guides` would rewrite them without their via layers. The `finish` session also takes the global route from those guides, as `rb power` does from a routed database. A routed database's pin access points can put a pin in another global-routing cell than the route reached, so OpenROAD would refuse the saved segments there. On a PDK with `rcx-rules` the final reports are timed on the extracted SPEF.
-
-A session has what the previous stage's checkpoint holds and what its prelude sets up again, nothing more:
-
-- The database keeps the design with its global-connect rules, placement blockages, routing layer range and layer adjustments, `dont_touch` marks, track grids and route guides.
-- The checkpoint SDC, written at the end of the stage after its hooks, keeps the timing constraints, including `set_max_fanout` and propagated clocks.
-- The state file keeps the flow variables named above.
-
-Anything else an earlier session set is gone: Tcl variables, procedures and `rename` wrappers, `set_wire_rc`, `set_layer_rc` and `set_dont_use` that a hook ran, STA settings outside the SDC, and the resizer's in-memory state. In every session but `finish`, rb compares the global Tcl commands and procedures before and after each hook but a `session` one. A hook that renamed, deleted or redefined a command that existed before it logs the warning `pnr.hook_commands_not_kept` naming them, since later sessions run the original. A hook that only defined new commands logs them at info as `pnr.hook_commands_added`: a later session that calls one fails with an unknown command. See [Quirks & Known Issues](../known-issues.md#session-state-does-not-cross-a-pr-stage-boundary).
-
-A session that fails, prints an OpenROAD `[ERROR ...]` line or exits before it ends its stage fails the run with its stage in the description, and no later stage runs. Its stage is recorded as not finished cleanly, so no resume can start after it. A checkpoint that cannot be written fails the run with `fail_stage: checkpoint`, and a session that exits with code 0 before its end-of-stage line fails it with `fail_stage: incomplete`; `xfail:` excuses neither.
-
-### Stop after a stage
-
-`--stop-after <stage>` ends a run, staged or not, once that stage's checkpoint is written:
-
-```bash
-rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --stop-after global_route
-```
-
-Any stage but `finish` can be named. The run writes the stage's checkpoint even without `checkpoints:`, prints a stage report and then `>>> STOPPED after <stage>`. The report gives the design area, setup and hold worst slack and TNS (per corner on a multi-corner platform), timed on no parasitics after `floorplan`, the placement estimate after `place` and `cts`, and the global-route estimate after `global_route` and `detailed_route`.
-
-The result is a `PASS` with `routed: false` and `stopped_after: <stage>`, with `area_um2`, the slack and TNS fields from the report, `global_route_overflow` (the total overflow in the last global-route usage table) from `global_route` on, and `drc_count` after `detailed_route`. A stopped run writes no routed DEF, ODB, SPEF or GDS, publishes no abstract for `harden: true`, and skips the [routed-floorplan check](#check-the-routed-floorplan) and the stream-out. A run that exits with code 0 before printing its stop line fails with `fail_stage: incomplete`, and one that cannot write the stage's checkpoint fails with `fail_stage: checkpoint`. A run's `xfail:` marker does not apply to a stopped run, which is no verdict on the routed design: its `PASS` stays `PASS`, never `XPASS`, and a `FAIL` stays `FAIL`.
-
-### Resume a staged run
-
-`--resume <run> --from <stage>` starts a new staged run at `<stage>` from a staged run's checkpoint of the stage before it:
-
-```bash
-rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --stop-after global_route
-rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --resume latest --from detailed_route
-```
-
-`<run>` is `latest` or a run id under the run's `checkpoints/`, both looked up there first, or else a checkpoint run directory, which a relative path names from the directory `rb` was invoked in. The resumed run writes its own run directory and leaves the old one unchanged, so detailed routing can be retried several times from one global route. Its manifest records `resumed_from` (run id and stage) and lists the inherited stages' scripts, logs and checkpoints with the run that wrote them (`rb pnr-export --checkpoint <run-id>/<stage>` on the resumed run exports an inherited checkpoint from the run that wrote it, wherever that run is), and its `pnr.log` starts with the inherited stages' logs. A run resumed from `finish` puts the inherited route's `route.drc.rpt` and `route.maze.log` back in the artefact directory, so its `drc_count` and DRC report are that route's. A resumed run is staged whatever its `stages:` setting, and can itself be resumed. Both options need a single named run, and `--stop-after` may be added.
-
-The resume is refused, with `fail_stage: resume` and a description that names what differs, unless:
-
-- the run named was a staged run, and its stage before `--from` finished cleanly with its checkpoint written and unchanged since;
-- the script of every stage before `--from`, generated from today's configuration, is the one that run used, as compared below;
-- every input file those stages read has the same content; and
-- OpenROAD reports the same version.
-
-The input files are those the [checkpoint manifest](#keep-stage-checkpoints) fingerprints: the netlist, the SDC, the Liberty of every corner, the LEF, `pin-constraints`, the planner files, the `pdn-config`, the PDK Tcl hooks (`platform-tcl`, `layer-rc-tcl`, `tracks-tcl`, `tapcell-tcl`) and the run's `hooks:` files. A file that one of them sources or reads in turn, such as a file a hook, `platform-tcl`, a `pdn-config` or the SDC sources, is not checked, and neither are environment variables.
-
-A stage script is compared up to its end-of-stage line, without:
-
-- the two lines that name run directories (`RB_RUN_DIR` and `RB_PRED_DIR`);
-- the thread count (`set_thread_count`); and
-- each `set NAME value` line of the header at the top of the script whose variable the rest of that stage's script does not read, as `$NAME`, `${NAME}`, `$::NAME` or `${::NAME}`, itself or through another header line it keeps.
-
-Everything else is compared, including rb's own Tcl procedures, so an rtl_buddy version that generates a different script for an earlier stage refuses the resume. The scan sees only the stage script: a hook file, `platform-tcl` or other file that the stage sources and that reads a header variable does not make that variable part of the comparison.
-
-So a setting that only `--from` and later stages read may change between the runs: `detailed-route-verbose:` or a `before-detailed-route` hook, the routing layers (first read by `global_route`), or the fill cells (read by `finish`). The thread count may differ between stages, so a resume can run on another CPU allocation than the run it resumes; a staged run equals a one-session run of the same configuration only at equal thread counts.
-
-A resume is checked before anything is cleared or written. A refused resume, or one that fails setup before it is checked, leaves `checkpoints/latest` and the previous run's outputs as they were, so the same `--resume latest` can be retried once the configuration is put back.
-
-### Stage resources
-
-Each stage's wall time, CPU time (user plus system) and peak resident memory are recorded as `stage_end` events in `progress.jsonl` and under `resources` in the manifest, with `measured_by` naming how:
-
-- In a staged run rb measures each session as a process (`measured_by: process`) and also records its thread count (`threads`, the count OpenROAD reported, else the one `threads:` set).
-- In a one-session run with `checkpoints:` or `--stop-after`, the flow measures each stage from inside OpenROAD (`measured_by: session`) at the stage boundaries of the [checkpoint table](#keep-stage-checkpoints): wall time from the Tcl clock, CPU time from `/proc/self/stat`, and peak memory from `VmHWM`, reset at each stage boundary through `/proc/self/clear_refs`. The reset starts from the memory the process already holds, so a stage's peak includes what earlier stages left resident (the `finish` stage after detailed routing, for example). Without `/proc` the CPU time and peak memory are `null`, and the peak memory is `null` after the first stage when the reset is refused.
+Resume from a checkpoint is not supported. To look at one, open its ODB in OpenROAD or stream it out with [`rb pnr-export --checkpoint`](#export-a-saved-result).
 
 ## Stream-out inputs
 
@@ -943,6 +849,4 @@ rb pnr -c pnr/top/pnr.yaml --synth
 - **`PDN-0008 ... halo overlaps row`.** A macro grid's `-halo` in the `pdn-config` reaches into a row beside the macro, which OpenROAD 26Q4's `pdngen` refuses. Reduce the halo to at most the value the message suggests.
 - **`block power: ... is not on a parent <net> strap`, `no single parent power net`, or `PDN-0233` on a block's macro grid.** A block's supply pins are off the parent's straps or cannot be tied. See [Blocks with supply pins on the top strap layer](#blocks-with-supply-pins-on-the-top-strap-layer).
 - **`instance '<inst>' ... of block '<blk>' sets <P>=...`, `port '<p>' is connected to N bit(s)`, `instances of block '<blk>' have different parameters`, or `... named by a hash`.** The parent instances a block with parameters or ports it was not hardened with. See [Instance a parameterised block](#instance-a-parameterised-block).
-- **`fail_stage: checkpoint`.** A stage checkpoint that a staged run or `--stop-after` needs could not be written (the `checkpoint` event in `progress.jsonl` has the error), or a one-session run never ended the stage the description names because a hook wrapped its command with `rename`. Free disk space, or remove the wrapper or set `stages: true`. See [Keep stage checkpoints](#keep-stage-checkpoints).
-- **`fail_stage: resume`.** `--resume` was refused; the description names the stage script, input file, checkpoint or OpenROAD version that differs. Rerun the stages from that point, or resume from an earlier stage. See [Resume a staged run](#resume-a-staged-run).
 - **`fail_stage: error`.** The run crashed; the exception is in the row description. Its consumers are blocked and other runs still report.
