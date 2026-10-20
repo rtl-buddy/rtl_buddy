@@ -14,6 +14,10 @@ CLI behavior, YAML loading, artifact layout, machine output, event names, and bu
 
 Record surprising defaults, limitations, and workarounds in [Quirks & Known Issues](../known-issues.md). Give each quirk one H2 section that states the effect and the action to take.
 
+## Tool Defaults
+
+Keep each underlying tool's defaults. A knob that changes what a tool command does is unset or off by default, so a project gets the tool's behaviour unless it sets the knob. A default that departs from the tool works around a named tool bug, has its section in [Quirks & Known Issues](../known-issues.md), and has an issue that tracks dropping it once the supported tool versions fix the bug.
+
 ## Execution Contexts
 
 Use explicit contexts, never ambient `os.getcwd()`:
