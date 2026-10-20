@@ -163,6 +163,8 @@ RUN_SIZED = {
     "post-cts-setup-repair": False,
     "port-buffer": "buf2",
     "tapcell-tcl": "tap_run.tcl",
+    "cts-dont-use-cells": ["*_L"],
+    "keep-sizing-vt": True,
     "cts-clock-nets": ["clk", "clk_div[0]"],
     "global-route": GLOBAL_ROUTE_ALL,
     "mode": "closure",
@@ -245,6 +247,8 @@ PLATFORM_ONE_CORNER = {
     "routing-layers": {"signal": "m1-m5", "clock": "m3-m5"},
     "placement": PLACEMENT_ALL,
     "dont-use-cells": ["y*"],
+    "cts-dont-use-cells": ["*_L", "*_SL"],
+    "keep-sizing-vt": True,
     "tapcell-tcl": "tap_platform.tcl",
     "global-route": GLOBAL_ROUTE_ALL,
 }
@@ -332,8 +336,8 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "global-route-repair, post-route-repair, routing-layers, "
             "routing-layer-adjustment, cts-buffer, cts-latency-balancing, "
             "cts-repair-clock-nets, post-cts-setup-repair, global-route-hold-repair, "
-            "port-buffer, tapcell-tcl, cts-clock-nets, global-route, mode, reglvl, "
-            "tool_overrides, "
+            "port-buffer, tapcell-tcl, cts-dont-use-cells, keep-sizing-vt, "
+            "cts-clock-nets, global-route, mode, reglvl, tool_overrides, "
             "threads, resources, detailed-route-verbose, xfail, xfail_strict, "
             "xfail_match",
         ),
@@ -696,7 +700,7 @@ cfg-pnr-platforms:
             "post-cts-setup-repair, global-route-hold-repair, global-route-repair, "
             "post-route-repair, routing-layer-adjustment, cts-apply-ndr, "
             "port-buffer, max-fanout, routing-layers, placement, dont-use-cells, "
-            "tapcell-tcl, global-route",
+            "cts-dont-use-cells, keep-sizing-vt, tapcell-tcl, global-route",
         ),
         (
             "platform",
