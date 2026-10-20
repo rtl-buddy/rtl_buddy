@@ -207,10 +207,13 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | Key | Behavior |
 |---|---|
 | `repair-design` | `repair_design` with `slew-margin`, `cap-margin` (percent) and `max-wire-length` (µm); `{}` uses OpenROAD's defaults |
+| `repair-design.wire-rc` | `post-route-repair` only. Signal wire RC for `repair_design`: `{resistance: <kohm/um>, capacitance: <fF/um>}` or `{layer: <name>}`. The session's RC is restored for `repair_timing`; nets `repair_design` changed keep this estimate until they are estimated again. Unset uses the session's |
+| `repair-design.after-timing` | `post-route-repair` only. `true` runs `repair_design` again after timing repair in each round; needs a margin. Default `false` |
 | `setup-margin`, `hold-margin` | `repair_timing -setup` / `-hold` with that margin in ns, at least 0 |
 | `reroute` | `incremental` (default) or `full` for `global-route-repair`; `eco` (default) or `full` for `post-route-repair` |
 | `rounds` | `post-route-repair` only. Positive, default 1; above 1 needs a margin |
 | `margin-step` | `post-route-repair` only. ns added to the margins each round after the first. Default 0 |
+| `electrical-repair` | `post-route-repair` only. `{slew-margin, cap-margin}` (percent): one more round runs `repair_design` alone when the best round has max-slew or max-capacitance violators. Unset runs none |
 
 The block a run ends up with must set at least one of `repair-design`, `setup-margin` and `hold-margin`. A run's block overrides the platform's field by field; `null` turns a field or the block off. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing).
 
@@ -384,9 +387,14 @@ cfg-dispatch:
 
 `compile.parallel` multiplies only the build job's `cpus` reservation, capped at the suite's planned test count. `mem` and `time` are submitted as written. Above 1, the job runs every config's `preproc` before any builder starts, so no hook may change another config's inputs. It has no effect where a builder compiles inside its own simulation job, since that job is one serial build.
 
-`parallel` and `split-verilate` are honored only in `cfg-dispatch.compile` and a suite's top-level `compile:`. In a per-test or per-testbench `resources:` block they are ignored with a warning; in a testbench `compile:` block or any `modes:` block they are rejected at load.
+`parallel` and `split-verilate` are valid only in `cfg-dispatch.compile` and suite-level `compile:`. Per-test/testbench `resources:`, testbench `compile:`, and all mode blocks reject them.
 
-An unknown key in `cfg-dispatch`, in its `resources`, `compile`, `compile.verilate`, `coverage`, `retry` or `rightsize` block, in a `tests.yaml` `resources:` or `compile:` block, or in an elaboration profile's `resources` is ignored. Each one logs the warning `config.unknown_key` with the file, the block and the nearest known key, for example `did you mean 'mem'?` for `memory:`. A later major release will make it fatal. A key written twice in the same block is fatal, not a warning.
+Unknown keys fail loading with exit code 2 in:
+
+- `cfg-dispatch` and its `resources`, `compile`, `compile.verilate`, `coverage`, `retry`, and `rightsize` blocks.
+- Suite/testbench `compile` (including `verilate`), test/testbench `resources`, and elaboration-profile `resources`.
+
+ERROR `config.unknown_key_rejected` names each file, block, unknown key, nearest spelling, and valid keys. Correct or remove every reported key; for example, replace `memory:` with `mem:`.
 
 ### Per-mode reservations
 
@@ -399,7 +407,7 @@ A `modes:` block resizes a reservation for the run's `--builder-mode`.
 - Omitted fields and unnamed modes inherit, so a mode that no block names reserves the base value.
 - Mode names are free text, normally your `cfg-rtl-builder.builder-opts` keys, but they must be strings. Quote `on`, `no`, and `yes`.
 - Fields use the base validators, including the quoted-`time` rule.
-- A `modes:` block rejects `parallel`, `split-verilate`, a nested `modes:`, and unknown keys at load. A base `resources:` or `compile:` block instead ignores an unknown key after a `config.unknown_key` warning, so a misspelled field such as `memory:` reserves nothing.
+- Mode blocks accept only `cpus`, `mem`, and `time`, plus `verilate` under `compile`; a nested `modes:` is invalid.
 - `modes:` is also rejected inside `compile.verilate` (write `compile.modes.<mode>.verilate`) and on an elaboration profile's `resources`, which resolves without a builder mode.
 - A testbench's `compile.modes` is the most specific layer and is aggregated over the planned builds like the base fields.
 - A mode block is not part of the compile fingerprint.
@@ -849,7 +857,7 @@ runs:
 | `routing-layers`, `routing-layer-adjustment`, `cts-buffer`, `cts-clock-nets`, `cts-latency-balancing`, `cts-repair-clock-nets`, `post-cts-setup-repair`, `global-route-hold-repair`, `port-buffer`, `tapcell-tcl` | Platform's | Override the platform's value for this run. See [P&R keys](#synthesis-and-physical-design-tools) |
 | `global-route-repair`, `post-route-repair` | Platform's | Overrides the platform's block field by field; `null` turns it off. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing) |
 | `mode` | `closure` | `probe` skips timing repair and stops after global route. Not with `harden: true`. See [Probe a floorplan](../concepts/pnr.md#probe-a-floorplan) |
-| `fail-on-electrical` | `false` | `true` fails a routed run with any max-slew, max-capacitance or max-fanout violator |
+| `fail-on-electrical` | `false` | `true` fails a routed run with any max-slew, max-capacitance or max-fanout violator, and post-route repair prefers a round without max-slew or max-capacitance violators |
 | `threads` | 1 | Positive integer, or `auto` for the CPUs of the current allocation. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `detailed-route-verbose` | 1 | `detailed_route -verbose` level; 0 silences the iteration log |
 | `checkpoints` | `false` | `true`, a stage, or a list of `floorplan`, `place`, `cts`, `global_route`, `detailed_route`, `post_route_repair`. `[]` writes only the progress log. See [Keep stage checkpoints](../concepts/pnr.md#keep-stage-checkpoints) |

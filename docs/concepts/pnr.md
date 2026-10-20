@@ -60,7 +60,7 @@ Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previo
 | `physical_cell_count` | Tap, endcap, spacer and fill cells. |
 | `worst_setup_corner`, `worst_hold_corner`, `corners` | Multi-corner platforms: the corner behind each WNS, and each corner's four timing values. |
 | `routed`, `mode`, `stopped_after`, `global_route_overflow` | `routed: false` means the run stopped early ([probe](#probe-a-floorplan) or `--stop-after`); its numbers are that stage's estimate, with the global-route overflow from `global_route` on. |
-| `post_route_repair` | The rounds of [post-route repair](#repair-timing-after-routing): `kept_round`, `rounds`, `repaired_rounds`, `stop`, `reason`, `passed_over_round`. |
+| `post_route_repair` | The rounds of [post-route repair](#repair-timing-after-routing): `kept_round`, `rounds`, `repaired_rounds`, `stop`, `reason`, `passed_over_round`, and with `electrical-repair` `electrical_round`. |
 | `openroad_threads` | Requested and effective [thread counts](#openroad-threads). |
 | `gds_status`, `gds_missing_cells` | [Stream-out](#stream-out-gds-and-png) outcome. |
 | `checkpoint_dir`, `checkpoint_stages`, `last_step` | With [checkpoints](#keep-stage-checkpoints): where they are, which stages were written, and the last step reached. |
@@ -72,6 +72,7 @@ A passing run's description carries qualifiers worth reading:
 - `pnr.no_wire_rc`: placement and CTS ran without wire RC. See [Set wire RC](#set-wire-rc).
 - `electrical N max-slew, ... violator(s)`: set `fail-on-electrical: true` to fail such runs.
 - `post-route repair ...`: a repair round was passed over or its session failed and was set aside.
+- `post-route electrical round N kept`, `not kept` or `failed`: the [electrical round](#repair-electrical-violators-after-routing) ran.
 - `GDS incomplete: ...`: cells with no layout in `preview` mode.
 - `stale block abstract(s) accepted: ...`: run with `--accept-stale`.
 
@@ -99,7 +100,7 @@ When OpenROAD fails, the run removes the routed database so `rb power` never rea
 - `tail -f artefacts/<run>/pnr.log`. Each step starts with a `>>> ` line.
 - Global route prints a per-layer usage table (`GRT-0096 Final congestion report`).
 - Detailed route logs each iteration (`DRT-0195`) and its violation count (`DRT-0199`), so a converging route can be told from a stalled one. `detailed-route-verbose: 0` silences this; higher levels add detail.
-- With [checkpoints](#keep-stage-checkpoints), `checkpoints/latest/progress.jsonl` records each step, hook and stage. After a kill, the last `step_begin` without a `step_end` is where the run was.
+- With [checkpoints](#keep-stage-checkpoints), `checkpoints/latest/progress.jsonl` records each step, hook and stage. After a kill, the last `step_begin` without a `step_end` is where the run was. Its `stage_timing` events give each corner's slack at every stage end; see [Compare timing across stages](#compare-timing-across-stages).
 
 ## Fix a failed run
 
@@ -264,12 +265,44 @@ Each block runs `repair_design` when `repair-design` is set (`{}` for OpenROAD's
 
 **`post-route-repair`** adds the stage `post_route_repair` after detailed route. It needs the PDK's `rcx-rules`. It extracts and times the detailed route (round 0), then runs up to `rounds` (default 1) repair rounds, each in fresh OpenROAD sessions: repair on the extracted parasitics, route again, extract and time. `reroute: eco` (default) keeps the detailed route and reroutes only the changed nets; `full` routes the whole design again, costing about a global and a detailed route per round. Round k repairs with the margins plus (k − 1) × `margin-step`. `rounds` above 1 needs a margin.
 
+Two `repair-design` keys apply to `post-route-repair` only. Both are off by default:
+
+```yaml
+post-route-repair:
+  repair-design:
+    slew-margin: 20
+    wire-rc: {resistance: 0.06, capacitance: 0.17}   # kohm/um, fF/um; or {layer: M5}
+    after-timing: true
+  setup-margin: 0.05
+```
+
+- `wire-rc`: each `repair_design` estimates the nets it changes at this signal wire RC instead of the session's, which is set for placement. Routed nets that `repair_design` buffers are often longer and higher in the stack than that estimate assumes, so it can leave them over their slew limit. `{layer: M5}` takes that layer's RC per corner from `set_layer_rc`, else from the LEF. The session's signal wire RC, including one a `session` hook set, is restored right after, and `repair_timing` estimates the nets it changes at it. The nets `repair_design` changed keep their `wire-rc` estimate through `repair_timing` until OpenROAD estimates them again, for example after legalizing moves their cells. Clock wire RC is not changed. Each repair line in `pnr.log` names the signal wire RC it ran at.
+- `after-timing: true`: each round runs `repair_design` again after setup and hold repair, before legalizing. `repair_timing` checks the slew of the nets it changes at the session's RC, and some end a few picoseconds over their limit. It needs `setup-margin` or `hold-margin`.
+
 The stage keeps the best round, never worse than the detailed route:
 
 - A clean route always beats one with DRCs.
 - Otherwise a round wins when no repaired side's worst slack (setup if `setup-margin` is set, hold if `hold-margin` is set; 0 when met) is lower and one is higher, without more DRCs; or when it ties on timing with fewer DRCs.
+- On a run with `fail-on-electrical: true`, a clean round with no max-slew or max-capacitance violators also beats a clean round that has some, when its timing is as good on every repaired side. The stop reason names that case and the kept round's violators. Other runs ignore electrical violators here.
 
 Rounds stop (`post_route_repair.stop`) when the best round is clean and meets timing (`timing_met`), a clean round does not improve (`no_improvement`), timing is not reported (`timing_not_reported`), a session fails (`session_failed`) or `rounds` run out (`last_round`). `timing_met` and `no_improvement` need a clean route, so rounds with DRCs keep going. The first clean round that does not become the best ends the stage, so no later round starts from it and raising `rounds` does not change that. A failure extracting round 0 fails the run; a failed session of a later round does not: rb warns `pnr.post_route_round_failed`, keeps the best round and qualifies the `PASS`. `finish` continues from the kept round, whose DRC report becomes `route.drc.rpt`. `pnr.post_route_round` logs each round's slack and DRCs.
+
+### Repair electrical violators after routing
+
+A round's reroute can leave nets over their max-slew or max-capacitance limit. `electrical-repair` adds one round after the others:
+
+```yaml
+post-route-repair:
+  repair-design: {slew-margin: 20, cap-margin: 20}
+  setup-margin: 0.05
+  electrical-repair: {slew-margin: 10, cap-margin: 10}   # percent; {} for OpenROAD's defaults
+```
+
+- When the best round has max-slew or max-capacitance violators, the electrical round runs `repair_design` alone at these margins on that round's database and SPEF, at `repair-design.wire-rc` when that is set. It then legalizes, reroutes per `reroute`, extracts and times like any round, and becomes the kept round only if it [beats the best](#repair-timing-after-routing). On a run without `fail-on-electrical: true` that takes better timing or fewer DRCs.
+- When the best round has no such violators, the round is skipped and `pnr.log` says so.
+- Its number is `rounds` + 1. `post_route_repair.electrical_round` gives the round it repaired (`source_round`), its `status` (`kept`, `not_kept`, `skipped` or `failed`) and `reason`. A failed session is set aside like a round's.
+
+With `electrical-repair` set or `fail-on-electrical: true`, each `pnr.post_route_round` event in `progress.jsonl` carries `max_slew_violation_count` and `max_capacitance_violation_count` over every corner and, on a multi-corner platform, each corner's in `corners`. Without either, the rounds count no violators and their scripts are unchanged.
 
 ## Probe a floorplan
 
@@ -415,6 +448,33 @@ On a multi-corner platform the `.sdc` holds every corner's SDC mode, and `<NN>_<
 
 Look at a checkpoint in OpenROAD or with `rb pnr-export --checkpoint`. It is never a final result. Old run directories are not pruned.
 
+## Compare timing across stages
+
+A run that writes `progress.jsonl` (`checkpoints:` set, even to `[]`, `stages: true`, `--stop-after`, or post-route repair) appends one `stage_timing` event to it when each stage ends, and lists the events per stage under `timing` in `manifest.json`. They compare iterations of a block stage by stage without reports of your own:
+
+```json
+{"event": "stage_timing", "stage": "global_route", "index": "04", "point": "stage_end", "parasitics": "global_route", "corners": {"tt": {"wns_setup_ps": -224.675, "wns_hold_ps": 343.534, "tns_ps": -322.268, "tns_hold_ps": 0.0}}}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `stage`, `index` | The stage and its file index. |
+| `point` | `stage_end`, `before_repair` or `round`. |
+| `round` | The post-route repair round (0 is the detailed route); on a `stage_end` of `post_route_repair`, the kept round. |
+| `parasitics` | What the slacks were timed on: `none` (no wire RC), `placement` (placement estimate), `global_route` (global-route estimate) or `extracted` (OpenRCX SPEF). |
+| `corners` | Per corner, in config order, `wns_setup_ps`, `wns_hold_ps`, `tns_ps` and `tns_hold_ps`, in picoseconds as in the result row. A single-corner platform has one entry, named by its `corner:`. |
+
+| Stage | Events | `parasitics` |
+| --- | --- | --- |
+| `floorplan` | `stage_end` | `none` |
+| `place`, `cts` | `stage_end` | `placement` |
+| `global_route` | `before_repair` when [global-route repair](#tune-placement-clock-tree-and-repair) runs, then `stage_end` after it | `global_route` |
+| `detailed_route` | `stage_end` | `global_route`, the estimate from the route guides |
+| `post_route_repair` | one `round` per round, then a `stage_end` copied from the kept round | `extracted` |
+| `finish` | `stage_end` | `extracted` with `rcx-rules`, else `global_route` |
+
+A stage's numbers are what its own report prints on the same parasitics: the `--stop-after` stage report, and the final reports for `finish`. They carry more digits than the report. A side with no constrained path has null WNS and TNS. A corner rb could not time has nulls and an `error`; this never fails the run, and no result field or verdict reads the events.
+
 ## Run stages as separate sessions
 
 `stages: true` runs each stage (`floorplan`, `place`, `cts`, `global_route`, `detailed_route`, `post_route_repair`, `finish`) as its own OpenROAD session that reads the previous stage's checkpoint. It writes every checkpoint, keeps each session's script and log in the checkpoint directory, and concatenates them into `pnr.tcl` and `pnr.log`. A staged run gives the same result as a one-session run at the same thread count, with the exceptions in [Known Issues](../known-issues.md#a-staged-pr-run-can-differ-from-a-one-session-run).
@@ -545,4 +605,4 @@ A `probe` skips the setup and hold repair and stops after global route. Each ses
 
 A staged session starts with a prelude regenerated from the same template: the header, Liberty and LEF, `read_db` and `read_sdc` of the previous checkpoint (every mode), its saved flow variables, then step 1's per-session settings. It keeps only what the database, the checkpoint SDC and the state file hold. A resume compares each earlier stage's script up to its end-of-stage line, ignoring comments, the run-directory lines, `set_thread_count` and header variables the stage does not read.
 
-Each stage's wall time, CPU time and peak memory are recorded as `stage_end` events in `progress.jsonl` and under `resources` in the manifest. In a one-session run the peak memory of a stage includes what earlier stages left resident.
+Each stage's wall time, CPU time and peak memory are recorded as `stage_end` events in `progress.jsonl` and under `resources` in the manifest. In a one-session run the peak memory of a stage includes what earlier stages left resident. Its [timing](#compare-timing-across-stages) is recorded as `stage_timing` events and under `timing`.

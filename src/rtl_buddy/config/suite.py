@@ -13,8 +13,8 @@ from .dispatch import (
     TESTBENCH_COMPILE_BLOCK,
     SuiteCompileFile,
     validate_compile_block,
-    warn_unknown_block_keys,
 )
+from .unknown_keys import find_unknown_keys, reject_unknown_keys
 from .rtl import normalize_compile_opts, normalize_filelist_modes
 from .test import (
     TestbenchConfig,
@@ -48,16 +48,14 @@ def _entry_label(kind: str, entry: dict, idx: int) -> str:
     return f"{kind} {name!r}" if isinstance(name, str) else f"{kind} #{idx}"
 
 
-def warn_unknown_reservation_keys(raw, path) -> list[str]:
-    """Warn about unknown keys in a tests.yaml's ``compile:`` and ``resources:`` blocks, which serde drops; return them.
+def reject_unknown_reservation_keys(raw, path) -> None:
+    """Reject unknown keys in a tests.yaml's ``compile:`` and ``resources:`` blocks.
 
     Covers the suite ``compile:`` block and each testbench's ``resources:`` and ``compile:`` and each test's ``resources:``. A malformed shape is left to the typed load.
     """
     if not isinstance(raw, dict):
-        return []
-    found = warn_unknown_block_keys(
-        raw.get("compile"), SUITE_COMPILE_BLOCK, path=path, block="compile"
-    )
+        return
+    found = find_unknown_keys(raw.get("compile"), SUITE_COMPILE_BLOCK, label="compile")
     for kind, section, blocks in (
         (
             "testbench",
@@ -74,10 +72,8 @@ def warn_unknown_reservation_keys(raw, path) -> list[str]:
                 continue
             label = _entry_label(kind, entry, idx)
             for key, spec in blocks:
-                found += warn_unknown_block_keys(
-                    entry.get(key), spec, path=path, block=f"{label} {key}"
-                )
-    return found
+                found += find_unknown_keys(entry.get(key), spec, label=f"{label} {key}")
+    reject_unknown_keys(found, path=path)
 
 
 class SuiteConfig:
@@ -88,8 +84,7 @@ class SuiteConfig:
         try:
             with open(path, "r") as file:
                 text = file.read()
-            # Before the typed load, whose validation can be fatal: the warning names a misspelt key.
-            warn_unknown_reservation_keys(load_yaml(text, path), path)
+            reject_unknown_reservation_keys(load_yaml(text, path), path)
             data = config_from_yaml(SuiteConfigFile, text, path)
         except Exception as e:
             log_event(

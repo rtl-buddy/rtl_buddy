@@ -80,6 +80,22 @@ Rename `budget.per_module_cap` to `budget.per_file_cap` in every `mut.yaml`. The
 
 ## v6 to v7
 
+### Machine output and reservation keys
+
+Machine-mode stderr summaries omit `PASS`, `SKIP`, and `XFAIL` rows but retain the full tally. Read stdout results or `summary.rows` for every row. Human mode still shows all rows unless `--print-failures-only` is set. Per-phase status lines require `--verbose` or `--debug`; dispatch progress, job announcements, hooks, warnings, and errors remain visible.
+
+Update consumers of `payload.reservation_advice`:
+
+- Stop reading `event`; findings omit it.
+- Treat missing `reg_level`, `allocated`, `suggested_total`, and `aggregate_delta` as null. Regression levels remain per finding, absent on build-job advice.
+- Keep applying the explicit `edit_hint`; names, units, ordering, and provenance are unchanged. See [Apply reservation advice](concepts/dispatch.md#apply-reservation-advice) for the payload contract.
+
+`rightsize.advice` moves from INFO to DEBUG. Use `--debug` for individual events or read the complete machine payload. A nonempty list logs INFO `rightsize.summary` with `total` and direction `counts` (`raise`, `reduce`).
+
+Unknown reservation and dispatch keys now stop loading with exit code 2. Correct or remove every reported key; the [YAML reference](reference/yaml.md#parallel-dispatch) lists checked blocks. Mode names remain free-form; mode contents remain strict.
+
+Log consumers must replace WARNING `config.unknown_key` with ERROR `config.unknown_key_rejected`. Diagnostics include the file, block, key, nearest spelling, and valid keys. Nested locations use `cfg-dispatch: compile.verilate` instead of `cfg-dispatch.compile.verilate`.
+
 ### Unknown P&R keys are errors
 
 An unknown key in a P&R run, a P&R platform or a PDK is a config error. Before, it was dropped without a word, so a misspelt key changed the flow silently: a blockage written with `lifetme: global-placement` loaded as a permanent one.

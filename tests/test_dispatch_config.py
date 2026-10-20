@@ -544,20 +544,16 @@ def test_parallel_never_reaches_the_resolved_compile_reservation():
 def test_parallel_is_not_a_field_of_a_cfg_dispatch_resources_block(
     minimal_project: Path,
 ):
-    """`parallel` on `resources:` is an unknown key and is ignored.
-
-    The field does not exist there, so compile concurrency stays at its default.
-    """
+    """Compile concurrency cannot be set through simulation resources."""
     root_cfg_path = minimal_project / "root_config.yaml"
     root_cfg_path.write_text(
         root_cfg_path.read_text()
         + "\ncfg-dispatch:\n  resources:\n    cpus: 2\n    parallel: 4\n"
     )
-    cfg = RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
-    assert cfg.resources.cpus == 2
-    assert not hasattr(cfg.resources, "parallel")
-    assert compile_parallel(cfg) == 1
-    assert not hasattr(resolve_resources(cfg), "parallel")
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        RootConfig(name="t/root", start_dir=minimal_project)
+    assert "unknown key 'parallel'" in str(excinfo.value.__cause__)
+    assert "cfg-dispatch: resources" in str(excinfo.value.__cause__)
 
 
 def test_parallel_is_not_a_field_of_a_test_level_resources_block(
@@ -570,12 +566,10 @@ def test_parallel_is_not_a_field_of_a_test_level_resources_block(
             "  - name: basic\n    resources: { cpus: 2, parallel: 4 }\n",
         )
     )
-    basic = SuiteConfig(path=str(tests_yaml)).get_tests("basic")[0]
-    assert basic.resources.cpus == 2
-    assert not hasattr(basic.resources, "parallel")
-    resolved = resolve_resources(DispatchConfigFile(), basic)
-    assert resolved.cpus == 2
-    assert not hasattr(resolved, "parallel")
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        SuiteConfig(path=str(tests_yaml))
+    assert "unknown key 'parallel'" in str(excinfo.value.__cause__)
+    assert "test 'basic' resources" in str(excinfo.value.__cause__)
 
 
 def test_suite_compile_block_is_the_most_specific_compile_layer():

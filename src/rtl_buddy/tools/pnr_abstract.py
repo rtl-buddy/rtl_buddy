@@ -273,6 +273,26 @@ def _repair_digest(platform) -> dict:
     pr = platform.get_post_route_repair()
     if pr is not None:
         digest["post_route_repair"] = _jsonable(asdict(pr))
+    for block in digest.values():
+        design = block.get("repair_design") if isinstance(block, dict) else None
+        if design:
+            # Emitted only when set so existing digests do not change.
+            if design["wire_rc"] is None:
+                del design["wire_rc"]
+            else:
+                design["wire_rc"] = {
+                    k: v for k, v in design["wire_rc"].items() if v is not None
+                }
+            if not design["after_timing"]:
+                del design["after_timing"]
+    post_route = digest.get("post_route_repair")
+    if post_route is not None:
+        electrical = post_route.pop("electrical_repair")
+        if electrical is not None:
+            post_route["electrical_repair"] = {
+                "slew_margin": electrical["slew_margin"],
+                "cap_margin": electrical["cap_margin"],
+            }
     return digest
 
 

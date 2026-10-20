@@ -29,7 +29,11 @@ from .synth import (
 from .pdk import PDK_SPEC, PdkConfig, PdkConfigFile
 from .pnr import PnrToolConfig, PnrToolConfigFile
 from .pnr_platform import PNR_PLATFORM_SPEC, PnrPlatformConfig, PnrPlatformConfigFile
-from .unknown_keys import find_unknown_entry_keys, reject_unknown_keys
+from .unknown_keys import (
+    find_unknown_entry_keys,
+    find_unknown_keys,
+    reject_unknown_keys,
+)
 from .power import PowerToolConfig, PowerToolConfigFile
 from .cdc import CdcToolConfig, CdcToolConfigFile
 from .fpga import FpgaToolConfig, FpgaToolConfigFile
@@ -42,7 +46,6 @@ from .dispatch import (
     DISPATCH_BLOCK,
     DispatchConfig,
     DispatchConfigFile,
-    warn_unknown_block_keys,
 )
 from .env_file import apply_env_file
 from ..errors import FatalRtlBuddyError
@@ -359,10 +362,15 @@ class RootConfig:
         try:
             with open(self.root_cfg_path, "r") as file:
                 text = file.read()
-            data = config_from_yaml(RootConfigFile, text, self.root_cfg_path)
-            # Untyped second read: pyserde drops unknown keys that `_reject_unroutable_platform_keys` must see.
             reparsed = load_yaml(text, self.root_cfg_path)
             raw = reparsed if isinstance(reparsed, dict) else {}
+            reject_unknown_keys(
+                find_unknown_keys(
+                    raw.get("cfg-dispatch"), DISPATCH_BLOCK, label="cfg-dispatch"
+                ),
+                path=self.root_cfg_path,
+            )
+            data = config_from_yaml(RootConfigFile, text, self.root_cfg_path)
 
         except Exception as e:
             log_event(
@@ -503,13 +511,6 @@ class RootConfig:
 
             # cfg-dispatch execution backend (optional, single block)
             if data.dispatch is not None:
-                # serde drops an unknown key; warn before the typed block is validated.
-                warn_unknown_block_keys(
-                    raw.get("cfg-dispatch"),
-                    DISPATCH_BLOCK,
-                    path=self.root_cfg_path,
-                    block="cfg-dispatch",
-                )
                 self.dispatch_cfg = data.dispatch.initialise()
 
             # RegConfig loads lazily in get_rtl_reg_cfg() so non-simulation commands never read regression.yaml or suite files.

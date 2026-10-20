@@ -8,7 +8,7 @@ Layout under the run's artefact directory::
       latest -> 20260925T101500-4242      # the run that started last
       20260925T101500-4242/
         manifest.json                     # inputs + tool identity (Python)
-        progress.jsonl                    # step / stage / checkpoint events
+        progress.jsonl                    # step / stage / checkpoint / timing events
         01_floorplan.{odb,def,sdc}
         01_floorplan.<corner>.sdc         # each corner's SDC mode, with a mode per corner
         02_place.{odb,def,sdc}
@@ -72,6 +72,15 @@ STAGE_ANCHORS = {
     "cts": ("global_route", "enter"),
     "global_route": None,
     "detailed_route": ("detailed_route", "leave"),
+}
+
+#: What a stage's end is timed on, as `stage: (parasitics, command)`: the source a `stage_timing` event names and the command that sets it, None for none. A stage's own report (`--stop-after`) times on the same. `post_route_repair` is timed per round on extracted parasitics in its extraction sessions, `finish` by the flow's final reports.
+STAGE_TIMING = {
+    "floorplan": ("none", None),
+    "place": ("placement", "estimate_parasitics -placement"),
+    "cts": ("placement", "estimate_parasitics -placement"),
+    "global_route": ("global_route", "estimate_parasitics -global_routing"),
+    "detailed_route": ("global_route", "estimate_parasitics -global_routing"),
 }
 
 #: Checkpoints whose database holds a global route.
@@ -158,9 +167,18 @@ def _tcl_quote(value: str) -> str:
 
 
 def _arm_config(
-    *, anchors: dict, wanted, order, account: bool, strict: bool, state=(), modes=()
+    *,
+    anchors: dict,
+    wanted,
+    order,
+    account: bool,
+    strict: bool,
+    state=(),
+    corners: tuple[str, ...] = (),
+    scenes: bool = False,
+    modes: tuple[str, ...] = (),
 ) -> str:
-    """Return the braced Tcl dict `rb::ckpt::arm` takes; every name in it is a plain identifier. `order` is the run's stages; only their reports are listed. `modes` is listed only when there are any, so a single-mode run's block is unchanged."""
+    """Return the braced Tcl dict `rb::ckpt::arm` takes; every name in it is a plain identifier except a corner, which is quoted. `order` is the run's stages; only their reports are listed. `corners` are the corners each stage end is timed on, STA scenes when `scenes` (see `render_tcl_block`). `modes` is listed only when there are any, so a single-mode run's block does not list it."""
     return (
         "{"
         + " ".join(
@@ -186,6 +204,14 @@ def _arm_config(
                 f"state {{{' '.join(state)}}}",
                 f"account {int(account)}",
                 f"strict {int(strict)}",
+                "timed {"
+                + " ".join(
+                    f"{stage} {{{source} {{{command or ''}}}}}"
+                    for stage, (source, command) in STAGE_TIMING.items()
+                )
+                + "}",
+                f"corners {{{' '.join(_tcl_quote(c) for c in corners)}}}",
+                f"scenes {int(scenes)}",
                 *([f"modes {{{' '.join(modes)}}}"] if modes else []),
             ]
         )
@@ -204,11 +230,13 @@ def render_tcl_block(
     order: tuple[str, ...],
     stop_after: str | None = None,
     state: tuple[str, ...] = (),
+    corners: tuple[str, ...] = (),
+    scenes: bool = False,
     modes: tuple[str, ...] = (),
 ) -> str:
     """Return the Tcl block the flow template splices in when checkpoints are on, for a one-session run.
 
-    `order` is the run's stages; `state` names the flow globals each checkpoint saves for a later session; `modes` are the corners whose SDC modes each checkpoint also writes alone, `NN_<stage>.<corner>.sdc`. Every stage boundary is armed, so each stage's resources are recorded; only `stages`, and the `stop_after` stage, write a checkpoint. The `stop_after` stage is ended by the flow's explicit stop, not by its anchor, so its checkpoint is strict and no later stage starts. The block carries its own leading newline so a run without checkpoints renders the template byte-identically.
+    `order` is the run's stages; `state` names the flow globals each checkpoint saves for a later session. `corners` are the platform's corners, which every stage end is timed on; `scenes` is set for a multi-corner platform, whose corners are STA scenes. `modes` are the corners whose SDC modes each checkpoint also writes alone, `NN_<stage>.<corner>.sdc`. Every stage boundary is armed, so each stage's resources are recorded; only `stages`, and the `stop_after` stage, write a checkpoint. The `stop_after` stage is ended by the flow's explicit stop, not by its anchor, so its checkpoint is strict and no later stage starts. The block carries its own leading newline so a run without checkpoints renders the template byte-identically.
     """
     wanted = [
         s for s in order if s in CHECKPOINT_STAGES and (s in stages or s == stop_after)
@@ -225,6 +253,8 @@ def render_tcl_block(
         account=True,
         strict=False,
         state=state,
+        corners=corners,
+        scenes=scenes,
         modes=modes,
     )
     return (
@@ -246,6 +276,8 @@ def render_staged_block(
     pred_dir: str | None,
     *,
     session: str = "staged run",
+    corners: tuple[str, ...] = (),
+    scenes: bool = False,
     modes: tuple[str, ...] = (),
 ) -> str:
     """Return the checkpoint block of one staged session; `session` names the session in its first log line, and `modes` are as `render_tcl_block`'s.
@@ -268,6 +300,8 @@ def render_staged_block(
         account=False,
         strict=True,
         state=SESSION_STATE,
+        corners=corners,
+        scenes=scenes,
         modes=modes,
     )
     lines += [
@@ -366,6 +400,42 @@ def stage_resources(events: list[dict]) -> dict[str, dict]:
         if e.get("event") == "stage_end"
     }
     return {stage: ended[stage] for stage in PNR_STAGES if stage in ended}
+
+
+#: Fields of a `stage_timing` event that are bookkeeping, left out of the manifest.
+_TIMING_BOOKKEEPING = ("event", "seq", "t", "epoch_ms")
+
+
+def stage_timings(events: list[dict]) -> dict[str, list[dict]]:
+    """Map each stage to its `stage_timing` events, in order: the `point` it was timed at, the `parasitics` source, and per corner the setup and hold WNS and TNS in ps (null without a constrained path), in flow order."""
+    timings: dict[str, list[dict]] = {}
+    for e in events:
+        if e.get("event") == "stage_timing":
+            timings.setdefault(str(e.get("stage")), []).append(
+                {k: v for k, v in e.items() if k not in _TIMING_BOOKKEEPING}
+            )
+    return {stage: timings[stage] for stage in PNR_STAGES if stage in timings}
+
+
+def record_kept_round_timing(run_dir: str, stage: str, round_: int) -> None:
+    """Record `stage`'s `stage_end` timing as that of round `round_`, the one the stage keeps, copied from the round's own event; nothing when the round has none."""
+    for e in reversed(read_progress(run_dir)):
+        if (
+            e.get("event") == "stage_timing"
+            and e.get("stage") == stage
+            and e.get("round") == round_
+        ):
+            _append_event(
+                run_dir,
+                "stage_timing",
+                stage=stage,
+                index=STAGE_INDEX[stage],
+                point="stage_end",
+                round=round_,
+                parasitics=e.get("parasitics"),
+                corners=e.get("corners"),
+            )
+            return
 
 
 def read_progress(run_dir: str) -> list[dict]:
@@ -585,6 +655,7 @@ def finish_run(
         stage: checkpoints[stage] for stage in PNR_STAGES if stage in checkpoints
     }
     manifest["resources"] = stage_resources(events)
+    manifest["timing"] = stage_timings(events)
     manifest["outcome"] = {
         "finished_at": _now(),
         "openroad_returncode": returncode,
