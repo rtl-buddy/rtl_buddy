@@ -46,6 +46,7 @@ def _synth(
     *,
     tool_opts=None,
     effort=0,
+    effort_max=0,
     overrides=None,
     icg="",
     mapped=True,
@@ -82,7 +83,9 @@ def _synth(
         effort_cfg=SynthEffortConfig(
             SynthEffortConfigFile(
                 name="e",
-                yosys=SynthEffortYosysFile(clock_gating_min_flops=effort),
+                yosys=SynthEffortYosysFile(
+                    clock_gating_min_flops=effort, clock_gating_max_flops=effort_max
+                ),
             )
         ),
     )
@@ -169,3 +172,52 @@ def test_the_keys_load_from_yaml():
 def test_a_malformed_icg_is_a_config_error(spec):
     with pytest.raises(FatalRtlBuddyError, match="clock-gating-cell"):
         _platform_cfg(f"name: p\npdk: k\nclock-gating-cell: '{spec}'\n")
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_max_flops_splits_through_a_json_round_trip(tmp_path, backend):
+    synth, script, lib = _synth(tmp_path, backend, effort=8, effort_max=16)
+    lines = script.splitlines()
+    i = lines.index(f"clockgate -liberty {lib} -dont_use FILL* -min_net_size 8")
+    tmp = synth.artefact_dir + "/yosys-tmp"
+    assert lines[i + 1] == f'write_json "{tmp}/clockgate.json"'
+    assert lines[i + 2].startswith("exec -expect-return 0 -- ")
+    assert lines[i + 2].endswith(
+        f"icg_split.py {tmp}/clockgate.json {tmp}/clockgate_split.json 16"
+    )
+    assert lines[i + 3 : i + 5] == [
+        "design -reset",
+        f'read_json "{tmp}/clockgate_split.json"',
+    ]
+    assert lines[i + 5].startswith("dfflibmap ")
+    assert _options(synth, backend)["clock_gating"] == {
+        "min_flops": 8,
+        "cell": None,
+        "max_flops": 16,
+    }
+
+
+def test_max_flops_without_gating_does_nothing(tmp_path):
+    _s, script, _lib = _synth(tmp_path, "yosys", effort_max=16)
+    assert "clockgate" not in script
+    assert "icg_split" not in script
+
+
+def test_max_flops_below_min_flops_is_a_config_error(tmp_path):
+    with pytest.raises(FatalRtlBuddyError, match="clock-gating-max-flops"):
+        _synth(tmp_path, "yosys", effort=8, effort_max=4)
+
+
+@pytest.mark.parametrize("bad", [-1, True, "8"])
+def test_a_bad_max_flops_is_a_config_error(tmp_path, bad):
+    with pytest.raises(FatalRtlBuddyError, match="clock_gating_max_flops|clock-gating"):
+        _synth(tmp_path, "yosys", effort=8, overrides={"clock_gating_max_flops": bad})
+
+
+def test_the_max_flops_keys_load_from_yaml():
+    opts = from_yaml(SynthToolOptsFile, "clock-gating-max-flops: 16\n")
+    assert opts.clock_gating_max_flops == 16
+    effort = from_yaml(
+        SynthEffortConfigFile, "name: e\nyosys:\n  clock-gating-max-flops: 32\n"
+    )
+    assert SynthEffortConfig(effort).get_yosys_clock_gating_max_flops() == 32

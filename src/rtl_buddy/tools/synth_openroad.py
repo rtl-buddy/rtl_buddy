@@ -295,6 +295,7 @@ class OpenRoadSynth:
                 dont_use,
                 self.synth_cfg.get_name(),
                 bool(lib_paths),
+                self.artefact_dir,
             )
         )
 
