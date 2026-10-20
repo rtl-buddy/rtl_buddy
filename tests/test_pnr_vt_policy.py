@@ -18,11 +18,77 @@ from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
 _KEEP_VT = "set_opt_config -keep_sizing_vt true\n"
 _PLATFORM_DONT_USE = "set_dont_use [list AND2_X1 *_X32]\n"
-_CTS_DONT_USE = 'puts ">>> CTS don\'t-use cells"\nset_dont_use [list *_L *_SL]\n'
-_CTS = "clock_tree_synthesis \\\n"
-_RESTORE_HEAD = (
-    'puts ">>> Don\'t-use cells after CTS"\nunset_dont_use [list *_L *_SL]\n'
+_CTS_DONT_USE = (
+    'puts ">>> CTS don\'t-use cells"\n'
+    "with_output_to_variable rb_cts_du_report { report_dont_use }\n"
+    "set rb_cts_du_before [dict create]\n"
+    'foreach rb_line [lrange [split $rb_cts_du_report "\\n"] 1 end] {\n'
+    "  dict set rb_cts_du_before [string trim $rb_line] 1\n"
+    "}\n"
+    "set rb_cts_du_added [list]\n"
+    "foreach rb_cell [get_lib_cells -quiet [list *_L *_SL]] {\n"
+    "  if {![dict exists $rb_cts_du_before [get_name $rb_cell]]} {\n"
+    "    lappend rb_cts_du_added $rb_cell\n"
+    "  }\n"
+    "}\n"
+    "set_dont_use [list *_L *_SL]\n"
 )
+_CTS = "clock_tree_synthesis \\\n"
+_RESTORE = (
+    'puts ">>> Don\'t-use cells after CTS"\n'
+    "if {[llength $rb_cts_du_added] > 0} {\n"
+    "  unset_dont_use $rb_cts_du_added\n"
+    "}\n"
+)
+
+#: Stub OpenROAD commands over a model of Resizer's dont-use set. The cells are `RB_STUB_LIB_CELLS`; `RB_STUB_LIB_DONT_USE` seeds the set as Liberty `dont_use` does. CTS prints the set it sees.
+_DONT_USE_STUBS = r"""
+array set rb_du {}
+proc rb_du_cells {patterns} {
+    global env
+    set hits [list]
+    if {![info exists env(RB_STUB_LIB_CELLS)]} { return $hits }
+    foreach cell $env(RB_STUB_LIB_CELLS) {
+        foreach pattern $patterns {
+            if {[string match $pattern $cell]} { lappend hits $cell; break }
+        }
+    }
+    return $hits
+}
+if {[info exists env(RB_STUB_LIB_DONT_USE)]} {
+    foreach rb_c $env(RB_STUB_LIB_DONT_USE) { set rb_du($rb_c) 1 }
+}
+proc get_lib_cells {args} { return [rb_du_cells [lindex $args end]] }
+proc get_name {obj} { return $obj }
+proc set_dont_use {cells} { foreach c [rb_du_cells $cells] { set ::rb_du($c) 1 } }
+proc unset_dont_use {cells} {
+    foreach c [rb_du_cells $cells] { unset -nocomplain ::rb_du($c) }
+}
+proc rb_du_report {} {
+    set text "Don't Use Cells:\n"
+    foreach c [lsort [array names ::rb_du]] { append text "  $c\n" }
+    return $text
+}
+proc report_dont_use {} { puts -nonewline [rb_du_report] }
+proc with_output_to_variable {var body} {
+    upvar 1 $var out
+    if {[string trim $body] ne "report_dont_use"} { error "stub: cannot capture $body" }
+    set out [rb_du_report]
+}
+proc clock_tree_synthesis {args} {
+    puts "CTS sees dont-use: [lsort [array names ::rb_du]]"
+}
+"""
+
+
+def _with_dont_use_stubs(tmp_path) -> None:
+    harness = tmp_path / "harness.tcl"
+    harness.write_text(
+        harness.read_text().replace(
+            "source [lindex $argv 0]", _DONT_USE_STUBS + "source [lindex $argv 0]"
+        )
+    )
+
 
 #: The placeholders this policy added to the flow template.
 _NEW_PLACEHOLDERS = (
@@ -149,7 +215,7 @@ def test_the_cts_list_brackets_cts_and_repair_clock_nets(tmp_path):
 
     assert text.count(_CTS_DONT_USE) == 1
     assert _CTS_DONT_USE + _CTS in text
-    restore = _RESTORE_HEAD + _PLATFORM_DONT_USE
+    restore = _RESTORE
     assert text.count(restore) == 1
     assert "repair_clock_nets\n" + restore in text
     order = [
@@ -168,7 +234,7 @@ def test_the_cts_list_brackets_cts_and_repair_clock_nets(tmp_path):
 def test_the_restore_follows_cts_when_repair_clock_nets_is_off(tmp_path):
     text = _render(tmp_path, _vt_platform(tmp_path))
 
-    restore = _RESTORE_HEAD + _PLATFORM_DONT_USE
+    restore = _RESTORE
     assert "repair_clock_nets" not in text
     cts_at = text.index(_CTS)
     assert (
@@ -176,8 +242,23 @@ def test_the_restore_follows_cts_when_repair_clock_nets_is_off(tmp_path):
     )
 
 
-def test_the_restore_reapplies_the_run_resolved_platform_list(tmp_path):
-    """The restore names the platform's own `dont-use-cells` (PDK's then platform's) and the run's CTS list."""
+def test_the_restore_unsets_only_what_the_cts_list_added(tmp_path):
+    """The snapshot of the dont-use set precedes the exclusion; the restore names no pattern and re-applies no list."""
+    text = _render(tmp_path, _vt_platform(tmp_path, cts_repair_clock_nets=True))
+
+    exclusion = text[text.index('puts ">>> CTS don\'t-use cells"') : text.index(_CTS)]
+    assert exclusion.index("report_dont_use") < exclusion.index(
+        "get_lib_cells -quiet [list *_L *_SL]"
+    )
+    assert exclusion.index("get_lib_cells") < exclusion.index(
+        "set_dont_use [list *_L *_SL]"
+    )
+    assert "unset_dont_use [list" not in text
+    assert text.count("unset_dont_use") == 1
+    assert text.count(_PLATFORM_DONT_USE) == 1
+
+
+def test_the_run_resolved_cts_list_brackets_cts(tmp_path):
     platform = _resolved(
         tmp_path,
         _platform(
@@ -189,19 +270,10 @@ def test_the_restore_reapplies_the_run_resolved_platform_list(tmp_path):
     )
     text = _render(tmp_path, platform)
 
-    assert 'puts ">>> CTS don\'t-use cells"\nset_dont_use [list *_L]\n' + _CTS in text
-    assert "unset_dont_use [list *_L]\nset_dont_use [list AND2_X1 *_X32]\n" in text
+    assert _CTS_DONT_USE.replace("[list *_L *_SL]", "[list *_L]") + _CTS in text
+    assert text.count(_RESTORE) == 1
+    assert text.count("set_dont_use [list AND2_X1 *_X32]\n") == 1
     assert "*_SL" not in text
-
-
-def test_without_platform_dont_use_cells_the_restore_only_unsets(tmp_path):
-    text = _render(tmp_path, _vt_platform(tmp_path, dont_use=()))
-
-    assert _RESTORE_HEAD + 'puts ">>> Detail placement (post-CTS)"' in text.replace(
-        "\n\n", "\n"
-    )
-    assert "set_dont_use [list *_L *_SL]\n" in text
-    assert text.count("set_dont_use") == 1 + text.count("unset_dont_use")
 
 
 def test_the_cts_list_stays_out_of_the_routed_design_check(tmp_path):
@@ -216,7 +288,7 @@ def test_a_probe_brackets_its_cts_too(tmp_path):
     text = _render(tmp_path, _vt_platform(tmp_path), mode=PnrMode.PROBE)
 
     assert _CTS_DONT_USE + _CTS in text
-    assert _RESTORE_HEAD + _PLATFORM_DONT_USE in text
+    assert _RESTORE in text
     assert text.count(_KEEP_VT) == 1
 
 
@@ -275,18 +347,20 @@ def test_only_the_cts_session_brackets_cts(tmp_path):
     cts = scripts[_stage_file("cts")]
     assert cts.count(_CTS_DONT_USE) == 1
     assert _CTS_DONT_USE + _CTS in cts
-    assert "repair_clock_nets\n" + _RESTORE_HEAD + _PLATFORM_DONT_USE in cts
+    assert "repair_clock_nets\n" + _RESTORE in cts
     # The prelude's own `set_dont_use` precedes the CTS exclusion.
     assert cts.index(_PLATFORM_DONT_USE) < cts.index(_CTS_DONT_USE)
 
 
 def test_a_run_resumed_at_cts_brackets_cts_in_its_session(tmp_path, monkeypatch):
     first, artefacts = _backend(tmp_path, monkeypatch, stages=True, stop_after="place")
+    _with_dont_use_stubs(tmp_path)
     first.root_cfg.get_pnr_platform_cfg.return_value = _vt_platform(tmp_path)
     assert first.run().results["result"] == "PASS"
     (stopped,) = _runs(artefacts)
 
     resumed, _ = _backend(tmp_path, monkeypatch, resume=stopped.name, resume_from="cts")
+    _with_dont_use_stubs(tmp_path)
     resumed.root_cfg.get_pnr_platform_cfg.return_value = _vt_platform(tmp_path)
     res = resumed.run()
 
@@ -294,9 +368,47 @@ def test_a_run_resumed_at_cts_brackets_cts_in_its_session(tmp_path, monkeypatch)
     latest = max(_runs(artefacts), key=lambda p: p.stat().st_mtime)
     cts = (latest / _stage_file("cts")).read_text()
     assert _CTS_DONT_USE + _CTS in cts
-    assert _RESTORE_HEAD + _PLATFORM_DONT_USE in cts
+    assert _RESTORE in cts
     for stage in ("cts", "global_route", "detailed_route", "finish"):
         assert (latest / _stage_file(stage)).read_text().count(_KEEP_VT) == 1, stage
+
+
+@pytest.mark.parametrize("stages", [False, True], ids=["one session", "stages"])
+def test_cts_frees_only_the_cells_its_list_made_dont_use(tmp_path, monkeypatch, stages):
+    """Liberty's, the platform's and a hook's dont-use cells that match the CTS list stay dont-use after CTS."""
+    session = tmp_path / "session.tcl"
+    session.write_text("set_dont_use HOOK_L\n")
+    after_cts = tmp_path / "after_cts.tcl"
+    after_cts.write_text("report_dont_use\n")
+    backend, artefacts = _backend(
+        tmp_path,
+        monkeypatch,
+        checkpoints=None,
+        stages=stages,
+        env={
+            "RB_STUB_LIB_CELLS": "BUF_R CTS_L CTS2_L LIBDU_L HOOK_L PLAT_L",
+            "RB_STUB_LIB_DONT_USE": "LIBDU_L",
+        },
+    )
+    _with_dont_use_stubs(tmp_path)
+    backend.root_cfg.get_pnr_platform_cfg.return_value = _platform(
+        _pdk(tmp_path, dont_use_cells=["PLAT_L"]),
+        cts_dont_use_cells=["*_L"],
+        cts_repair_clock_nets=True,
+    )
+    backend.pnr_cfg.hooks = {"session": (str(session),), "after-cts": (str(after_cts),)}
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    log = "\n".join(
+        p.read_text() for p in sorted(artefacts.rglob("*.log")) if "pnr" in p.name
+    )
+    assert "CTS sees dont-use: CTS2_L CTS_L HOOK_L LIBDU_L PLAT_L\n" in log
+    after = log[log.index(">>> Hook after-cts:") :]
+    assert after.split("Don't Use Cells:\n", 1)[1].startswith(
+        "  HOOK_L\n  LIBDU_L\n  PLAT_L\n"
+    )
 
 
 # -- unset ---------------------------------------------------------------------------

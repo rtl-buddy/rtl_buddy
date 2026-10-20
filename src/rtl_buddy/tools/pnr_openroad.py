@@ -698,17 +698,30 @@ def _keep_sizing_vt_tcl(platform) -> str:
 def _cts_dont_use_tcl(platform) -> tuple[str, str]:
     """Return the `cts-dont-use-cells` exclusion that precedes `clock_tree_synthesis`, and its undoing after `repair_clock_nets`; both `""` when the list is empty.
 
-    `unset_dont_use` also clears a platform pattern the CTS list overlaps, so the undoing applies the platform's `dont-use-cells` again.
+    The exclusion records which matching cells are not yet dont-use, from `report_dont_use`, and the undoing frees only those. A blanket `unset_dont_use` would also free cells that Liberty, the platform or a hook had made dont-use.
     """
     cells = list(platform.get_cts_dont_use_cells())
     if not cells:
         return "", ""
     patterns = f"[list {' '.join(cells)}]"
-    dont_use = list(platform.get_dont_use_cells())
-    reapply = f"set_dont_use [list {' '.join(dont_use)}]\n" if dont_use else ""
     return (
-        f'puts ">>> CTS don\'t-use cells"\nset_dont_use {patterns}\n',
-        f'puts ">>> Don\'t-use cells after CTS"\nunset_dont_use {patterns}\n{reapply}',
+        f'puts ">>> CTS don\'t-use cells"\n'
+        "with_output_to_variable rb_cts_du_report { report_dont_use }\n"
+        "set rb_cts_du_before [dict create]\n"
+        'foreach rb_line [lrange [split $rb_cts_du_report "\\n"] 1 end] {\n'
+        "  dict set rb_cts_du_before [string trim $rb_line] 1\n"
+        "}\n"
+        "set rb_cts_du_added [list]\n"
+        f"foreach rb_cell [get_lib_cells -quiet {patterns}] {{\n"
+        "  if {![dict exists $rb_cts_du_before [get_name $rb_cell]]} {\n"
+        "    lappend rb_cts_du_added $rb_cell\n"
+        "  }\n"
+        "}\n"
+        f"set_dont_use {patterns}\n",
+        'puts ">>> Don\'t-use cells after CTS"\n'
+        "if {[llength $rb_cts_du_added] > 0} {\n"
+        "  unset_dont_use $rb_cts_du_added\n"
+        "}\n",
     )
 
 

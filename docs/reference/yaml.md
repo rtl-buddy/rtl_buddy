@@ -193,7 +193,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `cts-clock-nets` | run | One net or a list: `clock_tree_synthesis -clk_nets`, building trees for those clock nets only. Unset lets CTS find every clock |
 | `cts-latency-balancing` | platform, run | `false` adds `-no_insertion_delay`: CTS does not pad shallow branches of a clock net with delay buffers to match its deepest. Default `true` |
 | `cts-repair-clock-nets` | platform, run | `true` runs `repair_clock_nets` right after CTS, before the `after-cts` hooks. Default `false` |
-| `cts-dont-use-cells` | platform, run | Cell names or globs, one per entry, excluded for CTS and `repair_clock_nets` only: `set_dont_use` just before `clock_tree_synthesis`, then `unset_dont_use` and the platform's `dont-use-cells` again before the `after-cts` hooks. The routed-design check does not read it. A run's list replaces the platform's; `[]` clears it. Empty by default |
+| `cts-dont-use-cells` | platform, run | Cell names or globs, one per entry, excluded for CTS and `repair_clock_nets` only: `set_dont_use` just before `clock_tree_synthesis`, then, before the `after-cts` hooks, `unset_dont_use` on the matching cells that were not dont-use before it. Cells that Liberty `dont_use`, `dont-use-cells` or an earlier hook excluded stay excluded. The routed-design check does not read it. A run's list replaces the platform's; `[]` clears it. Empty by default |
 | `cts-sink-clustering` | platform | `-sink_clustering_enable` for CTS. Default `true` |
 | `cts-apply-ndr` | platform | `none`, `root_only`, `half` or `full`. Unset keeps OpenROAD's `half` |
 | `port-buffer` | platform, run | Cell `buffer_ports` inserts. Unset lets OpenROAD choose |
