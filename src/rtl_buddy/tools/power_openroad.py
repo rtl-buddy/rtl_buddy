@@ -655,7 +655,7 @@ class OpenRoadPower(BasePower):
         )
         self._script_corners = list(corner_libs)
         tech_lef = pdk.get_tech_lef()
-        macro_lef = pdk.get_macro_lef()
+        cell_lefs = pdk.get_macro_lef_paths()
         inputs = self._resolve_inputs()
         # The script is generated from these; `_publish_phys_model` reads this capture instead of resolving again.
         self._script_inputs = inputs
@@ -669,7 +669,7 @@ class OpenRoadPower(BasePower):
             "corner_libs": [lib for libs in corner_libs.values() for lib in libs],
             "macro_libs": macro_libs,
             "tech_lef": tech_lef,
-            "macro_lef": macro_lef,
+            "cell_lefs": cell_lefs,
             "macro_lefs": macro_lefs,
         }
         netlist = inputs["netlist"]
@@ -765,8 +765,7 @@ class OpenRoadPower(BasePower):
             # After the platform corner so a macro library never shadows a standard cell, in resolved order.
             lines.extend(f"read_liberty {lib}" for lib in macro_libs)
         lines.append(f"read_lef {tech_lef}")
-        if macro_lef:
-            lines.append(f"read_lef {macro_lef}")
+        lines.extend(f"read_lef {lef}" for lef in cell_lefs)
         lines.extend(f"read_lef {lef}" for lef in macro_lefs)
         if source == "pnr":
             # The ODB restores the post-route state. Wire parasitics come from the P&R run's extracted SPEF
@@ -1314,7 +1313,7 @@ class OpenRoadPower(BasePower):
             *(resolved.get("corner_libs") or []),
             *(resolved.get("macro_libs") or []),
             resolved.get("tech_lef"),
-            resolved.get("macro_lef"),
+            *(resolved.get("cell_lefs") or []),
             *(resolved.get("macro_lefs") or []),
         ]
         return library_fingerprint([path for path in named if path], self.root_cfg)

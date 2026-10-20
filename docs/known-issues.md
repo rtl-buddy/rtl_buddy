@@ -4,7 +4,7 @@ description: Current rtl_buddy limitations, surprising behavior, and required wo
 
 # Quirks & Known Issues
 
-Use this page when behavior differs from what you expect. Each section states the effect and the action to take. Sections run in workflow order, from CDC and simulation through dispatch, synthesis, formal, FPGA and tools.
+Find limitations and workarounds by workflow, from CDC and simulation through dispatch, synthesis, formal, FPGA and tools.
 
 ## XPM CDC macros require rtl-buddy-cdc 0.4 or later
 
@@ -119,10 +119,6 @@ A resource group larger than the cluster's array limit is submitted as several a
 ## Quote dispatch time values
 
 YAML 1.1 reads an unquoted `time: 4:00:00` as an integer, and rtl_buddy rejects it. Quote every `time` value in `resources:`, `compile:` and `modes:` blocks.
-
-## An unknown key in a reservation block is ignored after a warning
-
-An unknown key in a `resources:` or `compile:` block, in `cfg-dispatch`, or in its `coverage:`, `retry:` or `rightsize:` block is ignored. Each one logs the warning `config.unknown_key`, naming the file, the block and the nearest known key, so a typo such as `memory:` reserves nothing but is reported. A later major release will make an unknown key fatal. A `modes:` block already rejects unknown keys, but a release without `modes:` drops the whole block silently, so confirm a new mode's reservation once. See [YAML formats](reference/yaml.md#parallel-dispatch).
 
 ## Dispatch build jobs cover the whole suite
 

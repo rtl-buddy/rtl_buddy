@@ -76,7 +76,7 @@ def _make_stream_pdk(tmp_path, **overrides):
         pdk.get_klayout_tech(),
         pdk.get_klayout_props(),
         pdk.get_tech_lef(),
-        pdk.get_macro_lef(),
+        pdk.get_macro_lef_paths()[0],
         *pdk.get_cell_gds_paths(),
     )
     return pdk

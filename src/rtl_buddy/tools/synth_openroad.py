@@ -6,6 +6,26 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+#: `openroad.repair`'s `repair_design` (#856). On an unplaced netlist `-pre_placement` builds buffer
+#: trees where plain `repair_design` only resizes, so it runs when no instance is placed and this
+#: OpenROAD's `repair_design` has the flag (25Q2 and later). The form that ran is logged as `rb: ...`.
+REPAIR_DESIGN_TCL = """\
+set rb_repair {repair_design}
+set rb_repair_why {this OpenROAD's repair_design has no -pre_placement}
+if {[string match *-pre_placement* [info body repair_design]]} {
+  set rb_repair {repair_design -pre_placement}
+  set rb_repair_why {no instance is placed}
+  foreach rb_inst [[ord::get_db_block] getInsts] {
+    if {[$rb_inst isPlaced]} {
+      set rb_repair {repair_design}
+      set rb_repair_why {an instance is placed}
+      break
+    }
+  }
+}
+puts "rb: $rb_repair ($rb_repair_why)"
+{*}$rb_repair"""
+
 from . import block_params
 from .artifact_paths import clear_stale_artefacts
 from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps, open_liberty
@@ -39,6 +59,7 @@ from .synth_yosys import (
     slang_handles_params,
     validate_frontend,
     warn_abc_driving_cell_missing,
+    warn_icg_split_skipped,
     warn_mapped_abc_args,
     yosys_env,
     yosys_read_lib_paths,
@@ -280,11 +301,12 @@ class OpenRoadSynth:
         cell_libs = liberty_args(self._resolve_cell_lib_paths())
         lines.extend(
             clock_gating_cmds(
-                resolve_clock_gating(opts, self.synth_cfg, self.root_cfg),
+                resolve_clock_gating(opts, self.synth_cfg, self.root_cfg, warn=True),
                 cell_libs,
                 dont_use,
                 self.synth_cfg.get_name(),
                 bool(lib_paths),
+                self.artefact_dir,
             )
         )
 
@@ -424,6 +446,7 @@ class OpenRoadSynth:
         warn_abc_driving_cell_missing(
             log_text, self._abc_constr, self.synth_cfg.get_name(), log_path
         )
+        warn_icg_split_skipped(log_text, self.synth_cfg.get_name(), log_path)
 
         conflicting = find_conflicting_driver_warnings(log_text)
         if conflicting and conflicting_mode == "error":
@@ -710,7 +733,7 @@ class OpenRoadSynth:
         # Effort `openroad.repair`: buffer and resize before the reports, as `rb pnr` does after
         # placement. Without it the reports time Yosys' unbuffered netlist (#703).
         if repair:
-            lines.append("repair_design")
+            lines.append(REPAIR_DESIGN_TCL)
             if constraints:
                 lines.append("repair_timing -setup")
 
@@ -855,8 +878,9 @@ class OpenRoadSynth:
           absent at the default.
         - `map`: `resynth` (from `_resynth_cmd`), the sha256 of the effort's pre-STA Tcl (stripped as
           the script writer strips it), and the resolved `lefs`. With the effort's `openroad.repair`
-          on, also `repair: true` and the sha256 of the `layer-rc-tcl` it sources; both are absent
-          with repair off, so a run without repair keeps its digest.
+          on, also `repair: true`, `pre_placement: true` (:data:`REPAIR_DESIGN_TCL`), and the
+          sha256 of the `layer-rc-tcl` it sources; all are absent with repair off, so a run without
+          repair keeps its digest.
         - `params` and `defines`: the elaboration values. `defines` is the merged table given to the
           frontend (:func:`elaboration_defines`), not `synth.yaml`'s field alone.
         - `libs`: the resolved Liberty set (:func:`library_fingerprint`), which both stages read. It
@@ -872,6 +896,7 @@ class OpenRoadSynth:
         }
         if self.effort_cfg.get_openroad_repair():
             map_options["repair"] = True
+            map_options["pre_placement"] = True
             map_options["layer_rc_tcl_sha256"] = sha256_of(self._layer_rc_tcl() or None)
         return {
             "tool": self.tool_cfg.get_name(),

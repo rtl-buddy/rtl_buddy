@@ -246,8 +246,11 @@ def task_status(message: str, *, spinner: str = "dots"):
     """Show a spinner for a long phase, or print one plain line.
 
     The spinner is confined to the main thread, since a console allows only one Rich
-    ``Live``. Worker threads and non-terminal runs print the message instead.
+    ``Live``. Machine mode requires verbose output for per-phase messages.
     """
+    if is_machine_mode() and console_level() > logging.INFO:
+        yield None
+        return
     if threading.current_thread() is threading.main_thread():
         if _should_use_rich_console():
             with get_stderr_console().status(message, spinner=spinner) as status:
@@ -748,6 +751,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('path')} ({fields.get('error')}); the result "
                 "itself is unaffected — the envelope keeps the content it "
                 "already had"
+            )
+        case "rightsize.summary":
+            counts = fields.get("counts") or {}
+            return (
+                f"Reservation advice: {fields.get('total')} findings "
+                f"({counts.get('raise', 0)} raise, {counts.get('reduce', 0)} reduce)"
             )
         case "rightsize.advice":
             return (
@@ -1826,6 +1835,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('min_flops')} is ignored on an unmapped run "
                 "(no Liberty to take an ICG from); set a platform or lib-paths"
             )
+        case "synth.clock_gating_max_ignored":
+            return (
+                f"synth {fields.get('synth')}: clock-gating-max-flops "
+                f"{fields.get('max_flops')} is ignored without "
+                "clock-gating-min-flops, which turns clock gating on"
+            )
+        case "synth.icg_not_split":
+            return (
+                f"synth {fields.get('synth')}: clock-gating-max-flops could not "
+                f"split an ICG: {fields.get('detail')}; see {fields.get('log')}"
+            )
         case "synth.yosys_abc_missing":
             return (
                 f"abc-persistent: false needs yosys-abc, but none was found next to "
@@ -1874,6 +1894,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"Tcl refused to evaluate it ({fields.get('message')}); falling "
                 "back to the word tokenizer, which does not evaluate "
                 "$variables or [expr]"
+            )
+        case "constraints.tcl_check_skipped":
+            return (
+                f'constraint file "{fields.get("source")}" line {fields.get("line")}: '
+                f"check skipped (error {fields.get('message')!r}); the reader "
+                "cannot answer design queries, so the check is assumed to pass"
+            )
+        case "constraints.tcl_checks_skipped":
+            return (
+                f'constraint file "{fields.get("source")}": '
+                f"{fields.get('count')} `error` check(s) skipped; the reader "
+                "has no design to answer them, so each is assumed to pass "
+                "(each one is logged at DEBUG as constraints.tcl_check_skipped)"
             )
         case "constraints.source_unreadable":
             return (
@@ -2314,6 +2347,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             round_ = fields.get("round")
             if not round_:
                 repair = "the detailed route"
+            elif fields.get("electrical_round"):
+                repair = "electrical, repair_design only"
             else:
                 repair = ", ".join(
                     f"{kind} margin {fields.get(f'{kind}_margin_ns'):g} ns"
@@ -2330,10 +2365,18 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 )
             else:
                 timing = "not timed"
+            electrical = ""
+            if "max_slew_violation_count" in fields:
+                electrical = (
+                    f", {fields.get('max_slew_violation_count')} max-slew and "
+                    f"{fields.get('max_capacitance_violation_count')} "
+                    "max-capacitance violator(s)"
+                )
             return (
-                f'P&R "{fields.get("pnr")}" post-route repair round '
-                f"{round_}/{fields.get('rounds')} ({repair}): {timing}, "
-                f"{fields.get('drc_count')} DRC violation(s); "
+                f'P&R "{fields.get("pnr")}" post-route repair round {round_}'
+                + ("" if fields.get("electrical_round") else f"/{fields.get('rounds')}")
+                + f" ({repair}): {timing}, "
+                f"{fields.get('drc_count')} DRC violation(s){electrical}; "
                 f"best round {fields.get('best_round')}"
             )
         case "pnr.post_route_round_failed":
@@ -2350,6 +2393,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 + (" (the detailed route)" if kept == 0 else "")
                 + f"; {fields.get('repaired_rounds')} of {fields.get('rounds')} "
                 f"round(s) repaired; stopped: {fields.get('reason')}"
+                + (
+                    f"; electrical round {electrical.get('round')} "
+                    f"{electrical.get('status', '').replace('_', ' ')}: "
+                    f"{electrical.get('reason')}"
+                    if (electrical := fields.get("electrical_round"))
+                    else ""
+                )
             )
         case "pnr.post_route_repair_without_rcx":
             return (
@@ -2604,20 +2654,6 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"({fields.get('error')}) — configured regression-manifest paths "
                 "ignored, falling back to the ./<flow>_regression.yaml filename "
                 "convention"
-            )
-        case "config.unknown_key":
-            msg = (
-                f"{fields.get('path')}: unknown key {fields.get('key')!r} in "
-                f"{fields.get('block')} ignored"
-            )
-            if fields.get("suggestion"):
-                msg += f" (did you mean {fields.get('suggestion')!r}?)"
-            known = fields.get("known") or []
-            if known:
-                msg += f"; known keys are {', '.join(str(k) for k in known)}"
-            return msg + (
-                ". The block is read without it; a later major release will "
-                "make an unknown key fatal"
             )
         case "config.unknown_key_rejected":
             msg = f"{fields.get('path')}: {fields.get('block')}: unknown key {fields.get('key')!r}"
@@ -3225,14 +3261,14 @@ def render_summary(
     logger: logging.Logger,
     metadata: list[str] | None = None,
 ) -> None:
-    """Console render honours print_failures_only; log and event keep every row."""
+    """Machine summaries and print_failures_only hide passing console rows."""
     cols = list(columns)
     verdict_key = _verdict_column(cols, rows)
     counts = _verdict_counts(rows, verdict_key) if verdict_key else {}
 
     footer = [_tally_line(counts)] if counts else []
 
-    if verdict_key is not None and print_failures_only():
+    if verdict_key is not None and (is_machine_mode() or print_failures_only()):
         console_rows = [
             row
             for row in rows
@@ -3260,6 +3296,7 @@ def render_summary(
                 )
             ),
             markup=False,
+            soft_wrap=True,
         )
         return
 

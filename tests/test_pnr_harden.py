@@ -51,7 +51,7 @@ def _pdk(tmp_path):
     _touch(
         pdk.get_klayout_tech(),
         pdk.get_tech_lef(),
-        pdk.get_macro_lef(),
+        pdk.get_macro_lef_paths()[0],
         *pdk.get_cell_gds_paths(),
     )
     Path(pdk.get_tech_lef()).write_text("TECH\n")

@@ -759,7 +759,7 @@ def test_export_of_a_pre_route_checkpoint_is_labelled_and_kept_apart(
     for path in _pdk(tmp_path).get_cell_gds_paths() + [
         _pdk(tmp_path).get_klayout_tech(),
         _pdk(tmp_path).get_tech_lef(),
-        _pdk(tmp_path).get_macro_lef(),
+        _pdk(tmp_path).get_macro_lef_paths()[0],
     ]:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).touch()
