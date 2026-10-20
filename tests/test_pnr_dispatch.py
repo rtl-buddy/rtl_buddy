@@ -927,6 +927,140 @@ def test_the_head_and_each_job_open_the_directories_jobs_write(
     assert written <= {path for job, path in seen[last_job:] if job is None}
 
 
+#: What the stub's finish stage writes into the artefact directory.
+_FINISH_OUTPUTS = {
+    "demo_top.def",
+    "demo_top.routed.odb",
+    "demo_top.routed.sdc",
+    "demo_top.routed.v",
+}
+
+
+@pytest.mark.parametrize("given_up", [True, False])
+def test_a_job_whose_run_was_given_up_during_its_stage_removes_its_outputs(
+    tmp_path, monkeypatch, caplog, given_up
+):
+    backend, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
+    session, job = pnr_openroad._run_session, pnr_dispatch.run_stage_job
+    seen = {}
+
+    def _present():
+        return {name for name in _FINISH_OUTPUTS if (artefacts / name).exists()}
+
+    def _session(cmd, **kwargs):
+        if given_up and cmd[-1].endswith(f"{_NAMES['finish']}.tcl"):
+            # rb gives the run up and clears its outputs while the stage runs.
+            pnr_dispatch.mark_given_up(str(_only_run(artefacts)))
+        done = session(cmd, **kwargs)
+        seen["written"] = _present()
+        return done
+
+    def _job(run_dir, stage, **kwargs):
+        ok = job(run_dir, stage, **kwargs)
+        if stage == "finish":
+            seen["ok"], seen["left"] = ok, _present()
+        return ok
+
+    monkeypatch.setattr(pnr_openroad, "_run_session", _session)
+    monkeypatch.setattr(pnr_dispatch, "run_stage_job", _job)
+
+    with caplog.at_level("WARNING"):
+        backend.run()
+
+    run_dir = _only_run(artefacts)
+    result = pnr_dispatch.read_result(str(run_dir), "finish")
+    events = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "pnr.stage_job_given_up"
+    ]
+    assert seen["written"] == _FINISH_OUTPUTS
+    if not given_up:
+        assert seen["ok"] is True and result["ok"] is True
+        assert seen["left"] == _FINISH_OUTPUTS
+        assert not events
+        return
+    assert seen["ok"] is False
+    assert seen["left"] == set()
+    assert result["ok"] is False and result["started"] is True
+    assert result["problem"] == (
+        f"rb gave run {run_dir.name} up while stage {_NAMES['finish']} ran; the job "
+        "removed the outputs the stage wrote"
+    )
+    assert result["fail_stage"] == "dispatch"
+    (event,) = events
+    assert {os.path.basename(p) for p in event.rtl_fields["removed"]} >= (
+        _FINISH_OUTPUTS
+    )
+    assert event.getMessage().endswith(
+        f"removed the {len(event.rtl_fields['removed'])} output(s) the stage wrote"
+    )
+
+
+def test_the_head_marks_the_run_given_up_before_it_clears_its_outputs(
+    tmp_path, monkeypatch
+):
+    backend, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
+    _interrupt_at_first_poll(slurm, signal.SIGINT)
+    calls = []
+    mark, clear = pnr_dispatch.mark_given_up, pnr_openroad.clear_run_outputs
+
+    def _mark(run_dir, **kwargs):
+        calls.append("mark")
+        mark(run_dir, **kwargs)
+
+    def _clear(artefact_dir, **kwargs):
+        calls.append(("clear", kwargs.get("include_script", False)))
+        return clear(artefact_dir, **kwargs)
+
+    monkeypatch.setattr(pnr_dispatch, "mark_given_up", _mark)
+    monkeypatch.setattr(pnr_openroad, "clear_run_outputs", _clear)
+
+    with pytest.raises(KeyboardInterrupt):
+        with pnr_dispatch.cancel_on_interrupt():
+            backend.run()
+
+    # The clear at the start of the run, then the mark, then the clear of the FAIL.
+    assert calls == [("clear", True), "mark", ("clear", False)]
+    run_dir = _only_run(artefacts)
+    assert pnr_dispatch.given_up(str(run_dir))
+    assert pnr_dispatch._refusal(str(run_dir), "finish") is not None
+
+
+def test_a_job_opens_the_directories_before_it_checks_whether_its_run_was_given_up(
+    tmp_path, monkeypatch
+):
+    backend, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
+    seen = []
+    listdir, session = os.listdir, pnr_openroad._run_session
+    check = pnr_dispatch.given_up
+
+    def _listdir(path="."):
+        seen.append(("list", os.path.abspath(path)))
+        return listdir(path)
+
+    def _session(cmd, **kwargs):
+        seen.append(("session",))
+        return session(cmd, **kwargs)
+
+    def _given_up(run_dir):
+        seen.append(("check",))
+        return check(run_dir)
+
+    monkeypatch.setattr(os, "listdir", _listdir)
+    monkeypatch.setattr(pnr_openroad, "_run_session", _session)
+    monkeypatch.setattr(pnr_dispatch, "given_up", _given_up)
+
+    assert backend.run().results["result"] == "PASS"
+
+    dispatch_dir = str(_only_run(artefacts) / "dispatch")
+    sessions = [i for i, entry in enumerate(seen) if entry == ("session",)]
+    assert len(sessions) == len(PNR_STAGES)
+    for start in sessions:
+        checked = seen.index(("check",), start)
+        assert ("list", dispatch_dir) in seen[start:checked]
+
+
 def test_a_repeated_signal_waits_for_the_cancel(tmp_path, monkeypatch):
     backend, artefacts, slurm = _dispatched(tmp_path, monkeypatch)
     _interrupt_at_first_poll(slurm, signal.SIGINT)
@@ -1366,6 +1500,11 @@ def test_a_stage_job_runs_only_for_an_unfinished_run_of_its_version(
     manifest["outcome"] = None
     manifest_path.write_text(json.dumps(manifest))
     assert pnr_dispatch._refusal(run_dir, "finish") is None
+    pnr_dispatch.mark_given_up(run_dir)
+    assert pnr_dispatch._refusal(run_dir, "finish") == (
+        f"rb gave run {os.path.basename(run_dir)} up"
+    )
+    os.remove(os.path.join(run_dir, "dispatch", "given_up"))
     manifest["generator"] = "rtl-buddy 0.0.1"
     manifest_path.write_text(json.dumps(manifest))
     assert pnr_dispatch._refusal(run_dir, "finish") == (
@@ -1925,6 +2064,10 @@ def test_the_cancel_messages_say_whether_slurm_took_the_cancel(cancelled):
     abandoned = logging_utils._human_message(
         "dispatch.pnr_stage_submission_abandoned",
         {"pnr": "blk", "stage": "cts", "job_id": "7", "cancelled": cancelled},
+    )
+    assert (
+        "one that is running its stage removes the outputs the stage wrote when it "
+        "ends" in survived
     )
     if cancelled:
         assert "after rb cancelled them" in survived

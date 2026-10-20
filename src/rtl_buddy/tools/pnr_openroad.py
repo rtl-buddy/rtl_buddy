@@ -354,6 +354,54 @@ def run_output_paths(artefact_dir: str, design: str) -> list[str]:
     ]
 
 
+def clear_run_outputs(
+    artefact_dir: str, *, owner: str, design: str | None, include_script: bool = False
+) -> list[str]:
+    """Remove a P&R run's outputs from `artefact_dir` and return the paths removed (see `OpenRoadPnr._clear_stale_outputs`).
+
+    `owner` names the run in errors. `design` is the run's top, whose outputs are removed even when their names match a protected pattern; None removes by suffix only. A stage job whose run was given up while its stage ran removes the same set (`pnr_dispatch.run_stage_job`).
+    """
+    stale = clear_stale_artefacts(
+        [
+            os.path.join(artefact_dir, name)
+            for name in (
+                *_FIXED_OUTPUT_NAMES,
+                _DEF2STREAM_REPORT_NAME,
+                _EXPORT_PROVENANCE_NAME,
+                *(
+                    (
+                        _SCRIPT_NAME,
+                        _DEF2STREAM_INPUTS_NAME,
+                        _BLOCK_NETLIST_NAME,
+                        _CONGESTION_REPORT_NAME,
+                    )
+                    if include_script
+                    else ()
+                ),
+            )
+        ]
+        + ([pnr_checkpoints.latest_pointer(artefact_dir)] if include_script else []),
+        owner=owner,
+    )
+    # `own` lets a design colliding with a sibling's protected name still clear its own files.
+    own = [f"{design}{suffix}" for suffix in _MANAGED_OUTPUT_SUFFIXES] if design else []
+    stale += clear_managed_outputs(
+        artefact_dir,
+        _MANAGED_OUTPUT_SUFFIXES,
+        owner=owner,
+        own=own,
+        own_flow="pnr-openroad",
+    )
+    # The abstract is cut from the result being replaced, whether or not this run hardens.
+    stale += pnr_abstract.clear_abstract(artefact_dir)
+    # The parameter probe's scratch files belong to the abstract.
+    probe_dir = os.path.join(artefact_dir, _PARAM_PROBE_DIR)
+    if include_script and os.path.isdir(probe_dir):
+        shutil.rmtree(probe_dir, ignore_errors=True)
+        stale.append(probe_dir)
+    return stale
+
+
 _KLAYOUT_PACKAGE = "rtl_buddy.pnr.klayout"
 
 _DEF2STREAM_INPUTS_NAME = "def2stream.inputs.json"
@@ -2597,54 +2645,16 @@ class OpenRoadPnr:
 
         `include_script` also clears `pnr.tcl`, the stream-out input manifest and `congestion.rpt` so a rerun that dies before `_write_script` leaves no stale script. Only `run` sets it; `_fail_after_openroad` keeps them because they are what the tools read and why a route failed.
         """
-        stale = clear_stale_artefacts(
-            [
-                os.path.join(self.artefact_dir, name)
-                for name in (
-                    *_FIXED_OUTPUT_NAMES,
-                    _DEF2STREAM_REPORT_NAME,
-                    _EXPORT_PROVENANCE_NAME,
-                    *(
-                        (
-                            _SCRIPT_NAME,
-                            _DEF2STREAM_INPUTS_NAME,
-                            _BLOCK_NETLIST_NAME,
-                            _CONGESTION_REPORT_NAME,
-                        )
-                        if include_script
-                        else ()
-                    ),
-                )
-            ]
-            + (
-                [pnr_checkpoints.latest_pointer(self.artefact_dir)]
-                if include_script
-                else []
-            ),
-            owner=self.pnr_cfg.get_name(),
-        )
-        # `own` lets a design colliding with a sibling's protected name still clear its own files.
-        own: list[str] = []
         try:
             design = self.pnr_cfg.resolve_synth_cfg().get_top()
         except Exception:
-            pass
-        else:
-            own = [f"{design}{suffix}" for suffix in _MANAGED_OUTPUT_SUFFIXES]
-        stale += clear_managed_outputs(
+            design = None
+        stale = clear_run_outputs(
             self.artefact_dir,
-            _MANAGED_OUTPUT_SUFFIXES,
             owner=self.pnr_cfg.get_name(),
-            own=own,
-            own_flow="pnr-openroad",
+            design=design,
+            include_script=include_script,
         )
-        # The abstract is cut from the result being replaced, whether or not this run hardens.
-        stale += pnr_abstract.clear_abstract(self.artefact_dir)
-        # The parameter probe's scratch files belong to the abstract.
-        probe_dir = os.path.join(self.artefact_dir, _PARAM_PROBE_DIR)
-        if include_script and os.path.isdir(probe_dir):
-            shutil.rmtree(probe_dir, ignore_errors=True)
-            stale.append(probe_dir)
         if stale:
             log_event(
                 logger,
