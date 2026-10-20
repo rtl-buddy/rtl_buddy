@@ -128,6 +128,10 @@ A one-session run that reaches its end without writing a checkpoint it keeps fai
 
 Every OpenROAD session runs in the run's artefact directory, `artefacts/<run>/`. In v6 it ran in the directory `rb` was started from, so a relative path in a run hook, `platform-tcl`, `layer-rc-tcl`, `tapcell-tcl`, `pin-constraints` file or `pdn-config` (`source`, `open`, `read_*`, `write_*`) resolved there. Such a path now resolves from `artefacts/<run>/`. Build paths from the script's own location instead, `[file join [file dirname [info script]] <name>]`, or from the variables the flow sets (`OUT_DIR`). See [Run Tcl hooks](concepts/pnr.md#run-tcl-hooks).
 
+### Synthesis repair buffers the unplaced netlist
+
+A synthesis effort with `openroad.repair: true` runs `repair_design -pre_placement` when its `pre-sta-tcl` runs no `global_placement`. In v6 it ran plain `repair_design`, which on an unplaced netlist only resizes, so high-fanout nets stayed unbuffered. Such runs usually report more area and less negative WNS and TNS, and their options digest changes. No config change is needed. See [Select an effort](concepts/synthesis.md#select-an-effort).
+
 ## Submodule to uv
 
 Replace the `tools/rtl_buddy` submodule and editable pip install with a `uv` dependency:
