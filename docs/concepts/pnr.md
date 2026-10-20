@@ -53,6 +53,7 @@ Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previo
 | `tns_ps`, `tns_hold_ps` | Total negative setup and hold slack. |
 | `drc_count` | Violations left in `route.drc.rpt`. 0 is a clean route. |
 | `max_slew_violation_count`, `max_capacitance_violation_count`, `max_fanout_violation_count` | Pins over a Liberty or SDC limit at any corner, listed in `electrical.rpt`. |
+| `macro_pin_buffered_count`, `macro_pin_unmet_count` | With `placement.macro-pin-limits`: macro pins it buffered, and those still over their limit less the margin on placement parasitics. |
 | `area_um2` | Design area. |
 | `routed_cell_count` | Instances of the finished design, including added tie, buffer and clock cells, excluding physical-only cells. Compare experiments on this. |
 | `cell_count` | Instances of the input netlist (the summary's Cells column). |
@@ -123,6 +124,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `GRT-0116`, global-route overflow | Too congested. See `congestion.rpt`; lower utilization or density, or try `placement.routability-driven`. |
 | Large `drc_count` | Try `routing-layer-adjustment`, a lower density, or `post-route-repair` with several rounds. |
 | `RSZ-0090` at a slow corner | A macro with one Liberty limits that corner. Give it a Liberty per corner. |
+| Macro pins in `electrical.rpt`, or `pnr.macro_pin_limits_unmet` | Set `placement.macro-pin-limits`, add a stronger buffer to it, or lower the macro's `macro-cell-halo`. See [Tune placement](#tune-placement-clock-tree-and-repair). |
 | `RSZ-0074` in a post-route repair round | Set `post-route-repair.reroute: full`. |
 | `CTS-0080 Sink not found` | Set `cts-sink-clustering: false`. |
 | `GRT-0273 Disabled NDR`, large hold violations | Clock nets with non-default rules detour. Set `cts-apply-ndr: none`. |
@@ -221,8 +223,22 @@ Process-dependent knobs live on the PDK, can be overridden on the platform, and 
 | A block needs other tap spacing or endcaps than the PDK's | `tapcell-tcl` on the platform or the run |
 | Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm, default 1.0) |
 | Tie cells too close to their loads | `placement.tie-separation` (µm, default 0) |
+| Macro pins over a tight Liberty limit, such as OpenRAM SKY130 SRAM inputs (0.04 ns) | `placement.macro-pin-limits`, below |
 
 A platform that ends up with `routability-use-grt` but not `routability-driven` fails to load.
+
+`repair_design` sizes repeaters for the library's target slew, so a macro pin whose own limit is far below it stays in `electrical.rpt`. `placement.macro-pin-limits` buffers such pins at the end of the place stage, after `repair_design`, the `after-repair-design` hook and legalization:
+
+```yaml
+    placement:
+      macro-pin-limits:
+        buffers: [sky130_fd_sc_hd__buf_1, sky130_fd_sc_hd__buf_2, sky130_fd_sc_hd__buf_4,
+                  sky130_fd_sc_hd__buf_8, sky130_fd_sc_hd__buf_12, sky130_fd_sc_hd__buf_16]
+        margin: 0.05              # of each max-slew limit, kept in hand
+        capacitance-margin: 0.5   # of each max-capacitance limit; default: margin
+```
+
+Each macro data pin over its limit less the margin gets a buffer fixed on the free row site nearest it (an input also gets a pre-driver), sized from `buffers` weakest first and marked `dont_touch`, so later repair leaves it alone. `pnr.log` has one `>>>` line per pin. The step judges on placement parasitics, so check `electrical.rpt`: a long macro-output net can route to twice its estimated capacitance (hence `capacitance-margin: 0.5` on sky130hd), a large `macro-cell-halo` keeps the buffer too far from the pin (3 µm works with `buf_8` on sky130hd, 20 µm does not), and a pin route that global routing detours around the macro is out of its reach. A block set on the run or platform replaces a lower level's whole.
 
 ## Repair timing after routing
 
@@ -362,7 +378,7 @@ By default each stripe layer connects to the next; `connect: [[met1, met4], ...]
 | `after-pdn` | After taps and the power grid |
 | `after-pins` | After pin placement, before port buffering. A hook that buffers ports needs `buffer-ports: false`. |
 | `after-global-placement` | After `global_placement` |
-| `after-repair-design` | After `repair_design` |
+| `after-repair-design` | After `repair_design`, before legalization and the `placement.macro-pin-limits` step |
 | `after-cts` | After CTS, before setup and hold repair |
 | `after-global-route` | After `global_route`, before global-route repair |
 | `before-detailed-route` | Before each detailed route, including each post-route repair round's |
@@ -513,7 +529,7 @@ For maintainers and hook authors. The generated `pnr.tcl` runs:
 1. `platform-tcl`, Liberty, LEF, a mode and scene per corner on a multi-corner platform, netlist, SDC, `max-fanout`, `layer-rc-tcl`, don't-use cells, `session` hooks. The SDC and `max-fanout` go into every mode.
 2. Floorplan, tracks, blockages and cut-outs, tie cells.
 3. Macro placement, tap cells, power grid, pin placement, port buffering.
-4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present), `repair_tie_fanout`, `repair_design`, legalization.
+4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present), `repair_tie_fanout`, `repair_design`, legalization, the `placement.macro-pin-limits` step.
 5. CTS, optional post-CTS setup repair, hold repair, legalization.
 6. Global route, optional global-route repair, detailed route, optional post-route repair stage.
 7. Fill, global connections, extraction with `rcx-rules`, final reports, outputs.

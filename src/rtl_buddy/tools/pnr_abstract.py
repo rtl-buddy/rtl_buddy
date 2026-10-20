@@ -18,6 +18,7 @@ from ..config.pdk import (
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
     DEFAULT_ROTATED_MACRO_FOOTPRINT,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
+    MacroPinLimitsFile,
 )
 from ..config.pnr_repair import GlobalRouteRepair
 from ..config.pnr import (
@@ -422,6 +423,20 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 }
                 if platform.get_placement_rotated_macro_footprint()
                 != DEFAULT_ROTATED_MACRO_FOOTPRINT
+                else {}
+            ),
+            **(
+                {
+                    "macro_pin_limits": {
+                        "buffers": list(macro_pin_limits.buffers),
+                        "margin": macro_pin_limits.margin,
+                        "capacitance_margin": macro_pin_limits.capacitance_margin,
+                    }
+                }
+                if isinstance(
+                    macro_pin_limits := platform.get_placement_macro_pin_limits(),
+                    MacroPinLimitsFile,
+                )
                 else {}
             ),
         },
