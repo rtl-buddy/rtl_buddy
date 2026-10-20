@@ -130,6 +130,40 @@ def test_each_stage_session_reads_its_predecessor_checkpoint(tmp_path, monkeypat
         assert f"rb::ckpt::stage_end {stage}\n" in script
 
 
+@pytest.mark.parametrize("stages", [False, True])
+def test_global_placement_follows_the_sdc_and_the_wire_rc(
+    tmp_path, monkeypatch, stages
+):
+    """Timing-driven global placement estimates slack, so the session that runs it has read the SDC and set the wire RC first."""
+    from rtl_buddy.config.pdk import PlacementFile
+
+    (tmp_path / "pdk").mkdir()
+    (tmp_path / "pdk" / "rc.tcl").write_text("set_wire_rc -signal -layer met2\n")
+    backend, artefacts = _backend(
+        tmp_path,
+        monkeypatch,
+        stages=stages,
+        pdk_fields={
+            "layer_rc_tcl": "pdk/rc.tcl",
+            "placement": PlacementFile(timing_driven=True),
+        },
+    )
+
+    assert backend.run().results["result"] == "PASS"
+
+    if stages:
+        text = (_only_run(artefacts) / "02_place.tcl").read_text()
+        sdc = text.index("read_sdc [file join $RB_PRED_DIR 01_floorplan.sdc]")
+    else:
+        text = (artefacts / "pnr.tcl").read_text()
+        sdc = text.index("read_sdc $SDC_FILE")
+    rc = text.index("source ", sdc)
+    assert "pdk/rc.tcl" in text[rc : rc + 200]
+    placement = re.search(r"^global_placement -density .*$", text, re.M)
+    assert sdc < rc < placement.start()
+    assert placement.group().endswith(" -timing_driven")
+
+
 def _quoted(path) -> str:
     return '"' + str(path) + '"'
 
@@ -390,6 +424,7 @@ def test_a_failed_staged_session_names_its_stage(tmp_path, monkeypatch):
 
     assert res.results["result"] == "FAIL"
     assert res.results["desc"].startswith("stage 04_global_route: OpenROAD exited")
+    assert "fail_stage" not in res.results
     run_dir = _only_run(artefacts)
     ended = {e["stage"]: e for e in _events(run_dir) if e["event"] == "stage_end"}
     assert ended["global_route"]["status"] == "error"

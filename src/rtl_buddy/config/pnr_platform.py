@@ -280,6 +280,9 @@ class PnrPlatformConfig:
         self._placement_routability_use_grt = _pick(
             "routability_use_grt", pdk.get_placement_routability_use_grt(), False
         )
+        self._placement_timing_driven = _pick(
+            "timing_driven", pdk.get_placement_timing_driven(), False
+        )
         self._placement_rotated_macro_footprint = _pick(
             "rotated_macro_footprint",
             pdk.get_placement_rotated_macro_footprint(),
@@ -435,6 +438,10 @@ class PnrPlatformConfig:
     def get_placement_routability_use_grt(self) -> bool:
         """Whether global placement passes `-routability_use_grt`, platform over PDK, default `False`."""
         return self._placement_routability_use_grt
+
+    def get_placement_timing_driven(self) -> bool:
+        """Whether global placement runs `-timing_driven`, run over platform over PDK, default `False`."""
+        return self._placement_timing_driven
 
     def get_placement_rotated_macro_footprint(self) -> str:
         """How the flow handles a macro rotated by 90 degrees (`block`, `diamond-legalizer` or `none`), platform over PDK, default `block`."""

@@ -82,7 +82,7 @@ DETAIL_ROUTED = ("detailed_route", "post_route_repair")
 #: Checkpoints that also carry the route guides and global-route segments; the detailed-route session reads the segments. A routed database's pin access points no longer match the segments, which OpenROAD then refuses (GRT-0263), so a later session takes the global route from the guides the database keeps.
 ROUTE_FILES = ("global_route",)
 
-#: Reports in the artefact directory a stage's checkpoint keeps a copy of, as `kind: file name`: the detailed router's DRC report and log, of the detailed route and of the last post-route repair round, which a run resumed after that stage restores.
+#: Reports in the artefact directory a stage's checkpoint keeps a copy of, as `kind: file name`: the detailed router's DRC report and log, of the detailed route and of the kept post-route repair round, which a run resumed after that stage restores.
 STAGE_REPORTS = {
     "detailed_route": {"drc": "route.drc.rpt", "maze": "route.maze.log"},
     "post_route_repair": {"drc": "route.drc.rpt", "maze": "route.maze.log"},

@@ -1099,7 +1099,7 @@ def _routed_backend(tmp_path, monkeypatch, fp, log, def_text=None, returncode=0)
 
     def _fake_openroad(cmd, **kwargs):
         launched.append(cmd)
-        kwargs["stdout"].write(log)
+        kwargs["stdout"].write(log + ">>> DONE\n")
         if def_text is not None:
             (Path(backend.artefact_dir) / "demo_top.def").write_text(def_text)
         result = MagicMock()

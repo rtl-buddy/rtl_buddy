@@ -2263,37 +2263,52 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "pnr.post_route_round":
 
             def _ns(ps):
-                return "n/a" if ps is None else f"{ps / 1000:.3f} ns"
+                return "n/a" if ps is None else f"{ps / 1000:.4f} ns"
 
             def _wns(side):
                 if side in (fields.get("unconstrained") or ()):
                     return "unconstrained"
                 return _ns(fields.get(f"wns_{side}_ps"))
 
-            timing = (
-                f"setup WNS {_wns('setup')} "
-                f"TNS {_ns(fields.get('tns_ps'))}, "
-                f"hold WNS {_wns('hold')} "
-                f"TNS {_ns(fields.get('tns_hold_ps'))}"
-            )
-            if fields.get("repair"):
-                margins = ", ".join(
+            round_ = fields.get("round")
+            if not round_:
+                repair = "the detailed route"
+            else:
+                repair = ", ".join(
                     f"{kind} margin {fields.get(f'{kind}_margin_ns'):g} ns"
                     for kind in ("setup", "hold")
                     if fields.get(f"{kind}_margin_ns") is not None
                 )
-                then = f"repairing ({margins or 'repair_design only'})"
+                repair = f"repaired with {repair or 'repair_design only'}"
+            if "wns_setup_ps" in fields:
+                timing = (
+                    f"setup WNS {_wns('setup')} "
+                    f"TNS {_ns(fields.get('tns_ps'))}, "
+                    f"hold WNS {_wns('hold')} "
+                    f"TNS {_ns(fields.get('tns_hold_ps'))}"
+                )
             else:
-                then = "no repair"
+                timing = "not timed"
             return (
                 f'P&R "{fields.get("pnr")}" post-route repair round '
-                f"{fields.get('round')}/{fields.get('rounds')}: {timing}; {then}"
+                f"{round_}/{fields.get('rounds')} ({repair}): {timing}, "
+                f"{fields.get('drc_count')} DRC violation(s); "
+                f"best round {fields.get('best_round')}"
+            )
+        case "pnr.post_route_round_failed":
+            return (
+                f'P&R "{fields.get("pnr")}" post-route repair round '
+                f"{fields.get('round')}'s {fields.get('session')} session failed "
+                f"({fields.get('error')}); the stage keeps round "
+                f"{fields.get('kept_round')}"
             )
         case "pnr.post_route_repair_done":
+            kept = fields.get("kept_round")
             return (
-                f'P&R "{fields.get("pnr")}" post-route repair: '
-                f"{fields.get('repaired_rounds')} of {fields.get('rounds')} round(s) "
-                f"repaired; stopped: {fields.get('reason')}"
+                f'P&R "{fields.get("pnr")}" post-route repair: kept round {kept}'
+                + (" (the detailed route)" if kept == 0 else "")
+                + f"; {fields.get('repaired_rounds')} of {fields.get('rounds')} "
+                f"round(s) repaired; stopped: {fields.get('reason')}"
             )
         case "pnr.post_route_repair_without_rcx":
             return (

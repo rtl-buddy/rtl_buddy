@@ -102,9 +102,21 @@ Remove the key or correct its spelling. A `pnr.yaml` error stops `rb pnr`. A `cf
 
 A run with a located macro or an exact pin compares them with the routed DEF and fails with `fail_stage: routed_check` when one moved; `xfail:` does not excuse it. In v6 nothing compared them, so a run whose `pin-constraints` file or platform hook moved a located macro or an exact pin passed. Remove the conflicting placement or the floorplan entry. See [Check the routed floorplan](concepts/pnr.md#check-the-routed-floorplan).
 
+### A flow that ends early is a failure
+
+A run whose OpenROAD session exits 0 before its flow's end marker fails with `fail_stage: incomplete`; `xfail:` does not excuse it. In v6 a run was judged on the exit code and the log's `[ERROR` lines, so a run whose `platform-tcl`, `layer-rc-tcl`, `tracks-tcl` or `tapcell-tcl` file, `pin-constraints` file or `pdn-config` called `exit` passed with missing metrics and outputs. Remove the `exit`, or the `return -level 2`, from the file that the step named in the message sources. See [Interpret results](concepts/pnr.md#interpret-results).
+
+### Supply pins of added cells are connected
+
+The flow applies the PDK's global connections again (`global_connect`) at the end of every stage, before detailed routing, after fill and before the final outputs. In v6 only the cells present when `pdngen` ran had their supply pins connected; the buffers, tie cells and fill added later kept them unconnected in the routed ODB, DEF and every checkpoint. The generated `pnr.tcl` of every run gains the call, and the routed DEF of a run with a `pdn-config` lists the added cells in its power and ground nets. Detailed routing now starts from a design with connected supply pins, so a run's route and slack can differ slightly. No `pnr.yaml` change is needed. See [Tune the process-dependent steps](concepts/pnr.md#tune-the-process-dependent-steps).
+
 ### Exact pins leave side and group rules
 
 A port with an exact location in `floorplan.pins` is left out of every side or group rule that also matches it. In v6 it stayed in the rule's list: the run failed with `PPL-0107` when the pin lay outside the rule's edge, and otherwise the rule's other pins were placed around it. Such a config now places the rule's other pins differently.
+
+### The routed netlist declares no supply ports
+
+`<top>.routed.v` is the logical netlist in every run: it declares no supply ports and connects no cell supply pin. In v6 it declared the supply nets the power grid created, such as `VDD` and `VSS`, as `inout` ports that nothing inside the module connected to. A hardened block's `<top>.lib` lists those supply pins with `direction : input`, where v6 wrote `inout`. A script or testbench that connects the supply ports of a routed netlist by name must drop those connections. See [Inspect artefacts](concepts/pnr.md#inspect-artefacts).
 
 ### Stage checkpoints
 
