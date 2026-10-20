@@ -386,9 +386,14 @@ cfg-dispatch:
 
 `compile.parallel` multiplies only the build job's `cpus` reservation, capped at the suite's planned test count. `mem` and `time` are submitted as written. Above 1, the job runs every config's `preproc` before any builder starts, so no hook may change another config's inputs. It has no effect where a builder compiles inside its own simulation job, since that job is one serial build.
 
-`parallel` and `split-verilate` are honored only in `cfg-dispatch.compile` and a suite's top-level `compile:`. In a per-test or per-testbench `resources:` block they are ignored with a warning; in a testbench `compile:` block or any `modes:` block they are rejected at load.
+`parallel` and `split-verilate` are valid only in `cfg-dispatch.compile` and suite-level `compile:`. Per-test/testbench `resources:`, testbench `compile:`, and all mode blocks reject them.
 
-An unknown key in `cfg-dispatch`, in its `resources`, `compile`, `compile.verilate`, `coverage`, `retry` or `rightsize` block, in a `tests.yaml` `resources:` or `compile:` block, or in an elaboration profile's `resources` is ignored. Each one logs the warning `config.unknown_key` with the file, the block and the nearest known key, for example `did you mean 'mem'?` for `memory:`. A later major release will make it fatal. A key written twice in the same block is fatal, not a warning.
+Unknown keys fail loading with exit code 2 in:
+
+- `cfg-dispatch` and its `resources`, `compile`, `compile.verilate`, `coverage`, `retry`, and `rightsize` blocks.
+- Suite/testbench `compile` (including `verilate`), test/testbench `resources`, and elaboration-profile `resources`.
+
+ERROR `config.unknown_key_rejected` names each file, block, unknown key, nearest spelling, and valid keys. Correct or remove every reported key; for example, replace `memory:` with `mem:`.
 
 ### Per-mode reservations
 
@@ -401,7 +406,7 @@ A `modes:` block resizes a reservation for the run's `--builder-mode`.
 - Omitted fields and unnamed modes inherit, so a mode that no block names reserves the base value.
 - Mode names are free text, normally your `cfg-rtl-builder.builder-opts` keys, but they must be strings. Quote `on`, `no`, and `yes`.
 - Fields use the base validators, including the quoted-`time` rule.
-- A `modes:` block rejects `parallel`, `split-verilate`, a nested `modes:`, and unknown keys at load. A base `resources:` or `compile:` block instead ignores an unknown key after a `config.unknown_key` warning, so a misspelled field such as `memory:` reserves nothing.
+- Mode blocks accept only `cpus`, `mem`, and `time`, plus `verilate` under `compile`; a nested `modes:` is invalid.
 - `modes:` is also rejected inside `compile.verilate` (write `compile.modes.<mode>.verilate`) and on an elaboration profile's `resources`, which resolves without a builder mode.
 - A testbench's `compile.modes` is the most specific layer and is aggregated over the planned builds like the base fields.
 - A mode block is not part of the compile fingerprint.

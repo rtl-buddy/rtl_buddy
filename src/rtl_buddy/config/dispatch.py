@@ -8,7 +8,6 @@ Reservations resolve field by field (test, testbench, ``cfg-dispatch``), then th
 See docs/concepts/dispatch.md.
 """
 
-import difflib
 import logging
 import math
 import os
@@ -19,7 +18,7 @@ from serde import field, serde
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
-from .unknown_keys import serde_keys
+from .unknown_keys import KeySpec
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +70,7 @@ class CompileVerilateFile:
 class DispatchCompileFile:
     """``cfg-dispatch.compile``: the compile's reservation and its concurrency.
 
-    Separate from :class:`DispatchResourcesFile` because ``parallel`` belongs to the per-suite build job, not to a per-test reservation. An unknown key such as ``parallel`` in a per-test ``resources:`` block is dropped by serde; :func:`warn_unknown_block_keys` warns about it.
+    Separate from :class:`DispatchResourcesFile` because ``parallel`` belongs to the per-suite build job, not to a per-test reservation. Unknown reservation keys are rejected before the typed load.
     """
 
     cpus: int | None = None
@@ -733,64 +732,20 @@ class DispatchConfigFile:
         )
 
 
-# Nested reservation blocks checked by warn_unknown_block_keys: key -> (class, its own nested blocks).
-_VERILATE_BLOCK = {"verilate": (CompileVerilateFile, {})}
-RESOURCES_BLOCK = (DispatchResourcesFile, {})
-SUITE_COMPILE_BLOCK = (SuiteCompileFile, _VERILATE_BLOCK)
-TESTBENCH_COMPILE_BLOCK = (TestbenchCompileFile, _VERILATE_BLOCK)
-DISPATCH_BLOCK = (
+_VERILATE_BLOCK = {"verilate": KeySpec(CompileVerilateFile)}
+RESOURCES_BLOCK = KeySpec(DispatchResourcesFile)
+SUITE_COMPILE_BLOCK = KeySpec(SuiteCompileFile, _VERILATE_BLOCK)
+TESTBENCH_COMPILE_BLOCK = KeySpec(TestbenchCompileFile, _VERILATE_BLOCK)
+DISPATCH_BLOCK = KeySpec(
     DispatchConfigFile,
     {
         "resources": RESOURCES_BLOCK,
-        "compile": (DispatchCompileFile, _VERILATE_BLOCK),
+        "compile": KeySpec(DispatchCompileFile, _VERILATE_BLOCK),
         "coverage": RESOURCES_BLOCK,
-        "retry": (RetryConfigFile, {}),
-        "rightsize": (RightsizeConfigFile, {}),
+        "retry": KeySpec(RetryConfigFile),
+        "rightsize": KeySpec(RightsizeConfigFile),
     },
 )
-
-
-# (path, block, key) already warned about: a models.yaml is reloaded for every test that names one of its models.
-_WARNED_UNKNOWN_KEYS: set[tuple[str, str, str]] = set()
-
-
-def warn_unknown_block_keys(raw, spec, *, path, block) -> list[str]:
-    """Warn about every key serde would drop from the raw mapping ``raw``; return them as ``block.key`` paths.
-
-    ``spec`` is ``(serde class, {key: nested spec})``. Each unknown key logs ``config.unknown_key`` naming ``path``, the block, the key and its closest known spelling, once per process.
-    A non-mapping ``raw`` is left to the typed load, and a ``modes:`` block is not descended into because :func:`validate_modes_block` already rejects its unknown keys.
-    """
-    if not isinstance(raw, dict):
-        return []
-    cls, nested = spec
-    known = serde_keys(cls)
-    found = []
-    for key in raw:
-        if key in known:
-            continue
-        # YAML 1.1 reads an unquoted `on`/`yes` key as a boolean.
-        name = str(key)
-        found.append(f"{block}.{name}")
-        seen = (str(path), block, name)
-        if seen in _WARNED_UNKNOWN_KEYS:
-            continue
-        _WARNED_UNKNOWN_KEYS.add(seen)
-        close = difflib.get_close_matches(name, known, n=1)
-        log_event(
-            logger,
-            logging.WARNING,
-            "config.unknown_key",
-            path=str(path),
-            block=block,
-            key=name,
-            suggestion=close[0] if close else None,
-            known=list(known),
-        )
-    for key, child in nested.items():
-        found += warn_unknown_block_keys(
-            raw.get(key), child, path=path, block=f"{block}.{key}"
-        )
-    return found
 
 
 @dataclass
