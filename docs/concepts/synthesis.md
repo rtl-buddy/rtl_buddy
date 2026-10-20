@@ -267,11 +267,11 @@ Precedence is the run's `tool_overrides`, then the selected effort, then `cfg-sy
 
 `openroad.run: false` skips OpenROAD and returns the Yosys result. `pre-sta-tcl` is raw Tcl run before STA; syntax errors appear only at runtime. The OpenROAD stage uses one thread unless the entry sets `threads:`; see [OpenROAD threads](pnr.md#openroad-threads).
 
-`openroad.repair: true` repairs the netlist before the area and timing reports. OpenROAD sources the PDK's `layer-rc-tcl`, when it has one, right after `read_sdc`, so a `set_wire_rc` in `pre-sta-tcl` overrides it. After `pre-sta-tcl` and any `strategy` resynthesis it runs `repair_design -pre_placement` and, with an SDC, `repair_timing -setup`. The default is `false`. Repair changes only the reported area, WNS and TNS: `synth_netlist.v` is still Yosys' netlist, and `rb pnr` repairs it again after placement. The design is unplaced, so the repair sees pin loads but no wire lengths.
+`openroad.repair: true` repairs the netlist before the area and timing reports. OpenROAD sources the PDK's `layer-rc-tcl`, when it has one, right after `read_sdc`, so a `set_wire_rc` in `pre-sta-tcl` overrides it. After `pre-sta-tcl` and any `strategy` resynthesis it runs `repair_design` and, with an SDC, `repair_timing -setup`. The default is `false`. Repair changes only the reported area, WNS and TNS: `synth_netlist.v` is still Yosys' netlist, and `rb pnr` repairs it again after placement. The design is unplaced, so the repair sees pin loads but no wire lengths.
 
 - On an unplaced netlist, plain `repair_design` only resizes; `-pre_placement` also builds buffer trees on high-fanout nets.
-- When `pre-sta-tcl` contains `global_placement`, the run uses plain `repair_design`.
-- An OpenROAD whose `repair_design` has no `-pre_placement` (before 25Q2) runs it plain.
+- The run passes `-pre_placement` when no instance is placed at that point. When `pre-sta-tcl` placed any instance, or the OpenROAD's `repair_design` has no `-pre_placement` (before 25Q2), it runs plain `repair_design`.
+- The OpenROAD log names the form that ran and why, for example `rb: repair_design -pre_placement (no instance is placed)`.
 
 ## Choose the mapped-run ABC script
 

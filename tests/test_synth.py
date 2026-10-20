@@ -25,6 +25,7 @@ from rtl_buddy.runner.synth_results import (
 from rtl_buddy.errors import FilelistError
 from rtl_buddy.process_utils import ManagedProcessResult
 from rtl_buddy.tools import synth_yosys as synth_yosys_module
+from rtl_buddy.tools.synth_openroad import REPAIR_DESIGN_TCL
 from rtl_buddy.tools.synth_yosys import YosysSynth
 from rtl_buddy.tools.vlog_filelist import VlogFilelist
 
@@ -7245,13 +7246,10 @@ def test_openroad_repair_runs_after_resynthesis_and_before_the_reports(tmp_path)
     )
     lines = _or_script_lines(or_synth, lib, lef)
     start = lines.index("resynth_annealing")
-    assert lines[start : start + 8] == [
+    block = REPAIR_DESIGN_TCL.splitlines()
+    assert lines[start : start + len(block) + 3] == [
         "resynth_annealing",
-        "if {[string match *-pre_placement* [info body repair_design]]} {",
-        "  repair_design -pre_placement",
-        "} else {",
-        "  repair_design",
-        "}",
+        *block,
         "repair_timing -setup",
         "report_design_area",
     ]
@@ -7264,22 +7262,81 @@ def test_openroad_repair_without_layer_rc_or_constraints(tmp_path):
     or_synth, lib, lef = _repair_openroad(tmp_path, repair=True, sdc=False)
     lines = _or_script_lines(or_synth, lib, lef)
     # No clock to repair setup against, and no PDK wire RC to source.
-    assert "  repair_design -pre_placement" in lines
+    assert "{*}$rb_repair" in lines
     assert "repair_timing -setup" not in lines
     assert not any(line.startswith("source ") for line in lines)
 
 
-def test_openroad_repair_after_a_pre_sta_placement_runs_plain(tmp_path):
+@pytest.mark.parametrize(
+    "pre_sta_tcl",
+    [
+        "initialize_floorplan -utilization 50\nglobal_placement\n",
+        "# global_placement is not run here\n",
+    ],
+)
+def test_openroad_repair_picks_its_form_at_run_time(tmp_path, pre_sta_tcl):
     or_synth, lib, lef = _repair_openroad(
-        tmp_path,
-        repair=True,
-        pre_sta_tcl="initialize_floorplan -utilization 50\nglobal_placement\n",
+        tmp_path, repair=True, pre_sta_tcl=pre_sta_tcl
     )
     lines = _or_script_lines(or_synth, lib, lef)
-    start = lines.index("global_placement")
-    assert lines[start + 1 : start + 3] == ["repair_design", "repair_timing -setup"]
-    assert not any("-pre_placement" in line for line in lines)
-    assert "pre_placement" not in or_synth._phys_options()["map"]
+    start = lines.index(pre_sta_tcl.splitlines()[-1])
+    block = REPAIR_DESIGN_TCL.splitlines()
+    assert lines[start + 1 : start + len(block) + 2] == [
+        *block,
+        "repair_timing -setup",
+    ]
+    assert or_synth._phys_options()["map"]["pre_placement"] is True
+
+
+def _repair_design_case(tmp_path, *, placed=False, stub=None):
+    """Run `REPAIR_DESIGN_TCL` on a one-macro design; ``stub`` replaces `repair_design` with a body."""
+    from test_pnr_block_power import _BLOCK_LEF, _TECH_LEF
+
+    (tmp_path / "tech.lef").write_text(_TECH_LEF)
+    (tmp_path / "blk.lef").write_text(_BLOCK_LEF)
+    (tmp_path / "top.v").write_text("module top ();\n  blk u_blk ();\nendmodule\n")
+    lines = ["read_lef tech.lef", "read_lef blk.lef", "read_verilog top.v"]
+    lines.append("link_design top")
+    if placed:
+        lines += [
+            "initialize_floorplan -die_area {0 0 200 200} -core_area {10 10 190 190} -site core",
+            "place_inst -name u_blk -location {60 32.64} -status FIRM",
+        ]
+    if stub is None:
+        lines.append(
+            'puts "flag [string match *-pre_placement* [info body repair_design]]"'
+        )
+    else:
+        lines.append(f'proc repair_design {{args}} {{\n{stub}\n  puts "ran: $args"\n}}')
+        lines.append(REPAIR_DESIGN_TCL)
+    script = tmp_path / "run.tcl"
+    script.write_text("\n".join(lines) + "\n")
+    proc = subprocess.run(
+        [_OPENROAD, "-exit", "-no_init", str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=300,
+    )
+    return proc.stdout + proc.stderr
+
+
+@pytest.mark.skipif(_OPENROAD is None, reason="openroad not installed")
+def test_openroad_repair_design_form_follows_placement_and_the_flag(tmp_path):
+    assert "flag 1" in _repair_design_case(tmp_path)
+    with_flag = "  # -pre_placement"
+    out = _repair_design_case(tmp_path, stub=with_flag)
+    assert "rb: repair_design -pre_placement (no instance is placed)" in out
+    assert "ran: -pre_placement" in out
+    out = _repair_design_case(tmp_path, placed=True, stub=with_flag)
+    assert "rb: repair_design (an instance is placed)" in out
+    assert "ran: \n" in out
+    out = _repair_design_case(tmp_path, stub="")
+    assert (
+        "rb: repair_design (this OpenROAD's repair_design has no -pre_placement)" in out
+    )
+    assert "ran: \n" in out
 
 
 def test_openroad_without_repair_times_the_yosys_netlist_as_is(tmp_path):
