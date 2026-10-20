@@ -41,11 +41,11 @@ rb pnr alu_pnr -c pnr/alu/pnr.yaml
 rb pnr alu_pnr -c pnr/alu/pnr.yaml --png    # also stream out GDS and render a PNG
 ```
 
-Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previous run's outputs first. With no run name, `rb pnr` runs every entry whose `reglvl` is within `-l`, hardened blocks before the runs that use them.
+Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previous run's outputs first, except a refused `--resume`, which stops before that and leaves them in place. With no run name, `rb pnr` runs every entry whose `reglvl` is within `-l`, hardened blocks before the runs that use them.
 
 ## Interpret results
 
-`PASS` means OpenROAD ran the flow to its end and wrote its outputs. It does not mean the design meets timing or routes clean. Judge the design on these fields:
+`PASS` means OpenROAD ran the flow to its end and wrote its outputs, or, for `mode: probe` and `--stop-after`, to the stage it stops after, with `routed: false` and no routed outputs. Check `routed` before treating a `PASS` as a routed result. It does not mean the design meets timing or routes clean. Judge the design on these fields:
 
 | Field | Meaning |
 | --- | --- |
@@ -74,7 +74,7 @@ A passing run's description carries qualifiers worth reading:
 - `GDS incomplete: ...`: cells with no layout in `preview` mode.
 - `stale block abstract(s) accepted: ...`: run with `--accept-stale`.
 
-A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line, stops before the end of its flow, or a check below fails. It is `SKIP` when `-l` filters it out or `tool:` is not `openroad`.
+A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in a post-route repair session rb sets aside), stops before the end of its flow, or a check below fails. It is `SKIP` when `-l` filters it out or `tool:` is not `openroad`.
 
 ## Inspect artefacts
 
@@ -113,7 +113,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `fail_stage: resume` | `--resume` refused: a stage script, input file, checkpoint or OpenROAD version differs. Rerun from an earlier stage. |
 | `fail_stage: dispatch` | A Slurm stage job ended `OUT_OF_MEMORY`, `TIMEOUT`, `CANCELLED` or similar, never started, or was refused. Read `dispatch/<NN>_<stage>.slurm.log`; raise that stage's `resources:`. See [Dispatch](#dispatch-the-stages-to-slurm). |
 | `fail_stage: abstract` | A hardened block's view could not be written. Read `pnr.log`. |
-| `fail_stage: export` | Stream-out failed under `gds-mode: strict`: KLayout, `klayout-tech`, an input file or the render. Fix it and run `rb pnr-export`. |
+| `fail_stage: export` | Stream-out failed, under `gds-mode: strict` in `rb pnr` or in any mode in `rb pnr-export`: KLayout, `klayout-tech`, an input file or the render. Fix it and run `rb pnr-export`. |
 | `fail_stage: blocked`, `synth`, `error` | A block this run uses failed, its upstream synthesis failed under `--synth`, or rb crashed (the exception is in the description). Fix the cause first. |
 | `[ERROR PDN-0179] Unable to repair all channels` | Macros too close for the power grid. Raise `placement.macro-halo` (about 19 µm minimum on sky130hd). |
 | `PDN-0008 ... halo overlaps row` | A macro grid's `-halo` in `pdn-config` reaches into a row. Reduce it to the value the message suggests. |
@@ -421,7 +421,7 @@ Each job's reservation comes from `resources.stages.<stage>`, then the run's `re
 
 - A job that fails, times out or runs out of memory fails the run at that stage (`fail_stage: dispatch` unless the stage itself failed) and Slurm removes the jobs after it.
 - Ctrl-C, SIGTERM or SIGHUP cancels the run's jobs.
-- If `rb pnr` itself is killed, its jobs keep running. Until they leave the queue, a new `rb pnr` of the same configuration refuses to start and prints the `scancel` command. See [Known Issues](../known-issues.md#an-unconfirmed-dispatched-pr-run-blocks-later-runs).
+- If `rb pnr` itself is killed, its jobs keep running. Until they leave the queue, a new `rb pnr` of the same configuration refuses to start and prints the `scancel` command. On a host without `squeue`, that refusal lapses once the dispatch directory has been quiet for the sum of the stages' time limits (`pnr.stage_jobs_unchecked`), so check the queue before starting again. See [Known Issues](../known-issues.md#an-unconfirmed-dispatched-pr-run-blocks-later-runs).
 - `checkpoints/<run-id>/dispatch/` holds each job's id, Slurm log, rtl_buddy log and result.
 
 ## Stream out GDS and PNG
