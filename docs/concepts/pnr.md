@@ -100,7 +100,7 @@ When OpenROAD fails, the run removes the routed database so `rb power` never rea
 - `tail -f artefacts/<run>/pnr.log`. Each step starts with a `>>> ` line.
 - Global route prints a per-layer usage table (`GRT-0096 Final congestion report`).
 - Detailed route logs each iteration (`DRT-0195`) and its violation count (`DRT-0199`), so a converging route can be told from a stalled one. `detailed-route-verbose: 0` silences this; higher levels add detail.
-- With [checkpoints](#keep-stage-checkpoints), `checkpoints/latest/progress.jsonl` records each step, hook and stage. After a kill, the last `step_begin` without a `step_end` is where the run was.
+- With [checkpoints](#keep-stage-checkpoints), `checkpoints/latest/progress.jsonl` records each step, hook and stage. After a kill, the last `step_begin` without a `step_end` is where the run was. Its `stage_timing` events give each corner's slack at every stage end; see [Compare timing across stages](#compare-timing-across-stages).
 
 ## Fix a failed run
 
@@ -442,6 +442,33 @@ On a multi-corner platform the `.sdc` holds every corner's SDC mode, and `<NN>_<
 
 Look at a checkpoint in OpenROAD or with `rb pnr-export --checkpoint`. It is never a final result. Old run directories are not pruned.
 
+## Compare timing across stages
+
+A run that writes `progress.jsonl` (`checkpoints:` set, even to `[]`, `stages: true`, `--stop-after`, or post-route repair) appends one `stage_timing` event to it when each stage ends, and lists the events per stage under `timing` in `manifest.json`. They compare iterations of a block stage by stage without reports of your own:
+
+```json
+{"event": "stage_timing", "stage": "global_route", "index": "04", "point": "stage_end", "parasitics": "global_route", "corners": {"tt": {"wns_setup_ps": -224.675, "wns_hold_ps": 343.534, "tns_ps": -322.268, "tns_hold_ps": 0.0}}}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `stage`, `index` | The stage and its file index. |
+| `point` | `stage_end`, `before_repair` or `round`. |
+| `round` | The post-route repair round (0 is the detailed route); on a `stage_end` of `post_route_repair`, the kept round. |
+| `parasitics` | What the slacks were timed on: `none` (no wire RC), `placement` (placement estimate), `global_route` (global-route estimate) or `extracted` (OpenRCX SPEF). |
+| `corners` | Per corner, in config order, `wns_setup_ps`, `wns_hold_ps`, `tns_ps` and `tns_hold_ps`, in picoseconds as in the result row. A single-corner platform has one entry, named by its `corner:`. |
+
+| Stage | Events | `parasitics` |
+| --- | --- | --- |
+| `floorplan` | `stage_end` | `none` |
+| `place`, `cts` | `stage_end` | `placement` |
+| `global_route` | `before_repair` when [global-route repair](#tune-placement-clock-tree-and-repair) runs, then `stage_end` after it | `global_route` |
+| `detailed_route` | `stage_end` | `global_route`, the estimate from the route guides |
+| `post_route_repair` | one `round` per round, then a `stage_end` copied from the kept round | `extracted` |
+| `finish` | `stage_end` | `extracted` with `rcx-rules`, else `global_route` |
+
+A stage's numbers are what its own report prints on the same parasitics: the `--stop-after` stage report, and the final reports for `finish`. They carry more digits than the report. A side with no constrained path has null WNS and TNS. A corner rb could not time has nulls and an `error`; this never fails the run, and no result field or verdict reads the events.
+
 ## Run stages as separate sessions
 
 `stages: true` runs each stage (`floorplan`, `place`, `cts`, `global_route`, `detailed_route`, `post_route_repair`, `finish`) as its own OpenROAD session that reads the previous stage's checkpoint. It writes every checkpoint, keeps each session's script and log in the checkpoint directory, and concatenates them into `pnr.tcl` and `pnr.log`. A staged run gives the same result as a one-session run at the same thread count, with the exceptions in [Known Issues](../known-issues.md#a-staged-pr-run-can-differ-from-a-one-session-run).
@@ -572,4 +599,4 @@ A `probe` skips the setup and hold repair and stops after global route. Each ses
 
 A staged session starts with a prelude regenerated from the same template: the header, Liberty and LEF, `read_db` and `read_sdc` of the previous checkpoint (every mode), its saved flow variables, then step 1's per-session settings. It keeps only what the database, the checkpoint SDC and the state file hold. A resume compares each earlier stage's script up to its end-of-stage line, ignoring comments, the run-directory lines, `set_thread_count` and header variables the stage does not read.
 
-Each stage's wall time, CPU time and peak memory are recorded as `stage_end` events in `progress.jsonl` and under `resources` in the manifest. In a one-session run the peak memory of a stage includes what earlier stages left resident.
+Each stage's wall time, CPU time and peak memory are recorded as `stage_end` events in `progress.jsonl` and under `resources` in the manifest. In a one-session run the peak memory of a stage includes what earlier stages left resident. Its [timing](#compare-timing-across-stages) is recorded as `stage_timing` events and under `timing`.

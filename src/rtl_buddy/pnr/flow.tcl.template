@@ -191,7 +191,7 @@ report_worst_slack -max
 report_worst_slack -min
 report_tns
 report_tns -min{{ corner_reports }}
-report_checks -path_delay max -fields {slew cap input nets fanout} -format full_clock_expanded > $OUT_DIR/timing.rpt
+{{ final_timing_block }}report_checks -path_delay max -fields {slew cap input nets fanout} -format full_clock_expanded > $OUT_DIR/timing.rpt
 # Max-slew, max-capacitance and max-fanout violators over every corner, as
 # ORFS report_metrics counts them; the list goes to electrical.rpt.
 foreach rb_check {slew capacitance fanout} {
