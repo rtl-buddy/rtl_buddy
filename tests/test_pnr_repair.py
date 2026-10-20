@@ -991,7 +991,10 @@ def test_an_eco_round_that_ends_early_after_rsz_0074_names_reroute_full(
     res = backend.run()
 
     assert res.results["result"] == "PASS", res.results
-    assert "OpenROAD exited before the end of the session" in res.results["desc"]
+    assert (
+        "OpenROAD exited with code 0 before the end of round 1 repair"
+        in res.results["desc"]
+    )
     assert "set post-route-repair.reroute: full" in res.results["desc"]
 
 

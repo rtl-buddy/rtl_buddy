@@ -51,6 +51,10 @@ DESIGN = "demo_top"
 # `RB_STUB_FAIL=<cmd>` raises an OpenROAD-style error in that command;
 # `RB_STUB_KILL=<cmd>` SIGKILLs the interpreter on entry;
 # `RB_STUB_EXIT=<cmd>` exits 0 on entry, as a flow that ends early by accident;
+# `RB_STUB_RULES=1` gives the database global-connection rules, so `rb::global_connect`
+# calls `global_connect`. `global_connect` and the database writers log a
+# `stub: ...` line, which orders them in the log;
+# `RB_STUB_DONE_EARLY=<cmd>` prints the flow's end marker in that command, which returns;
 # `RB_STUB_DRC=<n>` makes `detailed_route` report n DRC lines and write a maze log;
 # `RB_STUB_ERRLINE=<cmd>` prints an OpenROAD `[ERROR` line in that command, which returns.
 # `RB_STUB_CKPT_FAIL=<NN_stage>` makes `write_db` of that checkpoint fail without an `[ERROR` line.
@@ -58,7 +62,13 @@ _HARNESS = r"""
 # `clock format` loads msgcat through the auto-loader, which the catch-all
 # `unknown` below would swallow; load it first.
 clock format [clock seconds]
-proc unknown {args} { return "" }
+proc unknown {args} {
+    global env
+    if {[lindex $args 1] eq "getGlobalConnects" && [info exists env(RB_STUB_RULES)]} {
+        return rule
+    }
+    return ""
+}
 namespace eval ord {}
 proc ord::microns_to_dbu {x} { return [expr {int($x * 1000)}] }
 proc rb_stub {name args} {
@@ -74,6 +84,9 @@ proc rb_stub {name args} {
     if {[info exists env(RB_STUB_FAIL)] && $env(RB_STUB_FAIL) eq $name} {
         puts "\[ERROR STUB-0001\] $name failed: \"quoted\"\nsecond line"
         error "STUB-0001 $name failed: \"quoted\"\nsecond line"
+    }
+    if {[info exists env(RB_STUB_DONE_EARLY)] && $env(RB_STUB_DONE_EARLY) eq $name} {
+        puts ">>> DONE"
     }
     if {[info exists env(RB_STUB_ERRLINE)] && $env(RB_STUB_ERRLINE) eq $name} {
         puts "\[ERROR STUB-0002\] $name complained but returned"
@@ -103,7 +116,12 @@ proc rb_write {path text} {
     puts $fh $text
     close $fh
 }
-proc write_def {path} { global DESIGN; rb_write $path "DESIGN $DESIGN ;\nEND DESIGN" }
+proc global_connect {} { puts "stub: global_connect" }
+proc write_def {path} {
+    global DESIGN
+    puts "stub: write_def [file tail $path]"
+    rb_write $path "DESIGN $DESIGN ;\nEND DESIGN"
+}
 proc write_db {path} {
     global env
     if {[info exists env(RB_STUB_CKPT_FAIL)]
@@ -111,6 +129,7 @@ proc write_db {path} {
         error "cannot write $path"
     }
     rb_stub write_db
+    puts "stub: write_db [file tail $path]"
     rb_write $path "odb"
 }
 proc write_sdc {args} { rb_write [lindex $args end] "sdc" }
@@ -244,11 +263,12 @@ def _backend(
     env=None,
     stages=False,
     pnr_cfg=None,
+    pdk_fields=None,
     **options,
 ):
     """An `OpenRoadPnr` whose OpenROAD is the stub harness under Tcl.
 
-    `options` are `OpenRoadPnr` keywords (`stop_after`, `resume`, `resume_from`).
+    `pdk_fields` are extra `PdkConfigFile` fields (the PDK Tcl hooks, `pdn_config`); `options` are `OpenRoadPnr` keywords (`stop_after`, `resume`, `resume_from`).
     """
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
@@ -256,7 +276,7 @@ def _backend(
     _write_synth_config(tmp_path)
     monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
-    pdk = _pdk(tmp_path)
+    pdk = _pdk(tmp_path, **(pdk_fields or {}))
     root_cfg = MagicMock()
     root_cfg.get_pnr_platform_cfg.return_value = _platform(pdk)
     backend = OpenRoadPnr(
@@ -387,7 +407,7 @@ def _render(tmp_path, checkpoints, *, pnr_cfg=None, **platform):
 def test_flow_without_checkpoints_renders_the_template_unchanged(tmp_path):
     """Without `checkpoints:` the flow is byte-identical to the template render."""
     text = _render(tmp_path, None).read_text()
-    assert 'file mkdir $OUT_DIR\n\nputs ">>> Reading Liberty + LEF"' in text
+    assert '}\n\nputs ">>> Reading Liberty + LEF"' in text
     assert "rb::ckpt" not in text
     assert "progress.jsonl" not in text
     assert "trace add" not in text

@@ -529,19 +529,23 @@ def _comparable(results: dict, root: Path) -> dict:
 
 
 @pytest.mark.parametrize(
-    "env",
+    ("env", "fail_stage"),
     [
-        None,
-        {"RB_STUB_FAIL": "global_route"},
-        # Exits 0 before its end-of-stage line: `fail_stage: incomplete`.
-        {"RB_STUB_EXIT": "check_placement"},
-        # Its checkpoint cannot be written: `fail_stage: checkpoint`.
-        {"RB_STUB_FAIL": "write_db"},
+        (None, None),
+        ({"RB_STUB_FAIL": "global_route"}, None),
+        # Exits 0 before its end-of-stage line.
+        ({"RB_STUB_EXIT": "check_placement"}, "incomplete"),
+        # `finish` exits 0 before `>>> DONE`.
+        ({"RB_STUB_EXIT": "filler_placement"}, "incomplete"),
+        # Its checkpoint cannot be written.
+        ({"RB_STUB_FAIL": "write_db"}, "checkpoint"),
         # An `[ERROR` line in a session that exits 0.
-        {"RB_STUB_ERRLINE": "check_placement"},
+        ({"RB_STUB_ERRLINE": "check_placement"}, None),
     ],
 )
-def test_the_result_is_the_same_as_the_run_staged_locally(tmp_path, monkeypatch, env):
+def test_the_result_is_the_same_as_the_run_staged_locally(
+    tmp_path, monkeypatch, env, fail_stage
+):
     local_root, dispatched_root = tmp_path / "local", tmp_path / "dispatched"
     local_root.mkdir()
     dispatched_root.mkdir()
@@ -556,7 +560,9 @@ def test_the_result_is_the_same_as_the_run_staged_locally(tmp_path, monkeypatch,
         assert got == expected
     else:
         assert got["result"] == expected["result"] == "FAIL"
-        assert got.get("fail_stage") == expected.get("fail_stage")
+        assert got.get("fail_stage") == expected.get("fail_stage") == fail_stage
+        if env.get("RB_STUB_EXIT") == "filler_placement":
+            assert got["desc"].startswith("stage 07_finish: the flow did not finish")
         # The dispatched description adds the scheduler's account of the job.
         assert got["desc"].startswith(expected["desc"])
         assert re.search(r"\(Slurm job \d+ ended FAILED\)$", got["desc"])

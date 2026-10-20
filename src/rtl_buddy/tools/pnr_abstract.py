@@ -399,6 +399,11 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 else {}
             ),
             **(
+                {"timing_driven": True}
+                if platform.get_placement_timing_driven() is True
+                else {}
+            ),
+            **(
                 {
                     "rotated_macro_footprint": str(
                         platform.get_placement_rotated_macro_footprint()

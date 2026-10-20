@@ -80,8 +80,12 @@ _PDN_GRID_FILE = "pdn_grid.tcl"
 _MACROS_FILE = "macros.tcl"
 # `floorplan.pins` checks and commands; see `_floorplan_pins_block`.
 _PINS_FILE = "pins.tcl"
+# Skips `place_pins` when every signal port already has a fixed pin; see `_place_pins_block`.
+_PLACE_PINS_FILE = "place_pins.tcl"
 # The OpenROAD#11735 workaround for macros turned by 90 degrees; see `_global_placement_blocks`.
 _ROTATED_MACROS_FILE = "rotated_macros.tcl"
+# Makes the supply ports power and ground ports before the final reports; see `_supply_ports_block`.
+_SUPPLY_PORTS_FILE = "supply_ports.tcl"
 # Ties `blocks:` supply pins and joins top-layer ones to the parent's straps; see `_block_power_tcl`.
 _BLOCK_POWER_FILE = "block_power.tcl"
 # Sources the run's `hooks:` files; see `_hook_procs_block`.
@@ -284,6 +288,18 @@ def _hook_role(point: str) -> str:
     return "hook_" + point.replace("-", "_")
 
 
+def _supply_ports_block() -> str:
+    """Return the Tcl that re-asserts the top's supply bterms in the `finish` session, before the final reports.
+
+    Without it the session that ran `pdngen` writes VDD and VSS into `<top>.routed.v`, and as `inout` pins into a hardened block's timing model, and a session that read the database does not (#885).
+    """
+    return (
+        '\nputs ">>> Supply ports"\n'
+        + files(_TEMPLATE_PACKAGE).joinpath(_SUPPLY_PORTS_FILE).read_text()
+        + "rb::supply_ports::reassert\n"
+    )
+
+
 def _hook_procs_block(hooks: dict) -> str:
     """Return the Tcl that defines `rb::hook::run`, or `""` when the run has no hooks."""
     if not hooks:
@@ -475,6 +491,11 @@ def _routability_options(platform) -> str:
     if platform.get_placement_routability_use_grt():
         options += " -routability_use_grt"
     return options
+
+
+def _timing_driven_option(platform) -> str:
+    """Return ` -timing_driven` for global placement when set, else `""`."""
+    return " -timing_driven" if platform.get_placement_timing_driven() else ""
 
 
 def _cts_apply_ndr_option(platform) -> str:
@@ -843,6 +864,26 @@ def _floorplan_pins_block(fp: PnrFloorplan) -> str:
     return "\n".join(lines) + "\n"
 
 
+_PLACE_PINS = "place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V"
+
+
+def _place_pins_block(fp: PnrFloorplan) -> str:
+    """Return the `place_pins` command, guarded by a run-time check when the run has an exact pin entry.
+
+    The guard skips `place_pins` when every signal port already has a fixed pin at that point, so pins a hook placed count too. Without an exact pin entry the command is bare and the script is unchanged.
+    """
+    if not any(pin.location is not None for pin in fp.pins):
+        return _PLACE_PINS
+    helper = files(_TEMPLATE_PACKAGE).joinpath(_PLACE_PINS_FILE).read_text()
+    return (
+        helper.rstrip("\n") + "\nif {[rb::pins::all_placed]} {\n"
+        '    puts ">>>   floorplan.pins: every signal port has a placed pin; skipping place_pins"\n'
+        "} else {\n"
+        f"    {_PLACE_PINS}\n"
+        "}"
+    )
+
+
 def _macro_directives_block(fp: PnrFloorplan) -> str:
     """Return the `floorplan.macros` and macros-file Tcl that opens the macro branch, or "" without directives.
 
@@ -1065,6 +1106,7 @@ def _global_placement_blocks(
 #: Printed by a run that `--stop-after` ended, after its stage report; with the requested stage it tells a stopped run from one that ended early by accident.
 STOPPED_MARKER = ">>> STOPPED after "
 _STAGE_DONE_MARKER = pnr_stages.STAGE_DONE_MARKER
+_FLOW_DONE_MARKER = pnr_stages.FLOW_DONE_MARKER
 #: `fail_stage` of a run whose OpenROAD session exited 0 before the end marker its flow prints.
 INCOMPLETE_FAIL_STAGE = "incomplete"
 #: `fail_stage` of a run that did not write a stage checkpoint it had to write.
@@ -1123,6 +1165,54 @@ def _stage_report_tcl(stage: str, corner_reports: str) -> str:
 
 def _checkpoint_name(stage: str) -> str:
     return f"{pnr_checkpoints.STAGE_INDEX[stage]}_{stage}"
+
+
+_LOGGED_STEP_RE = re.compile(r"^>>> (?! )(?!rb: )(.+)$", re.MULTILINE)
+
+
+def _last_logged_step(log_text: str) -> str | None:
+    """The last step the flow announced in `log_text`, from its last `>>> ` line; indented detail lines and rb's own notices do not count."""
+    steps = _LOGGED_STEP_RE.findall(log_text)
+    return steps[-1].strip() if steps else None
+
+
+def _flow_done(log_text: str) -> bool:
+    """Whether `log_text` ends its flow: `>>> DONE` is a line of it and the last step it announces."""
+    if _FLOW_DONE_MARKER not in log_text.splitlines():
+        return False
+    return _last_logged_step(log_text) == _FLOW_DONE_MARKER.removeprefix(">>> ")
+
+
+def _session_events(run_dir: str | None) -> list[dict]:
+    """The progress events in `run_dir` of the stage that ran last: those after its `stage_begin`, or all of them without one."""
+    if run_dir is None:
+        return []
+    events = pnr_checkpoints.read_progress(run_dir)
+    begins = [i for i, e in enumerate(events) if e.get("event") == "stage_begin"]
+    return events[begins[-1] :] if begins else events
+
+
+def _incomplete_desc(
+    run_dir: str | None, until: str, marker: str, session_log: str
+) -> str:
+    """Return the failure description of a session that exited 0 without printing `marker`.
+
+    `until` names where the session was to end. The last step comes from the session's log, which every run has, and, with checkpoints in `run_dir`, the last command from its progress events.
+    """
+    step = _last_logged_step(session_log)
+    reached = f"the last step in the log is '{step}'" if step else "no step is logged"
+    missing = (
+        f"'{marker}' is not in the log"
+        if marker not in session_log.splitlines()
+        else f"'{marker}' is not the last step in the log"
+    )
+    command = pnr_checkpoints.last_step(_session_events(run_dir))
+    if command:
+        reached += f" (last command: {command['step']}, {command['status']})"
+    return (
+        f"the flow did not finish: OpenROAD exited with code 0 before {until} "
+        f"({missing}); {reached}"
+    )
 
 
 def _read_checkpoint_tcl(
@@ -1400,15 +1490,16 @@ def run_post_route_repair(
         )
         used["threads"] = max(used["threads"], resources.get("threads") or 1)
         problem = failure = None
-        errors = _error_lines(section.decode(errors="replace"))
+        text = section.decode(errors="replace")
+        errors = _error_lines(text)
         if returncode != 0:
             first = next((ln.strip() for ln in stderr.splitlines() if ln.strip()), "")
             failure = f"OpenROAD exited with code {returncode}" + (
                 f": {first}" if first else ""
             )
-        elif f"{done}\n".encode() not in section:
-            problem = f"stage {stage}: OpenROAD exited before the end of {label}"
-            failure = "OpenROAD exited before the end of the session"
+        elif done not in text.splitlines():
+            failure = _incomplete_desc(run_dir, f"the end of {label}", done, text)
+            problem = f"stage {stage}: {failure}"
         elif errors:
             failure = f"{len(errors)} ERROR(s) in its log, the first: {errors[0]}"
         return returncode, stderr, problem, failure, section
@@ -1696,7 +1787,7 @@ def run_stage(
 
     A local staged run calls this for each stage in turn, and a dispatched run's job (`rb _pnr-stage-job`) calls it for its one stage, so a stage is run and checked the same way either way. Everything the stage needs is in `run_dir`, which the head wrote before the first stage ran. The session runs in `cwd`, the run's artefact directory. Its output is appended to `log` (the open `log_path`, the run's `pnr.log`) as it runs and copied to `NN_<stage>.log` when it exits. `post_route_repair` runs its rounds' sessions (see `run_post_route_repair`), measured and logged as one. `stage_begin` records where the stage's part of `pnr.log` starts; `stage_end` records the exit, the wall time, CPU time, peak RSS and threads measured here and, for a clean stage, the checkpoint's fingerprints. `fields` are added to both events.
 
-    The stage fails when a session exits non-zero, exits 0 before its end-of-stage line (`fail_stage: incomplete`) or without its checkpoint (`fail_stage: checkpoint`), or logs an `[ERROR` line.
+    The stage fails when a session exits non-zero, exits 0 before its end marker (`fail_stage: incomplete`) or without its checkpoint (`fail_stage: checkpoint`), or logs an `[ERROR` line. The end marker is `>>> End of stage NN_<stage>`, `>>> DONE` as the last step `finish` announces, or each post-route repair session's own (see `run_post_route_repair`).
     """
     name = _checkpoint_name(stage)
     log.flush()
@@ -1740,12 +1831,17 @@ def run_stage(
         returncode, stderr, resources, section = _session(
             os.path.join(run_dir, f"{name}.tcl"), name
         )
-        if (
-            returncode == 0
-            and stage != "finish"
-            and f"{_STAGE_DONE_MARKER}{name}\n".encode() not in section
-        ):
-            problem = f"stage {name}: OpenROAD exited before the end of the stage"
+        text = section.decode(errors="replace")
+        marker = f"{_STAGE_DONE_MARKER}{name}"
+        if returncode == 0 and stage == "finish":
+            if not _flow_done(text):
+                problem = f"stage {name}: " + _incomplete_desc(
+                    run_dir, "the end of the flow", _FLOW_DONE_MARKER, text
+                )
+        elif returncode == 0 and marker not in text.splitlines():
+            problem = f"stage {name}: " + _incomplete_desc(
+                run_dir, "the end of the stage", marker, text
+            )
     if problem is not None:
         fail_stage = INCOMPLETE_FAIL_STAGE
     Path(run_dir, f"{name}.log").write_bytes(section)
@@ -2133,6 +2229,7 @@ class OpenRoadPnr:
         substitutions = {
             "pin_constraints_tcl": pin_constraints_tcl,
             "floorplan_pins_block": _floorplan_pins_block(fp),
+            "place_pins_block": _place_pins_block(fp),
             "design": self.pnr_cfg.resolve_synth_cfg().get_top(),
             "netlist": netlist,
             "sdc": sdc,
@@ -2155,6 +2252,7 @@ class OpenRoadPnr:
             "place_padding": str(platform.get_placement_padding()),
             "reference_hpwl_option": _reference_hpwl_option(platform),
             "routability_options": _routability_options(platform),
+            "timing_driven_option": _timing_driven_option(platform),
             "macro_halo": f"{platform.get_placement_macro_halo():g}",
             "macro_cell_halo": f"{platform.get_placement_macro_cell_halo():g}",
             "macro_pack_procs": self._load_macro_pack(),
@@ -2205,6 +2303,7 @@ class OpenRoadPnr:
             ),
             "hook_before_reports_block": _run_hook_block("before-reports", hooks),
             "rcx_block": rcx_block,
+            "supply_ports_block": _supply_ports_block(),
             "final_parasitics": final_parasitics,
             "harden_block": (
                 pnr_abstract.harden_tcl(self.pnr_cfg.get_abstract())
@@ -2415,7 +2514,7 @@ class OpenRoadPnr:
         )
 
     def _post_route_repair_script(self, round_: int, run_dir: str) -> str:
-        """Round `round_`'s repair session, bound to `run_dir`: repair round `round_ - 1`'s database on its SPEF, legalize inside an incremental global route, run the `before-detailed-route` hooks, route in detail and write the stage's checkpoint.
+        """Round `round_`'s repair session, bound to `run_dir`: repair round `round_ - 1`'s database on its SPEF, legalize inside an incremental global route, connect the supply pins of the cells the repair added, run the `before-detailed-route` hooks and connect again, route in detail and write the stage's checkpoint.
 
         The rounds work on the unfilled database; `finish` fills after the last. A repair in the session that routed fails detailed routing (DRT-0218), so each round is a fresh session that reads the routed database.
 
@@ -2469,7 +2568,10 @@ class OpenRoadPnr:
                 _END_INCREMENTAL_CMD,
             ]
         parts += [
+            "rb::global_connect\n",
             "{{ hook_before_detailed_route_block }}",
+            "# Again for cells a before-detailed-route hook added.\n",
+            "rb::global_connect\n",
             f'puts ">>> {title}: detailed route"\n',
             # So the round's DRC count is its own route's.
             "file delete -force $OUT_DIR/route.drc.rpt\n",
@@ -4355,10 +4457,18 @@ class OpenRoadPnr:
         except OSError:
             log_text = ""
         lines = log_text.splitlines()
-        if f"{_STAGE_DONE_MARKER}{name}" not in lines:
+        marker = f"{_STAGE_DONE_MARKER}{name}"
+        if marker not in lines:
             self._failed_stage = name
             self._chain_fail_stage = INCOMPLETE_FAIL_STAGE
-            return 0, "", f"stage {name}: OpenROAD exited before the end of the stage"
+            return (
+                0,
+                "",
+                f"stage {name}: "
+                + _incomplete_desc(
+                    self._ckpt_run_dir, "the end of the stage", marker, log_text
+                ),
+            )
         if any(line.startswith("[ERROR ") for line in lines):
             self._failed_stage = name
             return 0, "", None
@@ -4453,7 +4563,7 @@ class OpenRoadPnr:
         if self._staged or self._ckpt_run_dir is None:
             return None
         end = (
-            ">>> DONE"
+            _FLOW_DONE_MARKER
             if self.stop_after is None
             else f"{STOPPED_MARKER}{self.stop_after}"
         )
@@ -4487,16 +4597,51 @@ class OpenRoadPnr:
         totals = _GR_TOTAL_RE.findall(log_text)
         return int(totals[-1]) if totals else None
 
-    def _stopped_result(self, platform, log_text: str) -> PnrResults:
-        """Return the result of a run `--stop-after` ended: PASS with the stage report's numbers, or FAIL when the run ended without its stop marker."""
-        stage = self.stop_after
-        marker = f"{STOPPED_MARKER}{stage}"
-        if marker not in log_text.splitlines():
-            return self._fail_after_openroad(
-                f"OpenROAD exited before --stop-after {stage} finished "
-                f"(no '{marker}' line in pnr.log)",
-                fail_stage=INCOMPLETE_FAIL_STAGE,
+    def _unfinished_flow(
+        self, returncode: int, log_text: str, chain_problem: str | None
+    ) -> PnrFailResults | None:
+        """Return the FAIL of a run whose OpenROAD exited 0 without ending its flow, or None.
+
+        A chain of stage sessions reports its own session's problem. Otherwise the run must end on its marker: `>>> DONE` as the last step the log announces, or `>>> STOPPED after <stage>` under `--stop-after`. The failure carries `fail_stage: incomplete`, so no `xfail:` excuses it, and it comes before every check of the design the run built.
+        """
+        if returncode != 0:
+            return None
+        fail_stage = INCOMPLETE_FAIL_STAGE
+        if chain_problem is not None:
+            desc = chain_problem + self._eco_hint(log_text)
+            fail_stage = self._chain_fail_stage
+        elif self._failed_stage is not None:
+            return None
+        elif self.stop_after is not None:
+            marker = f"{STOPPED_MARKER}{self.stop_after}"
+            if marker in log_text.splitlines():
+                return None
+            desc = _incomplete_desc(
+                self._ckpt_run_dir,
+                f"--stop-after {self.stop_after} finished",
+                marker,
+                log_text,
             )
+        elif not self._staged and not _flow_done(log_text):
+            desc = _incomplete_desc(
+                self._ckpt_run_dir, "the end of the flow", _FLOW_DONE_MARKER, log_text
+            )
+        else:
+            return None
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.failed",
+            pnr=self.pnr_cfg.get_name(),
+            returncode=returncode,
+            stage=self._failed_stage,
+            log=self._log_path(),
+        )
+        return self._fail_after_openroad(desc, fail_stage=fail_stage)
+
+    def _stopped_result(self, platform, log_text: str) -> PnrResults:
+        """Return the PASS of a run `--stop-after` ended, with the numbers of its stage report."""
+        stage = self.stop_after
         report = log_text[log_text.rfind(f"{_STAGE_REPORT_MARKER}{stage}") :]
         ps_per_unit = self._ps_per_unit
 
@@ -5027,6 +5172,10 @@ class OpenRoadPnr:
             log_text = Path(log_path).read_text()
         except OSError:
             log_text = ""
+
+        unfinished = self._unfinished_flow(returncode, log_text, chain_problem)
+        if unfinished is not None:
+            return unfinished
 
         # Before the exit-code check: the violating instances are the diagnostic.
         self._warn_unmatched_dont_use(log_text, platform.get_dont_use_cells())
