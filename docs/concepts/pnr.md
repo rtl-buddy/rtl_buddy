@@ -116,6 +116,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `fail_stage: resume` | `--resume` refused: a stage script, input file, checkpoint or OpenROAD version differs. Rerun from an earlier stage. |
 | `fail_stage: dispatch` | A Slurm stage job ended `OUT_OF_MEMORY`, `TIMEOUT`, `CANCELLED` or similar, never started, or was refused. Read `dispatch/<NN>_<stage>.slurm.log`; raise that stage's `resources:`. See [Dispatch](#dispatch-the-stages-to-slurm). |
 | `fail_stage: abstract` | A hardened block's view could not be written. Read `pnr.log`. |
+| `fail_stage: outputs` | rb could not read, decode or rewrite `<top>.routed.pwr.v` or a hardened block's `<top>.lib` to put the supply ports last. The description names the file and error. |
 | `fail_stage: export` | Stream-out failed, under `gds-mode: strict` in `rb pnr` or in any mode in `rb pnr-export`: KLayout, `klayout-tech`, an input file or the render. Fix it and run `rb pnr-export`. |
 | `fail_stage: blocked`, `synth`, `error` | A block this run uses failed, its upstream synthesis failed under `--synth`, or rb crashed (the exception is in the description). Fix the cause first. |
 | `[ERROR PDN-0179] Unable to repair all channels` | Macros too close for the power grid. Raise `placement.macro-halo` (about 19 µm minimum on sky130hd). |
@@ -552,7 +553,7 @@ A top run names its blocks under `blocks:`, in `pnr.yaml` and in the `synth.yaml
 - A run whose block failed is not attempted (`fail_stage: blocked`, with `blocked_by`).
 - The block must use the same technology LEF and corner as the top.
 - An abstract whose inputs changed since hardening is refused, naming what changed. Re-harden it, or pass `--accept-stale`.
-- A block hardened with `abstract: {gds: false}` has no GDS. A parent that streams out (`--gds`, `--png` or its own `harden`) or `rb pnr-export` of the parent fails at setup naming the block.
+- A block hardened with `abstract: {gds: false}` has no GDS. A `gds-mode: strict` stream-out of the parent, including the parent's own `harden` and `rb pnr-export --gds-mode strict`, fails at setup naming the block. A `preview` stream-out, `--png` included, treats the block as a cell without GDS: the layout lacks it and the result names it, as in [Stream out GDS and PNG](#stream-out-gds-and-png).
 
 ## Instance a parameterised block
 

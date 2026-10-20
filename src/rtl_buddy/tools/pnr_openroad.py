@@ -1261,6 +1261,8 @@ _FLOW_DONE_MARKER = pnr_stages.FLOW_DONE_MARKER
 INCOMPLETE_FAIL_STAGE = "incomplete"
 #: `fail_stage` of a run that did not write a stage checkpoint it had to write.
 CHECKPOINT_FAIL_STAGE = "checkpoint"
+#: `fail_stage` of a run whose output rb rewrites after OpenROAD could not be read or written.
+OUTPUTS_FAIL_STAGE = "outputs"
 #: Heads a stopped run's stage report, which its result is parsed from.
 _STAGE_REPORT_MARKER = ">>> Stage report "
 #: Heads the timing of a post-route repair round's database, which rb compares with the best round's.
@@ -3976,7 +3978,10 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
         blocks_failure = self._resolve_blocks(
-            platform, None if png_only else "the stream-out"
+            platform,
+            "the gds-mode: strict stream-out"
+            if self._strict() and not png_only
+            else None,
         )
         if blocks_failure is not None:
             return blocks_failure
@@ -4358,7 +4363,7 @@ class OpenRoadPnr:
     ) -> PnrFailResults | None:
         """Resolve `blocks:` to published abstracts and append their views to the run's path lists.
 
-        Each block's LEF, Liberty and GDS are appended to `lef-paths`, `lib-paths` and `gds-paths`, so blocks are treated like hand-wired macros. Returns a FAIL before OpenROAD when an abstract is missing, stale or built for another technology or corner, or has no GDS while `gds_needed_by` names what needs it; blocks are never re-run.
+        Each block's LEF, Liberty and GDS are appended to `lef-paths`, `lib-paths` and `gds-paths`, so blocks are treated like hand-wired macros. Returns a FAIL before OpenROAD when an abstract is missing, stale or built for another technology or corner, or has no GDS while `gds_needed_by` names what needs it; blocks are never re-run. A `preview` stream-out does not need a block's GDS: the block is a cell without one.
         """
         refs = self.pnr_cfg.get_blocks()
         if not refs:
@@ -4725,20 +4730,43 @@ class OpenRoadPnr:
         )
         return {"abstract_dir": published, "abstract_manifest": manifest}
 
-    def _order_supply_ports(self) -> None:
-        """Put the supply ports last in `<top>.routed.pwr.v` and a hardened block's staged `<top>.lib` (see `pnr_supply_order`)."""
+    def _order_supply_ports(self) -> str | None:
+        """Put the supply ports last in `<top>.routed.pwr.v` and a hardened block's staged `<top>.lib` (see `pnr_supply_order`); return the failure description, or None.
+
+        A file left out of order is a warning. A file that cannot be read, decoded or written fails the run.
+        """
         design = self.pnr_cfg.resolve_synth_cfg().get_top()
         out = Path(self.artefact_dir)
-        pnr_supply_order.canonicalise(
-            str(out / f"{design}.routed.v"),
-            str(out / f"{design}.routed.pwr.v"),
-            design,
-            pnr_abstract.view_path(
-                pnr_abstract.staging_dir(self.artefact_dir), design, "lib"
+        try:
+            order = pnr_supply_order.canonicalise(
+                str(out / f"{design}.routed.v"),
+                str(out / f"{design}.routed.pwr.v"),
+                design,
+                pnr_abstract.view_path(
+                    pnr_abstract.staging_dir(self.artefact_dir), design, "lib"
+                )
+                if self.pnr_cfg.get_harden()
+                else None,
             )
-            if self.pnr_cfg.get_harden()
-            else None,
-        )
+        except (OSError, UnicodeDecodeError) as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.supply_order_failed",
+                pnr=self.pnr_cfg.get_name(),
+                error=str(e),
+            )
+            return f"cannot put the supply ports last: {e}"
+        for path, reason in order.unverified:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.supply_order_unverified",
+                pnr=self.pnr_cfg.get_name(),
+                file=path,
+                reason=reason,
+            )
+        return None
 
     def _stage_option_error(self) -> str | None:
         return pnr_stages.option_error(
@@ -5491,7 +5519,10 @@ class OpenRoadPnr:
             )
 
         blocks_failure = self._resolve_blocks(
-            platform, "this run's stream-out" if self.emit_gds else None
+            platform,
+            "this run's gds-mode: strict stream-out"
+            if self.emit_gds and self._strict()
+            else None,
         )
         if blocks_failure is not None:
             return blocks_failure
@@ -5853,7 +5884,11 @@ class OpenRoadPnr:
         if self.stop_after is not None:
             return self._stopped_result(platform, log_text)
 
-        self._order_supply_ports()
+        supply_order_failure = self._order_supply_ports()
+        if supply_order_failure is not None:
+            return self._fail_after_openroad(
+                supply_order_failure, fail_stage=OUTPUTS_FAIL_STAGE
+            )
 
         # Logged for every run that got this far; only a pass carries it in the result description.
         no_wire_rc = self._no_wire_rc_qualifier(platform, log_text)

@@ -857,7 +857,7 @@ runs:
 | `stages` | `false` | `true` runs each stage in its own session. A `checkpoints` list may then leave out only `post_route_repair`. See [Run stages as separate sessions](../concepts/pnr.md#run-stages-as-separate-sessions) |
 | `resources` | — | `cpus`, `mem`, quoted `time`, and `stages: {<stage>: {...}}`, for `--dispatch slurm` only. See [Dispatch the stages to Slurm](../concepts/pnr.md#dispatch-the-stages-to-slurm) |
 | `harden` | `false` | Publish the routed block as an abstract. Needs a single-corner platform. See [Harden a block](../concepts/pnr.md#harden-a-block) |
-| `abstract` | — | Needs `harden`. `bloat`: `occupied` (default) or a number; `feedthrough-layers`: layers written with real shapes; `gds: false`: publish no GDS and skip the forced stream-out |
+| `abstract` | — | Needs `harden`. `bloat`: `occupied` (default) or a number; `feedthrough-layers`: layers written with real shapes; `gds: false`: publish no GDS and skip the forced stream-out; a parent's `strict` stream-out then fails at setup and a `preview` one lacks the block |
 | `buffer-ports` | Value of `harden` | `true` buffers every input and output port after pin placement |
 | `blocks` | — | Hardened blocks: `name` (module), `pnr` (a `harden: true` run), `pnr-path` (default this file). Needs a single-corner platform. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
 | `floorplan.utilization` | 0.55 | Fraction of the core area the cells fill |

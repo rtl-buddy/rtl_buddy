@@ -5,6 +5,11 @@ Pinned behaviour:
 - the supply ports, those the powered netlist declares and the logical one does not, go
   last, sorted by name, in the powered netlist's port list and declarations and in the
   timing model's cell group; nothing else moves;
+- without the logical or powered port list nothing is rewritten; a file the rewrite
+  could not order is checked with an independent reader and reported, by name, in a
+  `pnr.supply_order_unverified` warning;
+- a file is replaced atomically, so a failed write leaves the original; a read, decode
+  or write error fails the run with `fail_stage: outputs`;
 - a staged and a one-session run write byte-identical `<top>.routed.pwr.v` and
   `abstract/<top>.lib` (stub OpenROAD that orders the ports as each session does);
 - with OpenROAD installed: the session that ran `pdngen` and a session that read its
@@ -12,6 +17,8 @@ Pinned behaviour:
   powered netlist connects every instance supply pin.
 """
 
+import logging
+import os
 import re
 from dataclasses import replace
 from pathlib import Path
@@ -28,9 +35,14 @@ from test_pnr_supply_ports import (
 )
 from test_pnr_block_power import _TECH_LEF
 
+import pytest
+
 from rtl_buddy.config.pnr import PnrAbstract
+from rtl_buddy.logging_utils import _human_message
+from rtl_buddy.tools import pnr_supply_order
 from rtl_buddy.tools.pnr_supply_order import (
     canonicalise,
+    liberty_pins,
     netlist_ports,
     order_liberty,
     order_netlist,
@@ -117,7 +129,12 @@ def _lib(*groups: str) -> str:
 
 def test_netlist_ports_reads_the_port_list():
     assert netlist_ports(_READ_V, "top") == ["en", "z", "VDD", "VSS", "a"]
-    assert netlist_ports(_READ_V, "other") == []
+    assert netlist_ports(_READ_V, "other") is None
+    assert netlist_ports("module top (a, \\b[0] ,\n  VDD);", "top") == [
+        "a",
+        "\\b[0]",
+        "VDD",
+    ]
 
 
 def test_the_supply_ports_go_last_in_the_port_list_and_declarations():
@@ -158,21 +175,102 @@ def test_canonicalise_finds_the_supply_ports_and_rewrites_both_files(tmp_path):
     powered.write_text(_READ_V)
     lib.write_text(_lib(_PIN_EN, _PIN_VDD, _PIN_VSS, _BUS_A))
 
-    assert canonicalise(str(logical), str(powered), "top", str(lib)) == ["VDD", "VSS"]
+    order = canonicalise(str(logical), str(powered), "top", str(lib))
+    assert order.supplies == ["VDD", "VSS"]
+    assert order.unverified == []
     assert powered.read_text() == _BUILT_V
     assert lib.read_text() == _lib(_PIN_EN, _BUS_A, _PIN_VDD, _PIN_VSS)
     assert logical.read_text() == _LOGICAL_V
 
 
-def test_canonicalise_without_a_netlist_changes_nothing(tmp_path):
-    lib = tmp_path / "t.lib"
-    lib.write_text(_lib(_PIN_VDD, _BUS_A))
+def _files(tmp_path, logical=_LOGICAL_V, powered=_READ_V):
+    paths = [tmp_path / n for n in ("t.v", "t.pwr.v", "t.lib")]
+    for path, text in zip(paths, (logical, powered, _lib(_PIN_VDD, _BUS_A))):
+        if text is not None:
+            path.write_text(text)
+    return paths
 
-    assert (
-        canonicalise(str(tmp_path / "t.v"), str(tmp_path / "t.pwr.v"), "top", str(lib))
-        == []
+
+@pytest.mark.parametrize(
+    "logical",
+    [None, "", _LOGICAL_V[: _LOGICAL_V.index("a);")]],
+    ids=["missing", "empty", "truncated"],
+)
+def test_without_the_logical_port_list_nothing_is_rewritten(tmp_path, logical):
+    paths = _files(tmp_path, logical=logical)
+
+    order = canonicalise(*map(str, paths[:2]), "top", str(paths[2]))
+
+    assert order.supplies == []
+    assert [f for f, _reason in order.unverified] == [str(paths[0])]
+    assert paths[1].read_text() == _READ_V
+    assert paths[2].read_text() == _lib(_PIN_VDD, _BUS_A)
+
+
+def test_without_the_powered_port_list_nothing_is_rewritten(tmp_path):
+    paths = _files(tmp_path, powered=_READ_V[:20])
+
+    order = canonicalise(*map(str, paths[:2]), "top", str(paths[2]))
+
+    assert [f for f, _reason in order.unverified] == [str(paths[1])]
+    assert paths[2].read_text() == _lib(_PIN_VDD, _BUS_A)
+
+
+def test_an_unrecognised_port_list_is_left_alone_and_reported(tmp_path):
+    one_line = _READ_V.replace(",\n    ", ", ")
+    paths = _files(tmp_path, powered=one_line)
+
+    order = canonicalise(*map(str, paths[:2]), "top")
+
+    assert order.supplies == ["VDD", "VSS"]
+    assert paths[1].read_text() == one_line
+    assert order.unverified == [(str(paths[1]), "supply ports VDD, VSS are not last")]
+
+
+def test_an_unrecognised_liberty_layout_is_reported(tmp_path):
+    paths = _files(tmp_path)
+    next_line = _lib(_PIN_EN, _PIN_VDD.replace(") {", ")\n    {"), _PIN_VSS, _BUS_A)
+    paths[2].write_text(next_line)
+
+    order = canonicalise(*map(str, paths[:2]), "top", str(paths[2]))
+
+    assert paths[1].read_text() == _BUILT_V
+    assert order.unverified == [(str(paths[2]), "supply pins VDD, VSS are not last")]
+
+
+def test_liberty_pins_reads_any_brace_layout():
+    lib = (
+        'library (x) {\n  cell ("top") {\n    pin("VDD")\n    {\n      /* { */\n    }\n'
+        '    bus("a") { pin("a[0]") { x : "{"; } }\n    pin(en) { } }\n}\n'
     )
-    assert lib.read_text() == _lib(_PIN_VDD, _BUS_A)
+    assert liberty_pins(lib, "top") == ["VDD", "a", "en"]
+    assert liberty_pins(lib, "other") is None
+
+
+def test_a_failed_write_leaves_the_original(tmp_path, monkeypatch):
+    paths = _files(tmp_path)
+
+    def _fail(src, dst):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(pnr_supply_order.os, "replace", _fail)
+    with pytest.raises(OSError, match="No space"):
+        canonicalise(*map(str, paths[:2]), "top", str(paths[2]))
+
+    assert paths[1].read_text() == _READ_V
+    assert sorted(os.listdir(tmp_path)) == ["t.lib", "t.pwr.v", "t.v"]
+
+
+def test_the_supply_order_events_read_as_sentences():
+    unverified = _human_message(
+        "pnr.supply_order_unverified",
+        {"pnr": "blk", "file": "/a/t.pwr.v", "reason": "supply ports VDD are not last"},
+    )
+    assert "/a/t.pwr.v: supply ports VDD are not last" in unverified
+    failed = _human_message(
+        "pnr.supply_order_failed", {"pnr": "blk", "error": "disk full"}
+    )
+    assert "cannot put the supply ports last: disk full" in failed
 
 
 def _gds_less_harden(tmp_path, monkeypatch, *, stages):
@@ -207,6 +305,80 @@ def test_a_staged_and_a_one_session_run_write_the_same_powered_netlist_and_model
         r'(?:pin|bus)\("([^"]+)"\)', (staged / "abstract/demo_top.lib").read_text()
     )
     assert pins == ["clk", "d", "d[0]", "VDD", "VSS"]
+
+
+def _harden(tmp_path, monkeypatch, *, stages=True):
+    tmp_path.mkdir()
+    cfg = replace(
+        _pnr_cfg(tmp_path, stages=stages), harden=True, abstract=PnrAbstract(gds=False)
+    )
+    backend, artefacts = _backend(tmp_path, monkeypatch, pnr_cfg=cfg, stages=stages)
+    monkeypatch.setattr(backend, "_record_block_parameters", lambda *_a: None)
+    return backend, artefacts
+
+
+@pytest.mark.parametrize(
+    "target, error",
+    [
+        ("_write", OSError(28, "No space left on device")),
+        ("_read", UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")),
+    ],
+    ids=["write", "decode"],
+)
+def test_a_supply_order_io_error_fails_the_run_with_fail_stage_outputs(
+    tmp_path, monkeypatch, caplog, target, error
+):
+    backend, artefacts = _harden(tmp_path / "run", monkeypatch)
+    calls = []
+
+    def _raise(*_a):
+        calls.append(target)
+        raise error
+
+    monkeypatch.setattr(pnr_supply_order, target, _raise)
+    with caplog.at_level(logging.ERROR):
+        res = backend.run()
+
+    assert calls == [target]
+    assert res.results["result"] == "FAIL"
+    assert res.results["fail_stage"] == "outputs"
+    assert res.results["desc"].startswith("cannot put the supply ports last: ")
+    assert [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "pnr.supply_order_failed"
+    ]
+    assert not (artefacts / "abstract").exists()
+    assert not (artefacts / "demo_top.routed.pwr.v").exists()
+
+
+def test_a_run_whose_logical_netlist_has_no_port_list_passes_and_warns(
+    tmp_path, monkeypatch, caplog
+):
+    backend, artefacts = _harden(tmp_path / "run", monkeypatch)
+    real_canonicalise = pnr_supply_order.canonicalise
+
+    def _truncated(logical, *args):
+        Path(logical).write_text("module demo_top (clk,\n")
+        return real_canonicalise(logical, *args)
+
+    monkeypatch.setattr(pnr_supply_order, "canonicalise", _truncated)
+    with caplog.at_level(logging.WARNING):
+        res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    warnings = [
+        r.rtl_fields
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "pnr.supply_order_unverified"
+    ]
+    assert warnings == [
+        {
+            "pnr": backend.pnr_cfg.get_name(),
+            "file": str(artefacts / "demo_top.routed.v"),
+            "reason": "no port list of module demo_top; supply order unchanged",
+        }
+    ]
 
 
 # A Liberty for `_CELL_LEF`'s inverter, so the session can write a timing model.
@@ -295,7 +467,8 @@ def test_openroad_sessions_write_one_powered_netlist_and_model_once_ordered(tmp_
         texts[session, "before"] = (
             Path(files[1]).read_text() + Path(files[2]).read_text()
         )
-        assert canonicalise(files[0], files[1], "top", files[2]) == ["VDD", "VSS"]
+        order = canonicalise(files[0], files[1], "top", files[2])
+        assert order.supplies == ["VDD", "VSS"] and order.unverified == []
         texts[session] = Path(files[1]).read_text() + Path(files[2]).read_text()
 
     assert texts["built", "before"] != texts["read", "before"]

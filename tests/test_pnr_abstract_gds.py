@@ -6,11 +6,15 @@ Pinned behaviour:
   only when false, so existing digests do not change;
 - such a run needs no stream-out: it publishes the LEF, Liberty and manifest, with the
   manifest's GDS output null;
-- a parent P&Rs against the abstract with no block GDS in its stream-out inputs, and a
-  parent that streams out, or `rb pnr-export`, fails at setup naming the block.
+- a parent P&Rs against the abstract with no block GDS in its stream-out inputs;
+- a `gds-mode: strict` stream-out of the parent (`--gds`, its own `harden` or
+  `rb pnr-export`) fails at setup naming the block;
+- a `gds-mode: preview` stream-out, `--png` included, treats the block as a cell
+  without GDS: the run or export passes with the qualifier naming the block.
 """
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -20,6 +24,7 @@ from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.runner.pnr_results import PnrPassResults
 from rtl_buddy.tools import pnr_abstract, pnr_openroad
 from rtl_buddy.tools.pnr_abstract import resolve_block
+from rtl_buddy.tools.pnr_openroad import GDS_INCOMPLETE, GdsExport
 
 from test_pnr_abstract_style import _suite
 from test_pnr_blocks import (
@@ -114,32 +119,116 @@ def test_a_parent_routes_against_a_gds_less_block(tmp_path, monkeypatch):
     assert not any("blk_top" in p for p in backend.pnr_cfg.get_gds_paths())
 
 
-def test_a_parent_that_streams_out_fails_at_setup_naming_the_block(
+def test_a_strict_parent_stream_out_fails_at_setup_naming_the_block(
     tmp_path, monkeypatch
 ):
     _block_suite(tmp_path, gds=False)
     backend, launched = _top_backend(tmp_path, monkeypatch, _BLOCK_YAML)
     backend.emit_gds = True
+    backend.gds_mode = GdsMode.STRICT
 
     res = backend.run()
 
     assert res.results["fail_stage"] == "setup"
     assert res.results["desc"] == (
         f"block 'blk_top' has no GDS: pnr run 'blk_pnr' in {tmp_path}/blk/pnr.yaml "
-        "hardens it with abstract: {gds: false}, and this run's stream-out needs its GDS"
+        "hardens it with abstract: {gds: false}, and this run's gds-mode: strict "
+        "stream-out needs its GDS"
     )
     assert launched == []
 
 
-def test_pnr_export_of_a_parent_fails_at_setup_naming_the_block(tmp_path, monkeypatch):
+def test_a_hardened_parent_fails_at_setup_naming_the_block(tmp_path, monkeypatch):
+    _block_suite(tmp_path, gds=False)
+    backend, launched = _top_backend(tmp_path, monkeypatch, _BLOCK_YAML)
+    backend = type(backend)(
+        name="top",
+        pnr_cfg=replace(backend.pnr_cfg, harden=True),
+        suite_dir=backend.suite_dir,
+        root_cfg=backend.root_cfg,
+    )
+    assert backend.emit_gds and backend.gds_mode == GdsMode.STRICT
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "setup"
+    assert "block 'blk_top' has no GDS" in res.results["desc"]
+    assert launched == []
+
+
+def _klayout_without_the_block(backend, monkeypatch):
+    """Stream-out as KLayout does it: a block whose GDS is not an input is a cell without layout."""
+    streamed = []
+
+    def _def2stream(_platform, design, *, in_def=None):
+        streamed.append(list(backend.pnr_cfg.get_gds_paths()))
+        gds = Path(backend.artefact_dir) / f"{design}.gds"
+        gds.parent.mkdir(parents=True, exist_ok=True)
+        gds.write_bytes(b"gds")
+        return GdsExport(
+            mode=backend.gds_mode,
+            status=GDS_INCOMPLETE,
+            png_requested=backend.emit_png,
+            gds_path=str(gds),
+            missing_cells=["blk_top"],
+            desc=f"GDS incomplete: no layout for {pnr_openroad.describe_missing_cells(['blk_top'])}",
+        )
+
+    monkeypatch.setattr(pnr_openroad, "_resolve_klayout_exe", lambda: None)
+    monkeypatch.setattr(backend, "_run_def2stream", _def2stream)
+    monkeypatch.setattr(
+        backend,
+        "_run_gds2png",
+        lambda _p, _g, design: str(Path(_g).with_suffix(".png")),
+    )
+    return streamed
+
+
+@pytest.mark.parametrize("png", [False, True], ids=["gds", "png"])
+def test_a_preview_parent_streams_out_without_the_block(tmp_path, monkeypatch, png):
+    _block_suite(tmp_path, gds=False)
+    backend, launched = _top_backend(tmp_path, monkeypatch, _BLOCK_YAML)
+    backend.emit_gds = True
+    backend.emit_png = png
+    assert backend.gds_mode == GdsMode.PREVIEW
+    streamed = _klayout_without_the_block(backend, monkeypatch)
+
+    res = backend.run()
+
+    assert res.is_pass(), res.results
+    assert launched
+    assert streamed and not any("blk_top" in p for p in streamed[0])
+    assert res.results["desc"].startswith(
+        "P&R passed; GDS incomplete: no layout for 1 cell (blk_top);"
+    )
+    assert res.results["gds_missing_cells"] == ["blk_top"]
+    assert (res.results.get("png_path") is not None) == png
+
+
+def test_pnr_export_of_a_parent_follows_its_gds_mode(tmp_path, monkeypatch):
     _block_suite(tmp_path, gds=False)
     backend, _launched = _top_backend(tmp_path, monkeypatch, _BLOCK_YAML)
+    backend.gds_mode = GdsMode.STRICT
 
     res = backend.export_only()
 
     assert res.results["fail_stage"] == "setup"
     assert "block 'blk_top' has no GDS" in res.results["desc"]
-    assert "the stream-out needs its GDS" in res.results["desc"]
+    assert "the gds-mode: strict stream-out needs its GDS" in res.results["desc"]
+
+    backend, _launched = _top_backend(tmp_path, monkeypatch, _BLOCK_YAML)
+    assert backend.gds_mode == GdsMode.PREVIEW
+    streamed = _klayout_without_the_block(backend, monkeypatch)
+    Path(backend.artefact_dir).mkdir(parents=True, exist_ok=True)
+    (Path(backend.artefact_dir) / "top.def").write_text("DESIGN top ;\n")
+
+    res = backend.export_only()
+
+    assert res.is_pass(), res.results
+    assert streamed
+    assert res.results["desc"] == "GDS incomplete: no layout for 1 cell (blk_top)"
 
 
 def test_a_png_only_re_render_does_not_need_the_block_gds(tmp_path, monkeypatch):

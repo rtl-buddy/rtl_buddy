@@ -2077,6 +2077,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'{flow} "{run}": using stale abstract of block '
                 f"{fields.get('block')!r} (--accept-stale): {changes}"
             )
+        case "pnr.supply_order_unverified":
+            return (
+                f'P&R "{fields.get("pnr")}": {fields.get("file")}: '
+                f"{fields.get('reason')}; its supply ports may be in OpenROAD's "
+                "order, which differs between a one-session and a staged run"
+            )
+        case "pnr.supply_order_failed":
+            return (
+                f'P&R "{fields.get("pnr")}": cannot put the supply ports last: '
+                f"{fields.get('error')}"
+            )
         case "pnr.abstract_failed":
             return (
                 f'P&R "{fields.get("pnr")}": no abstract published — '
