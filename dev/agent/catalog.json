@@ -2153,6 +2153,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/development/guidelines/quirks-and-known-issues.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/development/guidelines/#tool-defaults",
+          "slug": "tool-defaults",
+          "title": "Tool Defaults",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/development/guidelines/tool-defaults.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/development/guidelines/#execution-contexts",
           "slug": "execution-contexts",
           "title": "Execution Contexts",
