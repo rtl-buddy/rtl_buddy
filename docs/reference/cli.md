@@ -729,15 +729,6 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 │                                               detailed_route, finish); it starts     │
 │                                               from the resumed run's checkpoint of   │
 │                                               the stage before                       │
-│ --dispatch              BACKEND               slurm: run each stage as its own job,  │
-│                                               each held until the one before         │
-│                                               succeeds, sized by the run's           │
-│                                               resources: block over                  │
-│                                               cfg-dispatch.resources; implies        │
-│                                               stages: true. Blocks until the last    │
-│                                               stage ends; Ctrl-C, SIGTERM or SIGHUP  │
-│                                               cancels the jobs. local runs here      │
-│                                               [default: (local)]                     │
 │ --help                                        Show this message and exit.            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

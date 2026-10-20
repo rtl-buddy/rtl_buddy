@@ -13,7 +13,6 @@ from .base import (
     BuildJobSpec,
     CoverageJobSpec,
     ElabJobSpec,
-    PnrStageJobSpec,
     RunnableJobSpec,
     TestJobSpec,
 )
@@ -173,27 +172,6 @@ def coverage_job_argv(spec: CoverageJobSpec) -> list[str]:
     if spec.run_tag is not None:
         argv += ["--run-tag", spec.run_tag]
     return argv
-
-
-def pnr_stage_job_argv(spec: PnrStageJobSpec) -> list[str]:
-    """The ``rb _pnr-stage-job`` invocation for one stage of a staged P&R run."""
-    return [
-        sys.executable,
-        "-m",
-        "rtl_buddy",
-        "--machine",
-        "_pnr-stage-job",
-        "--command-root",
-        str(spec.suite_dir),
-        "--run-dir",
-        str(spec.run_dir),
-        "--stage",
-        spec.stage,
-        "--openroad",
-        str(spec.openroad),
-        "--log",
-        str(spec.pnr_log),
-    ]
 
 
 def job_argv(spec: RunnableJobSpec) -> list[str]:

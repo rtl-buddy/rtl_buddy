@@ -33,18 +33,15 @@ def no_inherited_job_tag(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def reset_cancellation_latch():
-    """Un-latch ``process_utils`` cancellation and forget a ``pnr_dispatch`` interrupt between tests.
+    """Un-latch ``process_utils`` cancellation between tests.
 
-    Both are one-way per process, so a test that sets one would otherwise block every later test from spawning tool processes or opening a stage chain.
+    The latch is one-way per process, so a test that sets it would otherwise block every later test from spawning tool processes.
     """
     from rtl_buddy import process_utils
-    from rtl_buddy.tools import pnr_dispatch
 
     process_utils._reset_cancellation_latch()
-    pnr_dispatch._reset_interrupted()
     yield
     process_utils._reset_cancellation_latch()
-    pnr_dispatch._reset_interrupted()
 
 
 @pytest.fixture(autouse=True)
