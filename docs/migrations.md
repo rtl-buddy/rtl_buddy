@@ -100,7 +100,7 @@ Remove the key or correct its spelling. A `pnr.yaml` error stops `rb pnr`. A `cf
 
 ### The routed DEF must keep located macros and exact pins
 
-A run with a located macro or an exact pin compares them with the routed DEF and fails with `fail_stage: routed_check` when one moved; `xfail:` does not excuse it. In v6 nothing compared them, so a run whose `pin-constraints` file or platform hook moved a located macro or an exact pin passed. Remove the conflicting placement or the floorplan entry. See [Check the routed floorplan](concepts/pnr.md#check-the-routed-floorplan).
+A run with a located macro or an exact pin compares them with the routed DEF and fails with `fail_stage: routed_check` when one moved; `xfail:` does not excuse it. In v6 nothing compared them, so a run whose `pin-constraints` file or platform hook moved a located macro or an exact pin passed. Remove the conflicting placement or the floorplan entry. See [Place IO pins](concepts/pnr.md#place-io-pins).
 
 ### A flow that ends early is a failure
 
@@ -108,7 +108,7 @@ A run whose OpenROAD session exits 0 before its flow's end marker fails with `fa
 
 ### Supply pins of added cells are connected
 
-The flow applies the PDK's global connections again (`global_connect`) at the end of every stage, before detailed routing, after fill and before the final outputs. In v6 only the cells present when `pdngen` ran had their supply pins connected; the buffers, tie cells and fill added later kept them unconnected in the routed ODB, DEF and every checkpoint. The generated `pnr.tcl` of every run gains the call, and the routed DEF of a run with a `pdn-config` lists the added cells in its power and ground nets. Detailed routing now starts from a design with connected supply pins, so a run's route and slack can differ slightly. No `pnr.yaml` change is needed. See [Tune the process-dependent steps](concepts/pnr.md#tune-the-process-dependent-steps).
+The flow applies the PDK's global connections again (`global_connect`) at the end of every stage, before detailed routing, after fill and before the final outputs. In v6 only the cells present when `pdngen` ran had their supply pins connected; the buffers, tie cells and fill added later kept them unconnected in the routed ODB, DEF and every checkpoint. The generated `pnr.tcl` of every run gains the call, and the routed DEF of a run with a `pdn-config` lists the added cells in its power and ground nets. Detailed routing now starts from a design with connected supply pins, so a run's route and slack can differ slightly. No `pnr.yaml` change is needed. See [Plan the power grid](concepts/pnr.md#plan-the-power-grid).
 
 ### Exact pins leave side and group rules
 
@@ -130,14 +130,13 @@ Every OpenROAD session runs in the run's artefact directory, `artefacts/<run>/`.
 
 ### A multi-corner platform times each corner in its own SDC mode
 
-On a platform with `corners:`, `rb pnr` gives each corner an OpenSTA SDC mode and scene of its own, reads the SDC into every mode, applies `max-fanout` and the propagated clocks in every mode, and reads the routed SPEF once per corner for the final reports. In v6 every corner shared one mode and the final reports read the SPEF once, so a generated clock's source latency came from one corner and the corners after the first reused the first corner's parasitics. A multi-corner run's slack and repairs therefore change. Single-corner runs are unchanged.
+On a platform with `corners:`, `rb pnr` times each corner in an OpenSTA SDC mode and scene of its own, and the final reports read the routed SPEF once per corner. In v6 the corners shared one mode and one SPEF read, so a generated clock's latency came from one corner and the later corners reused the first corner's parasitics. Multi-corner slack and repairs change; single-corner runs do not.
 
-- `constraints:` also takes a mapping from each corner to its SDC.
-- An SDC command in a hook applies to the primary corner's mode alone. Put it in the SDC, or run it after `set_mode <corner>` for each corner and end with `set_mode <primary>`.
-- `max_fanout_violation_count` counts a violator once per corner it violates at.
-- The run writes `<top>.<corner>.routed.sdc` for each corner next to `<top>.routed.sdc`, which holds the primary corner's mode. A checkpoint's `.sdc` holds every mode.
-- A `--resume` of a multi-corner run started by v6 is refused, since its stage scripts differ; rerun it from the start.
-- On an OpenROAD that cannot switch between SDC modes, such as 26Q2, the corners keep sharing one mode and the run warns `pnr.corner_modes_unsupported`; a per-corner `constraints:` fails at setup.
+- An SDC command in a hook constrains the primary corner only. Put it in the SDC, or run it after `set_mode <corner>` for each corner, then `set_mode <primary>`.
+- `max_fanout_violation_count` counts a pin once per corner it violates at.
+- Each corner also gets `<top>.<corner>.routed.sdc` and, in checkpoints, `<NN>_<stage>.<corner>.sdc`. `<top>.routed.sdc` holds the primary corner's constraints, and a checkpoint's `.sdc` every mode.
+- A `--resume` of a multi-corner run started by v6 is refused; rerun it from the start.
+- OpenROAD 26Q2 keeps one shared mode and warns `pnr.corner_modes_unsupported`. An OpenROAD that does not answer rb's mode check fails setup.
 
 See [Sign off at several corners](concepts/pnr.md#sign-off-at-several-corners).
 
