@@ -2271,7 +2271,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f'P&R "{fields.get("pnr")}" post-route repair round '
                 f"{round_}/{fields.get('rounds')} ({repair}): {timing}, "
-                f"{fields.get('drc_count')} DRC report line(s); "
+                f"{fields.get('drc_count')} DRC violation(s); "
                 f"best round {fields.get('best_round')}"
             )
         case "pnr.post_route_round_failed":

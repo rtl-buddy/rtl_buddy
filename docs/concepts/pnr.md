@@ -63,7 +63,7 @@ The run's [`hooks:`](#run-tcl-hooks) are sourced between these steps, each at th
 
 ## Interpret results
 
-The summary reports cell count, design area, setup and hold WNS, and the number of non-empty DRC report lines. Positive slack meets timing and zero DRC lines indicate a clean route. `wns_setup_ps`, `wns_hold_ps`, `tns_ps` (setup) and `tns_hold_ps` are converted to picoseconds from the Liberty `time_unit`; see [Synthesis: Configure tools and the PDK](synthesis.md#configure-tools-and-the-pdk).
+The summary reports cell count, design area, setup and hold WNS, and `drc_count`, the number of violations in `route.drc.rpt`, which lists each as a `violation type:` line and its detail lines. Positive slack meets timing and zero DRC violations indicate a clean route. `wns_setup_ps`, `wns_hold_ps`, `tns_ps` (setup) and `tns_hold_ps` are converted to picoseconds from the Liberty `time_unit`; see [Synthesis: Configure tools and the PDK](synthesis.md#configure-tools-and-the-pdk).
 
 Three result fields count cells; compare experiments on `routed_cell_count`:
 
@@ -789,10 +789,11 @@ The resume is refused, with `fail_stage: resume` and a description that names wh
 - OpenROAD reports the same version; and
 - the run named was not a [probe](#probe-without-timing-repair), unless this run is one too.
 
-The input files are those the [checkpoint manifest](#keep-stage-checkpoints) fingerprints: the netlist, the SDC, the Liberty of every corner, the LEF, `pin-constraints`, the planner files, the `pdn-config`, the PDK Tcl hooks (`platform-tcl`, `layer-rc-tcl`, `tracks-tcl`, `tapcell-tcl`) and the run's `hooks:` files. A file that one of them sources or reads in turn, such as a file a hook, `platform-tcl`, a `pdn-config` or the SDC sources, is not checked, and neither are environment variables.
+The input files are those the [checkpoint manifest](#keep-stage-checkpoints) fingerprints: the netlist, the SDC, the Liberty of every corner, the LEF, `pin-constraints`, the planner files, the `pdn-config`, the PDK's `rcx-rules` (read first by post-route repair, else by `finish`), the PDK Tcl hooks (`platform-tcl`, `layer-rc-tcl`, `tracks-tcl`, `tapcell-tcl`) and the run's `hooks:` files. A file that one of them sources or reads in turn, such as a file a hook, `platform-tcl`, a `pdn-config` or the SDC sources, is not checked, and neither are environment variables.
 
 A stage script is compared up to its end-of-stage line, without:
 
+- whole-line comments;
 - the two lines that name run directories (`RB_RUN_DIR` and `RB_PRED_DIR`);
 - the thread count (`set_thread_count`); and
 - each `set NAME value` line of the header at the top of the script whose variable the rest of that stage's script does not read, as `$NAME`, `${NAME}`, `$::NAME` or `${::NAME}`, itself or through another header line it keeps.

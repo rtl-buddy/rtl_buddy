@@ -640,12 +640,18 @@ proc detailed_route {args} {
     set round [expr {[rb_round] eq "" ? 0 : [rb_round]}]
     set i [lsearch $args -output_drc]
     if {$i >= 0} {
-        set drc [lindex $args [expr {$i + 1}]]
-        if {[info exists env(RB_STUB_DRC)] && [lsearch $env(RB_STUB_DRC) $round] >= 0} {
-            rb_write $drc "violation r$round"
-        } else {
-            rb_write $drc ""
+        set count 0
+        if {[info exists env(RB_STUB_DRC)]} {
+            foreach item $env(RB_STUB_DRC) {
+                lassign [split $item :] at n
+                if {$at == $round} { set count [expr {$n eq "" ? 1 : $n}] }
+            }
         }
+        set text ""
+        for {set v 0} {$v < $count} {incr v} {
+            append text "violation type: Short\n\tsrcs: net:a net:b\n\tbbox = ($v.0, 2.0) - ($v.1, 2.1) on Layer met1 r$round\n"
+        }
+        rb_write [lindex $args [expr {$i + 1}]] [string trimright $text]
     }
     set i [lsearch $args -output_maze]
     if {$i >= 0} { rb_write [lindex $args [expr {$i + 1}]] "maze r$round" }
@@ -1590,12 +1596,12 @@ def test_round_messages_name_the_round_its_timing_and_the_best_round():
     assert _human_message("pnr.post_route_round", measured) == (
         'P&R "blk" post-route repair round 1/3 (repaired with setup margin 0.1 ns): '
         "setup WNS -0.1900 ns TNS -1.5000 ns, hold WNS 0.0120 ns TNS 0.0000 ns, "
-        "0 DRC report line(s); best round 0"
+        "0 DRC violation(s); best round 0"
     )
     drc = {"pnr": "blk", "round": 0, "rounds": 3, "drc_count": 4, "best_round": 0}
     assert _human_message("pnr.post_route_round", drc) == (
         'P&R "blk" post-route repair round 0/3 (the detailed route): not timed, '
-        "4 DRC report line(s); best round 0"
+        "4 DRC violation(s); best round 0"
     )
     done = {
         "pnr": "blk",
@@ -1820,7 +1826,7 @@ def test_a_round_with_drc_violations_is_never_kept(tmp_path, monkeypatch, round_
         "repaired_rounds": round_,
         "rounds": 3,
         "stop": "drc",
-        "reason": f"round {round_}'s detailed route has 1 DRC report line(s)",
+        "reason": f"round {round_}'s detailed route has 1 DRC violation(s)",
     }
     assert res.results["drc_count"] == 0
     # The stage's checkpoint and the artefact directory hold the kept round's
@@ -1831,7 +1837,8 @@ def test_a_round_with_drc_violations_is_never_kept(tmp_path, monkeypatch, round_
     assert (artefacts / "route.maze.log").read_text().strip() == maze
     assert (artefacts / "route.drc.rpt").read_text().strip() == ""
     kept = run_dir / f"06_post_route_repair.r{round_}.route.drc.rpt"
-    assert kept.read_text().strip() == f"violation r{round_}"
+    assert kept.read_text().startswith("violation type: Short")
+    assert kept.read_text().rstrip().endswith(f"r{round_}")
     finish = (run_dir / "07_finish.tcl").read_text()
     assert "read_db [file join $RB_PRED_DIR 06_post_route_repair.odb]" in finish
     stage = (run_dir / "06_post_route_repair.odb").stat().st_ino
@@ -1863,7 +1870,7 @@ def test_a_detailed_route_with_drc_violations_gets_no_round(tmp_path, monkeypatc
         "repaired_rounds": 0,
         "rounds": 3,
         "stop": "drc",
-        "reason": "the detailed route has 1 DRC report line(s)",
+        "reason": "the detailed route has 1 DRC violation(s)",
     }
     assert res.results["drc_count"] == 1
     assert (run_dir / "06_post_route_repair.odb").samefile(
@@ -1953,6 +1960,40 @@ def test_a_resume_from_finish_restores_the_last_round_s_reports(tmp_path, monkey
 
     assert res.results["result"] == "PASS", res.results
     assert (artefacts / "route.maze.log").read_text().strip() == "maze r1"
+
+
+@pytest.mark.parametrize("post_route", [_PR, None], ids=["repaired", "unrepaired"])
+def test_a_resume_from_finish_refuses_changed_rcx_rules_only_after_repair_rounds(
+    tmp_path, monkeypatch, post_route
+):
+    """The rounds extract with `rcx-rules`; without them only `finish`, which a resume from finish reruns, reads the file."""
+    first, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=post_route,
+        stages=True,
+        env={"RB_STUB_SETUP": "-0.2 0.01"},
+    )
+    assert first.run().results["result"] == "PASS"
+    (first_dir,) = _runs(artefacts)
+    again, _artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=post_route,
+        stages=True,
+        resume=str(first_dir),
+        resume_from="finish",
+        env={"RB_STUB_SETUP": "-0.2 0.01"},
+    )
+    (tmp_path / "pdk" / "rcx.rules").write_text("recalibrated rules\n")
+
+    res = again.run()
+
+    if post_route is None:
+        assert res.results["result"] == "PASS", res.results
+    else:
+        assert res.results["fail_stage"] == "resume", res.results
+        assert "input rcx_rules differs" in res.results["desc"]
 
 
 @pytest.mark.parametrize("how", ["one session", "staged", "dispatched"])

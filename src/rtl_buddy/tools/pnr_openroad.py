@@ -593,6 +593,15 @@ def read_def_design_name(path: str) -> str | None:
     return match.group(1) if match else None
 
 
+def count_drc_violations(path: str) -> int:
+    """The violations a detailed-route DRC report lists, each a `violation type:` line and its detail lines; 0 without the report."""
+    try:
+        with open(path) as f:
+            return sum(1 for line in f if line.startswith("violation type:"))
+    except OSError:
+        return 0
+
+
 def _file_fingerprint(path: str | None) -> dict | None:
     """Return `{path, size, sha256}` for a file, or None without a path; an unreadable file gets a null size and digest."""
     if not path:
@@ -1297,15 +1306,6 @@ def _improves(timing: dict, best: dict, sides) -> bool:
     return new != old and all(n >= o for n, o in zip(new, old))
 
 
-def _report_lines(path: str) -> int:
-    """The non-blank lines of a DRC report; 0 when it is missing."""
-    try:
-        with open(path) as f:
-            return sum(1 for line in f if line.strip())
-    except OSError:
-        return 0
-
-
 def _round_files(run_dir: str, round_: int) -> dict | None:
     """Rename the stage checkpoint that round `round_`'s repair session wrote to `06_post_route_repair.r<k>.*`, where the next round and the end of the stage read it, and return its `{kind: file name}`; None when the session wrote none."""
     stage = _checkpoint_name(POST_ROUTE_REPAIR_STAGE)
@@ -1492,13 +1492,13 @@ def run_post_route_repair(
                 stop = _set_aside(round_, "repair", failure, section)
                 break
             repaired = round_
-        drcs = _report_lines(drc_report)
+        drcs = count_drc_violations(drc_report)
         if drcs:
             _record(round_, drcs, None)
             route = (
                 f"round {round_}'s detailed route" if round_ else "the detailed route"
             )
-            stop = "drc", f"{route} has {drcs} DRC report line(s)"
+            stop = "drc", f"{route} has {drcs} DRC violation(s)"
             break
         returncode, stderr, problem, failure, section = _run(
             rounds[round_ - 1]["extract"] if round_ else plan["extract"],
@@ -2788,14 +2788,7 @@ class OpenRoadPnr:
         return os.path.join(self.artefact_dir, "route.drc.rpt")
 
     def _count_drcs(self) -> int:
-        drc_path = self._drc_report_path()
-        if not os.path.isfile(drc_path):
-            return 0
-        try:
-            with open(drc_path) as f:
-                return sum(1 for line in f if line.strip())
-        except OSError:
-            return 0
+        return count_drc_violations(self._drc_report_path())
 
     def _klayout_script_path(self, name: str) -> str:
         """Copy a bundled KLayout helper into the artefact directory and return its path.
@@ -3753,6 +3746,7 @@ class OpenRoadPnr:
             "pin_constraints": _file_fingerprint(self.pnr_cfg.pin_constraints),
             **self._planner_files(_file_fingerprint),
             "pdn_config": _file_fingerprint(self._pdn_config(pdk)),
+            "rcx_rules": _file_fingerprint(pdk.get_rcx_rules()),
             **{
                 key.replace("-", "_"): _file_fingerprint(path)
                 for key, path in pdk.get_tcl_hooks().items()

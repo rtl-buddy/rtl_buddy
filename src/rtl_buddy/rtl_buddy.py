@@ -11691,6 +11691,7 @@ class RtlBuddy:
                 name=f"{run.get_name()}/results",
                 desc=(f"reglvl {pnr_level} above {reg_level}"),
             )
+            res.results["mode"] = run.get_mode().value
             return {**row, "results": res}
         # An XFAIL passes the suite but delivers no abstract.
         blocked_by = [

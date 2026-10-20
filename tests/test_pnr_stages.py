@@ -671,6 +671,35 @@ def _stopped_at_global_route(tmp_path, monkeypatch) -> Path:
     return _only_run(artefacts)
 
 
+@pytest.mark.parametrize(
+    "script_edit, resumes", [("# reworded\n", True), ("x\n", False)]
+)
+def test_resume_compares_the_recorded_script_again(
+    tmp_path, monkeypatch, script_edit, resumes
+):
+    """A run whose recorded identities another rtl_buddy computed resumes when the scripts it ran compare equal now."""
+    first = _stopped_at_global_route(tmp_path, monkeypatch)
+    manifest_path = first / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    for entry in manifest["chain"]:
+        entry["script"]["identity"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest))
+    floorplan = first / "01_floorplan.tcl"
+    floorplan.write_text(script_edit + floorplan.read_text())
+
+    backend, _artefacts = _backend(
+        tmp_path, monkeypatch, resume=first.name, resume_from="detailed_route"
+    )
+    res = backend.run()
+
+    if resumes:
+        assert res.results["result"] == "PASS", res.results
+    else:
+        assert res.results["fail_stage"] == "resume"
+        assert "01_floorplan.tcl" in res.results["desc"]
+        assert "line 1" in res.results["desc"]
+
+
 def test_resume_twice_from_one_global_route(tmp_path, monkeypatch):
     first = _stopped_at_global_route(tmp_path, monkeypatch)
 
@@ -1163,6 +1192,16 @@ def test_script_identity_ignores_run_bindings_and_the_stop_report():
     assert pnr_stages.script_identity(a) != pnr_stages.script_identity(
         a.replace("flow", "other")
     )
+
+
+def test_script_identity_ignores_whole_line_comments():
+    a = "# rb 1\nflow\n  # a step\nstep ;# kept\n"
+    b = "flow\n# another wording\nstep ;# kept\n"
+    assert pnr_stages.script_identity(a) == pnr_stages.script_identity(b)
+    assert pnr_stages.script_identity(a) != pnr_stages.script_identity(
+        a.replace("step", "other")
+    )
+    assert "line 2" in pnr_stages.first_difference(a, a.replace("step ", "other "))
 
 
 def test_run_session_measures_the_child_process(tmp_path):

@@ -158,6 +158,9 @@ STAGE_DONE_MARKER = ">>> End of stage "
 _THREADS_RE = re.compile(r'\nputs ">>> Threads"\nset_thread_count [^\n]*\n')
 
 
+#: A whole-line Tcl comment.
+_COMMENT_LINE_RE = re.compile(r"^[ \t]*#[^\n]*\n?", re.MULTILINE)
+
 #: A line of the shared header at the top of every stage script: `set NAME value`.
 _HEADER_SET_RE = re.compile(r"^set (\w+)\s")
 
@@ -194,12 +197,13 @@ def session_body(text: str) -> str:
 def _identity_text(text: str) -> str:
     """A stage script as far as its checkpoint depends on it.
 
-    That is the script up to its end-of-stage line, with the run bindings blanked, the thread count left out, and of the shared header only the `set` lines whose variable the rest of the script reads (see `_reads`), directly or through another such line. What follows the end-of-stage line, `exit` or a `--stop-after` report, does not change the checkpoint, so a stopped run's stage counts as the same stage. A stage may run at another thread count than the stages before it.
+    That is the script up to its end-of-stage line, without whole-line comments, with the run bindings blanked, the thread count left out, and of the shared header only the `set` lines whose variable the rest of the script reads (see `_reads`), directly or through another such line. What follows the end-of-stage line, `exit` or a `--stop-after` report, does not change the checkpoint, so a stopped run's stage counts as the same stage. A stage may run at another thread count than the stages before it.
     """
     done = text.find(f'puts "{STAGE_DONE_MARKER}')
     if done >= 0:
         end = text.find("\n", done)
         text = text[: end + 1] if end >= 0 else text
+    text = _COMMENT_LINE_RE.sub("", text)
     text = _THREADS_RE.sub("", text, count=1)
     text = pnr_checkpoints.RUN_BINDING_RE.sub(r"set RB_\1_DIR <run>", text)
     header, rest = _header_and_rest(text)
@@ -260,14 +264,22 @@ _FLOORPLAN_INPUTS = (
 )
 
 
-def input_read_before(role: str, stage: str) -> bool:
-    """Whether a session before `stage` reads the manifest input `role`.
+#: The stages that read the PDK's `rcx-rules`, in flow order.
+_RCX_RULES_READERS = ("post_route_repair", "finish")
 
-    Every session reads the Liberty, LEF, `platform-tcl`, `layer-rc-tcl` and `session` hooks, and so does any role not named here.
+
+def input_read_before(
+    role: str, stage: str, stages: tuple[str, ...] = PNR_STAGES
+) -> bool:
+    """Whether a session before `stage` of a run of `stages` reads the manifest input `role`.
+
+    Every session reads the Liberty, LEF, `platform-tcl`, `layer-rc-tcl` and `session` hooks, and so does any role not named here. `rcx_rules` is read first by the run's post-route repair, else by its finish.
     """
     if role == "script":
         return False
-    if role in _FLOORPLAN_INPUTS:
+    if role == "rcx_rules":
+        first = next((s for s in _RCX_RULES_READERS if s in stages), "finish")
+    elif role in _FLOORPLAN_INPUTS:
         first = "floorplan"
     elif role.startswith("hook_") and role[5:].replace("_", "-") in HOOK_STAGE:
         first = HOOK_STAGE[role[5:].replace("_", "-")]
@@ -419,13 +431,16 @@ def check_resume(
         if entry is None:
             return f"{where} records no script for stage {stage}"
         recorded = (entry.get("script") or {}).get("identity")
-        if recorded != script_identity(scripts[stage]):
+        path = (entry.get("script") or {}).get("path")
+        ran = None
+        if path and os.path.isfile(path):
+            with open(path) as f:
+                ran = f.read()
+        now = script_identity(scripts[stage])
+        # The recorded script is compared again, so a run recorded by another rtl_buddy that compares less of a script still resumes.
+        if now not in (recorded, ran is not None and script_identity(ran)):
             name = f"{pnr_checkpoints.STAGE_INDEX[stage]}_{stage}.tcl"
-            path = (entry.get("script") or {}).get("path")
-            detail = ""
-            if path and os.path.isfile(path):
-                with open(path) as f:
-                    detail = f": {first_difference(f.read(), scripts[stage])}"
+            detail = f": {first_difference(ran, scripts[stage])}" if ran else ""
             return (
                 f"the {name} script generated now differs from the one {where} "
                 f"ran{detail}"
@@ -433,7 +448,7 @@ def check_resume(
 
     old_inputs = _absolutise(manifest.get("inputs") or {}, root)
     for role, value in inputs.items():
-        if not input_read_before(role, from_stage):
+        if not input_read_before(role, from_stage, stages):
             continue
         if _content(old_inputs.get(role)) != _content(value):
             return (
@@ -441,7 +456,7 @@ def check_resume(
                 f"{_describe(old_inputs.get(role))} then, {_describe(value)} now"
             )
     for role in old_inputs:
-        if role not in inputs and input_read_before(role, from_stage):
+        if role not in inputs and input_read_before(role, from_stage, stages):
             return f"input {role} that {where} read is no longer configured"
 
     for kind, file in (record.get("files") or {}).items():

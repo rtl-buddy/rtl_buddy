@@ -2321,6 +2321,23 @@ def test_pnr_template_packs_macros_by_their_own_size():
     assert "slot_w" not in template
 
 
+def test_drc_count_counts_violations_not_report_lines(tmp_path):
+    from rtl_buddy.tools import pnr_openroad
+
+    report = tmp_path / "route.drc.rpt"
+    report.write_text(
+        "violation type: Short\n"
+        "\tsrcs: net:a net:b\n"
+        "\tbbox = (1.0, 2.0) - (1.1, 2.1) on Layer met1\n"
+        "violation type: Metal Spacing\n"
+        "\tsrcs: net:c PIN/VPWR\n"
+        "\tbbox = (3.0, 4.0) - (3.1, 4.1) on Layer met2\n"
+    )
+
+    assert pnr_openroad.count_drc_violations(str(report)) == 2
+    assert pnr_openroad.count_drc_violations(str(tmp_path / "missing.rpt")) == 0
+
+
 def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatch):
     """A run that reaches OpenROAD but writes nothing scores zero DRCs, not a previous
     run's count, and leaves no previous ODB for `rb power`.
