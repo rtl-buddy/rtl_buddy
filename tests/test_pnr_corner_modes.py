@@ -285,6 +285,7 @@ def test_the_mode_probe_reads_its_answer(tmp_path, monkeypatch, stdout, expected
 
     assert backend._probe_sta_modes() is expected
     assert seen["input"] == openroad_corners.MODES_PROBE_TCL
+    assert seen["cwd"] == backend.artefact_dir
 
 
 @pytest.mark.parametrize(
@@ -453,6 +454,18 @@ def test_a_per_corner_sdc_path_is_quoted_for_tcl(tmp_path):
     quoted = str(odd).replace("$", "\\$").replace("[", "\\[").replace("]", "\\]")
     quoted = quoted.replace('"', '\\"')
     assert f'read_sdc -mode ss "{quoted}/ss.sdc"\n' in text
+
+
+def test_the_primary_sdc_path_is_quoted_only_when_tcl_needs_it(tmp_path):
+    odd = tmp_path / "my design"
+    odd.mkdir()
+    sdcs = {c: _sdc(odd, f"{c}.sdc") for c in _CORNERS}
+    text = _render(tmp_path, _platform(_pdk(tmp_path)), constraints=sdcs)
+    assert f'set SDC_FILE        "{odd}/tt.sdc"\n' in text
+
+    plain = {c: _sdc(tmp_path, f"{c}.sdc") for c in _CORNERS}
+    text = _render(tmp_path, _platform(_pdk(tmp_path)), constraints=plain)
+    assert f"set SDC_FILE        {tmp_path}/tt.sdc\n" in text
 
 
 def test_max_fanout_and_propagated_clocks_apply_in_every_mode(tmp_path):

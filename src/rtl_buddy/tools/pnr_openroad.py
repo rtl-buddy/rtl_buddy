@@ -870,6 +870,13 @@ def _tcl_quoted_path(path: str) -> str:
     return f'"{escaped}"'
 
 
+def _tcl_path_word(path: str) -> str:
+    """A file path as a Tcl word: bare when it needs no quoting, so ordinary paths render as before."""
+    if any(c.isspace() or c in '$[]"\\{};' for c in path):
+        return _tcl_quoted_path(path)
+    return path
+
+
 def _tcl_list(items) -> str:
     """A braced Tcl list of names `config.pnr` has already checked for Tcl-unsafe characters."""
     return "{" + " ".join(items) + "}"
@@ -2451,7 +2458,7 @@ class OpenRoadPnr:
             "place_pins_block": _place_pins_block(fp),
             "design": self.pnr_cfg.resolve_synth_cfg().get_top(),
             "netlist": netlist,
-            "sdc": sdc,
+            "sdc": _tcl_path_word(sdc),
             "liberty": platform.get_sta_lib_paths()[0],
             "read_liberty": read_liberty,
             "scenes_block": scenes_block,
@@ -3198,6 +3205,7 @@ class OpenRoadPnr:
 
     def _probe_sta_modes(self) -> bool | str:
         """Return whether this OpenROAD's OpenSTA can give each corner an SDC mode of its own (see `openroad_corners.MODES_PROBE_TCL`), or, when it gave no answer, what went wrong."""
+        os.makedirs(self.artefact_dir, exist_ok=True)
         try:
             r = subprocess.run(
                 [self.openroad_executable, "-no_init", "-exit"],
@@ -3206,6 +3214,7 @@ class OpenRoadPnr:
                 text=True,
                 timeout=_MODES_PROBE_TIMEOUT_S,
                 check=False,
+                cwd=self.artefact_dir,
             )
         except subprocess.TimeoutExpired:
             return f"it did not finish in {_MODES_PROBE_TIMEOUT_S} s"
