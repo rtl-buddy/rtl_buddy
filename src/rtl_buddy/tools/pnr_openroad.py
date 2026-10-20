@@ -862,6 +862,14 @@ def _pdn_grid_tcl(pdn) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _tcl_quoted_path(path: str) -> str:
+    """A file path as a double-quoted Tcl word, with substitutions suppressed."""
+    escaped = path.replace("\\", "\\\\")
+    for char in ("$", "[", "]", '"'):
+        escaped = escaped.replace(char, "\\" + char)
+    return f'"{escaped}"'
+
+
 def _tcl_list(items) -> str:
     """A braced Tcl list of names `config.pnr` has already checked for Tcl-unsafe characters."""
     return "{" + " ".join(items) + "}"
@@ -1297,6 +1305,9 @@ def _read_global_route_tcl(stage: str) -> str:
     )
 
 
+#: How long the SDC mode probe may take (`OpenRoadPnr._probe_sta_modes`).
+_MODES_PROBE_TIMEOUT_S = 15
+
 #: Every clock propagates after CTS; in each corner's mode on a platform with one.
 _PROPAGATED_CLOCKS = "set_propagated_clock [all_clocks]"
 
@@ -1304,28 +1315,29 @@ _PROPAGATED_CLOCKS = "set_propagated_clock [all_clocks]"
 def _mode_checkpoint_sdc_tcl(corners: list[str]) -> str:
     """Tcl defining `rb::ckpt::write_sdc`, which `write_checkpoint` (checkpoints.tcl) calls in place of OpenSTA's `write_sdc` when each corner has an SDC mode.
 
-    It writes one file holding every corner's mode, each after its `set_mode` and the primary's last, so the next session's `read_sdc` of the checkpoint restores every mode and leaves the primary current.
+    Given `<name>.sdc`, it writes each corner's mode alone to `<name>.<corner>.sdc`, a plain SDC, and every mode into `<name>.sdc`, each after its `set_mode` and the primary's last, so the next session's `read_sdc` of that file restores every mode and leaves the primary current. It returns to the mode it was called in.
     """
     primary = corners[0]
     return (
         "namespace eval rb::ckpt {}\n"
         "proc rb::ckpt::write_sdc {args} {\n"
         "  set path [lindex $args end]\n"
+        "  set root [file rootname $path]\n"
+        "  set was [sta::cmd_mode_name]\n"
         "  set out [open $path w]\n"
         "  try {\n"
         f"    foreach mode {{{' '.join(corners)}}} {{\n"
         "      set_mode $mode\n"
-        "      ::write_sdc {*}[lrange $args 0 end-1] $path.$mode\n"
-        "      set in [open $path.$mode]\n"
+        "      ::write_sdc {*}[lrange $args 0 end-1] $root.$mode.sdc\n"
+        "      set in [open $root.$mode.sdc]\n"
         '      puts $out "set_mode $mode"\n'
         '      puts $out [string trimright [read $in] "\\n"]\n'
         "      close $in\n"
-        "      file delete $path.$mode\n"
         "    }\n"
         f'    puts $out "set_mode {primary}"\n'
         "  } finally {\n"
         "    close $out\n"
-        f"    set_mode {primary}\n"
+        "    set_mode $was\n"
         "  }\n"
         "}"
     )
@@ -2091,6 +2103,8 @@ class OpenRoadPnr:
         self._split = False
         # Whether a multi-corner platform gets an SDC mode per corner; `run` asks OpenROAD.
         self._sta_modes = True
+        # The corners whose SDC modes each checkpoint also writes alone; empty without modes.
+        self._mode_corners: tuple[str, ...] = ()
         self.pnr_cfg = pnr_cfg
         self._configured_cfg = pnr_cfg
         self.root_cfg = root_cfg
@@ -2305,13 +2319,19 @@ class OpenRoadPnr:
                 + _mode_checkpoint_sdc_tcl(corners)
             )
             per_corner_sdc = isinstance(self.pnr_cfg.get_constraints(), dict)
-            read_sdc = "".join(
-                f"read_sdc -mode {c} {path if per_corner_sdc else '$SDC_FILE'}\n"
-                for c, path in sdc_by_corner.items()
+            # `read_sdc -mode` returns to a mode named `default` only by this `set_mode`.
+            read_sdc = (
+                "".join(
+                    f"read_sdc -mode {c} "
+                    f"{_tcl_quoted_path(path) if per_corner_sdc else '$SDC_FILE'}\n"
+                    for c, path in sdc_by_corner.items()
+                )
+                + f"set_mode {corners[0]}\n"
             )
         else:
             scenes_block = ""
             read_sdc = "read_sdc $SDC_FILE\n"
+        self._mode_corners = tuple(corners) if modes else ()
 
         cts_buffers = platform.get_cts_buffers()
         if len(cts_buffers) > 1:
@@ -2402,10 +2422,7 @@ class OpenRoadPnr:
         if pin_script is not None:
             if not os.path.isfile(pin_script):
                 raise RuntimeError(f"pin-constraints file does not exist: {pin_script}")
-            escaped = pin_script.replace("\\", "\\\\")
-            for char in ("$", "[", "]", '"'):
-                escaped = escaped.replace(char, "\\" + char)
-            pin_constraints_tcl = f'source "{escaped}"'
+            pin_constraints_tcl = f"source {_tcl_quoted_path(pin_script)}"
         max_fanout = max_fanout_cmd(platform)
         if modes:
             max_fanout_block = (
@@ -2553,6 +2570,7 @@ class OpenRoadPnr:
                     order=self._stages,
                     stop_after="detailed_route" if self._split else self.stop_after,
                     state=pnr_checkpoints.SESSION_STATE if self._split else (),
+                    modes=self._mode_corners,
                 )
                 if self._ckpt_run_dir is not None and not self._staged
                 else ""
@@ -2613,7 +2631,11 @@ class OpenRoadPnr:
         substitutions = {
             **self._substitutions,
             "checkpoint_block": pnr_checkpoints.render_staged_block(
-                stage, run_dir, self._pred_dir(stage, run_dir), session=session
+                stage,
+                run_dir,
+                self._pred_dir(stage, run_dir),
+                session=session,
+                modes=self._mode_corners,
             ),
         }
         if self._dispatch is not None:
@@ -3058,7 +3080,7 @@ class OpenRoadPnr:
     def _check_corner_constraints(self, platform, version: str | None):
         """Check `constraints:` against the platform's corners and, on a multi-corner platform, whether OpenROAD can give each corner an SDC mode; return the setup failure, or None.
 
-        A per-corner mapping must name each corner and no other; on a single-corner platform it is the one path from here on. Without modes every corner shares one SDC mode, with a warning, and a per-corner mapping fails.
+        A per-corner mapping must name each corner and no other; on a single-corner platform it is the one path from here on. Without modes every corner shares one SDC mode, with a warning, and a per-corner mapping fails. A probe that gives no answer is tried once more, then fails setup.
         """
         name = self.pnr_cfg.get_name()
         constraints = self.pnr_cfg.get_constraints()
@@ -3084,7 +3106,27 @@ class OpenRoadPnr:
                     self.pnr_cfg, constraints=constraints[corners[0]]
                 )
             return None
-        self._sta_modes = self._probe_sta_modes()
+        answer = self._probe_sta_modes()
+        if isinstance(answer, str):
+            answer = self._probe_sta_modes()
+        if isinstance(answer, str):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.corner_modes_probe_failed",
+                pnr=name,
+                exe=self.openroad_executable,
+                problem=answer,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    f"could not tell whether {self.openroad_executable} gives "
+                    f"each corner an SDC mode: {answer}"
+                ),
+                fail_stage="setup",
+            )
+        self._sta_modes = answer
         if self._sta_modes:
             return None
         if isinstance(constraints, dict):
@@ -3154,20 +3196,30 @@ class OpenRoadPnr:
             return False
         return f"RB_HAS_CMD:{command}:yes" in (r.stdout or "")
 
-    def _probe_sta_modes(self) -> bool:
-        """Return whether this OpenROAD's OpenSTA can give each corner an SDC mode of its own (see `openroad_corners.MODES_PROBE_TCL`); False if it cannot be determined."""
+    def _probe_sta_modes(self) -> bool | str:
+        """Return whether this OpenROAD's OpenSTA can give each corner an SDC mode of its own (see `openroad_corners.MODES_PROBE_TCL`), or, when it gave no answer, what went wrong."""
         try:
             r = subprocess.run(
                 [self.openroad_executable, "-no_init", "-exit"],
                 input=openroad_corners.MODES_PROBE_TCL,
                 capture_output=True,
                 text=True,
-                timeout=15,
+                timeout=_MODES_PROBE_TIMEOUT_S,
                 check=False,
             )
-        except (OSError, subprocess.SubprocessError):
+        except subprocess.TimeoutExpired:
+            return f"it did not finish in {_MODES_PROBE_TIMEOUT_S} s"
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"it could not be started: {exc}"
+        out = r.stdout or ""
+        if openroad_corners.MODES_PROBE_YES in out:
+            return True
+        if openroad_corners.MODES_PROBE_NO in out:
             return False
-        return openroad_corners.MODES_PROBE_YES in (r.stdout or "")
+        last = (r.stderr or out).strip().splitlines()[-1:]
+        return f"it exited with code {r.returncode} without an answer" + (
+            f" ({last[0].strip()})" if last else ""
+        )
 
     def _drc_report_path(self) -> str:
         return os.path.join(self.artefact_dir, "route.drc.rpt")

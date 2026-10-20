@@ -2010,6 +2010,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"({fields.get('version') or 'version unknown'}) cannot switch "
                 "between SDC modes; upgrade OpenROAD or give one SDC path"
             )
+        case "pnr.corner_modes_probe_failed":
+            return (
+                f'P&R "{fields.get("pnr")}": could not tell whether '
+                f"{fields.get('exe')} can give each corner an SDC mode: "
+                f"{fields.get('problem')}"
+            )
         case "pnr.corner_modes_unsupported":
             return (
                 f'P&R "{fields.get("pnr")}": {fields.get("exe")} '

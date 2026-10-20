@@ -49,8 +49,9 @@ if {$rb_ok} { puts RB_STA_MODES:yes } else { puts RB_STA_MODES:no }
 exit
 """
 
-#: What `MODES_PROBE_TCL` prints when modes work.
+#: What `MODES_PROBE_TCL` prints when modes work, and when they do not.
 MODES_PROBE_YES = "RB_STA_MODES:yes"
+MODES_PROBE_NO = "RB_STA_MODES:no"
 
 
 def mode_liberty_tcl(corner_libs: dict[str, list[str]]) -> list[str]:
