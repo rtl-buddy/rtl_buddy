@@ -1150,6 +1150,54 @@ def test_wait_all_reports_a_failed_scancel(monkeypatch, caplog):
     assert "Invalid job id" in caplog.text
 
 
+def _reaping_run(calls, *, polls):
+    """subprocess.run stand-in: `squeue` lists job 7 as never runnable for `polls`
+    polls, then nothing; the first `scancel` times out. Records `(command, timeout)`.
+    """
+    state = {"polls": 0, "scancels": 0}
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append((argv[0], timeout))
+        if argv[0] == "squeue":
+            state["polls"] += 1
+            doomed = state["polls"] <= polls
+            line = "7|DependencyNeverSatisfied|PENDING|0:00|rb:basic\n"
+            return SimpleNamespace(
+                returncode=0, stdout=line if doomed else "", stderr=""
+            )
+        state["scancels"] += 1
+        if state["scancels"] == 1:
+            raise subprocess.TimeoutExpired(argv, timeout)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    return run
+
+
+def test_queue_states_bounds_the_reaping_scancel_by_its_own_timeout(monkeypatch):
+    """A scancel that times out leaves the job queued, and the next poll retries it."""
+    calls = []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _reaping_run(calls, polls=2))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    handle = JobHandle("7", _spec())
+
+    assert backend.queue_states([handle], timeout_s=30.0) == {"7": "pending"}
+    assert backend.queue_states([handle], timeout_s=30.0) == {}
+    assert calls == [("squeue", 30.0), ("scancel", 30.0)] * 2
+
+
+def test_wait_all_bounds_the_reaping_scancel(monkeypatch):
+    """Its squeue waits as long as the controller takes, but the scancel is bounded."""
+    calls = []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _reaping_run(calls, polls=2))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+
+    SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(
+        [JobHandle("7", _spec())]
+    )
+
+    assert calls == [("squeue", None), ("scancel", base_module.CANCEL_TIMEOUT_S)] * 2
+
+
 def test_dependent_submit_asks_slurm_to_reap_on_invalid_dependency(monkeypatch):
     """cancel_all cannot run if the head is SIGKILLed, so Slurm owns the reaping."""
     calls, results = ([], [SimpleNamespace(returncode=0, stdout="7", stderr="")])
