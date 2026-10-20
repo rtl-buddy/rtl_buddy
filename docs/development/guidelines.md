@@ -16,7 +16,7 @@ Record surprising defaults, limitations, and workarounds in [Quirks & Known Issu
 
 ## Tool Defaults
 
-Keep each underlying tool's defaults. A knob that changes what a tool command does is unset or off by default, so a project gets the tool's behaviour unless it sets the knob. A default that departs from the tool works around a named tool bug, has its section in [Quirks & Known Issues](../known-issues.md), and has an issue that tracks dropping it once the supported tool versions fix the bug.
+Give each underlying tool's commands the behaviour their users expect: the tool's own default, or the setting its reference flows commonly use (for OpenROAD, OpenROAD-flow-scripts). A knob that departs from both is unset or off by default, so a project chooses it. A default that departs from both works around a named tool bug, has its section in [Quirks & Known Issues](../known-issues.md), and has an issue that tracks dropping it once the supported tool versions fix the bug.
 
 ## Execution Contexts
 
