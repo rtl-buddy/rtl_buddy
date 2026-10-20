@@ -384,10 +384,19 @@ def read_post_route_repair(where: str, raw):
 
 
 def _merge(layers) -> dict | None:
-    """Merge layers, lowest first: a `None` layer turns the block off, a later layer's keys win field by field, `repair_design` merging the same way."""
+    """Merge layers, lowest first: a `None` layer turns the block off, a later layer's keys win field by field, `repair_design` merging the same way. `HOLD_REPAIR_DROPPED` skips the hold repair, and turns the block off when that leaves nothing to repair."""
     merged = None
     for layer in layers:
         if layer is UNSET:
+            continue
+        if layer is HOLD_REPAIR_DROPPED:
+            if merged is not None:
+                merged = {**merged, "hold_margin": None}
+                if (
+                    merged.get("repair_design") is None
+                    and merged.get("setup_margin") is None
+                ):
+                    merged = None
             continue
         if layer is None:
             merged = None
@@ -467,6 +476,28 @@ def resolve_post_route_repair(where: str, layers) -> PostRouteRepair | None:
 
 #: The layer `global-route-hold-repair: true` stands for: a hold-only repair with no margin.
 HOLD_REPAIR_SHORTHAND = {"hold_margin": 0.0}
+
+
+class _HoldRepairDropped:
+    def __repr__(self) -> str:
+        return "HOLD_REPAIR_DROPPED"
+
+
+#: The layer a run's `global-route-hold-repair: false` stands for: no hold repair after global route.
+HOLD_REPAIR_DROPPED: Any = _HoldRepairDropped()
+
+
+def read_hold_repair_shorthand(where: str, shorthand: bool | None, block):
+    """Return a run's global-route repair layer from its `global-route-hold-repair` and `global-route-repair` (already read); refuse both together."""
+    if shorthand is None:
+        return block
+    if block is not UNSET:
+        raise FatalRtlBuddyError(
+            f"{where}: set either global-route-hold-repair or "
+            "global-route-repair, not both (global-route-hold-repair: true "
+            "is global-route-repair: {hold-margin: 0})"
+        )
+    return dict(HOLD_REPAIR_SHORTHAND) if shorthand else HOLD_REPAIR_DROPPED
 
 
 def read_mode(where: str, value) -> PnrMode:
