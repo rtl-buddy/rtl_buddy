@@ -6,6 +6,7 @@ OpenROAD backend; post-route rounds and probes run under the stub OpenROAD harne
 """
 
 import json
+import logging
 import os
 import re
 from dataclasses import replace
@@ -43,6 +44,7 @@ from rtl_buddy.config.pnr_repair import (
     read_post_route_repair,
 )
 from rtl_buddy.errors import FatalRtlBuddyError
+from rtl_buddy.logging_utils import _human_message
 from rtl_buddy.tools import pnr_openroad
 from rtl_buddy.tools.pnr_openroad import (
     _DETAILED_ROUTE_CMD,
@@ -925,15 +927,25 @@ def test_an_eco_round_overrides_design_is_routed_around_its_repairs_only(
     assert r1.count("rb::eco::repair 1 ") == 1
 
 
+@pytest.mark.parametrize("how", ["one session", "staged", "dispatched"])
 def test_an_eco_round_without_the_override_warns_and_repairs_as_routed(
-    tmp_path, monkeypatch, caplog
+    tmp_path, monkeypatch, how
 ):
-    backend, artefacts = _repair_backend(
-        tmp_path,
-        monkeypatch,
-        post_route={**_PR, "rounds": 2},
-        env={"RB_STUB_SETUP": "-0.2 -0.1"},
-    )
+    post_route = {**_PR, "rounds": 2}
+    if how == "dispatched":
+        from test_pnr_dispatch import _dispatched
+
+        monkeypatch.setenv("RB_STUB_SETUP", "-0.2 -0.1")
+        backend, artefacts, _slurm = _dispatched(tmp_path, monkeypatch)
+        _with_repair(backend, tmp_path, post_route=post_route)
+    else:
+        backend, artefacts = _repair_backend(
+            tmp_path,
+            monkeypatch,
+            post_route=post_route,
+            stages=how == "staged",
+            env={"RB_STUB_SETUP": "-0.2 -0.1"},
+        )
     # A `repair_timing` that does not call `design_is_routed` itself.
     harness = tmp_path / "harness.tcl"
     text = harness.read_text()
@@ -944,8 +956,16 @@ def test_an_eco_round_without_the_override_warns_and_repairs_as_routed(
         + text.replace(stub, stub.replace("design_is_routed", "rb_routed"))
     )
 
-    with caplog.at_level("INFO"):
-        res = backend.run()
+    logged = []
+    real_log_event = pnr_openroad.log_event
+
+    def _log_event(logger, level, event, /, **fields):
+        logged.append((level, event, fields))
+        return real_log_event(logger, level, event, **fields)
+
+    monkeypatch.setattr(pnr_openroad, "log_event", _log_event)
+
+    res = backend.run()
 
     assert res.results["result"] == "PASS", res.results
     (run_dir,) = _runs(artefacts)
@@ -957,13 +977,12 @@ def test_an_eco_round_without_the_override_warns_and_repairs_as_routed(
     ]
     assert [e["round"] for e in unguarded] == [1, 2]
     (warning,) = [
-        r
-        for r in caplog.records
-        if getattr(r, "rtl_event", None) == "pnr.post_route_eco_unguarded"
+        (level, fields)
+        for level, event, fields in logged
+        if event == "pnr.post_route_eco_unguarded"
     ]
-    assert warning.levelname == "WARNING"
-    assert warning.rtl_fields == {"pnr": "demo_pnr", "rounds": [1, 2]}
-    message = warning.getMessage()
+    assert warning == (logging.WARNING, {"pnr": "demo_pnr", "rounds": [1, 2]})
+    message = _human_message("pnr.post_route_eco_unguarded", warning[1])
     assert "RSZ-0074" in message
     assert "post-route-repair.reroute: full" in message
 
