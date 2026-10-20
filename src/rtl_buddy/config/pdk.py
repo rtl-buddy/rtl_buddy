@@ -5,6 +5,7 @@ from enum import StrEnum
 from serde import serde, field
 
 from ..errors import FatalRtlBuddyError
+from .unknown_keys import KeySpec
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,9 @@ class PlacementFile:
     rotated_macro_footprint: str | None = field(
         rename="rotated-macro-footprint", default=None
     )
+
+
+PLACEMENT_SPEC = KeySpec(PlacementFile)
 
 
 def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
@@ -223,6 +227,13 @@ class PdkConfigFile:
     layer_rc_tcl: str = field(rename="layer-rc-tcl", default="")
     tapcell_tcl: str = field(rename="tapcell-tcl", default="")
     platform_tcl: str = field(rename="platform-tcl", default="")
+
+
+#: The keys of one `cfg-pdks` entry, for the unknown-key check.
+PDK_SPEC = KeySpec(
+    PdkConfigFile,
+    {"pin-layers": KeySpec(PdkPinLayersFile), "placement": PLACEMENT_SPEC},
+)
 
 
 class PdkConfig:
