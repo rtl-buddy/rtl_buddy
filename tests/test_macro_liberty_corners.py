@@ -254,6 +254,18 @@ def test_the_time_unit_check_reads_every_per_corner_file(tmp_path, monkeypatch, 
     assert event.rtl_fields["units"][per_corner["ss"]] == "1ps"
 
 
+def test_a_hardened_block_digests_a_one_corner_mapping_as_its_path(tmp_path):
+    from rtl_buddy.tools.pnr_abstract import abstract_config
+
+    platform = _platform(_pdk(tmp_path), corners=["tt"])
+    (tt,) = _macro_libs(tmp_path, "m_tt")
+
+    plain = abstract_config(_cfg(tmp_path, lib_paths=[tt]), platform)
+    mapped = abstract_config(_cfg(tmp_path, lib_paths=[{"tt": tt}]), platform)
+
+    assert mapped == plain
+
+
 # ── rb pnr Tcl ─────────────────────────────────────────────────────────────
 
 
