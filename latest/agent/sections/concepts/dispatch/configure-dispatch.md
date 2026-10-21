@@ -33,6 +33,6 @@ cfg-dispatch:
     margin: 1.5
 ```
 
-`jobs` sizes the local-parallel pool. `max-jobs-per-array` throttles each Slurm array. See [YAML formats](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#root_configyaml) for defaults and validation.
+`jobs` sizes the local-parallel pool. `max-jobs-per-array` throttles each Slurm array. See [YAML formats](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#root_configyaml) for defaults and validation.
 
 Quote every `time` value; an unquoted `4:00:00` is rejected.

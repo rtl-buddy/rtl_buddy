@@ -1117,32 +1117,14 @@
       "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/plugins.md"
     },
     {
-      "description": "Run OpenROAD place-and-route from a mapped synthesis result, configure a physical platform, and inspect timing, DRC, GDS, and layout artefacts.",
+      "description": "Run OpenROAD place-and-route on a synthesised netlist with rb pnr, read and debug the result, and control the floorplan, timing repair, long runs, GDS export and hardened blocks.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/",
       "sections": [
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#install-the-tools",
-          "slug": "install-the-tools",
-          "title": "Install the tools",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/install-the-tools.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#define-a-pr-run",
-          "slug": "define-a-pr-run",
-          "title": "Define a P&R run",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/define-a-pr-run.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-pr",
-          "slug": "run-pr",
-          "title": "Run P&R",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/run-pr.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#flow-steps",
-          "slug": "flow-steps",
-          "title": "Flow steps",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/flow-steps.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-pr-on-a-block",
+          "slug": "run-pr-on-a-block",
+          "title": "Run P&R on a block",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/run-pr-on-a-block.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#interpret-results",
@@ -1157,6 +1139,18 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/inspect-artefacts.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#follow-a-running-flow",
+          "slug": "follow-a-running-flow",
+          "title": "Follow a running flow",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/follow-a-running-flow.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#fix-a-failed-run",
+          "slug": "fix-a-failed-run",
+          "title": "Fix a failed run",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/fix-a-failed-run.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#configure-the-physical-platform",
           "slug": "configure-the-physical-platform",
           "title": "Configure the physical platform",
@@ -1169,28 +1163,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/sign-off-at-several-corners.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#tune-the-process-dependent-steps",
-          "slug": "tune-the-process-dependent-steps",
-          "title": "Tune the process-dependent steps",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/tune-the-process-dependent-steps.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#exclude-cells-with-dont-use-cells",
-          "slug": "exclude-cells-with-dont-use-cells",
-          "title": "Exclude cells with dont-use-cells",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/exclude-cells-with-dont-use-cells.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#extract-parasitics-with-rcx-rules",
-          "slug": "extract-parasitics-with-rcx-rules",
-          "title": "Extract parasitics with rcx-rules",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/extract-parasitics-with-rcx-rules.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#source-platform-tcl-hooks",
-          "slug": "source-platform-tcl-hooks",
-          "title": "Source platform Tcl hooks",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/source-platform-tcl-hooks.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#gate-signoff",
+          "slug": "gate-signoff",
+          "title": "Gate signoff",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/gate-signoff.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#set-wire-rc",
@@ -1199,58 +1175,64 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/set-wire-rc.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#macro-placement",
-          "slug": "macro-placement",
-          "title": "Macro placement",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/macro-placement.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#rtl-mp-macro-placement",
-          "slug": "rtl-mp-macro-placement",
-          "title": "RTL-MP macro placement",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/rtl-mp-macro-placement.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#floorplan-controls",
-          "slug": "floorplan-controls",
-          "title": "Floorplan controls",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/floorplan-controls.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#place-individual-macros",
-          "slug": "place-individual-macros",
-          "title": "Place individual macros",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/place-individual-macros.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#size-the-die-and-core",
-          "slug": "size-the-die-and-core",
-          "title": "Size the die and core",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/size-the-die-and-core.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#plan-the-power-grid-per-run",
-          "slug": "plan-the-power-grid-per-run",
-          "title": "Plan the power grid per run",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/plan-the-power-grid-per-run.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#constrain-boundary-pins",
-          "slug": "constrain-boundary-pins",
-          "title": "Constrain boundary pins",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/constrain-boundary-pins.md"
-        },
-        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#pdk-setup-notes",
           "slug": "pdk-setup-notes",
           "title": "PDK setup notes",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/pdk-setup-notes.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#follow-routing-progress",
-          "slug": "follow-routing-progress",
-          "title": "Follow routing progress",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/follow-routing-progress.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#tune-placement-clock-tree-and-repair",
+          "slug": "tune-placement-clock-tree-and-repair",
+          "title": "Tune placement, clock tree and repair",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/tune-placement-clock-tree-and-repair.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#tune-global-routing",
+          "slug": "tune-global-routing",
+          "title": "Tune global routing",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/tune-global-routing.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#repair-timing-after-routing",
+          "slug": "repair-timing-after-routing",
+          "title": "Repair timing after routing",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/repair-timing-after-routing.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#probe-a-floorplan",
+          "slug": "probe-a-floorplan",
+          "title": "Probe a floorplan",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/probe-a-floorplan.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#shape-the-floorplan",
+          "slug": "shape-the-floorplan",
+          "title": "Shape the floorplan",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/shape-the-floorplan.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#place-macros",
+          "slug": "place-macros",
+          "title": "Place macros",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/place-macros.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#place-io-pins",
+          "slug": "place-io-pins",
+          "title": "Place IO pins",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/place-io-pins.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#plan-the-power-grid",
+          "slug": "plan-the-power-grid",
+          "title": "Plan the power grid",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/plan-the-power-grid.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-tcl-hooks",
+          "slug": "run-tcl-hooks",
+          "title": "Run Tcl hooks",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/run-tcl-hooks.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#openroad-threads",
@@ -1265,16 +1247,28 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/keep-stage-checkpoints.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#stream-out-inputs",
-          "slug": "stream-out-inputs",
-          "title": "Stream-out inputs",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/stream-out-inputs.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#compare-timing-across-stages",
+          "slug": "compare-timing-across-stages",
+          "title": "Compare timing across stages",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/compare-timing-across-stages.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#stream-out-completeness",
-          "slug": "stream-out-completeness",
-          "title": "Stream-out completeness",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/stream-out-completeness.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-stages-as-separate-sessions",
+          "slug": "run-stages-as-separate-sessions",
+          "title": "Run stages as separate sessions",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/run-stages-as-separate-sessions.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#dispatch-the-stages-to-slurm",
+          "slug": "dispatch-the-stages-to-slurm",
+          "title": "Dispatch the stages to Slurm",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/dispatch-the-stages-to-slurm.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#stream-out-gds-and-png",
+          "slug": "stream-out-gds-and-png",
+          "title": "Stream out GDS and PNG",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/stream-out-gds-and-png.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#export-a-saved-result",
@@ -1289,18 +1283,6 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/harden-a-block.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#block-power-grid-convention",
-          "slug": "block-power-grid-convention",
-          "title": "Block power-grid convention",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/block-power-grid-convention.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#blocks-with-supply-pins-on-the-top-strap-layer",
-          "slug": "blocks-with-supply-pins-on-the-top-strap-layer",
-          "title": "Blocks with supply pins on the top strap layer",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/blocks-with-supply-pins-on-the-top-strap-layer.md"
-        },
-        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#assemble-hardened-blocks",
           "slug": "assemble-hardened-blocks",
           "title": "Assemble hardened blocks",
@@ -1313,22 +1295,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/instance-a-parameterised-block.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-a-whole-hierarchy",
-          "slug": "run-a-whole-hierarchy",
-          "title": "Run a whole hierarchy",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/run-a-whole-hierarchy.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#build-a-hierarchy-from-a-clean-tree",
-          "slug": "build-a-hierarchy-from-a-clean-tree",
-          "title": "Build a hierarchy from a clean tree",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/build-a-hierarchy-from-a-clean-tree.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#troubleshooting",
-          "slug": "troubleshooting",
-          "title": "Troubleshooting",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/troubleshooting.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#flow-reference",
+          "slug": "flow-reference",
+          "title": "Flow reference",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/flow-reference.md"
         }
       ],
       "slug": "concepts/pnr",
@@ -2567,12 +2537,6 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/quote-dispatch-time-values.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#an-unknown-key-in-a-reservation-block-is-ignored-after-a-warning",
-          "slug": "an-unknown-key-in-a-reservation-block-is-ignored-after-a-warning",
-          "title": "An unknown key in a reservation block is ignored after a warning",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/an-unknown-key-in-a-reservation-block-is-ignored-after-a-warning.md"
-        },
-        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#dispatch-build-jobs-cover-the-whole-suite",
           "slug": "dispatch-build-jobs-cover-the-whole-suite",
           "title": "Dispatch build jobs cover the whole suite",
@@ -2685,6 +2649,54 @@
           "slug": "prefix-adders-off-the-critical-path-ripple-under-abc-script-default",
           "title": "Prefix adders off the critical path ripple under `abc-script: default`",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/prefix-adders-off-the-critical-path-ripple-under-abc-script-default.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint",
+          "slug": "openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint",
+          "title": "OpenROAD's legalizer blocks a rotated macro's unrotated footprint",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#a-pin-constraints-file-must-not-constrain-a-port-that-has-an-exact-pin",
+          "slug": "a-pin-constraints-file-must-not-constrain-a-port-that-has-an-exact-pin",
+          "title": "A `pin-constraints` file must not constrain a port that has an exact pin",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/a-pin-constraints-file-must-not-constrain-a-port-that-has-an-exact-pin.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#session-state-does-not-cross-a-pr-stage-boundary",
+          "slug": "session-state-does-not-cross-a-pr-stage-boundary",
+          "title": "Session state does not cross a P&R stage boundary",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/session-state-does-not-cross-a-pr-stage-boundary.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#a-staged-pr-run-can-differ-from-a-one-session-run",
+          "slug": "a-staged-pr-run-can-differ-from-a-one-session-run",
+          "title": "A staged P&R run can differ from a one-session run",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/a-staged-pr-run-can-differ-from-a-one-session-run.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#post-route-repair-works-around-openroad-routing-failures",
+          "slug": "post-route-repair-works-around-openroad-routing-failures",
+          "title": "Post-route repair works around OpenROAD routing failures",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/post-route-repair-works-around-openroad-routing-failures.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#corners-share-one-sdc-mode-on-an-openroad-without-modes",
+          "slug": "corners-share-one-sdc-mode-on-an-openroad-without-modes",
+          "title": "Corners share one SDC mode on an OpenROAD without modes",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/corners-share-one-sdc-mode-on-an-openroad-without-modes.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#rb-power-times-every-corner-in-one-sdc-mode",
+          "slug": "rb-power-times-every-corner-in-one-sdc-mode",
+          "title": "rb power times every corner in one SDC mode",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/rb-power-times-every-corner-in-one-sdc-mode.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#an-unconfirmed-dispatched-pr-run-blocks-later-runs",
+          "slug": "an-unconfirmed-dispatched-pr-run-blocks-later-runs",
+          "title": "An unconfirmed dispatched P&R run blocks later runs",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/an-unconfirmed-dispatched-pr-run-blocks-later-runs.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#rb-phys-module-reports-no-power-for-an-rtl-module",
@@ -2826,6 +2838,12 @@
           "slug": "v5-to-v6",
           "title": "v5 to v6",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/migrations/v5-to-v6.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/migrations/#v6-to-v7",
+          "slug": "v6-to-v7",
+          "title": "v6 to v7",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/migrations/v6-to-v7.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/migrations/#submodule-to-uv",

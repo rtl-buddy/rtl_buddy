@@ -1,6 +1,6 @@
 ## Coverage on the Graph
 
-`rb graph results` also joins each declared `covers:` relationship to coverage already on disk. It never reruns the simulator. See [Coverage](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/coverage/) for what the metrics mean.
+`rb graph results` also joins each declared `covers:` relationship to coverage already on disk. It never reruns the simulator. See [Coverage](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/coverage/) for what the metrics mean.
 
 The default `--coverage auto` uses the newest coverage manifest and model, and falls back to per-test `coverage.dat` files. Other choices:
 

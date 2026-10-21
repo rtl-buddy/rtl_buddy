@@ -9,11 +9,15 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ --verbose              -v                                      Print execution       │
 │                                                                details to console    │
 │ --machine                                                      Emit machine-oriented │
-│                                                                logs and plain        │
-│                                                                console output        │
+│                                                                logs and JSON         │
+│                                                                results; show failing │
+│                                                                summary rows and      │
+│                                                                counts on stderr      │
 │ --print-failures-only                                          Hide PASS, SKIP, and  │
 │                                                                XFAIL rows from       │
 │                                                                console summaries     │
+│                                                                (default with         │
+│                                                                --machine)            │
 │ --color                    --no-color                          Logs without ANSI     │
 │                                                                color codes           │
 │                                                                [default: color]      │

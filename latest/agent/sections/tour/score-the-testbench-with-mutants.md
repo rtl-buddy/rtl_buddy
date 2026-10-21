@@ -24,4 +24,4 @@ uv run rb mut run
                     Predicted-observable misses (weak properties): m0007_assign_drop
 ```
 
-Rows above are a subset of the twelve mutants. The last line is the actionable one: mutant `m0007` changes a signal the properties can observe and still survived, so the property set is weak there, not merely blind. The full matrix is also written as `mut_report.json`. See [Mutation testing](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/mut/).
+Rows above are a subset of the twelve mutants. The last line is the actionable one: mutant `m0007` changes a signal the properties can observe and still survived, so the property set is weak there, not merely blind. The full matrix is also written as `mut_report.json`. See [Mutation testing](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/mut/).

@@ -14,7 +14,7 @@ rb skill uninstall
 | Project (`--project`) | `<root>/.claude/skills/<member>/SKILL.md` | `<root>/.agents/skills/<member>/SKILL.md` |
 | Explicit dir (`--dir PATH`) | `<PATH>/<member>/SKILL.md` | — |
 
-`<member>` is `rtl-buddy`, `rtl-buddy-test`, `rtl-buddy-dispatch`, `rtl-buddy-graph`, `rtl-buddy-fpv`, or `rtl-buddy-implementation`.
+`<member>` is `rtl-buddy`, `rtl-buddy-test`, `rtl-buddy-dispatch`, `rtl-buddy-graph`, `rtl-buddy-fpv`, `rtl-buddy-implementation`, or `rtl-buddy-pnr`.
 
 - Use project scope only to override user-level skills in a project pinned to a different major version. The project root is found by walking up for `root_config.yaml`, then `.git/`.
 - Use `--dir PATH` for a flat family outside the normal layout. It cannot be combined with `--project` or `--root`.

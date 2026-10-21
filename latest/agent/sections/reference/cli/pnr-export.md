@@ -26,10 +26,11 @@ Usage: rtl-buddy pnr-export [OPTIONS] [PNR_NAME]
 │                                         [default: (the run's <top>.def)]             │
 │ --checkpoint          TEXT              export a stage checkpoint (checkpoints: in   │
 │                                         pnr.yaml) instead of the routed result: a    │
-│                                         stage (floorplan, place, cts, global_route)  │
-│                                         of the latest run, <run-id>/<stage>, or a    │
-│                                         checkpoint file; output goes under the       │
-│                                         checkpoint and is labelled not final         │
+│                                         stage (floorplan, place, cts, global_route,  │
+│                                         detailed_route) of the latest run,           │
+│                                         <run-id>/<stage>, or a checkpoint file;      │
+│                                         output goes under the checkpoint and is      │
+│                                         labelled not final                           │
 │                                         [default: (the run's routed DEF)]            │
 │ --lyp                 TEXT              layer properties (.lyp) for the render       │
 │                                         [default: (the PDK's klayout-props)]         │

@@ -22,4 +22,4 @@ uv run rb cdc-regression -c lint/cdc/cdc_regression.yaml
                                    Results: 5 PASS (5 total)
 ```
 
-The subsystem's ten crossings are the two handshakes, the async FIFO, and the two level synchronizers in the diagram above. Each crossing is also written to `cdc.json` with its source and destination flop, width, and synchronizer depth, so the two suppressed findings are auditable rather than silent. See the [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc) rule set and the FPGA page's [CDC constraint check](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/fpga/) for the flow around it.
+The subsystem's ten crossings are the two handshakes, the async FIFO, and the two level synchronizers in the diagram above. Each crossing is also written to `cdc.json` with its source and destination flop, width, and synchronizer depth, so the two suppressed findings are auditable rather than silent. See the [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc) rule set and the FPGA page's [CDC constraint check](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/fpga/) for the flow around it.

@@ -14,4 +14,4 @@ uv tool install 'rtl-buddy-axi-profiler[notebook]'
 uv tool install 'rtl-buddy-axi-profiler[parquet,notebook]'
 ```
 
-Add `--force` to replace an existing tool environment. Pass `--tool /path/to/axi-profiler` to use a specific executable. See [Installation](https://rtl-buddy.github.io/rtl_buddy/v6/install/#external-tools-by-feature) for external-tool setup.
+Add `--force` to replace an existing tool environment. Pass `--tool /path/to/axi-profiler` to use a specific executable. See [Installation](https://rtl-buddy.github.io/rtl_buddy/v7/install/#external-tools-by-feature) for external-tool setup.

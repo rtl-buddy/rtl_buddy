@@ -34,4 +34,4 @@ analyses:
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 | `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
-`rb cdc` produces text and JSON analyzer outputs. See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/) for commands and options.
+`rb cdc` produces text and JSON analyzer outputs. See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v7/reference/cli/) for commands and options.

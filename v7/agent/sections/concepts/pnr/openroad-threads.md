@@ -1,0 +1,3 @@
+## OpenROAD threads
+
+OpenROAD uses one thread unless the run sets `threads:` to a count or `auto`. `auto` takes the CPUs of the Slurm allocation or affinity mask the run is in, 1 outside one, never the host's core count. A count above the allocation is clamped with `openroad.threads_capped`. Run `rb pnr` inside an allocation (`srun -c 8 rb pnr ...`) to give it CPUs, or use [`--dispatch slurm`](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#dispatch-the-stages-to-slurm). Results can differ slightly between thread counts. `rb power` and `rb synth`'s OpenROAD stage read `threads:` the same way.

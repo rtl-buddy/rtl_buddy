@@ -32,4 +32,4 @@ runs:
 
 Setting both `part` and `platform`, or neither, is fatal. A platform requires `root_config.yaml`. Its XDC files are read first and the run's files afterward.
 
-For `openxc7`, `tool_overrides.openxc7` accepts `chipdb`, `prjxray_db`, `yosys`, `nextpnr`, `fasm2frames`, and `xc7frames2bit`. The `CHIPDB` and `PRJXRAY_DB_DIR` environment variables provide database fallbacks. The openXC7 backend accepts only Xilinx 7-series parts. See [FPGA Implementation](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/fpga/) for setup, commands, and result metrics.
+For `openxc7`, `tool_overrides.openxc7` accepts `chipdb`, `prjxray_db`, `yosys`, `nextpnr`, `fasm2frames`, and `xc7frames2bit`. The `CHIPDB` and `PRJXRAY_DB_DIR` environment variables provide database fallbacks. The openXC7 backend accepts only Xilinx 7-series parts. See [FPGA Implementation](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/fpga/) for setup, commands, and result metrics.

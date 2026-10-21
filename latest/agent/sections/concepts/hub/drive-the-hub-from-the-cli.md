@@ -13,6 +13,6 @@ rb hub send wave-add tb.dut.req tb.dut.ready
 rb hub send capture --out schematic.png --format png
 ```
 
-All verbs and arguments are in the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#hub-send).
+All verbs and arguments are in the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v7/reference/cli/#hub-send).
 
 The hub keeps the latest selection and the latest graph, coverage and physical focus. A focus sent before its app opens is delivered when the app connects. A Surfer rejection, an unknown id, or an absent target peer returns a hub error and a non-zero exit.

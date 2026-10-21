@@ -16,5 +16,5 @@ Logs are separated by process:
 `<tag>` is the run ID or `single`; `<pid>` is the head process ID. In `.dispatch`, every `<pid>` is followed by `-<token>`, for example `build-rtl_buddy-<pid>-<token>.log`; use a glob.
 
 - Regressions that list several test configs from one directory get a namespace directory under `.dispatch`, such as `artefacts/.dispatch/tests-7a91c2d4e6f8/`. If two configs expand tests onto the same per-test directory, the regression exits before submitting; rename one test or separate the configs.
-- `--run-tag <name>` moves these paths into `artefacts/.runs/<name>/`. The shared build directory stays put, so tagged runs reuse one build. See [Namespace concurrent runs](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/execution-context/#namespace-concurrent-runs).
-- Each test's `result-<tag>.json` includes its build record, which [`rb graph results`](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/graph/#results-overlay) shows.
+- `--run-tag <name>` moves these paths into `artefacts/.runs/<name>/`. The shared build directory stays put, so tagged runs reuse one build. See [Namespace concurrent runs](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/execution-context/#namespace-concurrent-runs).
+- Each test's `result-<tag>.json` includes its build record, which [`rb graph results`](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/graph/#results-overlay) shows.

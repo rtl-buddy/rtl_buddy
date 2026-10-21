@@ -20,6 +20,6 @@ fpga-configs:
   - blocks/fifo/fpga.yaml
 ```
 
-Runs above `-l/--reg-level` are SKIP. Machine-mode regression results include the originating suite. Selection and output options are in the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/).
+Runs above `-l/--reg-level` are SKIP. Machine-mode regression results include the originating suite. Selection and output options are in the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v7/reference/cli/).
 
 Filelist `+incdir+` entries reach both backends: Vivado's `synth_design` gets them as `-include_dirs` and openXC7's `read_verilog` as `-I`. Each directory resolves against the filelist that declared it.

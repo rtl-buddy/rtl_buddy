@@ -7,4 +7,4 @@ Inside a project, tool-check merges the built-in tool list with `root_config.yam
 - `cfg-fpv-tools[*].opts.solver-versions` sets solver versions. FPV runs require exact equality; tool-check shows a mismatch as `outdated`.
 - Other `cfg-*-tools` blocks are not consulted, because each flow picks its entry at run time.
 
-Without `root_config.yaml`, built-in locations and version floors apply. See [YAML formats](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#root_configyaml) and the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/).
+Without `root_config.yaml`, built-in locations and version floors apply. See [YAML formats](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#root_configyaml) and the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v7/reference/cli/).

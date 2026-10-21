@@ -23,5 +23,5 @@ rb graph results --run-tag icarus
 
 - A tag is one path segment of letters, digits, `.`, `_` and `-`, at most 64 characters. `.`, `..` and anything containing a path separator are rejected before any directory is created.
 - Shared builds stay shared. The build key includes the toolchain executable, so two simulators get separate `obj_dir`s, and two tags compiling the same thing reuse one build.
-- Under a tag the compile runs one directory deeper, so a relative path in a builder mode's `compile-time` opts names a different file. Write project files as `${RTL_BUDDY_PROJECT_ROOT}/design/waive.vlt`; see [Simulator builders](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#simulator-builders).
+- Under a tag the compile runs one directory deeper, so a relative path in a builder mode's `compile-time` opts names a different file. Write project files as `${RTL_BUDDY_PROJECT_ROOT}/design/waive.vlt`; see [Simulator builders](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#simulator-builders).
 - Without `--run-tag` the layout is the flat one in the left column.

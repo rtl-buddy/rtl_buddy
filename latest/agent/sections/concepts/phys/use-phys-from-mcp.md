@@ -1,6 +1,6 @@
 ## Use phys from MCP
 
-`rb mcp` exposes `phys_runs`, `phys_summary`, `phys_module` and `phys_instance`. They read files directly and need no EDA tool and no running hub. See [The MCP server](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/graph/#the-mcp-server).
+`rb mcp` exposes `phys_runs`, `phys_summary`, `phys_module` and `phys_instance`. They read files directly and need no EDA tool and no running hub. See [The MCP server](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/graph/#the-mcp-server).
 
 - `phys_runs` takes `limit` and is where the `phys_dir` for the other tools comes from.
 - `phys_dir` and `manifest` are the tool arguments for `--phys-dir` and `--manifest`; a relative path resolves against the project root.

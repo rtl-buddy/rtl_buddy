@@ -17,8 +17,8 @@ models:
 
 | Field | Requirement | Meaning |
 |---|---|---|
-| `name` | Required | Model identifier. Unique across every `models.yaml`, regardless of `graph:`. See [Model names](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#model-names) |
-| `filelist` | Required | Filelist entries resolved from `models.yaml`. See [Filelists](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#filelists) |
+| `name` | Required | Model identifier. Unique across every `models.yaml`, regardless of `graph:`. See [Model names](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#model-names) |
+| `filelist` | Required | Filelist entries resolved from `models.yaml`. See [Filelists](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#filelists) |
 | `desc` | Optional | Human-readable description |
 | `spec` | Optional | `specs.yaml` path for `rb spec`; no simulation effect |
 | `axi_bundles` | Optional | `axi-bundles.yaml` path relative to `models.yaml`, written by `rb axi-profile discover` |
@@ -27,7 +27,7 @@ models:
 | `synth` | Optional | Synthesis ownership pointer, optionally with `#entry`; no current runtime consumer |
 | `tests` | Optional | Test-suite ownership pointer, optionally with `#entry`; no current runtime consumer |
 | `graph` | Optional | `false` opts the model out of the `rb graph build` design tier. Default `true` |
-| `top` | Optional | Root module of the filelist when it is not named after the model. Default `name`. See [Model top](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#model-top) |
+| `top` | Optional | Root module of the filelist when it is not named after the model. Default `name`. See [Model top](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#model-top) |
 | `elaborations` | Optional, default empty | Named pyslang profile deltas used by `rb elab --profile` and `rb elab-regression`. The model stays directly elaborable without them |
 
 ### Model names
@@ -105,4 +105,4 @@ A profile is a delta on its containing model, not another model reference. Paths
 | `warnings` | Empty; warning controls without the `-W` prefix, such as `all`, `none`, `no-unused`, or `error=unused`. They cannot suppress hard compilation errors |
 | `resources` | Inherits `cfg-dispatch.resources` field by field. `cpus` must be positive and also sets pyslang worker threads |
 
-`rb elab MODEL -c models.yaml` runs the base model. `rb elab MODEL --profile NAME -c models.yaml` applies one profile. Outputs are `artefacts/elab/<model>/<base-or-profile>/elab.f`, `elab.log`, and `result.json`. See [Model Elaboration](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/elaboration/).
+`rb elab MODEL -c models.yaml` runs the base model. `rb elab MODEL --profile NAME -c models.yaml` applies one profile. Outputs are `artefacts/elab/<model>/<base-or-profile>/elab.f`, `elab.log`, and `result.json`. See [Model Elaboration](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/elaboration/).

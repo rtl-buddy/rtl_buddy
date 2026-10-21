@@ -14,4 +14,4 @@ For a full audit, report:
 | Feature / change | `rtl_buddy` commit | Role | Template location | Isolated | Integrated/minimal | Explained | Runnable | Action |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 
-Use pass, fail, or warning values and follow the table with one action for every non-pass row. Apply [Code Reviews](https://rtl-buddy.github.io/rtl_buddy/v6/development/reviews/) to pull request scope and feedback. If the template is unavailable, report the required downstream check instead of marking it complete.
+Use pass, fail, or warning values and follow the table with one action for every non-pass row. Apply [Code Reviews](https://rtl-buddy.github.io/rtl_buddy/v7/development/reviews/) to pull request scope and feedback. If the template is unavailable, report the required downstream check instead of marking it complete.

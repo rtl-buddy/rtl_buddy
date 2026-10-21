@@ -1,0 +1,40 @@
+## Define power runs
+
+```yaml
+rtl-buddy-filetype: power_config
+
+runs:
+  - name: demo_power_static
+    desc: Static post-synthesis power
+    tool: openroad
+    mode: static
+    synth: demo_synth_nangate45
+    synth-path: ../../synth/demo/synth.yaml
+    phys-run: demo_synth_nangate45
+    constraints: ../../synth/demo/constraints.sdc
+    platform: nangate45_typ
+    reglvl: 1000
+
+  - name: demo_power_saif
+    desc: Simulation-driven post-route power
+    tool: openroad
+    mode: dynamic
+    netlist-source: pnr
+    pnr: demo_pnr_nangate45
+    pnr-path: ../../pnr/demo/pnr.yaml
+    platform: nangate45_typ
+    activity:
+      saif: ../../verif/demo/artefacts/csr_smoke/dump.saif
+      scope: tb_top/u_dut
+    reglvl: 1000
+```
+
+Paths resolve from `power.yaml`.
+
+An entry, here or inherited, can map each corner to the macro's Liberty for it, as in [Sign off at several corners](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#sign-off-at-several-corners). Each file is read into its corner only. A map must name every corner of the platform, or the run fails at setup with `power.lib_paths_corners`. Corners the platform lacks are ignored, so `rb power` accepts a map written for a platform with more corners than its own, unlike `rb pnr`. On a single-corner platform, such as the one [Known Issues](https://rtl-buddy.github.io/rtl_buddy/v7/known-issues/#rb-power-times-every-corner-in-one-sdc-mode) recommends for one corner's figures, the entry is that corner's file. A file listed both as a plain entry and in a map fails setup with `power.lib_paths_duplicate`; drop the plain entry.
+
+- A `synth` source requires `synth`, `synth-path` and `constraints`.
+- A `pnr` source requires `pnr` and `pnr-path`. It uses the routed SDC unless `constraints` overrides it.
+- `phys-run` is optional; see [Pair the model with a synthesis run](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/power/#pair-the-model-with-a-synthesis-run).
+
+All fields are in [YAML Formats: power.yaml](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#poweryaml).

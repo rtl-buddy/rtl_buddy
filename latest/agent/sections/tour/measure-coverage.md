@@ -29,4 +29,4 @@ uv run rb cov summary
 └───────────────────────────────────────┴──────────────┴────────────┴────────────────┴────────────┘
 ```
 
-The coldest file is the shared testbench macro library, not the design: the DUT itself is at 100% on every metric. `rb cov module demo_tiny_alu` narrows the same data to one module. A regression run with `--coverage-merge --coverage-html` produces the merged LCOV report. See [Coverage](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/coverage/).
+The coldest file is the shared testbench macro library, not the design: the DUT itself is at 100% on every metric. `rb cov module demo_tiny_alu` narrows the same data to one module. A regression run with `--coverage-merge --coverage-html` produces the merged LCOV report. See [Coverage](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/coverage/).

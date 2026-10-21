@@ -7,14 +7,8 @@ rb --machine test basic
 rb --machine regression -c regression.yaml
 ```
 
-In machine mode:
+Supported commands print one JSON result to stdout and render plain stderr. File logs use JSON Lines. Python hook stdout becomes `hook.stdout` events; redirect child-process stdout to protect the result. See [Hook execution context](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/plugins/#handle-hook-execution-context).
 
-- Commands that write `rtl_buddy.log` write it as JSON Lines.
-- Rich formatting, colors, and spinners are off.
-- Supported commands print one structured JSON result to stdout.
-- Python hook stdout is captured as `hook.stdout` events so it cannot corrupt the result.
-- `test`, `regression`, and `fpv` render their result summary as plain text on stderr and record it as a `summary` event with `rows` and `counts`.
+Stderr summaries omit `PASS`, `SKIP`, and `XFAIL` rows but tally every verdict. Stdout results and the log's `summary` event retain all rows and counts. Human mode shows all rows unless `--print-failures-only` is set.
 
-Add `--print-failures-only` to omit `PASS`, `SKIP`, and `XFAIL` rows from the stderr summary of a long run. The `summary` event still carries every row.
-
-A hook that starts an external process inheriting file descriptor 1 can still write to stdout. Redirect that process; see [Hook execution context](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/plugins/#handle-hook-execution-context).
+Per-phase status lines require `--verbose` or `--debug`. Dispatch progress, job announcements, hooks, warnings, and errors remain visible.

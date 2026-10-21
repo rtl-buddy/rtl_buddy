@@ -2,7 +2,7 @@
 
 Read `power.log` for tool and input errors, then `power.rpt` for missing or malformed totals. A failed run deletes `power.rpt` and the netlist copy, so it never leaves an earlier run's numbers.
 
-- **`N instance(s) have no Liberty power data and report 0 W`:** see [Read the unpowered-cell warning](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/power/#read-the-unpowered-cell-warning).
+- **`N instance(s) have no Liberty power data and report 0 W`:** see [Read the unpowered-cell warning](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/power/#read-the-unpowered-cell-warning).
 - **`N configured macro input(s) not on disk`:** the run stops. Fix the listed `lib-paths` or `lef-paths` on this entry or the upstream run.
 - **`Total line of report_power output is NaN/inf`:** OpenSTA converted an activity against a zero clock period. Check that every clock the SDC's I/O delays reference has a finite period; `create_generated_clock` clocks are derived before the activity is read.
 - **`power.spef_rejected`:** the SPEF is unreadable or stale and the estimate was used. Rerun `rb pnr`, then the power run.

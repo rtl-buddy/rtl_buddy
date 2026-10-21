@@ -12,4 +12,4 @@ A testbench render writes to `artefacts/hier/<model>/tb/<testbench>/` under the 
 
 `rb hier` exits with the renderer's exit code. For a parse, elaboration, or output failure, read `hier.log`. If the executable is not found, run `rb tool-check --explain rtl-buddy-view`.
 
-For interactive browsing, `rb hub start --serve-viewer --model <name>` serves the same JSON hierarchy. See [Hub](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/hub/).
+For interactive browsing, `rb hub start --serve-viewer --model <name>` serves the same JSON hierarchy. See [Hub](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/hub/).

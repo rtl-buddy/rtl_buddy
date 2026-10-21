@@ -11,4 +11,4 @@
 
 Verilator compiles a cycle-based `simv` binary. Icarus compiles a `.vvp` snapshot and runs it with `vvp`; RTL Buddy generates a `simv` wrapper so the rest of the flow is the same.
 
-If a suite must run on Icarus, gate unsupported constructs. Use [expected failures](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/expected-failures/) only when the failure mode is understood.
+If a suite must run on Icarus, gate unsupported constructs. Use [expected failures](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/expected-failures/) only when the failure mode is understood.

@@ -5,4 +5,4 @@ Yosys's `read_verilog` cannot bind an interface instance to a child module's int
 - `unresolved-interfaces` gates the warning. `warn` (the default) logs `synth.unresolved_interface` per instance, `error` fails the run, and `allow` skips the scan.
 - `frontend: slang` binds the instance properly, but an interface port on the synthesis top itself needs a flat-port wrapper.
 
-See [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/synthesis/#gate-unbound-interface-instances).
+See [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/synthesis/#gate-unbound-interface-instances).

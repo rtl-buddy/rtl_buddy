@@ -14,4 +14,4 @@ The pane rereads the graph and overlay on reload. It can tint design nodes with 
 rb hub send graph-focus module:dma_engine
 ```
 
-See [Hub](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/hub/#design-knowledge-graph-pane) for pane behavior.
+See [Hub](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/hub/#design-knowledge-graph-pane) for pane behavior.

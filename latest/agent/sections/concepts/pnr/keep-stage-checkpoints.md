@@ -1,25 +1,18 @@
 ## Keep stage checkpoints
 
-A routing run killed at a scheduler wall limit leaves only its log, because the DEF and ODB are written after detailed routing. Set `checkpoints:` on the run to keep a database at each stage boundary:
+A run killed at a wall-time limit leaves only its log. `checkpoints: true` (or one stage, or a list) writes `<NN>_<stage>.odb`, `.def` and `.sdc` at each stage boundary into `checkpoints/<run-id>/`, with `checkpoints/latest` pointing at the newest:
 
-```yaml
-runs:
-  - name: demo_pnr_nangate45
-    # ...
-    checkpoints: true            # or a stage, or a list: [cts, global_route]
-```
+| Stage | Holds |
+| --- | --- |
+| `floorplan` | Floorplan, macros, power grid, pins |
+| `place` | Legalized global placement |
+| `cts` | Clock tree and hold repair |
+| `global_route` | The global route after global-route repair, with route guides and segments; with `global-route.grid-origin`, before the GCell grid is rebuilt from the guides |
+| `detailed_route` | The detailed route, before fill, with its DRC report |
+| `post_route_repair` | The kept repair round (only with `post-route-repair`) |
 
-| Stage | Written | Holds |
-| --- | --- | --- |
-| `floorplan` | before `global_placement` | floorplan, pins, tie cells, placed macros, PDN |
-| `place` | before `clock_tree_synthesis` | legalized global placement |
-| `cts` | before `global_route` | clock tree, hold repair, legalization |
-| `global_route` | after a successful `global_route` | the global route |
+On a multi-corner platform the `.sdc` holds every corner's SDC mode, and `<NN>_<stage>.<corner>.sdc` each corner's alone.
 
-`true` keeps all four stages; a name or list keeps some; `[]` keeps only the progress file. Unset or `false` disables the feature. Each stage writes `<NN>_<stage>.odb`, `.def` and `.sdc` into `artefacts/<run>/checkpoints/<timestamp>-<pid>/`, and `checkpoints/latest` points at the newest run.
+Look at a checkpoint in OpenROAD or with `rb pnr-export --checkpoint`. It is never a final result. Old run directories are not pruned.
 
-- `tail -f artefacts/<run>/checkpoints/latest/progress.jsonl` follows a running flow. After a kill, the last `step_begin` with no `step_end` is the step the run was in.
-- A checkpoint is never final. `rb power` and a plain `rb pnr-export` never read it.
-- Old run directories are not pruned. Delete the ones you no longer need.
-
-Resume from a checkpoint is not supported. To look at one, open its ODB in OpenROAD or stream it out with [`rb pnr-export --checkpoint`](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#export-a-saved-result).
+A run that fails in global route keeps that route's database as the `global_route` checkpoint, marked `failed`, with a copy of each congestion report (`04_global_route.congestion.rpt`, `04_global_route.congestion-<i>.rpt`), whether or not the run sets `checkpoints`; a run without them gets a run directory for it. The run still fails, and its `failed_global_route` field names the checkpoint as `<run-id>/global_route`. `rb pnr-export --checkpoint` opens it; no `--resume` starts from it, and `checkpoint_stages` does not list it. A failure a hook catches is dropped when a later global route passes or the `global_route` stage ends. A database OpenROAD did not finish writing, or that rb could not file, stays in `global_route_failed/` until the next run, and the `pnr.failed_global_route_not_kept` warning names it.

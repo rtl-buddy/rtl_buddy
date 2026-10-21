@@ -23,7 +23,7 @@ testbenches:
 
 - Fields resolve in this order: testbench `compile`, suite `compile`, `cfg-dispatch.compile`, `cfg-dispatch.resources`, built-in defaults.
 - A testbench block wins over the suite block field by field, in both directions. Each field must be greater than zero, and `parallel` is not allowed there.
-- `compile.verilate` sizes the verilate job of a split suite and `compile` sizes the C++ build alone. See [Split verilation from the C++ build](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/dispatch/#split-verilation-from-the-c-build). `compile.split-verilate` belongs to `cfg-dispatch.compile` or the suite block, not a testbench.
+- `compile.verilate` sizes the verilate job of a split suite and `compile` sizes the C++ build alone. See [Split verilation from the C++ build](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/dispatch/#split-verilation-from-the-c-build). `compile.split-verilate` belongs to `cfg-dispatch.compile` or the suite block, not a testbench.
 
 The suite block is the floor for the build job. The job aggregates the testbench blocks of the tests in the run:
 

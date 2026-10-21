@@ -18,4 +18,4 @@ uv run rb fpv
                                          Results: 2 PASS (2 total)
 ```
 
-Both runs pass, and both have something to fix: one assumption is dead in each, and one of the two vacuity properties never had its antecedent reached. Those are the findings a bare `sby` run hides. A failed proof gets `rb wave-fpv` to open the counterexample trace in Surfer. See [Formal property verification](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/fpv/).
+Both runs pass, and both have something to fix: one assumption is dead in each, and one of the two vacuity properties never had its antecedent reached. Those are the findings a bare `sby` run hides. A failed proof gets `rb wave-fpv` to open the counterexample trace in Surfer. See [Formal property verification](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/fpv/).

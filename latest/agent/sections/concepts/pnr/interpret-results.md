@@ -1,19 +1,38 @@
 ## Interpret results
 
-The summary reports cell count, design area, setup and hold WNS, and the number of non-empty DRC report lines. Positive slack meets timing and zero DRC lines indicate a clean route. `wns_setup_ps`, `wns_hold_ps`, `tns_ps` (setup) and `tns_hold_ps` are converted to picoseconds from the Liberty `time_unit`; see [Synthesis: Configure tools and the PDK](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/synthesis/#configure-tools-and-the-pdk).
+`PASS` means OpenROAD ran the flow to its end and wrote its outputs, or, for `mode: probe` and `--stop-after`, to the stage it stops after, with `routed: false` and no routed outputs. Check `routed` before treating a `PASS` as a routed result. It does not mean the design meets timing or routes clean unless [signoff gates](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#gate-signoff) are set. Judge the design on these fields:
 
-Three result fields count cells; compare experiments on `routed_cell_count`:
+| Field | Meaning |
+| --- | --- |
+| `wns_setup_ps`, `wns_hold_ps` | Worst setup and hold slack. Negative misses timing. |
+| `tns_ps`, `tns_hold_ps` | Total negative setup and hold slack. |
+| `drc_count` | Violations left in `route.drc.rpt`. 0 is a clean route. |
+| `max_slew_violation_count`, `max_capacitance_violation_count`, `max_fanout_violation_count` | Pins over a Liberty or SDC limit at any corner, listed in `electrical.rpt`. |
+| `macro_pin_buffered_count`, `macro_pin_unmet_count` | With `placement.macro-pin-limits`: macro pins it buffered, and those still over their limit less the margin on placement parasitics. |
+| `area_um2` | Design area. |
+| `routed_cell_count` | Instances of the finished design, including added tie, buffer and clock cells, excluding physical-only cells. Compare experiments on this. |
+| `cell_count` | Instances of the input netlist (the summary's Cells column). |
+| `physical_cell_count` | Tap, endcap, spacer and fill cells. |
+| `worst_setup_corner`, `worst_hold_corner`, `corners` | Multi-corner platforms: the corner behind each WNS, and each corner's four timing values. |
+| `routed`, `mode`, `stopped_after`, `global_route_overflow` | `routed: false` means the run stopped early ([probe](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#probe-a-floorplan) or `--stop-after`); its numbers are that stage's estimate, with the global-route overflow from `global_route` on. |
+| `signoff` | With [`signoff:`](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#gate-signoff): each gate's values and verdict. |
+| `post_route_repair` | The rounds of [post-route repair](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#repair-timing-after-routing): `kept_round`, `rounds`, `repaired_rounds`, `stop`, `reason`, `passed_over_round`, and with `electrical-repair` `electrical_round`. |
+| `openroad_threads` | Requested and effective [thread counts](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#openroad-threads). |
+| `gds_status`, `gds_missing_cells` | [Stream-out](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#stream-out-gds-and-png) outcome. |
+| `checkpoint_dir`, `checkpoint_stages`, `last_step` | With [checkpoints](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#keep-stage-checkpoints): where they are, which stages the run reached and checkpointed (never a failed global route), and the last step reached. |
+| `failed_global_route` | `<run-id>/global_route`: the checkpoint holding a failed global route's database, for `rb pnr-export --checkpoint`. |
+| `allow_congestion` | `true` on a [diagnosis run](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#tune-global-routing) that let global route keep its overflow; `global_route_overflow` is then the final overflow. |
 
-- `cell_count`, the summary's Cells column, is the input netlist's instance count at the floorplan. It leaves out every cell the flow adds.
-- `routed_cell_count` is the finished design's instances, including tie, repair, clock-tree and hold buffers, excluding physical-only cells.
-- `physical_cell_count` is the physical-only cells: masters of LEF class `CORE SPACER`, `CORE WELLTAP` or `ENDCAP*`, or matching a PDK `fill-cells` pattern. A decap counts only when its class is `CORE SPACER` or it is listed in `fill-cells`; sky130's `decap_*` cells are class `CORE`, so they count as routed unless listed.
+Times are in picoseconds, converted from the Liberty `time_unit`. The final timing uses extracted parasitics when the PDK sets `rcx-rules`, else the global-route estimate. A field rb could not read is left out.
 
-The flow prints the last two after `>>> Final reports` as `RB-CELL-COUNT: routed <n> physical <m>`. If counting fails, both fields are absent and the run still passes.
+A passing run's description carries qualifiers worth reading:
 
-A pass is qualified with `pnr.no_wire_rc` when the pre-route steps had no wire RC; see [Set wire RC](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#set-wire-rc).
+- `pnr.no_wire_rc`: placement and CTS ran without wire RC. See [Set wire RC](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#set-wire-rc).
+- `electrical N max-slew, ... violator(s)`: set `fail-on-electrical: true` or `electrical` in `signoff.fail-on` to fail such runs.
+- `post-route repair ...`: a repair round was passed over or its session failed and was set aside.
+- `post-route electrical round N kept`, `not kept` or `failed`: the [electrical round](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#repair-electrical-violators-after-routing) ran.
+- `GDS incomplete: ...`: cells with no layout in `preview` mode.
+- `stale block abstract(s) accepted: ...`: run with `--accept-stale`.
+- `global-route.allow-congestion (diagnosis only): global route overflow N`: global route was allowed to keep its overflow. See [Tune global routing](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#tune-global-routing).
 
-`max_slew_violation_count`, `max_capacitance_violation_count` and `max_fanout_violation_count` count the routed design's pins that break a Liberty or SDC max-slew, max-capacitance or max-fanout limit, over every corner, as ORFS's `report_metrics` counts them. The summary shows them as the Slew/Cap/Fanout column, `pnr.log` prints them as `RB-ELECTRICAL: max_<check> <n>` after `>>> Final reports`, and `electrical.rpt` lists the violating pins. A pass with any violator is qualified `electrical N max-slew, ... violator(s)` and logs the warning `pnr.electrical_violators`. A count OpenROAD cannot report is left out.
-
-A run passes when OpenROAD exits 0 with no `[ERROR ...]` line and, under `gds-mode: strict`, the requested export was delivered complete. With `fail-on-electrical: true` a run with any electrical violator also fails, with no `fail_stage`, so `xfail:` can excuse it; it keeps its routed outputs and publishes no abstract. It skips when `reglvl` filters it out or `tool:` is unsupported. Timing violations and DRC counts are metrics only; gate signoff on them in your project.
-
-On a multi-corner platform, `wns_setup_ps`, `wns_hold_ps`, `tns_ps` and `tns_hold_ps` are the worst across corners. The result also names the `worst_setup_corner` and `worst_hold_corner` and lists each corner's own four values under `corners`, so setup at the slow corner and hold at the fast corner can be read separately; `pnr.log` has them after `>>> Per-corner timing`.
+A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in a post-route repair session rb sets aside), stops before the end of its flow, or a check below fails. It is `SKIP` when `-l` filters it out or `tool:` is not `openroad`.

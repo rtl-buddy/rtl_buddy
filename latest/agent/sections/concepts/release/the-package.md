@@ -18,4 +18,4 @@ Design files ship in `design/` and testbench files in `verif/`. A `design.files`
 
 The tarball is `artefacts/<name>-<version>/<name>-<version>.tar.gz`. The `stage/` directories beside it are internal: `stage/src` and `stage/obf` hold readable sources and must not be shipped.
 
-See the [`release.yaml` reference](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#releaseyaml) for every key.
+See the [`release.yaml` reference](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#releaseyaml) for every key.

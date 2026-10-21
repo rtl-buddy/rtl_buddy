@@ -28,10 +28,10 @@ runs:
 | `synth`, `synth-path` | Required for synth source | Upstream synthesis entry and YAML path |
 | `pnr`, `pnr-path` | Required for P&R source | Upstream P&R entry and YAML path |
 | `phys-run` | Optional, synth source only | Synthesis run in `synth-path` whose artefact directory receives this run's `phys-model.json`. A run name, never a path |
-| `constraints` | Required for synth source | SDC path. For P&R source it defaults to the routed SDC |
+| `constraints` | Required for synth source | SDC path. For P&R source it defaults to the routed SDC, the primary corner's on a multi-corner platform |
 | `platform` | Required | `cfg-pnr-platforms` entry |
-| `lib-paths` | Optional | Extra macro Liberty files relative to `power.yaml`, appended after what the referenced run declares |
-| `threads` | Default unset (1) | OpenROAD worker threads, as in `pnr.yaml`. See [OpenROAD threads](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#openroad-threads) |
+| `lib-paths` | Optional | Extra macro Liberty files relative to `power.yaml`, appended after what the referenced run declares. An entry can map each platform corner to its Liberty, as in `pnr.yaml`, here or inherited from the P&R run. A map must name every corner of the platform; corners the platform lacks are ignored, and on a single-corner platform the entry is that corner's file. A file listed both as a plain entry and in a map fails setup |
+| `threads` | Default unset (1) | OpenROAD worker threads, as in `pnr.yaml`. See [OpenROAD threads](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#openroad-threads) |
 | `activity.saif` / `.vcd` | Mutually exclusive | Activity trace path |
 | `activity.scope` | Only with a trace | OpenROAD trace scope; invalid without SAIF or VCD |
 | `activity.default-toggle-rate` | Default 0.1 | Synthetic toggle rate for dynamic mode without a trace |
@@ -43,4 +43,4 @@ runs:
 
 A P&R source reads the routed ODB and estimates parasitics from global routing. A synthesis source reads the generated netlist. Without `phys-run`, the physical model is written into this run's own `artefacts/<name>/`, so it merges with a synthesis run's half only when both write there.
 
-Hard-macro Liberty is inherited from the run this one reads: a `pnr` source takes the P&R entry's `lib-paths`, and a `synth` source takes the synthesis entry's `lib-paths` and `lef-paths`. `lib-paths` here adds to that list. A configured file that is not on disk fails the run before OpenROAD starts. See [Power Analysis](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/power/), [Pair the model with a synthesis run](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/power/#pair-the-model-with-a-synthesis-run), and [Give hard macros a library](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/power/#give-hard-macros-a-library).
+Hard-macro Liberty is inherited from the run this one reads: a `pnr` source takes the P&R entry's `lib-paths`, and a `synth` source takes the synthesis entry's `lib-paths` and `lef-paths`. `lib-paths` here adds to that list. A configured file that is not on disk fails the run before OpenROAD starts. See [Power Analysis](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/power/), [Pair the model with a synthesis run](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/power/#pair-the-model-with-a-synthesis-run), and [Give hard macros a library](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/power/#give-hard-macros-a-library).

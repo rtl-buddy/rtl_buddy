@@ -16,7 +16,7 @@ rb test
 - Names and `--filter` are mutually exclusive. Duplicate or unknown names, an invalid regex, or a regex matching nothing exits 2 before any test runs.
 - Selection applies to configured names, before sweep expansion.
 
-From another directory, pass the suite explicitly. Outputs still land beside `tests.yaml` (see [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/execution-context/)):
+From another directory, pass the suite explicitly. Outputs still land beside `tests.yaml` (see [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/execution-context/)):
 
 ```bash
 rb test smoke --test-config path/to/tests.yaml

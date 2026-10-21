@@ -4,7 +4,7 @@ description: Current rtl_buddy limitations, surprising behavior, and required wo
 
 # Quirks & Known Issues
 
-Use this page when behavior differs from what you expect. Each section states the effect and the action to take. Sections run in workflow order, from CDC and simulation through dispatch, synthesis, formal, FPGA and tools.
+Find limitations and workarounds by workflow, from CDC and simulation through dispatch, synthesis, formal, FPGA and tools.
 
 ## XPM CDC macros require rtl-buddy-cdc 0.4 or later
 
@@ -120,10 +120,6 @@ A resource group larger than the cluster's array limit is submitted as several a
 
 YAML 1.1 reads an unquoted `time: 4:00:00` as an integer, and rtl_buddy rejects it. Quote every `time` value in `resources:`, `compile:` and `modes:` blocks.
 
-## An unknown key in a reservation block is ignored after a warning
-
-An unknown key in a `resources:` or `compile:` block, in `cfg-dispatch`, or in its `coverage:`, `retry:` or `rightsize:` block is ignored. Each one logs the warning `config.unknown_key`, naming the file, the block and the nearest known key, so a typo such as `memory:` reserves nothing but is reported. A later major release will make an unknown key fatal. A `modes:` block already rejects unknown keys, but a release without `modes:` drops the whole block silently, so confirm a new mode's reservation once. See [YAML formats](reference/yaml.md#parallel-dispatch).
-
 ## Dispatch build jobs cover the whole suite
 
 One build job compiles every build of a suite. `compile.parallel` runs that many builds at once, but only `cpus` is scaled for you: size `compile.mem` for the concurrent builds and `compile.time` for the longest batch. Each build job reserves `cpus` times `min(parallel, planned tests)`, so set `parallel` to the expected number of distinct builds. See [Compile several builds at once](concepts/dispatch.md#compile-several-builds-at-once) and [Split verilation from the C++ build](concepts/dispatch.md#split-verilation-from-the-c-build).
@@ -219,7 +215,7 @@ See [Synthesis](concepts/synthesis.md#gate-unbound-interface-instances).
 
 ## An overridden blackbox needs a LEF and Liberty master under OpenROAD
 
-The OpenROAD synthesis backend declares each `(* blackbox *)` module without a LEF or Liberty master to OpenROAD as one port-only Verilog-2001 stub, written by Yosys from the elaborated module. Yosys writes an instance that overrides the blackbox's parameters with a `#(...)` list, which OpenROAD's `read_verilog` rejects (`STA-0171`). Supply the module's LEF and Liberty, as `blocks:` does for a hardened block, or instance it with its defaults. See [Instance a parameterised block](concepts/pnr.md#instance-a-parameterised-block).
+The OpenROAD synthesis backend passes a `(* blackbox *)` module that has no LEF or Liberty master to OpenROAD as a port-only stub. An instance that overrides its parameters keeps its `#(...)` list, which OpenROAD's `read_verilog` rejects (`STA-0171`). Give the module a LEF and Liberty, as `blocks:` does for a hardened block, or instance it with its defaults. See [Instance a parameterised block](concepts/pnr.md#instance-a-parameterised-block).
 
 ## Unknown synthesis overrides are ignored after a warning
 
@@ -232,6 +228,59 @@ Yosys `synth` runs its generic `abc` pass before the mapped-run ABC step, and th
 ## Prefix adders off the critical path ripple under `abc-script: default`
 
 With the `default` mapped-run script, `&dch -f` choices and `&nf` area recovery under the module's one global required time rebuild Kogge-Stone and other `+/choices/` adders off the critical path as ripple chains. A run whose `synth-args` request a `+/choices/` map uses the `delay` preset unless `abc-script` is set. See [Synthesis](concepts/synthesis.md#keep-prefix-adders-log-depth-with-the-delay-preset).
+
+## OpenROAD's legalizer blocks a rotated macro's unrotated footprint
+
+OpenROAD's default legalizer treats a fixed macro turned by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) as covering its unrotated width and height from its lower-left corner (OpenROAD#11735). Cells in that footprint but outside the macro are moved out, some far. By default `rb pnr` blocks the footprint during global placement, so the area stays empty. `placement.rotated-macro-footprint: diamond-legalizer` uses the diamond legalizer, which sees the real box, instead; `none` does neither. The workaround acts only when a macro entry turns a macro or a hook before global placement could.
+
+## A `pin-constraints` file must not constrain a port that has an exact pin
+
+rb leaves exact pins out of the `floorplan.pins` side and group rules but does not read the `pin-constraints` file. A `set_io_pin_constraint -region` there that holds an exact pin outside the region fails `place_pins` with `PPL-0107`, reported on another pin. When every signal port has an exact pin, `place_pins` is skipped and the file's constraints have no effect. See [Place IO pins](concepts/pnr.md#place-io-pins).
+
+## Session state does not cross a P&R stage boundary
+
+Each stage of a staged run, and each post-route repair round and the `finish` stage of a run with `post-route-repair`, is a new OpenROAD session. It reads the previous stage's database, SDC and saved flow variables. Anything an earlier session held only in memory is gone: Tcl variables, procedures and `rename` wrappers, `set_wire_rc`, `set_layer_rc` and `set_dont_use` from a hook, STA settings outside the SDC, and the resizer's state. rb warns `pnr.hook_commands_not_kept` when a hook redefines an existing command, and logs `pnr.hook_commands_added` for new ones, which later sessions do not have.
+
+Move such state into a `session` hook, which runs at the start of every session. It then also applies to the steps before its original point: a `set_wire_rc` moved there from `after-cts` also changes placement. See [Run Tcl hooks](concepts/pnr.md#run-tcl-hooks).
+
+## A staged P&R run can differ from a one-session run
+
+A staged run runs the same flow commands as a one-session run and gives identical results at the same thread count, except where OpenROAD carries in-memory state across a stage boundary:
+
+- The resizer keeps state from `repair_design` and `buffer_ports`. A hook that runs one of them in an earlier stage, such as `repair_design -pre_placement` in `after-pins`, can change a later repair. rb's own `buffer_ports` (floorplan) and `repair_design` (place) also run in different stages; the sky130hd template routes identically either way, which does not guarantee it for every design.
+- OpenSTA keeps the supply ports `pdngen` creates bidirectional in the session that ran `pdngen` (OpenROAD#11850). The `finish` session re-asserts them as supply ports, so `<top>.routed.v` and a hardened `<top>.lib` do not depend on it, but a one-session hook that runs after `pdngen` sees them as signal ports.
+- OpenROAD writes the supply ports after the buses in the session that ran `pdngen` and before them in a session that read the database. rb moves them last, sorted by name, in `<top>.routed.pwr.v` and a hardened `<top>.lib`, so neither depends on it. A file it cannot read that way keeps OpenROAD's order, and the run warns `pnr.supply_order_unverified` naming the file. rtl_buddy#924 tracks removing the rewrite once OpenROAD writes one order.
+- Without `rcx-rules`, `finish` times on the global route restored from the route guides, which can miss a few pins (`EST-0026`), so slack can differ slightly. With `rcx-rules` both time the same SPEF.
+
+Compare a staged run with a one-session run at the same `threads:` before relying on it to reproduce one.
+
+## Post-route repair works around OpenROAD routing failures
+
+Each post-route repair round runs in fresh sessions and orders its steps to avoid these OpenROAD 26Q4 failures:
+
+- A repair in the session that ran detailed route makes the next detailed route fail with `DRT-0218`, so each round reads the routed database in a new session.
+- On a routed database, `repair_timing` switches to detailed-routing parasitics and builds buffer trees from global routes that a fresh session rebuilds incompletely, failing with `RSZ-0074` (OpenROAD#11852). An `eco` round therefore replaces OpenROAD's `design_is_routed` with one that answers 0 during its repairs, keeping them on placement parasitics. When `repair_timing` does not call that procedure, rb warns `pnr.post_route_eco_unguarded`; if the round then fails `RSZ-0074`, it is set aside and the result names the fix, `post-route-repair.reroute: full`.
+- `global_route -start_incremental` around a resizer command that reroutes by itself delivers each netlist change twice, and a later rip-up fails with `GRT-0229` and `usage=65535` (OpenROAD#11851). A `full` round and the global-route repair run their repairs first and open the incremental route around the legalization only, as ORFS does. An `eco` round, whose repairs do not reroute, opens it before the repairs.
+- `repair_timing` on global-route parasitics fails `RSZ-0074` on nets `repair_design` split until they are rerouted, so a repair that runs both legalizes and reroutes between them.
+
+## Corners share one SDC mode on an OpenROAD without modes
+
+`rb pnr` gives each corner its own SDC mode only on an OpenROAD that can switch back to an earlier mode, 26Q4 or newer. On an older one, such as 26Q2, every corner is timed in one mode and rb warns `pnr.corner_modes_unsupported`:
+
+- A generated clock's latency comes from one corner at every corner, so a forwarded clock can be timed for hold at a fast corner on a slow corner's latency.
+- A per-corner `constraints:` fails setup with `pnr.corner_constraints_unsupported`.
+- `STA-1140 library ... already exists` is logged once per extra corner for a macro with one Liberty. Per-corner Liberty files of one macro that share a `library` name log it in every session, with or without modes; it is harmless there, because each file is named only by its own corner's scene.
+- Every `<top>.<corner>.routed.sdc` holds that one mode, and checkpoints write no per-corner SDC.
+
+Upgrade OpenROAD, or run each corner on a single-corner platform. See [Sign off at several corners](concepts/pnr.md#sign-off-at-several-corners).
+
+## rb power times every corner in one SDC mode
+
+On a multi-corner platform `rb power` reads one SDC, by default the P&R run's `<top>.routed.sdc` (the primary corner's), and the routed SPEF once for all corners. Every corner then uses the primary corner's generated-clock latencies, and the corners after the first reuse the first corner's reduced parasitics. For one corner's own figures, run `rb power` on a single-corner platform of that corner with `constraints:` set to `<top>.<corner>.routed.sdc`.
+
+## An unconfirmed dispatched P&R run blocks later runs
+
+While an earlier [dispatched](concepts/pnr.md#dispatch-the-stages-to-slurm) run's stage jobs may still be queued, a new `rb pnr` of the same configuration refuses to start. It also refuses when it cannot confirm the jobs have left: while `squeue` does not answer, on a host without `squeue` while that run's `dispatch/` record changed within the total `time` its jobs asked for, and for up to 11 minutes while an `sbatch` submission has no answer. Run `rb pnr` where `squeue` answers, or, once the jobs have ended, remove the `checkpoints/<run id>/dispatch/` directory the refusal names.
 
 ## `rb phys module` reports no power for an RTL module
 

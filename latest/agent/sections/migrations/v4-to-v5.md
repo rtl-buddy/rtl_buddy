@@ -1,6 +1,6 @@
 ## v4 to v5
 
-Managed output is anchored on the primary config's directory, the [`command_root`](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/execution-context/).
+Managed output is anchored on the primary config's directory, the [`command_root`](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/execution-context/).
 
 | Behavior | v4 | v5 |
 |----------|----|-----|

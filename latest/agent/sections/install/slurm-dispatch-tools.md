@@ -7,4 +7,4 @@
 
 `scontrol` must also be on the `PATH` of the compute node that runs the build job. It lets each compile key's simulation jobs start as soon as that key is built; without it they wait for the whole build job.
 
-Use `--dispatch local-parallel` for parallelism on one host with no Slurm dependency. See [Parallel dispatch](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/dispatch/#meet-the-slurm-requirements).
+Use `--dispatch local-parallel` for parallelism on one host with no Slurm dependency. See [Parallel dispatch](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/dispatch/#meet-the-slurm-requirements).

@@ -31,7 +31,7 @@ cfg-synth-platforms:
     corner: tt
 ```
 
-Paths resolve from `root_config.yaml`. The Yosys backend needs Liberty. The OpenROAD backend needs Liberty plus technology and macro LEF. Keep large PDK files untracked and provide a fetch script.
+Paths resolve from `root_config.yaml`. The Yosys backend needs Liberty. The OpenROAD backend needs Liberty plus technology and macro LEF. `macro-lef` takes one path or a list, such as one cell LEF per threshold-voltage flavour, and OpenROAD reads them in order. Keep large PDK files untracked and provide a fetch script.
 
 OpenROAD `strategy` is `AREA`, `TIMING`, `TIMING_ANNEAL`, or `TIMING_GENETIC`. `AREA` reports the initial mapping; the timing strategies request OpenROAD resynthesis.
 
@@ -45,4 +45,4 @@ A corner takes one Liberty path or a list. Every file of the corner is read and 
 
 Liberty files may be gzipped. SDC values are in the Liberty `time_unit`, which rb reads from each file's `library` group (1 ns when unset) and uses to convert the ABC delay target and every reported time to picoseconds. All Liberty files a run reads must share one `time_unit`; otherwise the run fails at setup.
 
-`dont-use-cells` patterns exclude cells from mapping. A synth platform's own list is appended to the PDK's. [Place-and-Route](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#tune-the-process-dependent-steps) reads the PDK's list too, so two runs that exclude different cells count as two experiments. P&R-side PDK notes are in [Place-and-Route: PDK setup notes](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#pdk-setup-notes).
+`dont-use-cells` patterns exclude cells from mapping. A synth platform's own list is appended to the PDK's. [Place-and-Route](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#configure-the-physical-platform) reads the PDK's list too, so two runs that exclude different cells count as two experiments. P&R-side PDK notes are in [Place-and-Route: PDK setup notes](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#pdk-setup-notes).

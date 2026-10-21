@@ -1,7 +1,5 @@
 ## Know which commands write a log
 
-Commands that run a flow (`test`, `regression`, `synth`, `power`, and so on) write events to `<command_root>/rtl_buddy.log`. A process's first open truncates the file, so the log holds only the latest run.
+Flow commands (`test`, `regression`, `synth`, `power`, and so on) write `<command_root>/rtl_buddy.log`, replacing the previous run's log.
 
-Read commands write no file log: `rb phys`, `rb cov`, the `rb graph` read verbs (`query`, `path`, `explain`), `rb xplr`, and `--list` on any flow command. Writing one would truncate the log of the flow they report on. Their events go to stderr and their result goes to stdout as JSON.
-
-To debug a run, read the log of the flow that produced the artefacts, not of the read command that reported them.
+Read commands (`rb phys`, `rb cov`, `rb graph query|path|explain`, `rb xplr`, and flow `--list`) preserve that log. They send events to stderr and JSON results to stdout. Debug the flow using the log that produced its artefacts.

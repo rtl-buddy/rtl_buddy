@@ -1,15 +1,15 @@
 ## Read the results summary
 
-A regression prints a summary to stderr: one row per test, a metadata footer, and a tally of every verdict in the run, in the order `PASS`, `FAIL`, `XFAIL`, `XPASS`, `SKIP`, `NA`:
+A regression prints test rows, metadata, and a verdict tally to stderr:
 
 ```text
 Results: 780 PASS, 3 FAIL, 2 SKIP (785 total)
 ```
 
-On a large regression, show only rows that need attention:
+To hide `PASS`, `SKIP`, and `XFAIL` rows:
 
 ```bash
 rb --print-failures-only regression -c regression.yaml
 ```
 
-The flag drops `PASS`, `SKIP` and `XFAIL` rows from the console and keeps the tally. `rtl_buddy.log` and the machine-mode `summary` event still carry every row.
+Machine mode filters by default. The tally always counts every verdict; stdout results and the log's `summary` event retain all rows. See [Machine mode](https://rtl-buddy.github.io/rtl_buddy/dev/agents/#machine-mode).

@@ -1,6 +1,6 @@
 ## Find design context
 
-Use the [design knowledge graph](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/graph/) for relationships that need elaboration or cross config boundaries. Rebuild it after source or config changes, and refresh results after a regression:
+Use the [design knowledge graph](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/graph/) for relationships that need elaboration or cross config boundaries. Rebuild it after source or config changes, and refresh results after a regression:
 
 ```bash
 rb --machine graph build

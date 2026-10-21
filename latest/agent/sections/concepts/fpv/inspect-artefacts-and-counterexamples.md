@@ -1,6 +1,6 @@
 ## Inspect artefacts and counterexamples
 
-Output goes to `<fpv.yaml dir>/artefacts/<run>/` (see [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/execution-context/)):
+Output goes to `<fpv.yaml dir>/artefacts/<run>/` (see [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/execution-context/)):
 
 | File | Contents |
 |---|---|

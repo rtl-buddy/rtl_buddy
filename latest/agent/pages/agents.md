@@ -4,7 +4,7 @@ description: Install the bundled agent skills, query version-matched local docs,
 
 # Agent use of rtl-buddy
 
-Agents should use RTL Buddy's local docs and structured command output rather than parsing terminal formatting or searching the repository blind.
+Use version-matched local docs and structured output to run RTL Buddy and interpret its results.
 
 ## Find design context
 
@@ -65,7 +65,7 @@ rb skill uninstall
 | Project (`--project`) | `<root>/.claude/skills/<member>/SKILL.md` | `<root>/.agents/skills/<member>/SKILL.md` |
 | Explicit dir (`--dir PATH`) | `<PATH>/<member>/SKILL.md` | — |
 
-`<member>` is `rtl-buddy`, `rtl-buddy-test`, `rtl-buddy-dispatch`, `rtl-buddy-graph`, `rtl-buddy-fpv`, or `rtl-buddy-implementation`.
+`<member>` is `rtl-buddy`, `rtl-buddy-test`, `rtl-buddy-dispatch`, `rtl-buddy-graph`, `rtl-buddy-fpv`, `rtl-buddy-implementation`, or `rtl-buddy-pnr`.
 
 - Use project scope only to override user-level skills in a project pinned to a different major version. The project root is found by walking up for `root_config.yaml`, then `.git/`.
 - Use `--dir PATH` for a flat family outside the normal layout. It cannot be combined with `--project` or `--root`.
@@ -102,25 +102,17 @@ rb --machine test basic
 rb --machine regression -c regression.yaml
 ```
 
-In machine mode:
+Supported commands print one JSON result to stdout and render plain stderr. File logs use JSON Lines. Python hook stdout becomes `hook.stdout` events; redirect child-process stdout to protect the result. See [Hook execution context](concepts/plugins.md#handle-hook-execution-context).
 
-- Commands that write `rtl_buddy.log` write it as JSON Lines.
-- Rich formatting, colors, and spinners are off.
-- Supported commands print one structured JSON result to stdout.
-- Python hook stdout is captured as `hook.stdout` events so it cannot corrupt the result.
-- `test`, `regression`, and `fpv` render their result summary as plain text on stderr and record it as a `summary` event with `rows` and `counts`.
+Stderr summaries omit `PASS`, `SKIP`, and `XFAIL` rows but tally every verdict. Stdout results and the log's `summary` event retain all rows and counts. Human mode shows all rows unless `--print-failures-only` is set.
 
-Add `--print-failures-only` to omit `PASS`, `SKIP`, and `XFAIL` rows from the stderr summary of a long run. The `summary` event still carries every row.
-
-A hook that starts an external process inheriting file descriptor 1 can still write to stdout. Redirect that process; see [Hook execution context](concepts/plugins.md#handle-hook-execution-context).
+Per-phase status lines require `--verbose` or `--debug`. Dispatch progress, job announcements, hooks, warnings, and errors remain visible.
 
 ## Know which commands write a log
 
-Commands that run a flow (`test`, `regression`, `synth`, `power`, and so on) write events to `<command_root>/rtl_buddy.log`. A process's first open truncates the file, so the log holds only the latest run.
+Flow commands (`test`, `regression`, `synth`, `power`, and so on) write `<command_root>/rtl_buddy.log`, replacing the previous run's log.
 
-Read commands write no file log: `rb phys`, `rb cov`, the `rb graph` read verbs (`query`, `path`, `explain`), `rb xplr`, and `--list` on any flow command. Writing one would truncate the log of the flow they report on. Their events go to stderr and their result goes to stdout as JSON.
-
-To debug a run, read the log of the flow that produced the artefacts, not of the read command that reported them.
+Read commands (`rb phys`, `rb cov`, `rb graph query|path|explain`, `rb xplr`, and flow `--list`) preserve that log. They send events to stderr and JSON results to stdout. Debug the flow using the log that produced its artefacts.
 
 ## Parse command results
 

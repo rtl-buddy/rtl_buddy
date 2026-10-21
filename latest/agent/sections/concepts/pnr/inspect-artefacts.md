@@ -1,21 +1,18 @@
 ## Inspect artefacts
 
-Outputs land under `<pnr-dir>/artefacts/<run>/`.
-
-| File | Purpose |
+| File in `artefacts/<run>/` | Contents |
 | --- | --- |
-| `pnr.log`, `pnr.tcl` | OpenROAD output and generated flow |
-| `<top>.def`, `<top>.routed.v`, `<top>.routed.sdc` | Routed DEF, post-route netlist and constraints |
-| `<top>.routed.odb` | OpenROAD database read by post-P&R `rb power` |
-| `<top>.routed.spef` | Extracted parasitics; only when the PDK sets `rcx-rules` |
-| `timing.rpt` | Worst-path timing across all corners |
-| `electrical.rpt` | Max-slew, max-capacitance and max-fanout violators across all corners |
-| `route.drc.rpt`, `route.maze.log` | DRC summary and detailed-route log |
-| `congestion.rpt` | Overflowing global-route tiles; written only when global routing overflows |
-| `<top>.gds`, `<top>.png`, `klayout.*.log` | Optional KLayout outputs and logs |
-| `export.provenance.json` | What the last `rb pnr-export` read and produced |
-| `checkpoints/`, `abstract/` | Optional [stage checkpoints](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#keep-stage-checkpoints) and [hardened-block abstract](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#harden-a-block) |
+| `pnr.log`, `pnr.tcl` | OpenROAD output, written live, and the generated flow script |
+| `<top>.def`, `<top>.routed.odb` | Routed design. `rb power` reads the ODB. |
+| `<top>.routed.v`, `<top>.routed.sdc` | Logical netlist (no supply ports or supply pin connections) and constraints, for STA and gate-level simulation. The SDC is the primary corner's on a multi-corner platform. |
+| `<top>.routed.pwr.v` | Powered netlist, for LVS against `<top>.gds`: the top's supply ports, last and sorted by name, and every instance's supply pins, fill and tap cells included, connected by the `pdn-config` global connections. It is the same whether the run was staged or one session. |
+| `<top>.<corner>.routed.sdc` | Each corner's constraints, on a [multi-corner platform](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#sign-off-at-several-corners) |
+| `<top>.routed.spef` | Extracted parasitics, when the PDK sets `rcx-rules` |
+| `timing.rpt`, `electrical.rpt` | Worst paths and electrical violators, all corners |
+| `route.drc.rpt`, `route.maze.log` | Detailed-route DRCs and router log |
+| `congestion.rpt` | Overflowing global-route tiles, only when global routing overflows. Loads in the OpenROAD GUI's DRC viewer. |
+| `congestion-<i>.rpt` | The same at iteration `i`, every `global-route.congestion-report-iter-step` iterations of an overflowing route |
+| `<top>.gds`, `<top>.png`, `klayout.*.log`, `def2stream.inputs.json` | Stream-out outputs, logs and the inputs it read |
+| `checkpoints/`, `abstract/` | [Stage checkpoints](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#keep-stage-checkpoints) and a [hardened block's](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#harden-a-block) views |
 
-Each run deletes the previous run's outputs first, and a run that fails after writing the routed database removes it again, so `rb power` never reads a stale one. `pnr.log`, `pnr.tcl` and `congestion.rpt` are kept from a failed run.
-
-On failure, read `pnr.log`. If only KLayout failed, read the matching `klayout.*.log`, fix the installation and rerun with `--gds` or `--png`.
+When OpenROAD fails, the run removes the routed database so `rb power` never reads a stale one; `pnr.log`, `pnr.tcl` and the congestion reports stay. A failed global route also leaves its database as a [checkpoint](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#keep-stage-checkpoints). A run that fails a later check (`routed_check`, `fail-on-electrical`, a signoff gate, `export`, `abstract`) keeps its routed outputs for inspection.

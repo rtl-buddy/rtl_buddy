@@ -1,13 +1,20 @@
 ## Apply reservation advice
 
-After a Slurm run, rtl_buddy compares reservations with `sacct` usage and prints a Reservation Advice table. Machine output returns the findings in `payload.reservation_advice`. rtl_buddy never edits configuration. Turn the report off with `rightsize: {report: false}`. Without `sacct` accounting there is no advice.
+After a Slurm run, rtl_buddy compares reservations with `sacct` usage and reports suggested edits. It never changes configuration. Disable advice with `rightsize: {report: false}`; it requires accounting data. Query `sacct` without `-X` for step rows.
 
-Advice is per test, from the peak across runs in this invocation:
+Advice uses each test's peak across this invocation:
 
-- Utilization below `over-threshold` suggests a reduction. A lower value reports fewer tests: `0.3` lists only tests that used under a third of what they asked for.
-- Utilization above `near-limit`, a `TIMEOUT`, or an `OUT_OF_MEMORY` suggests an increase. These are listed first because under-reservation costs failed work.
-- Suggestions are peak times `margin`, with floors of 5 minutes and 128 MiB.
-- Time advice is given for Verilator only, because VCS license waits distort elapsed time. Memory advice is skipped for runs shorter than the accounting sample interval, except after an out-of-memory kill.
-- `phase` is `sim`, `compile+sim`, `compile`, or `verilate`, and `edit_hint` names the field that controlled the allocation.
+- Below `over-threshold`, reduce the reservation. Lower the threshold to report fewer reductions.
+- Above `near-limit`, or after `TIMEOUT` or `OUT_OF_MEMORY`, raise it. Increases appear first because under-reservation fails work.
+- Suggestions are peak times `margin`, floored at 5 minutes and 128 MiB.
+- Simulation time advice requires Verilator; VCS license waits distort elapsed time. Memory advice needs a run longer than the accounting interval, except after an OOM kill.
 
-Do not use a smoke run to shrink a nightly reservation. Apply the `edit_hint`, rerun, and confirm the finding clears. Query `sacct` without `-X` to see step rows.
+Apply the explicit `edit_hint`, rerun, and confirm the finding clears. Use representative levels and seeds; a smoke run cannot size a nightly reservation.
+
+Machine output always includes all findings in `payload.reservation_advice`:
+
+- `edit_hint.file` is absolute; `edit_hint.path` names the controlling YAML field. Environment overrides use `path: env` without a file. Never derive the target from a test name: inheritance and modes can point elsewhere.
+- `phase` is `sim`, `compile+sim`, `compile`, or `verilate`.
+- Inapplicable `reg_level`, `allocated`, `suggested_total`, and `aggregate_delta` are omitted; treat absence as null. Regression levels are per finding; build jobs have no simulation-level filter. Findings have no `event` field.
+
+A nonempty list logs one INFO `rightsize.summary` with `total` and direction `counts` (`raise`, `reduce`). Individual `rightsize.advice` events require `--debug`.

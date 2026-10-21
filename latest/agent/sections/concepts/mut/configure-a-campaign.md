@@ -29,4 +29,4 @@ scope:
   exclude: []
 ```
 
-`design_file` must be inside the directory containing `models.yaml`, because each mutant is evaluated in an isolated copy of that tree. It is also the baseline-oracle target. See [YAML formats](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/) for the full schema.
+`design_file` must be inside the directory containing `models.yaml`, because each mutant is evaluated in an isolated copy of that tree. It is also the baseline-oracle target. See [YAML formats](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/) for the full schema.

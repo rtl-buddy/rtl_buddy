@@ -8,4 +8,4 @@ A `function` or `task` outside a class declared without `automatic` has one shar
 - Add `automatic` to the declaration, or set `static-functions: warn` to stage a migration.
 - Yosys `multiple conflicting drivers` warnings fail the run unless `conflicting-drivers: allow` is set. Tristate buses are not counted.
 
-The scan reports declarations, so a subroutine with one call site can still fail, and it misses declarations produced by macros or in `-y` directories. A synth.yaml `defines:` that overrides a filelist `+define+` warns `synth.filelist_defines_overridden`. See [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/synthesis/#gate-static-lifetime-subroutines).
+The scan reports declarations, so a subroutine with one call site can still fail, and it misses declarations produced by macros or in `-y` directories. A synth.yaml `defines:` that overrides a filelist `+define+` warns `synth.filelist_defines_overridden`. See [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/synthesis/#gate-static-lifetime-subroutines).

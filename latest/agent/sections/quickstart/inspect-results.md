@@ -8,4 +8,4 @@ For JSON output:
 uv run rb --machine test basic
 ```
 
-See [Agent Use](https://rtl-buddy.github.io/rtl_buddy/v6/agents/#machine-mode) for the JSON contract and [Tests](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/tests/#interpret-results) for verdicts and exit codes.
+See [Agent Use](https://rtl-buddy.github.io/rtl_buddy/v7/agents/#machine-mode) for the JSON contract and [Tests](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/tests/#interpret-results) for verdicts and exit codes.
