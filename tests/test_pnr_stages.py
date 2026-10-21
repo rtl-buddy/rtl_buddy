@@ -1257,6 +1257,139 @@ def test_a_resumed_run_can_itself_be_resumed(tmp_path, monkeypatch):
     ]
 
 
+#: Post-route repair the stub rounds meet timing in: round 0 fails setup, round 1 meets it.
+_ROUNDS = {"setup-margin": 0.1, "rounds": 2}
+_ROUNDS_MET = {"RB_STUB_SETUP": "-0.2 0.01"}
+
+
+@pytest.mark.parametrize(
+    "repair",
+    [{"setup-margin": 0.1}, {"hold-margin": 0}],
+    ids=["setup", "hold-shorthand"],
+)
+def test_a_run_with_global_route_repair_resumes_after_its_global_route(
+    tmp_path, monkeypatch, repair
+):
+    from test_pnr_repair import _repair_backend
+
+    def _run(**options):
+        backend, artefacts = _repair_backend(
+            tmp_path,
+            monkeypatch,
+            post_route=_ROUNDS,
+            stages=True,
+            env=_ROUNDS_MET,
+            platform={"global_route_repair": repair},
+            **options,
+        )
+        res = backend.run()
+        assert res.results["result"] == "PASS", res.results
+        return artefacts
+
+    artefacts = _run(stop_after="global_route")
+    first = _only_run(artefacts)
+    _run(resume="latest", resume_from="detailed_route")
+    second = next(r for r in _runs(artefacts) if r != first)
+    _run(resume="latest", resume_from="post_route_repair")
+    third = next(r for r in _runs(artefacts) if r not in (first, second))
+
+    route = (first / "04_global_route.tcl").read_text()
+    assert "rb::ckpt::stage_timing global_route before_repair\n" in route
+    for run_dir in (second, third):
+        finish = (run_dir / "07_finish.tcl").read_text()
+        assert "rb::ckpt::timing_event finish stage_end extracted\n" in finish
+    manifest = json.loads((third / "manifest.json").read_text())
+    assert manifest["checkpoints"]["global_route"]["inherited_from"] == first.name
+    assert manifest["checkpoints"]["detailed_route"]["inherited_from"] == second.name
+
+
+def _unbound(script: str) -> str:
+    """`script` with its run bindings blanked, as two runs' scripts of a stage compare."""
+    return pnr_checkpoints.RUN_BINDING_RE.sub(r"set RB_\1_DIR <run>", script)
+
+
+_GRR = {"global_route_repair": {"setup-margin": 0.1}}
+_ORIGIN = {"global_route": PnrGlobalRouteFile(grid_origin=[3, 3])}
+_SIGNOFF = {"signoff": {"setup-corners": ["ss"], "hold-corners": ["ff"]}}
+
+
+@pytest.mark.parametrize("staged", [True, False], ids=["staged", "one-session"])
+@pytest.mark.parametrize(
+    "platform, post_route, corners",
+    [
+        ({}, None, None),
+        (_GRR, None, None),
+        (_GRR, _ROUNDS, None),
+        ({**_GRR, **_ORIGIN}, None, None),
+        ({**_GRR, **_SIGNOFF}, _ROUNDS, ["ss", "ff"]),
+    ],
+    ids=["plain", "grr", "grr-post-route", "grr-grid-origin", "grr-mc-signoff"],
+)
+def test_the_scripts_a_resume_check_renders_are_the_ones_the_run_wrote(
+    tmp_path, monkeypatch, staged, platform, post_route, corners
+):
+    """The flow rendered before the checkpoint run directory exists, as a `--resume` check renders it, is the flow the run writes."""
+    from test_pnr_repair import _repair_backend
+
+    def _backend_for(**options):
+        return _repair_backend(
+            tmp_path,
+            monkeypatch,
+            post_route=post_route,
+            stages=staged,
+            env=_ROUNDS_MET,
+            corners=corners,
+            platform=platform,
+            **options,
+        )
+
+    backend, artefacts = _backend_for()
+    res = backend.run()
+    assert res.results["result"] == "PASS", res.results
+    run_dir = _only_run(artefacts)
+    written = {
+        stage: (run_dir / f"{_NAMES[stage]}.tcl").read_text()
+        for stage in backend._session_stages()
+    }
+    assert set(written) == (
+        set(backend._stages)
+        if staged
+        else {"post_route_repair", "finish"}
+        if post_route
+        else set()
+    )
+
+    flow = dict(backend._substitutions)
+    backend._ckpt_run_dir = None
+    backend._prepare_flow(
+        backend.root_cfg.get_pnr_platform_cfg.return_value,
+        backend.pnr_cfg.get_floorplan(),
+    )
+    assert backend._substitutions == flow
+    for stage, script in written.items():
+        assert _unbound(backend._stage_script(stage, run_dir="<run>")) == (
+            _unbound(script)
+        ), stage
+
+    if not staged:
+        return
+    checked = {}
+    check_resume = pnr_stages.check_resume
+
+    def _check_resume(*args, scripts, **kwargs):
+        checked.update(scripts)
+        return check_resume(*args, scripts=scripts, **kwargs)
+
+    monkeypatch.setattr(pnr_stages, "check_resume", _check_resume)
+    resumed, _ = _backend_for(resume=run_dir.name, resume_from="finish")
+    res = resumed.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert set(checked) == set(written) - {"finish"}
+    for stage, script in checked.items():
+        assert _unbound(script) == _unbound(written[stage]), stage
+
+
 @pytest.mark.parametrize(
     ("options", "expected"),
     [

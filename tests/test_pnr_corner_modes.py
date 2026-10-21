@@ -88,6 +88,8 @@ def _render(tmp_path, platform, *, modes=True, checkpoints=False, **changes) -> 
     """The `pnr.tcl` a one-session run renders: with an SDC mode per corner when `modes`, and with checkpoints armed when `checkpoints`."""
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
+    if checkpoints:
+        changes["checkpoints"] = ()
     cfg = _cfg(tmp_path, **changes)
     top = MagicMock()
     top.get_top.return_value = "demo_top"
