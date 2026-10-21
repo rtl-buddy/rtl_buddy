@@ -1,6 +1,6 @@
 ---
 name: rtl-buddy-implementation
-description: Run and interpret rtl_buddy synthesis, P&R, power, FPGA, timing-closure, and XPLR design-space exploration workflows.
+description: Run and interpret rtl_buddy synthesis, power, FPGA, timing-closure, and XPLR design-space exploration workflows.
 ---
 
 # rtl_buddy implementation flows
@@ -9,7 +9,7 @@ Report `rb --version` at the top of every run summary.
 
 Use `rb --machine`; gate external tools with
 `rb --machine tool-check --required-for <flow>`. Use `rb docs list` to select the
-installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
+installed-version page for `synthesis`, `power`, `fpga`, or `xplr`.
 
 ## Results before logs
 
@@ -18,68 +18,15 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   `rb <flow> --help` rather than copying them between flows.
 - A tool completing does not mean the design met its target. Report timing,
   area, power, routing, and guardrail fields separately from command execution.
-- `synth`, `pnr`, `power`, `fpga`, `synth-regression`, `power-regression`, and
+- `synth`, `power`, `fpga`, `synth-regression`, `power-regression`, and
   `fpga-regression` exit 0 when every result counts as successful, 1 for any
   `FAIL` or strict `XPASS`, and 2 for a fatal configuration or environment error.
   `SKIP`, `XFAIL`, and non-strict `XPASS` count as successful. XPLR verbs exit 0
   on success and 2 on fatal errors.
 
-## P&R traps
+## Place-and-route
 
-- **OpenROAD threads.** OpenROAD runs single-threaded unless a `pnr.yaml`,
-  `power.yaml` or `synth.yaml` entry sets `threads:` (a count, or `auto` for the
-  allocation). A count above the Slurm or affinity allocation is clamped with
-  `openroad.threads_capped`. Quote `openroad_threads.effective`, not the
-  configured value.
-- **Checkpoints.** For a long or failing P&R, set `checkpoints: true` in
-  `pnr.yaml`. A `FAIL` row then carries `checkpoint_dir`, `checkpoint_stages`
-  and `last_step`, and `checkpoints/latest/progress.jsonl` shows the step a
-  running or killed flow is in. A checkpoint is never a routed or final result:
-  report it as the stage it names. `pnr-export --checkpoint <stage>` labels its
-  layout `checkpoint_final: false`.
-- **Route progress.** `pnr.log` is written live. Before calling a long route
-  hung, check its detailed-route iterations and violation counts (`DRT-0195`,
-  level set by `detailed-route-verbose:`, default 1) and the global-route
-  congestion table (`GRT-0096`).
-- **`pnr-export`.** It runs the KLayout export over a saved P&R result and
-  starts no P&R or synthesis. The export is the whole job, so any export not
-  delivered is a `FAIL`, unlike `rb pnr`, where a failed `preview` export leaves
-  the P&R verdict standing. A layout published with cells that have no GDS is a
-  qualified pass in `preview` and a `FAIL` in `strict`. Read `gds_status` and
-  `gds_missing_cells` before reporting a layout, and `export_provenance` for
-  what was read.
-- **Block boundary planning.** `floorplan.pins` puts ports (names or globs)
-  on a side and range, in a group, or one pin at an exact location; a glob
-  matching no port fails the run. For other pin Tcl, set `pin-constraints`
-  (a path relative to `pnr.yaml`), sourced just before `place_pins`. Do not
-  put either in SDC, which is read before the die exists. `floorplan.macro-anchor`
-  keeps macros off a pin edge (the packer starts in that corner).
-  `floorplan.blockages` adds hard, soft or partial placement blockages, and
-  macros avoid the hard ones. `floorplan.macro-placement: rtl-mp` uses
-  OpenROAD's RTL-MP instead of the packer and excludes `macro-anchor`.
-  `floorplan.macros` fixes a macro's location (full hierarchical instance
-  name), sets its orientation or its own cell halo.
-  `floorplan.die-area` + `core-area` size the die exactly (not with
-  `utilization`); `core-cutouts` makes an L/T core. A run's `pdn-config`
-  replaces the PDK's; `pdn:` declares the core grid (ring, stripes) in YAML.
-
-## Hierarchical P&R
-
-- A `harden: true` run publishes a block's abstract. A top names it under
-  `blocks:` in `pnr.yaml` and in its `synth.yaml` entry. It buffers the
-  block's ports (`buffer-ports:`, default on when hardening).
-- A `PASS` is not electrically clean while `max_slew_violation_count` or
-  `max_capacitance_violation_count` is nonzero; quote them with the timing.
-  `fail-on-electrical: true` makes them fail the run.
-- `rb pnr` with no run name runs blocks before the runs that consume them.
-  `--synth` also runs each upstream synthesis in that order, so a clean tree
-  builds in one command. `-j N` hardens independent blocks side by side.
-- A run not attempted because a block failed is `FAIL` with
-  `fail_stage: blocked` and `blocked_by`. Report the block, not the top.
-- A stale abstract fails naming the block and what changed. Re-harden the block
-  rather than reaching for `--accept-stale`.
-- A block reports 0 W in `rb power` and is listed in `unpowered_cells`, so the
-  total leaves out the blocks' own power.
+Use the `rtl-buddy-pnr` skill for `rb pnr` and `rb pnr-export`. A hardened P&R block reports 0 W in `rb power` and is listed in `unpowered_cells`, so a parent's total leaves out the blocks' own power.
 
 ## Synthesis correctness gates
 

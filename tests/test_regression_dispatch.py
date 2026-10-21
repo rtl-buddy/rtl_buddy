@@ -2653,7 +2653,7 @@ def test_regression_machine_payload_carries_reservation_advice(
     assert by_resource["time"]["direction"] == "reduce"
     assert by_resource["mem"]["direction"] == "reduce"
     mem = by_resource["mem"]
-    assert mem["event"] == "reservation-advice"
+    assert "event" not in mem
     assert mem["test"] == "basic"
     assert mem["suggested"] == "1536M"
     assert mem["edit_hint"]["path"] == "tests[name=basic].resources.mem"
@@ -2763,7 +2763,7 @@ def test_rightsize_advice_events_are_raise_first_across_suites(
 ):
     """The logged events follow the regression-wide order, not each suite's order."""
     argv = _raise_in_the_second_suite_backend(minimal_project, monkeypatch)
-    result, _ = _invoke(["--machine", *argv])
+    result, _ = _invoke(["--machine", "--debug", *argv])
     assert result.exit_code == 0, result.output
     payload_line = [
         line for line in result.output.splitlines() if line.startswith("{")
@@ -2817,7 +2817,7 @@ def test_whole_core_rounding_produces_no_cpus_advice_end_to_end(
     advice = json.loads(payload_line)["payload"]["reservation_advice"]
     assert [a for a in advice if a["resource"] == "cpus"] == []
     assert advice, "the time/mem rows should still be there"
-    assert all(a["allocated"] is None for a in advice)
+    assert all("allocated" not in a for a in advice)
 
 
 @pytest.mark.parametrize(
@@ -2883,7 +2883,7 @@ def test_an_sbatch_args_cpus_override_sends_the_analysis_back_to_reqcpus(
     (cpus,) = [a for a in advice if a["resource"] == "cpus"]
     # Analysed against the 4 the override submitted, not the 1 the YAML resolved to.
     assert cpus["reserved"] == "4"
-    assert cpus["allocated"] is None
+    assert "allocated" not in cpus
     assert cpus["suggested"] == "2"  # ceil(4 x 0.25 x 1.5)
     # The hint names the argument, not the field it masks.
     assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 from contextlib import nullcontext
 from pathlib import Path
 from textwrap import dedent
@@ -659,8 +660,10 @@ class _FakePdk:
     def get_tech_lef(self):
         return self._tech_lef
 
-    def get_macro_lef(self):
-        return self._macro_lef
+    def get_macro_lef_paths(self):
+        if isinstance(self._macro_lef, list):
+            return list(self._macro_lef)
+        return [self._macro_lef] if self._macro_lef else []
 
     def get_layer_rc_tcl(self):
         return self._layer_rc_tcl
@@ -695,6 +698,9 @@ class _FakePlatform:
 
     def is_multi_corner(self):
         return bool(self._corners) and len(self._corners) > 1
+
+    def get_sta_corners(self):
+        return list(self._corners) if self._corners else ["typ"]
 
     def get_sta_corner_lib_paths(self):
         return {c: [lib] for c, lib in (self._corners or {}).items()}
@@ -2272,6 +2278,22 @@ def test_a_platform_without_macro_lef_lists_only_what_the_script_reads(tmp_path)
     ]
 
 
+def test_the_power_script_reads_every_cell_lef_in_order(tmp_path):
+    lefs = ["/pdk/fake/cells_r.lef", "/pdk/fake/cells_l.lef"]
+    backend = _make_power_backend(
+        tmp_path,
+        platform=_FakePlatform(pdk=_FakePdk("/pdk/fake/tech.lef", lefs)),
+    )
+    script = Path(backend._write_script()).read_text()
+
+    assert [line for line in script.splitlines() if line.startswith("read_lef")] == [
+        "read_lef /pdk/fake/tech.lef",
+        "read_lef /pdk/fake/cells_r.lef",
+        "read_lef /pdk/fake/cells_l.lef",
+    ]
+    assert backend._phys_technology()[-2:] == lefs
+
+
 _STAT_JSON = (
     '{"modules": {"\\\\demo_top": {"num_cells": 4}}, "design": {"num_cells": 4}}'
 )
@@ -3762,3 +3784,26 @@ def test_a_spef_timed_power_run_does_not_digest_the_layer_rc(tmp_path):
     identity = backend._upstream_identity()
     assert identity["parasitics"] == "spef"
     assert "layer_rc_tcl_sha256" not in identity
+
+
+@pytest.mark.parametrize(
+    "mode, words",
+    [
+        ("probe", "pnr run 'demo_pnr' is a probe (mode: probe)"),
+        ("closure", "older runs predate the .routed.odb artefact"),
+    ],
+)
+def test_a_missing_routed_odb_names_a_probe_run(tmp_path, mode, words):
+    from unittest.mock import MagicMock
+
+    from rtl_buddy.config.pnr_repair import PnrMode
+
+    backend, _routed = _make_pnr_power_backend(tmp_path, "")
+    odb = backend._resolve_inputs()["odb"]
+    os.remove(odb)
+    backend.power_cfg.resolve_pnr_cfg = lambda: MagicMock(
+        get_name=lambda: "demo_pnr", get_mode=lambda: PnrMode(mode)
+    )
+
+    with pytest.raises(RuntimeError, match=re.escape(words)):
+        backend._write_script()

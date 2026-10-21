@@ -307,7 +307,7 @@ def test_advice_carries_run_count_and_reg_level():
     ]
     (finding,) = _analyze(rows, reg_level=1000)
     event = finding.as_event()
-    assert event["event"] == "reservation-advice"
+    assert "event" not in event
     assert event["reg_level"] == 1000
     assert event["runs"] == 1
 
@@ -2206,7 +2206,7 @@ def test_a_genuinely_over_reserved_test_still_gets_cpus_advice():
     assert cpu.suggested == "2"  # ceil(4 x 0.25 x 1.5)
     # Request and allocation agree, so there is nothing extra to reconcile.
     assert cpu.allocated is None
-    assert cpu.as_event()["allocated"] is None
+    assert "allocated" not in cpu.as_event()
 
 
 def test_a_cpus_finding_names_the_request_and_carries_the_allocation():

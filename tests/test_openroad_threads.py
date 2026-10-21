@@ -318,13 +318,13 @@ def test_unset_threads_leaves_the_pnr_script_unchanged(tmp_path, no_allocation):
     text = _script(tmp_path, None)
     assert "set_thread_count" not in text
     # The placeholder line collapses to the blank line that was always there, so the script is unchanged when no thread count is set.
-    assert 'file mkdir $OUT_DIR\n\nputs ">>> Reading Liberty + LEF"' in text
+    assert '}\n\nputs ">>> Reading Liberty + LEF"' in text
 
 
 def test_configured_threads_precede_the_first_liberty_read(tmp_path, no_allocation):
     text = _script(tmp_path, 4)
     assert (
-        'file mkdir $OUT_DIR\n\nputs ">>> Threads"\nset_thread_count 4\n\n'
+        '}\n\nputs ">>> Threads"\nset_thread_count 4\n\n'
         'puts ">>> Reading Liberty + LEF"' in text
     )
     assert text.index("set_thread_count 4") < text.index("read_liberty")
@@ -347,9 +347,10 @@ def _run(tmp_path, monkeypatch, threads, log):
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
     monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **k: nullcontext())
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
 
     def _fake_run(cmd, **_kwargs):
-        _kwargs["stdout"].write(log)
+        _kwargs["stdout"].write(log + ">>> DONE\n")
         return MagicMock(returncode=0, stderr="")
 
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)

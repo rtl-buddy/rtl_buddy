@@ -1,9 +1,11 @@
 import logging
 import os
+from enum import StrEnum
 
 from serde import serde, field
 
 from ..errors import FatalRtlBuddyError
+from .unknown_keys import KeySpec
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,38 @@ DEFAULT_PLACEMENT_MACRO_CELL_HALO = 1.0
 DEFAULT_PLACEMENT_TIE_SEPARATION = 0.0
 
 
+class RotatedMacroFootprint(StrEnum):
+    """How the flow keeps OpenROAD's default legalizer from evicting cells around a macro rotated by 90 degrees (OpenROAD#11735).
+
+    The legalizer reserves such a macro's unrotated footprint. ``BLOCK`` keeps global placement out of that footprint with a global-placement-only hard blockage; ``DIAMOND_LEGALIZER`` passes `-use_diamond_legalizer` to every `detailed_placement`; ``NONE`` does neither.
+    """
+
+    BLOCK = "block"
+    DIAMOND_LEGALIZER = "diamond-legalizer"
+    NONE = "none"
+
+
+DEFAULT_ROTATED_MACRO_FOOTPRINT = RotatedMacroFootprint.BLOCK
+
+
+#: Fraction of a macro pin's limit `placement.macro-pin-limits` keeps in hand when `margin` is unset.
+DEFAULT_MACRO_PIN_LIMIT_MARGIN = 0.05
+
+
+@serde
+class MacroPinLimitsFile:
+    """`placement.macro-pin-limits`: buffer macro pins over their Liberty max-slew or max-capacitance limit.
+
+    `buffers` are the candidate buffer cells, weakest first; `margin` is the fraction of each limit kept in hand, and `capacitance-margin`, when set, replaces it for max-capacitance checks. Typed loosely so `validate_placement` names a bad value.
+    """
+
+    buffers: str | list | None = None
+    margin: float | int | str | None = None
+    capacitance_margin: float | int | str | None = field(
+        rename="capacitance-margin", default=None
+    )
+
+
 @serde
 class PlacementFile:
     """Global-placement and macro-placement tuning as written in YAML.
@@ -57,6 +91,72 @@ class PlacementFile:
     # `global_placement -routability_driven` / `-routability_use_grt`; `None` inherits, unset means off.
     routability_driven: bool | None = field(rename="routability-driven", default=None)
     routability_use_grt: bool | None = field(rename="routability-use-grt", default=None)
+    # `global_placement -timing_driven`; `None` inherits, unset means off.
+    timing_driven: bool | None = field(rename="timing-driven", default=None)
+    # `block`, `diamond-legalizer` or `none`; `None` inherits, unset means `block`.
+    rotated_macro_footprint: str | None = field(
+        rename="rotated-macro-footprint", default=None
+    )
+    # Opt-in macro pin repair on the legalized post-`repair_design` placement; `None` inherits, unset means off. A block replaces a lower level's whole.
+    macro_pin_limits: MacroPinLimitsFile | None = field(
+        rename="macro-pin-limits", default=None
+    )
+
+
+PLACEMENT_SPEC = KeySpec(
+    PlacementFile, {"macro-pin-limits": KeySpec(MacroPinLimitsFile)}
+)
+
+
+def _validate_macro_pin_limits(
+    limits: MacroPinLimitsFile | None, where: str
+) -> MacroPinLimitsFile | None:
+    """Check `placement.macro-pin-limits`; the result has a list of cell names and float margins, `capacitance-margin` defaulting to `margin`."""
+    if limits is None:
+        return None
+    key = f"{where}: placement.macro-pin-limits"
+    buffers = limits.buffers
+    if not isinstance(buffers, list) or not buffers:
+        raise FatalRtlBuddyError(
+            f"{key}.buffers must be a non-empty list of buffer cell names, "
+            f"weakest first, got {buffers!r}"
+        )
+    for cell in buffers:
+        if not isinstance(cell, str) or len(cell.split()) != 1:
+            raise FatalRtlBuddyError(
+                f"{key}.buffers entries must be single cell names, got {cell!r}"
+            )
+        # Spliced unquoted into a Tcl list.
+        bad = sorted(set(cell) & _TCL_METACHARACTERS)
+        if bad:
+            raise FatalRtlBuddyError(
+                f"{key}.buffers entry {cell!r} contains {' '.join(bad)}"
+            )
+    if len(set(buffers)) != len(buffers):
+        raise FatalRtlBuddyError(f"{key}.buffers repeats a cell")
+    margin = _margin(
+        f"{key}.margin",
+        DEFAULT_MACRO_PIN_LIMIT_MARGIN if limits.margin is None else limits.margin,
+    )
+    capacitance_margin = (
+        margin
+        if limits.capacitance_margin is None
+        else _margin(f"{key}.capacitance-margin", limits.capacitance_margin)
+    )
+    return MacroPinLimitsFile(
+        buffers=list(buffers), margin=margin, capacitance_margin=capacitance_margin
+    )
+
+
+def _margin(key: str, value) -> float:
+    """A fraction of a limit: a number from 0 up to but not including 1."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise FatalRtlBuddyError(
+            f"{key} must be a number from 0 up to but not including 1, got {value!r}"
+        )
+    if not 0.0 <= float(value) < 1.0:
+        raise FatalRtlBuddyError(f"{key} must be >= 0 and < 1, got {value}")
+    return float(value)
 
 
 def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
@@ -112,6 +212,15 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
                 f"got {reference_hpwl!r}"
             )
         reference_hpwl = float(reference_hpwl)
+    rotated = placement.rotated_macro_footprint
+    if rotated is not None:
+        try:
+            rotated = RotatedMacroFootprint(rotated).value
+        except ValueError:
+            raise FatalRtlBuddyError(
+                f"{where}: placement.rotated-macro-footprint must be one of "
+                f"{', '.join(r.value for r in RotatedMacroFootprint)}, got {rotated!r}"
+            ) from None
     return PlacementFile(
         density=density,
         padding=padding,
@@ -121,14 +230,19 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
         reference_hpwl=reference_hpwl,
         routability_driven=placement.routability_driven,
         routability_use_grt=placement.routability_use_grt,
+        timing_driven=placement.timing_driven,
+        rotated_macro_footprint=rotated,
+        macro_pin_limits=_validate_macro_pin_limits(placement.macro_pin_limits, where),
     )
 
 
 _TCL_METACHARACTERS = frozenset('[]{}$"\\;')
 
 
-def _validate_dont_use_cells(cells: list[str], where: str) -> list[str]:
-    """Check a `dont-use-cells:` list; ``where`` names it in errors.
+def _validate_dont_use_cells(
+    cells: list[str], where: str, key: str = "dont-use-cells"
+) -> list[str]:
+    """Check a `dont-use-cells:` list, or another list of cell patterns named `key`; ``where`` names it in errors.
 
     Each entry becomes one Tcl list element and one Yosys `-dont_use` argument, so whitespace would split it into two patterns.
     """
@@ -136,19 +250,19 @@ def _validate_dont_use_cells(cells: list[str], where: str) -> list[str]:
     for cell in cells:
         if not isinstance(cell, str) or not cell.strip():
             raise FatalRtlBuddyError(
-                f"{where}: dont-use-cells entries must be non-empty cell-name "
+                f"{where}: {key} entries must be non-empty cell-name "
                 f"patterns, got {cell!r}"
             )
         if len(cell.split()) > 1:
             raise FatalRtlBuddyError(
-                f"{where}: dont-use-cells entry {cell!r} contains whitespace; "
+                f"{where}: {key} entry {cell!r} contains whitespace; "
                 "write one pattern per list entry"
             )
         # Spliced unquoted into a Tcl `[list ...]`: a metacharacter would be executed, not matched.
         bad = sorted(set(cell) & _TCL_METACHARACTERS)
         if bad:
             raise FatalRtlBuddyError(
-                f"{where}: dont-use-cells entry {cell!r} contains "
+                f"{where}: {key} entry {cell!r} contains "
                 f"{' '.join(bad)}; patterns support only the `*` and `?` "
                 "wildcards"
             )
@@ -171,8 +285,8 @@ class PdkConfigFile:
     # Each corner is one Liberty path or a list of them (cell libraries split across files).
     corners: dict[str, str | list[str]] = field(default_factory=dict)
     tech_lef: str = field(rename="tech-lef", default="")
-    macro_lef: str = field(rename="macro-lef", default="")
-    # One path or a list of paths.
+    # Each is one path or a list of paths, read in order.
+    macro_lef: str | list[str] = field(rename="macro-lef", default="")
     cell_gds: str | list[str] = field(rename="cell-gds", default="")
     klayout_tech: str = field(rename="klayout-tech", default="")
     klayout_props: str = field(rename="klayout-props", default="")
@@ -196,6 +310,13 @@ class PdkConfigFile:
     platform_tcl: str = field(rename="platform-tcl", default="")
 
 
+#: The keys of one `cfg-pdks` entry, for the unknown-key check.
+PDK_SPEC = KeySpec(
+    PdkConfigFile,
+    {"pin-layers": KeySpec(PdkPinLayersFile), "placement": PLACEMENT_SPEC},
+)
+
+
 class PdkConfig:
     def __init__(self, cfg: PdkConfigFile, root_cfg_path: str):
         cfg_dir = os.path.dirname(root_cfg_path)
@@ -215,7 +336,7 @@ class PdkConfig:
                     f"PDK '{cfg.name}': corner '{corner}' names no Liberty file"
                 )
         self._tech_lef = _resolve(cfg.tech_lef)
-        self._macro_lef = _resolve(cfg.macro_lef)
+        self._macro_lefs = [_resolve(p) for p in _as_path_list(cfg.macro_lef)]
         self._cell_gds = [_resolve(p) for p in _as_path_list(cfg.cell_gds)]
         self._klayout_tech = _resolve(cfg.klayout_tech)
         self._klayout_props = _resolve(cfg.klayout_props)
@@ -264,8 +385,9 @@ class PdkConfig:
     def get_tech_lef(self) -> str:
         return self._tech_lef
 
-    def get_macro_lef(self) -> str:
-        return self._macro_lef
+    def get_macro_lef_paths(self) -> list[str]:
+        """Every configured cell LEF, resolved, in config order."""
+        return list(self._macro_lefs)
 
     def get_cell_gds(self) -> str:
         """The first configured cell GDS, or `""`; use :meth:`get_cell_gds_paths` to stream layout."""
@@ -327,6 +449,18 @@ class PdkConfig:
     def get_placement_routability_use_grt(self) -> bool | None:
         """Configured `global_placement -routability_use_grt`, or `None` when unset."""
         return self._placement.routability_use_grt
+
+    def get_placement_timing_driven(self) -> bool | None:
+        """Configured `global_placement -timing_driven`, or `None` when unset."""
+        return self._placement.timing_driven
+
+    def get_placement_rotated_macro_footprint(self) -> str | None:
+        """Configured `placement.rotated-macro-footprint`, or `None` when unset."""
+        return self._placement.rotated_macro_footprint
+
+    def get_placement_macro_pin_limits(self) -> MacroPinLimitsFile | None:
+        """Configured `placement.macro-pin-limits`, validated, or `None` when unset."""
+        return self._placement.macro_pin_limits
 
     def get_dont_use_cells(self) -> list[str]:
         return list(self._dont_use_cells)

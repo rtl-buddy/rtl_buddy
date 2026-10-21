@@ -1,6 +1,7 @@
 import os
 import signal
 import subprocess
+import sys
 import time
 
 import pytest
@@ -372,3 +373,99 @@ def test_timeout_pauser_rejects_pipe_stdout(monkeypatch):
             timeout=1,
             timeout_pauser=lambda: True,
         )
+
+
+@pytest.mark.skipif(not hasattr(os, "wait4"), reason="needs os.wait4")
+def test_rusage_reports_the_child_and_its_one_pipe(tmp_path):
+    import sys
+
+    result = process_utils.run_managed_process(
+        [sys.executable, "-c", "import sys; sys.stderr.write('e'); sys.exit(3)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(tmp_path),
+        rusage=True,
+    )
+
+    assert result.returncode == 3
+    assert result.stderr == "e"
+    assert result.rusage.ru_maxrss > 0
+    assert process_utils._live_processes == {}
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"capture_output": True}, {"stdout": subprocess.DEVNULL, "timeout": 1}]
+)
+def test_rusage_rejects_two_pipes_and_a_timeout(monkeypatch, kwargs):
+    def _fail_popen(*args, **kw):
+        raise AssertionError("Popen should not be called before validation")
+
+    monkeypatch.setattr(process_utils.subprocess, "Popen", _fail_popen)
+
+    with pytest.raises(ValueError, match="rusage"):
+        process_utils.run_managed_process(["true"], rusage=True, **kwargs)
+
+
+def test_rusage_reap_tolerates_a_reaper_that_won():
+    """An interrupt's reaper may `wait()` the child first; the rusage reap then reports its exit code."""
+    proc = subprocess.Popen(["sh", "-c", "exit 3"], stdout=subprocess.PIPE)
+    proc.wait()
+
+    result = process_utils._reap_with_rusage(proc)
+
+    assert result.returncode == 3
+    assert result.rusage is None
+
+
+def test_a_sweep_from_a_signal_handler_does_not_wait_on_its_own_thread():
+    # The handler runs in the main thread while that thread holds the registry lock,
+    # as it does inside `_register_live_process`.
+    script = """
+import os, signal
+from rtl_buddy import process_utils
+
+def _handler(signum, frame):
+    process_utils.terminate_live_managed_processes()
+    raise KeyboardInterrupt
+
+signal.signal(signal.SIGINT, _handler)
+try:
+    with process_utils._live_processes_lock:
+        os.kill(os.getpid(), signal.SIGINT)
+        for _ in range(1000):
+            pass
+except KeyboardInterrupt:
+    print("interrupted")
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
+    )
+
+    assert proc.stdout.strip() == "interrupted", proc.stderr
+
+
+@pytest.mark.skipif(not hasattr(os, "wait4"), reason="needs os.wait4")
+def test_a_signal_during_a_rusage_reap_stops_the_run(tmp_path):
+    """The signal handler waits on the child in the thread that is reaping it; it must not deadlock on Popen's lock."""
+    script = tmp_path / "child.py"
+    script.write_text(
+        "import subprocess, sys\n"
+        "from rtl_buddy import process_utils\n"
+        "print('started', flush=True)\n"
+        "process_utils.run_managed_process(\n"
+        "    ['sleep', '60'], stdout=subprocess.DEVNULL, rusage=True, kill_timeout=0.5\n"
+        ")\n"
+    )
+    child = subprocess.Popen(
+        [sys.executable, str(script)], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert child.stdout.readline() == "started\n"
+        time.sleep(1.0)
+        child.send_signal(signal.SIGTERM)
+        assert child.wait(timeout=20) == 128 + signal.SIGTERM
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()

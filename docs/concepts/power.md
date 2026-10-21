@@ -10,7 +10,7 @@ description: Run OpenROAD gate-level power analysis from synthesis or P&R output
 
 OpenROAD 25Q1 or newer must be on `PATH` or configured under `cfg-power-tools`. Only `tool: openroad` is supported; other tools report `SKIP`.
 
-The run's `platform` names a `cfg-pnr-platforms` entry that supplies the PDK and Liberty corner; see [Place-and-Route: Configure the physical platform](pnr.md#configure-the-physical-platform). A platform with `corners:` analyses every listed corner in one session; see [Place-and-Route: Sign off at several corners](pnr.md#sign-off-at-several-corners).
+The run's `platform` names a `cfg-pnr-platforms` entry that supplies the PDK and Liberty corner; see [Place-and-Route: Configure the physical platform](pnr.md#configure-the-physical-platform). A platform with `corners:` analyses every listed corner in one session and one SDC mode; see [Place-and-Route: Sign off at several corners](pnr.md#sign-off-at-several-corners) and [Quirks & Known Issues](../known-issues.md#rb-power-times-every-corner-in-one-sdc-mode).
 
 ## Choose the design source
 
@@ -23,7 +23,7 @@ The `synth` source suits early leakage and activity comparisons but underestimat
 
 ## Extracted parasitics
 
-A `pnr` source reads the P&R run's extracted `<top>.routed.spef` when the PDK sets [`rcx-rules`](pnr.md#tune-the-process-dependent-steps). Otherwise it estimates parasitics from global routing, with the PDK's [`layer-rc-tcl`](pnr.md#source-platform-tcl-hooks) sourced first when set. That file's contents are part of the run's configuration digest, so editing it makes a new experiment. A configured `layer-rc-tcl` or `platform-tcl` missing from disk fails the run at `setup`.
+A `pnr` source reads the P&R run's extracted `<top>.routed.spef` when the PDK sets [`rcx-rules`](pnr.md#configure-the-physical-platform). Otherwise it estimates parasitics from global routing, with the PDK's [`layer-rc-tcl`](pnr.md#set-wire-rc) sourced first when set. That file's contents are part of the run's configuration digest, so editing it makes a new experiment. A configured `layer-rc-tcl` or `platform-tcl` missing from disk fails the run at `setup`.
 
 The SPEF is used only if its `pnr.tcl` contains `write_spef` and the SPEF is no older than that `pnr.tcl`. Otherwise the run logs a `power.spef_rejected` warning naming the reason and uses the estimate. The `parasitics` result field (`spef` or `estimated`) and the summary's Parasitics column show which was used, and one ODB measured both ways counts as two experiments.
 
@@ -61,6 +61,8 @@ runs:
 ```
 
 Paths resolve from `power.yaml`.
+
+An entry, here or inherited, can map each corner to the macro's Liberty for it, as in [Sign off at several corners](pnr.md#sign-off-at-several-corners). Each file is read into its corner only. A map must name every corner of the platform, or the run fails at setup with `power.lib_paths_corners`. Corners the platform lacks are ignored, so `rb power` accepts a map written for a platform with more corners than its own, unlike `rb pnr`. On a single-corner platform, such as the one [Known Issues](../known-issues.md#rb-power-times-every-corner-in-one-sdc-mode) recommends for one corner's figures, the entry is that corner's file. A file listed both as a plain entry and in a map fails setup with `power.lib_paths_duplicate`; drop the plain entry.
 
 - A `synth` source requires `synth`, `synth-path` and `constraints`.
 - A `pnr` source requires `pnr` and `pnr-path`. It uses the routed SDC unless `constraints` overrides it.

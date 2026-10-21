@@ -59,9 +59,16 @@ def _block_platform(tmp_path):
 
 
 def _block_suite(
-    tmp_path, *, harden=True, module="blk_top", manifest=True, views=True, lef_text=None
+    tmp_path,
+    *,
+    harden=True,
+    module="blk_top",
+    manifest=True,
+    views=True,
+    lef_text=None,
+    gds=True,
 ):
-    """A block pnr.yaml whose `blk_pnr` run published a current abstract."""
+    """A block pnr.yaml whose `blk_pnr` run published a current abstract; without `gds`, one hardened with `abstract: {gds: false}`."""
     suite = _write(
         tmp_path / "blk/pnr.yaml",
         dedent(f"""\
@@ -73,12 +80,14 @@ def _block_suite(
             synth-path: synth.yaml
             platform: p
             harden: {"true" if harden else "false"}
-        """),
+        """)
+        + ("" if gds else "    abstract: {gds: false}\n"),
     )
+    published = ("lef", "lib", "gds") if gds else ("lef", "lib")
     out = tmp_path / "blk/artefacts/blk_pnr/abstract"
     out.mkdir(parents=True)
     if views:
-        for view in ("lef", "lib", "gds"):
+        for view in published:
             _write(out / f"{module}.{view}", _view_text(view, lef_text))
     if manifest:
         run_cfg = PnrSuiteConfig(str(suite)).get_runs("blk_pnr")[0]
@@ -103,8 +112,9 @@ def _block_suite(
                             "path": str(out / f"{module}.{view}"),
                             "sha256": _sha(_view_text(view, lef_text)),
                         }
-                        for view in ("lef", "lib", "gds")
+                        for view in published
                     }
+                    | ({} if gds else {"gds": None})
                     if views
                     else {},
                 }
@@ -263,7 +273,7 @@ def _pdk(tmp_path):
         str(tmp_path / "top/root_config.yaml"),
     )
     _write(Path(pdk.get_tech_lef()), _TECH)
-    _write(Path(pdk.get_macro_lef()), "")
+    _write(Path(pdk.get_macro_lef_paths()[0]), "")
     _write(tmp_path / "top/pdk/typ.lib", _CORNER)
     return pdk
 
@@ -296,11 +306,12 @@ def _top_backend(tmp_path, monkeypatch, blocks_yaml):
         name="top", pnr_cfg=pnr_cfg, suite_dir=str(suite.parent), root_cfg=root_cfg
     )
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
     launched = []
 
     def _run(cmd, **_kw):
         launched.append(cmd)
-        _kw["stdout"].write("")
+        _kw["stdout"].write(">>> DONE\n")
         result = MagicMock(returncode=0, stdout="", stderr="")
         return result
 
@@ -597,3 +608,39 @@ def test_the_default_tie_separation_leaves_the_config_digest_alone(tmp_path):
     changed = pnr_abstract.abstract_config(run_cfg, spread)
     assert changed["placement"]["tie_separation"] == 4.0
     assert pnr_abstract.config_digest(changed) != pnr_abstract.config_digest(default)
+
+
+def test_timing_driven_placement_is_in_the_config_digest_only_when_on(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    suite = _block_suite(tmp_path)
+    run_cfg = PnrSuiteConfig(str(suite)).get_runs("blk_pnr")[0]
+    default = pnr_abstract.abstract_config(run_cfg, _block_platform(tmp_path))
+    assert "timing_driven" not in default["placement"]
+
+    def _platform_with(placement):
+        return PnrPlatformConfig(
+            PnrPlatformConfigFile(
+                name="p", pdk="p", cts_buffer="B", placement=placement
+            ),
+            lambda _n: _block_platform(tmp_path).get_pdk(),
+        )
+
+    off = pnr_abstract.abstract_config(
+        run_cfg, _platform_with(PlacementFile(timing_driven=False))
+    )
+    assert off == default
+
+    on = pnr_abstract.abstract_config(
+        run_cfg, _platform_with(PlacementFile(timing_driven=True))
+    )
+    assert on["placement"]["timing_driven"] is True
+    assert pnr_abstract.config_digest(on) != pnr_abstract.config_digest(default)
+
+    # A run's own placement block counts like the platform's.
+    resolved = _block_platform(tmp_path).with_run_placement(
+        PlacementFile(timing_driven=True), "blk_pnr"
+    )
+    assert pnr_abstract.config_digest(
+        pnr_abstract.abstract_config(run_cfg, resolved)
+    ) == pnr_abstract.config_digest(on)

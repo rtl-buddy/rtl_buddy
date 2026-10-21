@@ -26,9 +26,14 @@ from .synth import (
     SynthEffortConfigFile,
     default_effort_config,
 )
-from .pdk import PdkConfig, PdkConfigFile
+from .pdk import PDK_SPEC, PdkConfig, PdkConfigFile
 from .pnr import PnrToolConfig, PnrToolConfigFile
-from .pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
+from .pnr_platform import PNR_PLATFORM_SPEC, PnrPlatformConfig, PnrPlatformConfigFile
+from .unknown_keys import (
+    find_unknown_entry_keys,
+    find_unknown_keys,
+    reject_unknown_keys,
+)
 from .power import PowerToolConfig, PowerToolConfigFile
 from .cdc import CdcToolConfig, CdcToolConfigFile
 from .fpga import FpgaToolConfig, FpgaToolConfigFile
@@ -41,7 +46,6 @@ from .dispatch import (
     DISPATCH_BLOCK,
     DispatchConfig,
     DispatchConfigFile,
-    warn_unknown_block_keys,
 )
 from .env_file import apply_env_file
 from ..errors import FatalRtlBuddyError
@@ -358,10 +362,15 @@ class RootConfig:
         try:
             with open(self.root_cfg_path, "r") as file:
                 text = file.read()
-            data = config_from_yaml(RootConfigFile, text, self.root_cfg_path)
-            # Untyped second read: pyserde drops unknown keys that `_reject_unroutable_platform_keys` must see.
             reparsed = load_yaml(text, self.root_cfg_path)
             raw = reparsed if isinstance(reparsed, dict) else {}
+            reject_unknown_keys(
+                find_unknown_keys(
+                    raw.get("cfg-dispatch"), DISPATCH_BLOCK, label="cfg-dispatch"
+                ),
+                path=self.root_cfg_path,
+            )
+            data = config_from_yaml(RootConfigFile, text, self.root_cfg_path)
 
         except Exception as e:
             log_event(
@@ -377,6 +386,17 @@ class RootConfig:
             ) from e
 
         if data is not None:
+            # Before the typed entries are built: pyserde drops an unknown key, and a misspelt one can surface as a different error.
+            reject_unknown_keys(
+                find_unknown_entry_keys(raw.get("cfg-pdks"), PDK_SPEC, kind="cfg-pdks")
+                + find_unknown_entry_keys(
+                    raw.get("cfg-pnr-platforms"),
+                    PNR_PLATFORM_SPEC,
+                    kind="cfg-pnr-platforms",
+                ),
+                path=self.root_cfg_path,
+            )
+
             # Anchor for relative tool path candidates.
             cfg_dir = os.path.dirname(self.root_cfg_path)
 
@@ -438,7 +458,7 @@ class RootConfig:
 
             # Populate P&R platform configs
             self.pnr_platform_cfgs = {
-                cfg.name: PnrPlatformConfig(cfg, _pdk_lookup)
+                cfg.name: PnrPlatformConfig(cfg, _pdk_lookup, cfg_dir)
                 for cfg in data.pnr_platforms
             }
 
@@ -491,13 +511,6 @@ class RootConfig:
 
             # cfg-dispatch execution backend (optional, single block)
             if data.dispatch is not None:
-                # serde drops an unknown key; warn before the typed block is validated.
-                warn_unknown_block_keys(
-                    raw.get("cfg-dispatch"),
-                    DISPATCH_BLOCK,
-                    path=self.root_cfg_path,
-                    block="cfg-dispatch",
-                )
                 self.dispatch_cfg = data.dispatch.initialise()
 
             # RegConfig loads lazily in get_rtl_reg_cfg() so non-simulation commands never read regression.yaml or suite files.

@@ -246,8 +246,11 @@ def task_status(message: str, *, spinner: str = "dots"):
     """Show a spinner for a long phase, or print one plain line.
 
     The spinner is confined to the main thread, since a console allows only one Rich
-    ``Live``. Worker threads and non-terminal runs print the message instead.
+    ``Live``. Machine mode requires verbose output for per-phase messages.
     """
+    if is_machine_mode() and console_level() > logging.INFO:
+        yield None
+        return
     if threading.current_thread() is threading.main_thread():
         if _should_use_rich_console():
             with get_stderr_console().status(message, spinner=spinner) as status:
@@ -275,6 +278,9 @@ def _format_duration(duration: Any) -> str | None:
         return f"{float(duration):.2f}s"
     except (TypeError, ValueError):
         return str(duration)
+
+
+_BACKEND_NAMES = {"slurm": "Slurm"}
 
 
 def _format_elapsed(seconds: Any) -> str:
@@ -322,6 +328,15 @@ def _sim_exit_phrase(fields: Mapping[str, Any]) -> str:
     if isinstance(code, int) and code < 0:
         return f"killed by signal {-code}"
     return f"exited {code}"
+
+
+def _capped_names(names: Any, cap: int = 10) -> str:
+    """The first ``cap`` of ``names`` joined by commas, then ``and N more``."""
+    names = [str(n) for n in names or []]
+    shown = ", ".join(names[:cap])
+    if len(names) > cap:
+        shown += f" and {len(names) - cap} more"
+    return shown
 
 
 def _human_message(event: str, fields: Mapping[str, Any]) -> str:
@@ -736,6 +751,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('path')} ({fields.get('error')}); the result "
                 "itself is unaffected — the envelope keeps the content it "
                 "already had"
+            )
+        case "rightsize.summary":
+            counts = fields.get("counts") or {}
+            return (
+                f"Reservation advice: {fields.get('total')} findings "
+                f"({counts.get('raise', 0)} raise, {counts.get('reduce', 0)} reduce)"
             )
         case "rightsize.advice":
             return (
@@ -1814,6 +1835,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('min_flops')} is ignored on an unmapped run "
                 "(no Liberty to take an ICG from); set a platform or lib-paths"
             )
+        case "synth.clock_gating_max_ignored":
+            return (
+                f"synth {fields.get('synth')}: clock-gating-max-flops "
+                f"{fields.get('max_flops')} is ignored without "
+                "clock-gating-min-flops, which turns clock gating on"
+            )
+        case "synth.icg_not_split":
+            return (
+                f"synth {fields.get('synth')}: clock-gating-max-flops could not "
+                f"split an ICG: {fields.get('detail')}; see {fields.get('log')}"
+            )
         case "synth.yosys_abc_missing":
             return (
                 f"abc-persistent: false needs yosys-abc, but none was found next to "
@@ -1862,6 +1894,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"Tcl refused to evaluate it ({fields.get('message')}); falling "
                 "back to the word tokenizer, which does not evaluate "
                 "$variables or [expr]"
+            )
+        case "constraints.tcl_check_skipped":
+            return (
+                f'constraint file "{fields.get("source")}" line {fields.get("line")}: '
+                f"check skipped (error {fields.get('message')!r}); the reader "
+                "cannot answer design queries, so the check is assumed to pass"
+            )
+        case "constraints.tcl_checks_skipped":
+            return (
+                f'constraint file "{fields.get("source")}": '
+                f"{fields.get('count')} `error` check(s) skipped; the reader "
+                "has no design to answer them, so each is assumed to pass "
+                "(each one is logged at DEBUG as constraints.tcl_check_skipped)"
             )
         case "constraints.source_unreadable":
             return (
@@ -1966,6 +2011,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "pdn-config, but neither the PDK nor the run sets pdn-config; "
                 "add one with the global connections and voltage domain"
             )
+        case "pnr.setup_invalid":
+            return f'P&R "{fields.get("pnr")}": {fields.get("error")}'
+        case "pnr.pins_incomplete" | "pnr.routed_check_failed":
+            return f'P&R "{fields.get("pnr")}": {fields.get("desc")}'
         case "pnr.blockages_unsupported":
             return (
                 f'P&R "{fields.get("pnr")}": floorplan.blockages needs '
@@ -1973,12 +2022,55 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('exe')} does not have; upgrade OpenROAD or drop "
                 "the blockages"
             )
+        case "pnr.wire_rc_unsupported":
+            return (
+                f'P&R "{fields.get("pnr")}": post-route-repair.repair-design.'
+                "wire-rc needs OpenROAD's sta::scenes and est:: wire RC "
+                f"commands (26Q2 or newer), which {fields.get('exe')} does not "
+                "have; upgrade OpenROAD or drop wire-rc"
+            )
+        case "pnr.run_hook_missing":
+            return (
+                f'P&R "{fields.get("pnr")}": hooks.{fields.get("point")}'
+                f"[{fields.get('index')}] not found: {fields.get('path')}"
+            )
         # Hardened-block abstracts.
         case "pnr.harden_multi_corner":
             return (
                 f'P&R "{fields.get("pnr")}": harden: needs a single-corner '
                 f"platform, and '{fields.get('platform')}' declares corners — "
                 "an abstract carries one corner's timing model"
+            )
+        case "pnr.constraints_corners":
+            return f'P&R "{fields.get("pnr")}": constraints: {fields.get("problem")}'
+        case "pnr.lib_paths_corners":
+            return (
+                f'P&R "{fields.get("pnr")}": {fields.get("problem")}; a per-corner '
+                f"lib-paths mapping names each corner of platform "
+                f'"{fields.get("platform")}" and no other'
+            )
+        case "pnr.lib_paths_duplicate":
+            return f'P&R "{fields.get("pnr")}": {fields.get("problem")}'
+        case "pnr.corner_constraints_unsupported":
+            return (
+                f'P&R "{fields.get("pnr")}": constraints: a per-corner SDC needs '
+                f"an SDC mode per corner, and {fields.get('exe')} "
+                f"({fields.get('version') or 'version unknown'}) cannot switch "
+                "between SDC modes; upgrade OpenROAD or give one SDC path"
+            )
+        case "pnr.corner_modes_probe_failed":
+            return (
+                f'P&R "{fields.get("pnr")}": could not tell whether '
+                f"{fields.get('exe')} can give each corner an SDC mode: "
+                f"{fields.get('problem')}"
+            )
+        case "pnr.corner_modes_unsupported":
+            return (
+                f'P&R "{fields.get("pnr")}": {fields.get("exe")} '
+                f"({fields.get('version') or 'version unknown'}) cannot switch "
+                f"between SDC modes, so every corner of '{fields.get('platform')}' "
+                "is timed in one mode, where a generated clock's source latency "
+                "comes from one corner; upgrade OpenROAD for a mode per corner"
             )
         case "pnr.block_unresolved" | "synth.block_unresolved":
             flow = "P&R" if event.startswith("pnr") else "synthesis"
@@ -2026,6 +2118,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'{flow} "{run}": using stale abstract of block '
                 f"{fields.get('block')!r} (--accept-stale): {changes}"
             )
+        case "pnr.supply_order_unverified":
+            return (
+                f'P&R "{fields.get("pnr")}": {fields.get("file")}: '
+                f"{fields.get('reason')}; its supply ports may be in OpenROAD's "
+                "order, which differs between a one-session and a staged run"
+            )
+        case "pnr.supply_order_failed":
+            return (
+                f'P&R "{fields.get("pnr")}": cannot put the supply ports last: '
+                f"{fields.get('error')}"
+            )
         case "pnr.abstract_failed":
             return (
                 f'P&R "{fields.get("pnr")}": no abstract published — '
@@ -2055,6 +2158,285 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f'P&R "{fields.get("pnr")}" failed {where}; {saved}; '
                 f"checkpoints kept in {fields.get('dir')}"
+            )
+        case "pnr.resume_refused":
+            return (
+                f'P&R "{fields.get("pnr")}": --resume {fields.get("resume")} '
+                f"--from {fields.get('from_stage')} refused: {fields.get('reason')}"
+            )
+        case "pnr.hook_commands_not_kept":
+            return (
+                f'P&R "{fields.get("pnr")}": hook {fields.get("point")} '
+                f"({fields.get('path')}) redefined, renamed or deleted the Tcl "
+                f"command(s) {_capped_names(fields.get('commands'))}, which "
+                "later stage sessions have in their original form; move it to a "
+                "session hook"
+            )
+        case "pnr.hook_commands_added":
+            return (
+                f'P&R "{fields.get("pnr")}": hook {fields.get("point")} '
+                f"({fields.get('path')}) defined the Tcl command(s) "
+                f"{_capped_names(fields.get('commands'))}, which later stage "
+                "sessions do not have"
+            )
+        case "pnr.post_route_eco_unguarded":
+            return (
+                f'P&R "{fields.get("pnr")}": post-route repair round(s) '
+                f"{_capped_names(fields.get('rounds'))} ran their eco repairs on "
+                "detailed-routing parasitics, since this OpenROAD's repair_timing "
+                "does not call design_is_routed; they may fail RSZ-0074, which "
+                "post-route-repair.reroute: full avoids"
+            )
+        case "pnr.stage_job_submitted":
+            after = fields.get("dependency")
+            return (
+                f'P&R "{fields.get("pnr")}": stage {fields.get("stage")} is '
+                f"{_BACKEND_NAMES.get(fields.get('backend'), fields.get('backend'))} "
+                f"job {fields.get('job_id')}"
+                + (f", held until job {after} succeeds" if after else "")
+            )
+        case "pnr.stage_job_waiting":
+            return (
+                f'P&R "{fields.get("pnr")}": stage {fields.get("stage")} '
+                f"(job {fields.get('job_id')}) {fields.get('state')}, "
+                f"{fields.get('stages_left')} stage job(s) left, "
+                f"{_format_elapsed(fields.get('elapsed_s'))} elapsed"
+            )
+        case "pnr.stage_jobs_drained":
+            jobs = fields.get("jobs")
+            return (
+                f'P&R "{fields.get("pnr")}": '
+                + ("its stage job has" if jobs == 1 else f"all {jobs} stage jobs have")
+                + f" left the queue ({_format_elapsed(fields.get('elapsed_s'))})"
+            )
+        case "pnr.stage_job_failed":
+            state = fields.get("state")
+            return (
+                f"P&R stage {fields.get('stage')}: job {fields.get('job_id')} "
+                + (f"ended {state}" if state else "ended")
+                + ("" if fields.get("started") else " without finishing its stage")
+                + f"; its output is in {fields.get('log')}"
+            )
+        case "pnr.stage_job_refused":
+            return (
+                f"P&R stage job refused stage {fields.get('stage')} of "
+                f"{fields.get('run_dir')}: {fields.get('reason')}"
+            )
+        case "pnr.stage_job_given_up":
+            if fields.get("error"):
+                return (
+                    f"P&R stage job: rb gave {fields.get('run_dir')} up while stage "
+                    f"{fields.get('stage')} ran, and the job could not remove the "
+                    f"outputs the stage wrote: {fields.get('error')}"
+                )
+            return (
+                f"P&R stage job: rb gave {fields.get('run_dir')} up while stage "
+                f"{fields.get('stage')} ran; removed the "
+                f"{len(fields.get('removed') or [])} output(s) the stage wrote"
+            )
+        case "pnr.given_up_unrecorded":
+            return (
+                f'P&R "{fields.get("pnr")}": could not write {fields.get("path")} '
+                f"({fields.get('error')}); a stage job still running does not "
+                "learn that rb gave the run up, and may leave outputs that look "
+                "valid when its stage ends"
+            )
+        case "pnr.stage_job_script_unchanged":
+            return (
+                f"P&R stage job could not write its copy of {fields.get('script')} "
+                f"({fields.get('error')}); it runs the script as the head wrote it"
+            )
+        case "pnr.stage_jobs_survived_cancel":
+            ids = " ".join(map(str, fields.get("job_ids") or []))
+            how = (
+                "after rb cancelled them"
+                if fields.get("cancelled")
+                else "and Slurm did not take rb's cancel"
+            )
+            return (
+                f'P&R "{fields.get("pnr")}": stage job(s) {ids} are still queued '
+                f"{how}; one that is running its stage removes the outputs the "
+                "stage wrote when it ends, and the next rb pnr of this "
+                f"configuration waits for them; cancel them with "
+                f"`{fields.get('command')}`"
+            )
+        case "pnr.stage_jobs_orphaned":
+            ids = " ".join(map(str, fields.get("job_ids") or []))
+            clear = " ".join(map(str, fields.get("clear") or []))
+            if fields.get("error"):
+                return (
+                    f"P&R: cannot tell whether stage job(s) {ids} of an earlier "
+                    f"dispatched run in {fields.get('artefact_dir')} are still "
+                    f"queued ({fields.get('error')}); not starting; once they have "
+                    f"ended, remove {clear} to run without them"
+                )
+            return (
+                f"P&R: stage job(s) {ids} of an earlier dispatched run in "
+                f"{fields.get('artefact_dir')} are still queued or running; not "
+                f"starting; cancel them with `{fields.get('command')}`"
+            )
+        case "pnr.stage_jobs_unchecked":
+            ids = " ".join(map(str, fields.get("job_ids") or []))
+            return (
+                f"P&R: stage job(s) {ids} of the earlier dispatched run "
+                f"{fields.get('run_dir')} are not looked up: {fields.get('reason')}; "
+                f"its record last changed {_format_elapsed(fields.get('quiet_s'))} "
+                f"ago, more than the {_format_elapsed(fields.get('chain_s'))} its "
+                "jobs asked for, so they are taken to have ended; remove "
+                f"{fields.get('clear')} to stop this warning"
+            )
+        case "pnr.stage_submission_unanswered":
+            files = " ".join(map(str, fields.get("files") or []))
+            clear = " ".join(map(str, fields.get("clear") or []))
+            return (
+                f"P&R: sbatch has not answered stage job submission(s) {files} of an "
+                f"earlier dispatched run in {fields.get('artefact_dir')}; not "
+                "starting; once the submission is known to have died, remove "
+                f"{clear} to run without it"
+            )
+        case "pnr.stage_submission_presumed_failed":
+            return (
+                f"P&R: stage job submission {fields.get('file')} of the earlier "
+                f"dispatched run {fields.get('run_dir')} has had no answer from "
+                f"sbatch for {_format_elapsed(fields.get('age_s'))}, more than the "
+                f"{_format_elapsed(fields.get('after_s'))} a submission is given, "
+                "so it is taken to have failed"
+            )
+        case "pnr.stage_jobs_unaccounted":
+            ids = " ".join(map(str, fields.get("job_ids") or []))
+            stages = ", ".join(map(str, fields.get("stages") or []))
+            backend = _BACKEND_NAMES.get(fields.get("backend"), fields.get("backend"))
+            return (
+                f'P&R "{fields.get("pnr")}": {backend} accounting has no end state '
+                f"for stage job(s) {ids}, so the results of {stages} are taken as "
+                "the jobs wrote them"
+            )
+        case "pnr.dispatch_resources_default":
+            return (
+                f'P&R "{fields.get("pnr")}" has no resources: block, so every stage '
+                f"job gets {fields.get('cpus')} CPU(s), {fields.get('mem')} of memory "
+                f"and {fields.get('time')} from cfg-dispatch.resources and the "
+                "defaults; size the stages with resources:"
+            )
+        case "dispatch.pnr_stage_submission_abandoned":
+            job = fields.get("job_id")
+            if not job:
+                done = ""
+            elif fields.get("cancelled"):
+                done = f"; cancelled job {job}, which it had accepted"
+            else:
+                cluster = fields.get("cluster")
+                done = (
+                    f"; it had accepted job {job}, and scancel did not take the "
+                    f"cancel: run `scancel {f'-M {cluster} ' if cluster else ''}{job}`"
+                )
+            return (
+                f"dispatch: gave up submitting stage {fields.get('stage')} of P&R "
+                f'"{fields.get("pnr")}"'
+                + done
+                + (f" ({fields.get('error')})" if fields.get("error") else "")
+            )
+        case "pnr.failed_global_route_kept":
+            return (
+                f'P&R "{fields.get("pnr")}": global route failed; its database is '
+                f"checkpoint {fields.get('checkpoint')} "
+                f"(rb pnr-export --checkpoint {fields.get('spec')})"
+            )
+        case "pnr.failed_global_route_not_kept":
+            return (
+                f'P&R "{fields.get("pnr")}": global route failed, but its database '
+                f"was not filed as a checkpoint ({fields.get('error')}); what the "
+                f"flow wrote is left in {fields.get('dir')} until the next run"
+            )
+        case "pnr.allow_congestion_harden":
+            return (
+                f'P&R "{fields.get("pnr")}": global-route.allow-congestion is for '
+                "diagnosis and publishes no abstract, so the run cannot be "
+                "harden: true; drop one of them"
+            )
+        case "pnr.allow_congestion":
+            return (
+                f'P&R "{fields.get("pnr")}" ran with global-route.allow-congestion '
+                f"(diagnosis only): global route overflow "
+                f"{fields.get('global_route_overflow') if fields.get('global_route_overflow') is not None else 'unknown'}"
+            )
+        case "pnr.stopped":
+            why = "mode: probe" if fields.get("mode") == "probe" else "--stop-after"
+            return (
+                f'P&R "{fields.get("pnr")}" stopped after {fields.get("stage")} '
+                f"({why}, not routed); checkpoint {fields.get('checkpoint')}"
+            )
+        case "pnr.post_route_round":
+
+            def _ns(ps):
+                return "n/a" if ps is None else f"{ps / 1000:.4f} ns"
+
+            def _wns(side):
+                if side in (fields.get("unconstrained") or ()):
+                    return "unconstrained"
+                return _ns(fields.get(f"wns_{side}_ps"))
+
+            round_ = fields.get("round")
+            if not round_:
+                repair = "the detailed route"
+            elif fields.get("electrical_round"):
+                repair = "electrical, repair_design only"
+            else:
+                repair = ", ".join(
+                    f"{kind} margin {fields.get(f'{kind}_margin_ns'):g} ns"
+                    for kind in ("setup", "hold")
+                    if fields.get(f"{kind}_margin_ns") is not None
+                )
+                repair = f"repaired with {repair or 'repair_design only'}"
+            if "wns_setup_ps" in fields:
+                timing = (
+                    f"setup WNS {_wns('setup')} "
+                    f"TNS {_ns(fields.get('tns_ps'))}, "
+                    f"hold WNS {_wns('hold')} "
+                    f"TNS {_ns(fields.get('tns_hold_ps'))}"
+                )
+            else:
+                timing = "not timed"
+            electrical = ""
+            if "max_slew_violation_count" in fields:
+                electrical = (
+                    f", {fields.get('max_slew_violation_count')} max-slew and "
+                    f"{fields.get('max_capacitance_violation_count')} "
+                    "max-capacitance violator(s)"
+                )
+            return (
+                f'P&R "{fields.get("pnr")}" post-route repair round {round_}'
+                + ("" if fields.get("electrical_round") else f"/{fields.get('rounds')}")
+                + f" ({repair}): {timing}, "
+                f"{fields.get('drc_count')} DRC violation(s){electrical}; "
+                f"best round {fields.get('best_round')}"
+            )
+        case "pnr.post_route_round_failed":
+            return (
+                f'P&R "{fields.get("pnr")}" post-route repair round '
+                f"{fields.get('round')}'s {fields.get('session')} session failed "
+                f"({fields.get('error')}); the stage keeps round "
+                f"{fields.get('kept_round')}"
+            )
+        case "pnr.post_route_repair_done":
+            kept = fields.get("kept_round")
+            return (
+                f'P&R "{fields.get("pnr")}" post-route repair: kept round {kept}'
+                + (" (the detailed route)" if kept == 0 else "")
+                + f"; {fields.get('repaired_rounds')} of {fields.get('rounds')} "
+                f"round(s) repaired; stopped: {fields.get('reason')}"
+                + (
+                    f"; electrical round {electrical.get('round')} "
+                    f"{electrical.get('status', '').replace('_', ' ')}: "
+                    f"{electrical.get('reason')}"
+                    if (electrical := fields.get("electrical_round"))
+                    else ""
+                )
+            )
+        case "pnr.post_route_repair_without_rcx":
+            return (
+                f'P&R "{fields.get("pnr")}": post-route-repair needs rcx-rules on '
+                f"PDK '{fields.get('pdk')}'; OpenROAD was not started"
             )
         case "pnr.checkpoint_manifest_failed":
             return (
@@ -2092,6 +2474,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         # A macro library the configuration named but the disk lacks, and a macro no
         # library covered.
+        case "power.lib_paths_corners":
+            return (
+                f'power run "{fields.get("power")}": {fields.get("problem")}; a '
+                "per-corner lib-paths mapping, here or on the run this one reads, "
+                f'names each corner of platform "{fields.get("platform")}"'
+            )
+        case "power.lib_paths_duplicate":
+            return f'power run "{fields.get("power")}": {fields.get("problem")}'
         case "power.missing_macro_inputs":
             missing = fields.get("missing") or []
             return (
@@ -2305,20 +2695,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "ignored, falling back to the ./<flow>_regression.yaml filename "
                 "convention"
             )
-        case "config.unknown_key":
-            msg = (
-                f"{fields.get('path')}: unknown key {fields.get('key')!r} in "
-                f"{fields.get('block')} ignored"
-            )
+        case "config.unknown_key_rejected":
+            msg = f"{fields.get('path')}: {fields.get('block')}: unknown key {fields.get('key')!r}"
             if fields.get("suggestion"):
-                msg += f" (did you mean {fields.get('suggestion')!r}?)"
+                msg += f", did you mean {fields.get('suggestion')!r}?"
             known = fields.get("known") or []
             if known:
-                msg += f"; known keys are {', '.join(str(k) for k in known)}"
-            return msg + (
-                ". The block is read without it; a later major release will "
-                "make an unknown key fatal"
-            )
+                msg += f" (valid keys: {', '.join(str(k) for k in known)})"
+            return msg
         case "root_config.reg_cfg_unknown_keys":
             return (
                 f"{fields.get('path')}: cfg-rtl-reg has unknown key(s) "
@@ -2741,7 +3125,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "pnr.dont_use_unmatched":
             patterns = ", ".join(str(p) for p in fields.get("patterns") or [])
             return (
-                f"pnr {fields.get('pnr')}: dont-use-cells pattern(s) {patterns} "
+                f"pnr {fields.get('pnr')}: don't-use pattern(s) {patterns} "
                 "matched no Liberty cell (STA-0122), so they exclude nothing — "
                 "check them for typos"
             )
@@ -2755,11 +3139,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"miss hold they never repaired; set the PDK's layer-rc-tcl, "
                 f"see {fields.get('docs')}"
             )
+        case "pnr.signoff_failed":
+            return f"pnr {fields.get('pnr')}: {fields.get('desc')}"
         case "pnr.electrical_violators":
             verdict = (
-                "the run fails (fail-on-electrical)"
+                "the run fails (the electrical gate is on)"
                 if fields.get("fail_on_electrical")
-                else "the run still passes; set fail-on-electrical: true to fail it"
+                else "the run still passes; to fail it, set fail-on-electrical: "
+                "true or add electrical to signoff.fail-on"
             )
             return (
                 f"pnr {fields.get('pnr')}: the routed design has "
@@ -2767,6 +3154,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('max_capacitance_violation_count')} max-capacitance and "
                 f"{fields.get('max_fanout_violation_count')} max-fanout violator(s); "
                 f"{verdict}; see {fields.get('report')}"
+            )
+        case "pnr.macro_pin_limits_unmet":
+            return (
+                f"pnr {fields.get('pnr')}: {fields.get('unmet')} macro pin(s) stayed "
+                "over their max-slew or max-capacitance limit less the "
+                "placement.macro-pin-limits margin with the strongest buffer "
+                "candidate (or had no free row site); add a stronger buffer, "
+                "lower placement.macro-cell-halo, or check the routed result in "
+                f"electrical.rpt; see the '>>> Macro pin limits' lines in {fields.get('log')}"
             )
         case "pnr.dont_use_instantiated":
             shown = [
@@ -2908,14 +3304,14 @@ def render_summary(
     logger: logging.Logger,
     metadata: list[str] | None = None,
 ) -> None:
-    """Console render honours print_failures_only; log and event keep every row."""
+    """Machine summaries and print_failures_only hide passing console rows."""
     cols = list(columns)
     verdict_key = _verdict_column(cols, rows)
     counts = _verdict_counts(rows, verdict_key) if verdict_key else {}
 
     footer = [_tally_line(counts)] if counts else []
 
-    if verdict_key is not None and print_failures_only():
+    if verdict_key is not None and (is_machine_mode() or print_failures_only()):
         console_rows = [
             row
             for row in rows
@@ -2943,6 +3339,7 @@ def render_summary(
                 )
             ),
             markup=False,
+            soft_wrap=True,
         )
         return
 

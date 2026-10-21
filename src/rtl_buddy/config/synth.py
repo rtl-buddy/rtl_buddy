@@ -82,7 +82,7 @@ def _validate_abc_output_load(load, where: str) -> float | None:
 class SynthPlatformConfig:
     """A PDK plus corner selection for synthesis.
 
-    `get_paths()` is the corner's standard-cell Liberty, one or more files, for STA and tech mapping; `get_lef_paths()` is the PDK's tech and macro LEF. Block-specific LEFs come from `SynthConfig.get_lef_paths()`.
+    `get_paths()` is the corner's standard-cell Liberty, one or more files, for STA and tech mapping; `get_lef_paths()` is the PDK's tech LEF and its macro LEFs. Block-specific LEFs come from `SynthConfig.get_lef_paths()`.
     """
 
     def __init__(self, cfg: SynthPlatformConfigFile, pdk_lookup):
@@ -92,7 +92,9 @@ class SynthPlatformConfig:
         pdk = pdk_lookup(cfg.pdk)
         self._corner = cfg.corner or pdk.get_default_corner()
         self._lib_paths = pdk.get_corner_paths(self._corner)
-        self._lef_paths = [p for p in (pdk.get_tech_lef(), pdk.get_macro_lef()) if p]
+        self._lef_paths = [
+            p for p in (pdk.get_tech_lef(), *pdk.get_macro_lef_paths()) if p
+        ]
         self._layer_rc_tcl = pdk.get_layer_rc_tcl()
         self._dont_use_cells = merge_dont_use_cells(
             pdk.get_dont_use_cells(),
@@ -164,6 +166,8 @@ class SynthToolOpts:
     unresolved_interfaces: str = ""
     # Mapped runs: gate sets of at least this many enable flops with `clockgate`; 0 is off (#786).
     clock_gating_min_flops: int = 0
+    # Split a gated set above this many flops across copies of its ICG; 0 is no limit (#854).
+    clock_gating_max_flops: int = 0
     # False runs every ABC call as its own `yosys-abc` process instead of reusing one over a pipe (#826).
     abc_persistent: bool = True
 
@@ -182,6 +186,7 @@ class SynthToolOptsFile:
     conflicting_drivers: str = field(rename="conflicting-drivers", default="")
     unresolved_interfaces: str = field(rename="unresolved-interfaces", default="")
     clock_gating_min_flops: int = field(rename="clock-gating-min-flops", default=0)
+    clock_gating_max_flops: int = field(rename="clock-gating-max-flops", default=0)
     abc_persistent: bool = field(rename="abc-persistent", default=True)
 
 
@@ -220,15 +225,36 @@ def resolve_conflicting_drivers_mode(opts: SynthToolOpts) -> str:
     return mode
 
 
-def resolve_clock_gating_min_flops(opts: SynthToolOpts) -> int:
-    """Effective ``clock-gating-min-flops``: 0 (off) or the minimum enable-flop set size ``clockgate`` gates."""
-    value = opts.clock_gating_min_flops
+def _flop_count(value, key: str, zero: str) -> int:
     if value is None or value == "":
         return 0
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise FatalRtlBuddyError(
-            "synth option clock-gating-min-flops must be a non-negative integer "
-            f"(0 is off), got {value!r}"
+            f"synth option {key} must be a non-negative integer ({zero}), got {value!r}"
+        )
+    return value
+
+
+def resolve_clock_gating_min_flops(opts: SynthToolOpts) -> int:
+    """Effective ``clock-gating-min-flops``: 0 (off) or the minimum enable-flop set size ``clockgate`` gates."""
+    return _flop_count(
+        opts.clock_gating_min_flops, "clock-gating-min-flops", "0 is off"
+    )
+
+
+def resolve_clock_gating_max_flops(opts: SynthToolOpts) -> int:
+    """Effective ``clock-gating-max-flops``: 0 (no limit) or the most flops one ICG drives.
+
+    It must not be below a non-zero ``clock-gating-min-flops``.
+    """
+    value = _flop_count(
+        opts.clock_gating_max_flops, "clock-gating-max-flops", "0 is no limit"
+    )
+    min_flops = resolve_clock_gating_min_flops(opts)
+    if value and value < min_flops:
+        raise FatalRtlBuddyError(
+            f"synth option clock-gating-max-flops ({value}) must not be below "
+            f"clock-gating-min-flops ({min_flops})"
         )
     return value
 
@@ -263,6 +289,7 @@ SYNTH_TOOL_OVERRIDE_KEYS: tuple[str, ...] = (
     "conflicting_drivers",
     "unresolved_interfaces",
     "clock_gating_min_flops",
+    "clock_gating_max_flops",
     "abc_persistent",
 )
 
@@ -291,6 +318,11 @@ _SYNTH_OVERRIDE_TYPES: dict[str, tuple[type, str, str]] = {
         "non-negative integer",
         "write an unquoted number of flops; 0 is off",
     ),
+    "clock_gating_max_flops": (
+        int,
+        "non-negative integer",
+        "write an unquoted number of flops; 0 is no limit",
+    ),
     "abc_persistent": (bool, "bool", "write an unquoted YAML true/false"),
 }
 
@@ -301,6 +333,7 @@ class SynthEffortYosysFile:
     abc_args: str = field(rename="abc-args", default="")
     abc_script: str = field(rename="abc-script", default="")
     clock_gating_min_flops: int = field(rename="clock-gating-min-flops", default=0)
+    clock_gating_max_flops: int = field(rename="clock-gating-max-flops", default=0)
 
 
 @serde
@@ -336,6 +369,9 @@ class SynthEffortConfig:
 
     def get_yosys_clock_gating_min_flops(self) -> int:
         return self._cfg.yosys.clock_gating_min_flops
+
+    def get_yosys_clock_gating_max_flops(self) -> int:
+        return self._cfg.yosys.clock_gating_max_flops
 
     def get_openroad_run(self) -> bool:
         return self._cfg.openroad.run
@@ -437,6 +473,7 @@ class SynthToolConfig:
         conflicting_drivers = self._cfg.opts.conflicting_drivers
         unresolved_interfaces = self._cfg.opts.unresolved_interfaces
         clock_gating_min_flops = self._cfg.opts.clock_gating_min_flops
+        clock_gating_max_flops = self._cfg.opts.clock_gating_max_flops
         abc_persistent = self._cfg.opts.abc_persistent
         if overrides:
             if not isinstance(overrides, dict):
@@ -472,6 +509,9 @@ class SynthToolConfig:
             clock_gating_min_flops = overrides.get(
                 "clock_gating_min_flops", clock_gating_min_flops
             )
+            clock_gating_max_flops = overrides.get(
+                "clock_gating_max_flops", clock_gating_max_flops
+            )
             abc_persistent = overrides.get("abc_persistent", abc_persistent)
         return SynthToolOpts(
             synth_args=synth_args,
@@ -486,6 +526,7 @@ class SynthToolConfig:
             conflicting_drivers=conflicting_drivers,
             unresolved_interfaces=unresolved_interfaces,
             clock_gating_min_flops=clock_gating_min_flops,
+            clock_gating_max_flops=clock_gating_max_flops,
             abc_persistent=abc_persistent,
         )
 

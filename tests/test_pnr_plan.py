@@ -12,7 +12,7 @@ from rtl_buddy.runner.pnr_plan import plan_pnr_runs
 from rtl_buddy.runner.pnr_results import PnrFailResults, PnrPassResults
 
 
-def _run(name, blocks=(), *, reglvl=0, xfail=False):
+def _run(name, blocks=(), *, reglvl=0, xfail=False, mode=None):
     text = (
         f"  - name: {name}\n"
         f"    desc: {name}\n"
@@ -23,6 +23,8 @@ def _run(name, blocks=(), *, reglvl=0, xfail=False):
     )
     if xfail:
         text += "    xfail: true\n"
+    if mode:
+        text += f"    mode: {mode}\n"
     if blocks:
         text += "    blocks:\n"
         for block, run, path in blocks:
@@ -255,6 +257,7 @@ def test_a_failed_block_blocks_its_dependents_naming_it(tmp_path, monkeypatch):
     row = RtlBuddy._pnr_result_row(rb, results["mid"])
     assert row["fail_stage"] == "blocked"
     assert row["blocked_by"] == ["b"]
+    assert row["mode"] == "closure"
     assert results["flat"]["results"].is_pass()
 
 
@@ -370,6 +373,17 @@ def test_a_run_deselected_by_reglvl_is_skip_even_when_its_block_failed(
 
     assert top["result"] == "SKIP"
     assert "blocked_by" not in top
+
+
+@pytest.mark.parametrize("mode", ["probe", "closure"])
+def test_a_run_skipped_by_reglvl_carries_its_mode(tmp_path, monkeypatch, mode):
+    suite = _suite(tmp_path / "pnr.yaml", _run("r", reglvl=5, mode=mode))
+    rb, _ran = _driver(monkeypatch, {})
+
+    (row,) = rb._do_pnr_suite(suite, reg_level=1)
+
+    assert row["results"].results["result"] == "SKIP"
+    assert row["results"].results["mode"] == mode
 
 
 def test_two_suites_in_one_directory_defining_one_run_name_are_refused(tmp_path):
@@ -686,7 +700,39 @@ def test_a_run_that_raises_is_its_own_fail_and_keeps_the_others(
     boom = results["boom"]["results"].results
     assert boom["result"] == "FAIL"
     assert boom["fail_stage"] == "error"
+    assert boom["mode"] == "closure"
     assert "openroad segfaulted" in boom["desc"]
     assert results["sibling"]["results"].is_pass()
     assert results["top"]["results"].results["fail_stage"] == "blocked"
     assert "sibling" in ran
+
+
+@pytest.mark.parametrize(
+    "mode, passed, verdict",
+    [
+        ("probe", True, "PASS"),
+        ("probe", False, "FAIL"),
+        ("closure", True, "XPASS"),
+        ("closure", False, "XFAIL"),
+    ],
+)
+def test_xfail_does_not_judge_a_probe_either_way(
+    tmp_path, monkeypatch, mode, passed, verdict
+):
+    """A probe is a stopped run, no closure result, so `xfail:` turns neither its PASS nor its FAIL."""
+    suite = _suite(tmp_path / "pnr.yaml", _run("r", xfail=True, mode=mode))
+    rb, _ran = _driver(monkeypatch, {})
+    res = (
+        PnrPassResults(name="r/results")
+        if passed
+        else PnrFailResults(name="r/results", desc="setup slack")
+    )
+    monkeypatch.setattr(
+        "rtl_buddy.rtl_buddy.PnrRunner",
+        lambda **_kw: type("_Runner", (), {"run": lambda self: res})(),
+    )
+
+    (row,) = rb._do_pnr_suite(suite)
+
+    assert row["results"].results["result"] == verdict
+    assert row["results"].results["mode"] == mode

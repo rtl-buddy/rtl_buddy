@@ -94,7 +94,7 @@ cfg-synth-platforms:
     corner: tt
 ```
 
-Paths resolve from `root_config.yaml`. The Yosys backend needs Liberty. The OpenROAD backend needs Liberty plus technology and macro LEF. Keep large PDK files untracked and provide a fetch script.
+Paths resolve from `root_config.yaml`. The Yosys backend needs Liberty. The OpenROAD backend needs Liberty plus technology and macro LEF. `macro-lef` takes one path or a list, such as one cell LEF per threshold-voltage flavour, and OpenROAD reads them in order. Keep large PDK files untracked and provide a fetch script.
 
 OpenROAD `strategy` is `AREA`, `TIMING`, `TIMING_ANNEAL`, or `TIMING_GENETIC`. `AREA` reports the initial mapping; the timing strategies request OpenROAD resynthesis.
 
@@ -108,7 +108,7 @@ A corner takes one Liberty path or a list. Every file of the corner is read and 
 
 Liberty files may be gzipped. SDC values are in the Liberty `time_unit`, which rb reads from each file's `library` group (1 ns when unset) and uses to convert the ABC delay target and every reported time to picoseconds. All Liberty files a run reads must share one `time_unit`; otherwise the run fails at setup.
 
-`dont-use-cells` patterns exclude cells from mapping. A synth platform's own list is appended to the PDK's. [Place-and-Route](pnr.md#tune-the-process-dependent-steps) reads the PDK's list too, so two runs that exclude different cells count as two experiments. P&R-side PDK notes are in [Place-and-Route: PDK setup notes](pnr.md#pdk-setup-notes).
+`dont-use-cells` patterns exclude cells from mapping. A synth platform's own list is appended to the PDK's. [Place-and-Route](pnr.md#configure-the-physical-platform) reads the PDK's list too, so two runs that exclude different cells count as two experiments. P&R-side PDK notes are in [Place-and-Route: PDK setup notes](pnr.md#pdk-setup-notes).
 
 ## How the SDC is read
 
@@ -122,7 +122,7 @@ Either reader returns syntax only. `get_ports`, `get_cells` and `-filter` collec
 When `rb synth` reads the SDC for ABC's delay target, it also:
 
 - follows `source`, relative to the sourcing file's directory and then the working directory. `[info script]` names the file being read, and `file dirname`, `join`, `normalize`, `tail` and the other path subcommands answer as Tcl's do, so `source [file join [file dirname [file normalize [info script]]] clocks.sdc]` works. The `tokenizer` follows only a literal path. An include it cannot read warns `constraints.source_unreadable`.
-- re-reads a file the interpreter refused with `get_ports`, `get_pins`, `get_cells`, `get_nets`, `get_clocks` and `all_*` returning their name arguments as a list, so a `proc` or `foreach` over `[get_ports {a b}]` runs.
+- re-reads a file the interpreter refused with `get_ports`, `get_pins`, `get_cells`, `get_nets`, `get_clocks` and `all_*` returning their name arguments as a list, so a `proc` or `foreach` over `[get_ports {a b}]` runs. `get_full_name`, `get_name` and `get_object_name` return the name they are given. The reader has no design, so a check such as `[get_property $p direction] ne "input"` cannot be answered: in the re-read, an `error` call returns instead of stopping the file. Each skipped check is logged at DEBUG as `constraints.tcl_check_skipped`, and each file with skipped checks warns once with their count as `constraints.tcl_checks_skipped`. A Tcl error raised any other way, such as an unset variable or a `source` loop, still fails the read.
 
 Set `RTL_BUDDY_CONSTRAINT_READER=tokenizer` to force the fallback, or `=tcl` to require the interpreter and fail if none can start.
 
@@ -269,6 +269,10 @@ Precedence is the run's `tool_overrides`, then the selected effort, then `cfg-sy
 
 `openroad.repair: true` repairs the netlist before the area and timing reports. OpenROAD sources the PDK's `layer-rc-tcl`, when it has one, right after `read_sdc`, so a `set_wire_rc` in `pre-sta-tcl` overrides it. After `pre-sta-tcl` and any `strategy` resynthesis it runs `repair_design` and, with an SDC, `repair_timing -setup`. The default is `false`. Repair changes only the reported area, WNS and TNS: `synth_netlist.v` is still Yosys' netlist, and `rb pnr` repairs it again after placement. The design is unplaced, so the repair sees pin loads but no wire lengths.
 
+- On an unplaced netlist, plain `repair_design` only resizes; `-pre_placement` also builds buffer trees on high-fanout nets.
+- The run passes `-pre_placement` when no instance is placed at that point. When `pre-sta-tcl` placed any instance, or the OpenROAD's `repair_design` has no `-pre_placement` (before 25Q2), it runs plain `repair_design`.
+- The OpenROAD log names the form that ran and why, for example `rb: repair_design -pre_placement (no instance is placed)`.
+
 ## Choose the mapped-run ABC script
 
 A Liberty-mapped run, which is every `tool: openroad` run and a `tool: yosys` run with a `platform` or `lib-paths`, maps logic to cells with one `abc -liberty` command. `abc-script` sets the ABC commands it runs, or names a preset: `default` or `delay`. The `default` preset is Yosys' default Liberty script without `dc2` and `&fraig -x`:
@@ -355,6 +359,14 @@ cfg-synth-efforts:
 - When the Liberty's choice is wrong, name the cell and its enable, clock and gated-clock pins on the synth platform, for example `clock-gating-cell: 'sky130_fd_sc_hd__dlclkp_1 GATE:CLK:GCLK'`. The run then writes `clockgate -pos <cell> <pins> -min_net_size <n>`.
 - It needs a Liberty: an unmapped `tool: yosys` run warns `synth.clock_gating_ignored` and gates nothing.
 - The setting joins the run's options fingerprint only when on.
+
+`clock-gating-max-flops` bounds the other side, as commercial flows do (8 to 16 flops is typical). It is set where `clock-gating-min-flops` is, `0` (the default) is no limit, and it must not be below `clock-gating-min-flops`:
+
+- A set of n flops above the limit gets ceil(n/max) ICGs: the one `clockgate` inserted and copies of it on the same clock, enable and tie inputs. The flops are dealt in cell-name order in near-equal shares.
+- After `clockgate`, the Yosys script writes the design to `yosys-tmp/clockgate.il` with `write_rtlil`, rtl_buddy's `icg_split` helper rewrites it to `yosys-tmp/clockgate_split.il` and removes the input, and `read_rtlil` loads the result in place of the old design. The helper changes only the lines of a split, so every other cell, including its parameters, comes back unchanged. `synth.log` has one `icg_split:` line per split ICG; mapping, `stat` and the netlist include the copies.
+- An ICG whose cell has more than one output bit cannot be split. When it drives more flops than the limit, the run warns `synth.icg_not_split`.
+- It applies only to ICGs `clockgate` inserted, not to clock-gating cells instantiated in the RTL.
+- Without `clock-gating-min-flops`, nothing is gated, so the limit is ignored and the run warns `synth.clock_gating_max_ignored`.
 
 ## Run ABC in batch mode
 

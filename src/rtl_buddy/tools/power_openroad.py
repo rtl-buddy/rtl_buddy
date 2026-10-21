@@ -12,7 +12,16 @@ logger = logging.getLogger(__name__)
 _SNAPSHOT_ATTEMPTS = 3
 
 from .liberty_units import open_liberty
+from ..config.lib_paths import (
+    LibPath,
+    fit_lib_paths,
+    lib_files,
+    lib_path_key,
+    lib_paths_overlap,
+    lib_paths_problem,
+)
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
+from ..config.pnr_repair import PnrMode
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
 from ..phys import reports
@@ -107,6 +116,24 @@ def _dedup_paths(paths) -> list[str]:
             continue
         seen.add(key)
         out.append(path)
+    return out
+
+
+def _dedup_lib_paths(entries: list[LibPath]) -> list[LibPath]:
+    """Return `lib-paths` entries as `_dedup_paths` returns paths: a path once, and a per-corner mapping once per distinct corner-to-file assignment."""
+    out: list[LibPath] = []
+    seen: set = set()
+    for entry in entries:
+        if not entry:
+            continue
+        if isinstance(entry, str):
+            key = lib_path_key(entry)
+        else:
+            key = frozenset((c, lib_path_key(p)) for c, p in entry.items())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(entry)
     return out
 
 
@@ -453,7 +480,7 @@ class OpenRoadPower(BasePower):
         Liberty-less master whose outputs take the trace's or the default activity.
         """
         # power.yaml libraries go after the inherited ones.
-        own_libs = self.power_cfg.get_lib_paths()
+        own_libs = self.power_cfg.get_lib_path_entries()
         if self.power_cfg.get_netlist_source() == "pnr":
             pnr_cfg = self.power_cfg.resolve_pnr_cfg()
             top = pnr_cfg.resolve_synth_cfg().get_top()
@@ -473,9 +500,9 @@ class OpenRoadPower(BasePower):
                 "pnr_script": os.path.join(pnr_artefact, PNR_SCRIPT_NAME),
                 "sdc": sdc,
                 "top": top,
-                "macro_libs": _dedup_paths(
+                "macro_libs": _dedup_lib_paths(
                     [
-                        *pnr_cfg.get_lib_paths(),
+                        *pnr_cfg.get_lib_path_entries(),
                         *own_libs,
                     ]
                 ),
@@ -498,7 +525,7 @@ class OpenRoadPower(BasePower):
             "pnr_script": None,
             "sdc": self.power_cfg.get_constraints(),
             "top": top,
-            "macro_libs": _dedup_paths(
+            "macro_libs": _dedup_lib_paths(
                 [
                     *synth_cfg.get_lib_paths(),
                     *own_libs,
@@ -654,11 +681,40 @@ class OpenRoadPower(BasePower):
         )
         self._script_corners = list(corner_libs)
         tech_lef = pdk.get_tech_lef()
-        macro_lef = pdk.get_macro_lef()
+        cell_lefs = pdk.get_macro_lef_paths()
         inputs = self._resolve_inputs()
         # The script is generated from these; `_publish_phys_model` reads this capture instead of resolving again.
         self._script_inputs = inputs
-        macro_libs = list(inputs.get("macro_libs") or [])
+        corners = platform.get_sta_corners()
+        # A platform with fewer corners than a mapping is fine: the corners it lacks are ignored.
+        lib_problem = lib_paths_problem(
+            list(inputs.get("macro_libs") or []), corners, ignore_unknown=True
+        )
+        if lib_problem is not None:
+            log_event(
+                logger,
+                logging.ERROR,
+                "power.lib_paths_corners",
+                power=self.power_cfg.get_name(),
+                platform=self.power_cfg.get_platform(),
+                problem=lib_problem,
+            )
+            raise RuntimeError(lib_problem)
+        # Each entry fitted to the platform's corners: a mapping is one path on a single corner.
+        fitted = fit_lib_paths(list(inputs.get("macro_libs") or []), corners)
+        overlap = lib_paths_overlap(fitted)
+        if overlap is not None:
+            log_event(
+                logger,
+                logging.ERROR,
+                "power.lib_paths_duplicate",
+                power=self.power_cfg.get_name(),
+                problem=overlap,
+            )
+            raise RuntimeError(overlap)
+        macro_entries = _dedup_lib_paths(fitted)
+        inputs["macro_libs"] = macro_entries
+        macro_libs = lib_files(macro_entries)
         macro_lefs = list(inputs.get("macro_lefs") or [])
         # Not in the script: resolved with the platform so the fill-cell detection judges the PDK the run was prepared against.
         self._physical_only_cells = list(pdk.get_fill_cells() or [])
@@ -668,7 +724,7 @@ class OpenRoadPower(BasePower):
             "corner_libs": [lib for libs in corner_libs.values() for lib in libs],
             "macro_libs": macro_libs,
             "tech_lef": tech_lef,
-            "macro_lef": macro_lef,
+            "cell_lefs": cell_lefs,
             "macro_lefs": macro_lefs,
         }
         netlist = inputs["netlist"]
@@ -705,10 +761,17 @@ class OpenRoadPower(BasePower):
             )
         if source == "pnr":
             if not os.path.isfile(odb):
+                pnr_cfg = self.power_cfg.resolve_pnr_cfg()
+                why = (
+                    f"pnr run '{pnr_cfg.get_name()}' is a probe (mode: probe), "
+                    "which stops after global route and writes no routed ODB; "
+                    "run it with mode: closure"
+                    if pnr_cfg.get_mode() is PnrMode.PROBE
+                    else "re-run `rb pnr` (older runs predate the .routed.odb artefact)"
+                )
                 raise RuntimeError(
                     f"power run '{self.power_cfg.get_name()}': "
-                    f"routed ODB not found at {odb} — re-run `rb pnr` "
-                    "(older runs predate the .routed.odb artefact)"
+                    f"routed ODB not found at {odb} — {why}"
                 )
         else:
             if not os.path.isfile(netlist):
@@ -750,15 +813,14 @@ class OpenRoadPower(BasePower):
         if platform_tcl:
             lines.append(tcl_source(platform_tcl))
         if corner_libs:
-            # Each macro library is read into every corner, after the standard cells; see `openroad_corners.liberty_tcl`.
-            lines.extend(openroad_corners.liberty_tcl(corner_libs, macro_libs))
+            # Each macro library is read into its corners, after the standard cells; see `openroad_corners.liberty_tcl`.
+            lines.extend(openroad_corners.liberty_tcl(corner_libs, macro_entries))
         else:
             lines.extend(f"read_liberty {lib}" for lib in liberties)
             # After the platform corner so a macro library never shadows a standard cell, in resolved order.
             lines.extend(f"read_liberty {lib}" for lib in macro_libs)
         lines.append(f"read_lef {tech_lef}")
-        if macro_lef:
-            lines.append(f"read_lef {macro_lef}")
+        lines.extend(f"read_lef {lef}" for lef in cell_lefs)
         lines.extend(f"read_lef {lef}" for lef in macro_lefs)
         if source == "pnr":
             # The ODB restores the post-route state. Wire parasitics come from the P&R run's extracted SPEF
@@ -1306,7 +1368,7 @@ class OpenRoadPower(BasePower):
             *(resolved.get("corner_libs") or []),
             *(resolved.get("macro_libs") or []),
             resolved.get("tech_lef"),
-            resolved.get("macro_lef"),
+            *(resolved.get("cell_lefs") or []),
             *(resolved.get("macro_lefs") or []),
         ]
         return library_fingerprint([path for path in named if path], self.root_cfg)

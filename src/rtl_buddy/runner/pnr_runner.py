@@ -24,6 +24,10 @@ class PnrRunner:
         emit_png: bool = False,
         gds_mode: str | None = None,
         accept_stale: bool = False,
+        stop_after: str | None = None,
+        resume: str | None = None,
+        resume_from: str | None = None,
+        dispatch=None,
     ):
         self.name = name
         self.root_cfg = root_cfg
@@ -31,6 +35,12 @@ class PnrRunner:
         self.suite_dir = suite_dir
         self.reglvl_filter = reglvl_filter
         self.accept_stale = accept_stale
+        # `--stop-after`, `--resume` and `--from`; see `OpenRoadPnr`.
+        self.stop_after = stop_after
+        self.resume = resume
+        self.resume_from = resume_from
+        # `--dispatch`: the backend that runs each stage as a job; see `OpenRoadPnr`.
+        self.dispatch = dispatch
         self.emit_gds = emit_gds
         self.emit_png = emit_png
         # `None` defers to each run's `gds-mode:`; otherwise it overrides every run.
@@ -76,6 +86,10 @@ class PnrRunner:
             emit_png=self.emit_png,
             gds_mode=self.gds_mode,
             accept_stale=self.accept_stale,
+            stop_after=self.stop_after,
+            resume=self.resume,
+            resume_from=self.resume_from,
+            dispatch=self.dispatch,
         )
         return backend.run()
 

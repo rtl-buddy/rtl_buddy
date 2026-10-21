@@ -1,20 +1,47 @@
+import copy
 import logging
+import os
 import re
+from dataclasses import dataclass
+from typing import Any
 
 from serde import serde, field
 
 from ..errors import FatalRtlBuddyError
 from .pdk import (
+    PLACEMENT_SPEC,
     DEFAULT_PLACEMENT_DENSITY,
     DEFAULT_PLACEMENT_MACRO_HALO,
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
     DEFAULT_PLACEMENT_PADDING,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
+    DEFAULT_ROTATED_MACRO_FOOTPRINT,
+    MacroPinLimitsFile,
     PlacementFile,
     _validate_dont_use_cells,
     merge_dont_use_cells,
     validate_placement,
 )
+from .pnr_global_route import (
+    GLOBAL_ROUTE_SPEC,
+    GlobalRoute,
+    PnrGlobalRouteFile,
+    read_global_route,
+)
+from .pnr_repair import (
+    GLOBAL_ROUTE_REPAIR_SPEC,
+    POST_ROUTE_REPAIR_SPEC,
+    UNSET,
+    GlobalRouteRepair,
+    PostRouteRepair,
+    read_global_route_repair,
+    read_hold_repair_shorthand,
+    read_post_route_repair,
+    resolve_global_route_repair,
+    resolve_post_route_repair,
+)
+from .pnr_signoff import SIGNOFF_SPEC, Signoff, read_signoff, resolve_signoff
+from .unknown_keys import KeySpec
 
 logger = logging.getLogger(__name__)
 
@@ -77,15 +104,147 @@ def _validate_port_buffer(value, where: str) -> str | None:
     return value
 
 
-def _first_set(*values):
-    """Return the first value that is not `None`."""
-    return next(v for v in values if v is not None)
+def _validate_cts_buffer(value, where: str) -> list[str]:
+    cells = _as_cell_list(value) if isinstance(value, (str, list)) else None
+    if not cells or any(not isinstance(c, str) or len(c.split()) != 1 for c in cells):
+        raise FatalRtlBuddyError(
+            f"{where}: cts-buffer must be one buffer cell name or a list of them, "
+            f"got {value!r}"
+        )
+    return cells
+
+
+#: Characters a `cts-clock-nets` entry cannot hold: it is written inside a braced Tcl list.
+_TCL_LIST_BREAKERS = frozenset("{}\\")
+
+
+def _validate_cts_clock_nets(value, where: str) -> tuple[str, ...]:
+    nets = [value] if isinstance(value, str) else value
+    if (
+        not isinstance(nets, list)
+        or not nets
+        or any(
+            not isinstance(n, str)
+            or len(n.split()) != 1
+            or n != n.strip()
+            or _TCL_LIST_BREAKERS & set(n)
+            for n in nets
+        )
+    ):
+        raise FatalRtlBuddyError(
+            f"{where}: cts-clock-nets must be one clock net name or a list of them, "
+            "without whitespace, braces or backslashes, "
+            f"got {value!r}"
+        )
+    return tuple(nets)
+
+
+def _validate_tcl_path(key: str, value, where: str, config_dir: str) -> str | None:
+    """Return a Tcl hook path resolved from `config_dir`, or `None` when unset."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise FatalRtlBuddyError(
+            f"{where}: {key} must be a path to a Tcl file, got {value!r}"
+        )
+    return os.path.normpath(os.path.join(config_dir, value))
+
+
+def _validate_cts_dont_use_cells(value, where: str) -> tuple[str, ...]:
+    """Check a `cts-dont-use-cells` list of cell patterns; duplicates are dropped."""
+    if not isinstance(value, list):
+        raise FatalRtlBuddyError(
+            f"{where}: cts-dont-use-cells must be a list of cell-name patterns, "
+            f"got {value!r}"
+        )
+    return tuple(
+        dict.fromkeys(_validate_dont_use_cells(value, where, "cts-dont-use-cells"))
+    )
 
 
 @serde
 class PnrRoutingLayersFile:
     signal: str = ""
     clock: str = ""
+
+
+@dataclass(frozen=True)
+class PnrRunOverrides:
+    """A P&R run's own values of its platform's routing, CTS, repair, tap-cell and signoff knobs; `None` (`UNSET` for `signoff`) keeps the platform's.
+
+    Apply them with `PnrPlatformConfig.with_run_overrides`. `cts_clock_nets` exists on runs only.
+    """
+
+    signal_layers: str | None = None
+    clock_layers: str | None = None
+    cts_buffers: tuple[str, ...] | None = None
+    cts_clock_nets: tuple[str, ...] = ()
+    cts_repair_clock_nets: bool | None = None
+    cts_latency_balancing: bool | None = None
+    post_cts_setup_repair: bool | None = None
+    routing_layer_adjustment: float | None = None
+    port_buffer: str | None = None
+    tapcell_tcl: str | None = None
+    cts_dont_use_cells: tuple[str, ...] | None = None
+    keep_sizing_vt: bool | None = None
+    # The run's `signoff:` layer (see `pnr_signoff`): `UNSET` when absent, `None` when `null`.
+    signoff: Any = UNSET
+    global_route: GlobalRoute = GlobalRoute()
+
+    def is_empty(self) -> bool:
+        return self == PnrRunOverrides()
+
+
+def read_run_overrides(
+    where: str,
+    *,
+    routing_layers: "PnrRoutingLayersFile | None",
+    cts_buffer,
+    cts_clock_nets,
+    cts_repair_clock_nets: bool | None,
+    cts_latency_balancing: bool | None,
+    post_cts_setup_repair: bool | None,
+    routing_layer_adjustment,
+    port_buffer,
+    tapcell_tcl,
+    config_dir: str,
+    cts_dont_use_cells=None,
+    keep_sizing_vt: bool | None = None,
+    signoff=UNSET,
+    global_route: PnrGlobalRouteFile | None = None,
+) -> PnrRunOverrides:
+    """Validate a run's overrides of its platform's knobs; `where` names the run."""
+    layers = routing_layers or PnrRoutingLayersFile()
+    return PnrRunOverrides(
+        signal_layers=layers.signal or None,
+        clock_layers=layers.clock or None,
+        cts_buffers=(
+            tuple(_validate_cts_buffer(cts_buffer, where))
+            if cts_buffer is not None
+            else None
+        ),
+        cts_clock_nets=(
+            _validate_cts_clock_nets(cts_clock_nets, where)
+            if cts_clock_nets is not None
+            else ()
+        ),
+        cts_repair_clock_nets=cts_repair_clock_nets,
+        cts_latency_balancing=cts_latency_balancing,
+        post_cts_setup_repair=post_cts_setup_repair,
+        routing_layer_adjustment=_validate_layer_adjustment(
+            routing_layer_adjustment, where
+        ),
+        port_buffer=_validate_port_buffer(port_buffer, where),
+        tapcell_tcl=_validate_tcl_path("tapcell-tcl", tapcell_tcl, where, config_dir),
+        cts_dont_use_cells=(
+            _validate_cts_dont_use_cells(cts_dont_use_cells, where)
+            if cts_dont_use_cells is not None
+            else None
+        ),
+        keep_sizing_vt=keep_sizing_vt,
+        signoff=read_signoff(where, signoff),
+        global_route=read_global_route(where, global_route),
+    )
 
 
 @serde
@@ -98,12 +257,19 @@ class PnrPlatformConfigFile:
     # With a list, CTS gets every entry as its buffer list and the first as the root buffer.
     cts_buffer: str | list[str] = field(rename="cts-buffer", default="")
     cts_sink_clustering: bool = field(rename="cts-sink-clustering", default=True)
+    # `false` adds `clock_tree_synthesis -no_insertion_delay`.
+    cts_latency_balancing: bool = field(rename="cts-latency-balancing", default=True)
+    # `repair_clock_nets` after CTS.
+    cts_repair_clock_nets: bool = field(rename="cts-repair-clock-nets", default=False)
     # Runs `repair_timing -setup` before the post-CTS hold repair.
     post_cts_setup_repair: bool = field(rename="post-cts-setup-repair", default=False)
-    # Repairs hold again after global route, on `estimate_parasitics -global_routing`, as ORFS does.
+    # Repairs hold again after global route, on `estimate_parasitics -global_routing`, as ORFS does: shorthand for `global-route-repair: {hold-margin: 0}`.
     global_route_hold_repair: bool = field(
         rename="global-route-hold-repair", default=False
     )
+    # Repair after global route and after detailed route; a run overrides them field by field. Read by `pnr_repair`.
+    global_route_repair: Any = field(rename="global-route-repair", default=UNSET)
+    post_route_repair: Any = field(rename="post-route-repair", default=UNSET)
     # `set_global_routing_layer_adjustment` over the signal layers; `None` leaves the router's default.
     routing_layer_adjustment: float | None = field(
         rename="routing-layer-adjustment", default=None
@@ -121,23 +287,60 @@ class PnrPlatformConfigFile:
     placement: PlacementFile = field(default_factory=PlacementFile)
     # Added to the PDK's `dont-use-cells`, not replacing them.
     dont_use_cells: list[str] = field(rename="dont-use-cells", default_factory=list)
+    # Excluded for `clock_tree_synthesis` and `repair_clock_nets` only. Typed loosely so the validator names a bad value.
+    cts_dont_use_cells: Any = field(rename="cts-dont-use-cells", default_factory=list)
+    # `set_opt_config -keep_sizing_vt true`: sizing keeps each cell's threshold voltage.
+    keep_sizing_vt: bool = field(rename="keep-sizing-vt", default=False)
+    # Replaces the PDK's `tapcell-tcl`; relative to the root config.
+    tapcell_tcl: str | None = field(rename="tapcell-tcl", default=None)
+    # `global_route` options; a run overrides them field by field. Read by `pnr_global_route`.
+    global_route: PnrGlobalRouteFile | None = field(rename="global-route", default=None)
+    # Signoff corners and gates; a run overrides them field by field. Read by `pnr_signoff`.
+    signoff: Any = UNSET
+
+
+#: The keys of one `cfg-pnr-platforms` entry, for the unknown-key check.
+PNR_PLATFORM_SPEC = KeySpec(
+    PnrPlatformConfigFile,
+    {
+        "routing-layers": KeySpec(PnrRoutingLayersFile),
+        "placement": PLACEMENT_SPEC,
+        "global-route-repair": GLOBAL_ROUTE_REPAIR_SPEC,
+        "post-route-repair": POST_ROUTE_REPAIR_SPEC,
+        "global-route": GLOBAL_ROUTE_SPEC,
+        "signoff": SIGNOFF_SPEC,
+    },
+)
 
 
 class PnrPlatformConfig:
     """A PDK plus STA corner selection and P&R knobs (CTS buffer, routing layers, placement)."""
 
-    def __init__(self, cfg: PnrPlatformConfigFile, pdk_lookup):
+    def __init__(self, cfg: PnrPlatformConfigFile, pdk_lookup, config_dir: str = ""):
         self._name = cfg.name
         self._pdk_name = cfg.pdk
         self._pdk = pdk_lookup(cfg.pdk)
         self._sta_corners = self._resolve_sta_corners(cfg)
         self._sta_corner = self._sta_corners[0]
+        self._signoff_layer = read_signoff(f"pnr platform '{self._name}'", cfg.signoff)
+        self._signoff = resolve_signoff(
+            [self._signoff_layer], self._sta_corners, self._name
+        )
         self._cts_buffers = _as_cell_list(cfg.cts_buffer)
         self._cts_sink_clustering = cfg.cts_sink_clustering
+        self._cts_latency_balancing = cfg.cts_latency_balancing
+        self._cts_repair_clock_nets = cfg.cts_repair_clock_nets
+        self._cts_clock_nets: tuple[str, ...] = ()
+        self._tapcell_tcl = _validate_tcl_path(
+            "tapcell-tcl", cfg.tapcell_tcl, f"pnr platform '{self._name}'", config_dir
+        )
         self._post_cts_setup_repair = cfg.post_cts_setup_repair
-        self._global_route_hold_repair = cfg.global_route_hold_repair
+        self._read_repairs(cfg)
         self._routing_layer_adjustment = _validate_layer_adjustment(
             cfg.routing_layer_adjustment, f"pnr platform '{self._name}'"
+        )
+        self._global_route = read_global_route(
+            f"pnr platform '{self._name}'", cfg.global_route
         )
         self._cts_apply_ndr = _validate_cts_apply_ndr(
             cfg.cts_apply_ndr, f"pnr platform '{self._name}'"
@@ -156,47 +359,112 @@ class PnrPlatformConfig:
                 cfg.dont_use_cells, f"pnr platform '{self._name}'"
             ),
         )
+        self._cts_dont_use_cells = _validate_cts_dont_use_cells(
+            cfg.cts_dont_use_cells, f"pnr platform '{self._name}'"
+        )
+        self._keep_sizing_vt = cfg.keep_sizing_vt
 
-        placement = validate_placement(cfg.placement, f"pnr platform '{self._name}'")
-        self._placement_density = _first_set(
-            placement.density,
-            self._pdk.get_placement_density(),
-            DEFAULT_PLACEMENT_DENSITY,
+        self._platform_placement = validate_placement(
+            cfg.placement, f"pnr platform '{self._name}'"
         )
-        self._placement_padding = _first_set(
-            placement.padding,
-            self._pdk.get_placement_padding(),
-            DEFAULT_PLACEMENT_PADDING,
+        self._resolve_placement(
+            [self._platform_placement],
+            f"pnr platform '{self._name}'",
+            "set on the platform or its PDK",
         )
-        self._placement_macro_halo = _first_set(
-            placement.macro_halo,
-            self._pdk.get_placement_macro_halo(),
-            DEFAULT_PLACEMENT_MACRO_HALO,
+
+    def _read_repairs(self, cfg: PnrPlatformConfigFile) -> None:
+        """Read the platform's repair blocks into layers a run's blocks go over. They are resolved per run (see `with_run_repairs`), so a partial platform block fails only the runs that leave it partial."""
+        where = f"pnr platform '{self._name}'"
+        gr_layer = read_global_route_repair(where, cfg.global_route_repair)
+        self._global_route_repair_layer = read_hold_repair_shorthand(
+            where, cfg.global_route_hold_repair or None, gr_layer
         )
-        self._placement_macro_cell_halo = _first_set(
-            placement.macro_cell_halo,
-            self._pdk.get_placement_macro_cell_halo(),
+        self._post_route_repair_layer = read_post_route_repair(
+            where, cfg.post_route_repair
+        )
+        # Resolved on first use, or by `with_run_repairs`.
+        self._repairs: (
+            tuple[GlobalRouteRepair | None, PostRouteRepair | None] | None
+        ) = None
+
+    def _resolve_repairs(self, gr_run, pr_run, where: str) -> None:
+        self._repairs = (
+            resolve_global_route_repair(
+                where, [self._global_route_repair_layer, gr_run]
+            ),
+            resolve_post_route_repair(where, [self._post_route_repair_layer, pr_run]),
+        )
+
+    def with_run_repairs(
+        self, global_route_repair, post_route_repair, run: str
+    ) -> "PnrPlatformConfig":
+        """Return this platform with a P&R run's repair layers (see `pnr_repair`) over its own, field by field; raise when the merged block is incomplete."""
+        resolved = copy.copy(self)
+        resolved._resolve_repairs(
+            global_route_repair,
+            post_route_repair,
+            f"pnr run '{run}' on platform '{self._name}'",
+        )
+        return resolved
+
+    def _resolved_repairs(self):
+        if self._repairs is None:
+            self._resolve_repairs(UNSET, UNSET, f"pnr platform '{self._name}'")
+        return self._repairs
+
+    def _resolve_placement(
+        self, layers: list[PlacementFile], where: str, levels: str
+    ) -> None:
+        """Resolve each `placement:` key from `layers` (highest first), then the PDK, then the default."""
+
+        def _pick(key: str, pdk_value, default):
+            for layer in layers:
+                value = getattr(layer, key)
+                if value is not None:
+                    return value
+            return pdk_value if pdk_value is not None else default
+
+        pdk = self._pdk
+        self._placement_density = _pick(
+            "density", pdk.get_placement_density(), DEFAULT_PLACEMENT_DENSITY
+        )
+        self._placement_padding = _pick(
+            "padding", pdk.get_placement_padding(), DEFAULT_PLACEMENT_PADDING
+        )
+        self._placement_macro_halo = _pick(
+            "macro_halo", pdk.get_placement_macro_halo(), DEFAULT_PLACEMENT_MACRO_HALO
+        )
+        self._placement_macro_cell_halo = _pick(
+            "macro_cell_halo",
+            pdk.get_placement_macro_cell_halo(),
             DEFAULT_PLACEMENT_MACRO_CELL_HALO,
         )
-        self._placement_reference_hpwl = (
-            placement.reference_hpwl
-            if placement.reference_hpwl is not None
-            else self._pdk.get_placement_reference_hpwl()
+        self._placement_reference_hpwl = _pick(
+            "reference_hpwl", pdk.get_placement_reference_hpwl(), None
         )
-        self._placement_tie_separation = _first_set(
-            placement.tie_separation,
-            self._pdk.get_placement_tie_separation(),
+        self._placement_tie_separation = _pick(
+            "tie_separation",
+            pdk.get_placement_tie_separation(),
             DEFAULT_PLACEMENT_TIE_SEPARATION,
         )
-        self._placement_routability_driven = _first_set(
-            placement.routability_driven,
-            self._pdk.get_placement_routability_driven(),
-            False,
+        self._placement_routability_driven = _pick(
+            "routability_driven", pdk.get_placement_routability_driven(), False
         )
-        self._placement_routability_use_grt = _first_set(
-            placement.routability_use_grt,
-            self._pdk.get_placement_routability_use_grt(),
-            False,
+        self._placement_routability_use_grt = _pick(
+            "routability_use_grt", pdk.get_placement_routability_use_grt(), False
+        )
+        self._placement_timing_driven = _pick(
+            "timing_driven", pdk.get_placement_timing_driven(), False
+        )
+        self._placement_rotated_macro_footprint = _pick(
+            "rotated_macro_footprint",
+            pdk.get_placement_rotated_macro_footprint(),
+            DEFAULT_ROTATED_MACRO_FOOTPRINT.value,
+        )
+        # A whole block: a higher level's `macro-pin-limits` replaces a lower one's.
+        self._placement_macro_pin_limits = _pick(
+            "macro_pin_limits", pdk.get_placement_macro_pin_limits(), None
         )
         # The placer reads `-routability_use_grt` only in routability mode, so alone it would be silently ignored.
         if (
@@ -204,10 +472,61 @@ class PnrPlatformConfig:
             and not self._placement_routability_driven
         ):
             raise FatalRtlBuddyError(
-                f"pnr platform '{self._name}': placement.routability-use-grt "
-                "needs placement.routability-driven: true (set on the platform "
-                "or its PDK); global_placement ignores it otherwise"
+                f"{where}: placement.routability-use-grt needs "
+                f"placement.routability-driven: true ({levels}); "
+                "global_placement ignores it otherwise"
             )
+
+    def with_run_overrides(
+        self, overrides: PnrRunOverrides | None
+    ) -> "PnrPlatformConfig":
+        """Return this platform with a P&R run's routing, CTS, repair and tap-cell values over its own, field by field.
+
+        `overrides` must already be validated. Without any the platform itself is returned. A run's `signoff:` naming a corner the platform does not analyse raises.
+        """
+        if overrides is None or overrides.is_empty():
+            return self
+        resolved = copy.copy(self)
+        o = overrides
+        if o.signoff is not UNSET:
+            resolved._signoff = resolve_signoff(
+                [self._signoff_layer, o.signoff], self._sta_corners, self._name
+            )
+        for attr, value in (
+            ("_signal_layers", o.signal_layers),
+            ("_clock_layers", o.clock_layers),
+            ("_cts_buffers", list(o.cts_buffers) if o.cts_buffers else None),
+            ("_cts_clock_nets", o.cts_clock_nets or None),
+            ("_cts_repair_clock_nets", o.cts_repair_clock_nets),
+            ("_cts_latency_balancing", o.cts_latency_balancing),
+            ("_post_cts_setup_repair", o.post_cts_setup_repair),
+            ("_routing_layer_adjustment", o.routing_layer_adjustment),
+            ("_port_buffer", o.port_buffer),
+            ("_tapcell_tcl", o.tapcell_tcl),
+            ("_cts_dont_use_cells", o.cts_dont_use_cells),
+            ("_keep_sizing_vt", o.keep_sizing_vt),
+        ):
+            if value is not None:
+                setattr(resolved, attr, value)
+        resolved._global_route = o.global_route.over(self._global_route)
+        return resolved
+
+    def with_run_placement(
+        self, placement: PlacementFile | None, run: str
+    ) -> "PnrPlatformConfig":
+        """Return this platform with a P&R run's `placement:` block over its own, field by field.
+
+        `placement` must already be validated. Without one the platform itself is returned.
+        """
+        if placement is None:
+            return self
+        resolved = copy.copy(self)
+        resolved._resolve_placement(
+            [placement, self._platform_placement],
+            f"pnr run '{run}' on platform '{self._name}'",
+            "set on the run, the platform or its PDK",
+        )
+        return resolved
 
     def _resolve_sta_corners(self, cfg: PnrPlatformConfigFile) -> list[str]:
         """Return the analysis corners, primary first, validated against the PDK.
@@ -332,24 +651,82 @@ class PnrPlatformConfig:
         """Whether global placement passes `-routability_use_grt`, platform over PDK, default `False`."""
         return self._placement_routability_use_grt
 
+    def get_placement_timing_driven(self) -> bool:
+        """Whether global placement runs `-timing_driven`, run over platform over PDK, default `False`."""
+        return self._placement_timing_driven
+
+    def get_placement_rotated_macro_footprint(self) -> str:
+        """How the flow handles a macro rotated by 90 degrees (`block`, `diamond-legalizer` or `none`), platform over PDK, default `block`."""
+        return self._placement_rotated_macro_footprint
+
+    def get_placement_macro_pin_limits(self) -> MacroPinLimitsFile | None:
+        """`placement.macro-pin-limits`, run over platform over PDK, or `None` when the step is off."""
+        return self._placement_macro_pin_limits
+
     def get_dont_use_cells(self) -> list[str]:
         """The PDK's excluded cells plus this platform's, PDK first."""
         return list(self._dont_use_cells)
 
+    def get_cts_dont_use_cells(self) -> list[str]:
+        """The cells excluded for clock-tree synthesis and `repair_clock_nets` only, run over platform."""
+        return list(self._cts_dont_use_cells)
+
+    def get_keep_sizing_vt(self) -> bool:
+        """Whether sizing keeps each cell's threshold voltage (`set_opt_config -keep_sizing_vt`), run over platform."""
+        return self._keep_sizing_vt
+
     def get_cts_sink_clustering(self) -> bool:
         return self._cts_sink_clustering
+
+    def get_cts_latency_balancing(self) -> bool:
+        """Whether CTS balances latency between clock branches; `False` adds `-no_insertion_delay`."""
+        return self._cts_latency_balancing
+
+    def get_cts_repair_clock_nets(self) -> bool:
+        """Whether `repair_clock_nets` runs after CTS."""
+        return self._cts_repair_clock_nets
+
+    def get_cts_clock_nets(self) -> tuple[str, ...]:
+        """The clock nets CTS is restricted to (`-clk_nets`), or `()` for every clock."""
+        return self._cts_clock_nets
+
+    def get_tapcell_tcl(self) -> str:
+        """The tap and endcap Tcl: the run's, the platform's or the PDK's, resolved; `""` when none."""
+        if self._tapcell_tcl is not None:
+            return self._tapcell_tcl
+        return self._pdk.get_tapcell_tcl()
+
+    def get_tcl_hooks(self) -> dict[str, str]:
+        """The PDK's Tcl hooks as `{yaml-key: resolved path}`, with this platform's or run's `tapcell-tcl` in place of the PDK's; unset ones omitted, in flow order."""
+        hooks = dict(self._pdk.get_tcl_hooks())
+        # `tapcell-tcl` is the last hook in flow order, so a new entry keeps the order.
+        if self._tapcell_tcl is not None:
+            hooks["tapcell-tcl"] = self._tapcell_tcl
+        return hooks
+
+    def get_signoff(self) -> Signoff | None:
+        """The signoff corners and gates, run over platform, or None when neither sets `signoff:`."""
+        return self._signoff
 
     def get_post_cts_setup_repair(self) -> bool:
         """Whether post-CTS repair fixes setup before hold."""
         return self._post_cts_setup_repair
 
-    def get_global_route_hold_repair(self) -> bool:
-        """Whether hold is repaired again on global-route parasitics, before detail route."""
-        return self._global_route_hold_repair
+    def get_global_route_repair(self) -> GlobalRouteRepair | None:
+        """The repair after global route, platform under run, or None when off."""
+        return self._resolved_repairs()[0]
+
+    def get_post_route_repair(self) -> PostRouteRepair | None:
+        """The repair rounds after detailed route, platform under run, or None when off."""
+        return self._resolved_repairs()[1]
 
     def get_routing_layer_adjustment(self) -> float | None:
         """Global-route capacity adjustment, 0 to 1, or `None` for the router's default."""
         return self._routing_layer_adjustment
+
+    def get_global_route(self) -> GlobalRoute:
+        """The `global-route:` options, run over platform; unset fields are `None`."""
+        return self._global_route
 
     def get_cts_apply_ndr(self) -> str | None:
         """The `clock_tree_synthesis -apply_ndr` value, or `None` for the tool's default."""

@@ -37,29 +37,40 @@ set OUT_DIR         {{ out_dir }}
 # the router keeps a pointer to the file name's Tcl string past the command.
 set CONGESTION_RPT  $OUT_DIR/congestion.rpt
 file mkdir $OUT_DIR
-{{ threads_block }}{{ checkpoint_block }}{{ platform_tcl_block }}
+
+# Buffers and fill cells the flow adds after the power grid is built have no
+# supply connections. The rules `add_global_connection` stored in the database
+# cover them; a database without rules (no `pdn-config`) has nothing to apply.
+# The flow applies them at the end of every stage, so a run gives the same
+# result whether or not it writes checkpoints or splits into sessions.
+namespace eval rb {}
+proc rb::global_connect {} {
+  if {[llength [[ord::get_db_block] getGlobalConnects]] > 0} {
+    ::global_connect
+  }
+}
+{{ threads_block }}{{ checkpoint_block }}{{ platform_tcl_block }}{{ hook_procs_block }}
 puts ">>> Reading Liberty + LEF"
 {{ read_liberty }}
 read_lef     $TECH_LEF
 read_lef     $MACRO_LEF
-{{ extra_libs_lefs }}
+{{ extra_libs_lefs }}{{ scenes_block }}
 
-puts ">>> Reading netlist"
+{{ @load }}puts ">>> Reading netlist"
 read_verilog $NETLIST
 link_design  $DESIGN
 
 puts ">>> Reading SDC"
-read_sdc $SDC_FILE
-{{ max_fanout_block }}{{ layer_rc_block }}{{ dont_use_block }}
-puts ">>> Initializing floorplan"
+{{ read_sdc }}{{ @session }}{{ max_fanout_block }}{{ layer_rc_block }}{{ dont_use_block }}{{ keep_sizing_vt_block }}{{ hook_session_block }}
+{{ @floorplan }}puts ">>> Initializing floorplan"
 {{ initialize_floorplan }}
 {{ make_tracks }}
 {{ blockages_block }}
 puts ">>> Tie cells"
-{{ tie_cells_block }}
+{{ tie_cells_block }}{{ hook_after_floorplan_block }}
 {{ macro_pack_procs }}
 puts ">>> Macro placement"
-set block [ord::get_db_block]
+{{ @design }}set block [ord::get_db_block]
 # Macro origins snap to the site grid from the core corner; a bottom edge
 # between two rows can fail DPL-0011 after legalization.
 set site_obj [[lindex [$block getRows] 0] getSite]
@@ -69,7 +80,7 @@ set macros {}
 foreach inst [$block getInsts] {
   if {[[$inst getMaster] isBlock]} { lappend macros $inst }
 }
-if {[llength $macros] > 0} {
+{{ @/design }}if {[llength $macros] > 0} {
 {{ macro_directives_block }}{{ macro_place_block }}  # A hard placement blockage over each macro grown by MACRO_CELL_HALO, or by
   # its `floorplan.macros` halo in MACRO_CELL_HALOS, so no standard cell abuts
   # a macro edge; the router reaches such a cell's pins only with a Metal
@@ -92,61 +103,87 @@ if {[llength $macros] > 0} {
         [expr {[$bbox xMax] + $halo_x_dbu}] [expr {[$bbox yMax] + $halo_y_dbu}] \
         $inst
   }
-}
-{{ tapcell_block }}{{ pdn_block }}
+}{{ no_macros_block }}
+{{ tapcell_block }}{{ pdn_block }}{{ hook_after_pdn_block }}
 # Pins are placed after the macros and power grid so the pin placer sees placed
 # macros (unplaced ones raise PPL-0015). `place_pins` only avoids boundary
 # stretches a placed macro touches; keeping pins clear of macros kept a halo
 # inside the core is `floorplan.macro-anchor`'s job.
 puts ">>> IO pin placement"
 {{ floorplan_pins_block }}{{ pin_constraints_tcl }}
-place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
-{{ buffer_ports_block }}
-puts ">>> Global placement"
-global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}{{ routability_options }}
-{{ tie_fanout_block }}
+{{ place_pins_block }}
+{{ hook_after_pins_block }}{{ buffer_ports_block }}
+rb::global_connect
+{{ @place }}puts ">>> Global placement"
+{{ gp_blockages_create }}global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}{{ routability_options }}{{ timing_driven_option }}
+{{ gp_blockages_destroy }}{{ hook_after_global_placement_block }}{{ tie_fanout_block }}
 puts ">>> Resize"
 estimate_parasitics -placement
 repair_design
-
+{{ hook_after_repair_design_block }}
 puts ">>> Detail placement (legalize)"
-detailed_placement
+detailed_placement{{ dpl_options }}
+{{ macro_pin_limits_block }}rb::global_connect
 
-puts ">>> Clock tree synthesis"
-set_propagated_clock [all_clocks]
-clock_tree_synthesis \
+{{ @cts }}puts ">>> Clock tree synthesis"
+{{ @clocks }}{{ propagated_clocks }}{{ @/clocks }}{{ cts_dont_use_block }}clock_tree_synthesis \
     -root_buf {{ cts_root_buf }} \
     -buf_list $CTS_BUF \
-    {{ cts_clustering_option }}{{ cts_ndr_option }}
-
+    {{ cts_clustering_option }}{{ cts_ndr_option }}{{ cts_clock_nets_option }}{{ cts_insertion_delay_option }}
+{{ cts_repair_clock_nets }}{{ cts_dont_use_restore_block }}{{ hook_after_cts_block }}
 puts ">>> Detail placement (post-CTS)"
-detailed_placement
-
-puts ">>> Post-CTS timing repair"
-estimate_parasitics -placement
-{{ setup_repair }}repair_timing -hold
-
+detailed_placement{{ dpl_options }}
+{{ post_cts_repair }}
 # repair_timing inserts unlegalized buffers; without this pass the
 # detailed router fails with DRT-0073.
 puts ">>> Detail placement (legalize repair cells)"
-detailed_placement
+detailed_placement{{ dpl_options }}
 # -verbose names each failing instance.
 check_placement -verbose
+rb::global_connect
 
-# -verbose logs the per-layer usage table (GRT-0096) of every global route.
+{{ @global_route }}# -verbose logs the per-layer usage table (GRT-0096) of every global route.
 puts ">>> Global route"
-set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS
-{{ layer_adjustment }}global_route -congestion_iterations 20 -congestion_report_file $CONGESTION_RPT -verbose
-{{ global_route_hold_repair }}
+# A global_route that fails in this stage writes the database before the run
+# ends; rb files it as a failed global_route checkpoint when the run fails with
+# it, and only when the `done` marker says it is complete. A later route that
+# passes, or the stage's end, drops it. Its SDC is written as a checkpoint's
+# is, each corner's mode too on a platform with one per corner.
+proc rb::keep_failed_global_route {cmd_string code result op} {
+  global OUT_DIR
+  set dir [file join $OUT_DIR global_route_failed]
+  if {$code == 0} { file delete -force $dir; return }
+  if {$code != 1} { return }
+  puts ">>> Global route failed: writing the database to $dir"
+  if {[catch {
+    file delete -force $dir
+    file mkdir $dir
+    rb::global_connect
+    write_db [file join $dir global_route.odb]
+    write_def [file join $dir global_route.def]
+    {{ failed_global_route_write_sdc }} -no_timestamp -digits 9 [file join $dir global_route.sdc]
+    close [open [file join $dir done] w]
+  } err]} { puts ">>> rb: the failed global route's database was not written: $err" }
+}
+trace add execution global_route leave rb::keep_failed_global_route
+{{ @layers }}set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS
+{{ layer_adjustment }}{{ @/layers }}{{ global_route_cmd }}{{ hook_after_global_route_block }}{{ global_route_repair }}rb::global_connect
+trace remove execution global_route leave rb::keep_failed_global_route
+file delete -force [file join $OUT_DIR global_route_failed]
+{{ @detailed_route }}{{ grid_origin_guides }}{{ hook_before_detailed_route_block }}
+# Again for cells a before-detailed-route hook added.
+rb::global_connect
 puts ">>> Detail route"
 detailed_route \
     -output_drc  $OUT_DIR/route.drc.rpt \
     -output_maze $OUT_DIR/route.maze.log \
     -verbose {{ detailed_route_verbose }}
-{{ dont_use_check_block }}
+rb::global_connect
+{{ @finish }}{{ dont_use_check_block }}
 puts ">>> Fill insertion"
 filler_placement $FILL_CELLS
-{{ rcx_block }}
+rb::global_connect
+{{ rcx_block }}{{ hook_before_reports_block }}{{ supply_ports_block }}
 puts ">>> Final reports"
 {{ final_parasitics }}
 report_design_area
@@ -177,7 +214,7 @@ report_worst_slack -max
 report_worst_slack -min
 report_tns
 report_tns -min{{ corner_reports }}
-report_checks -path_delay max -fields {slew cap input nets fanout} -format full_clock_expanded > $OUT_DIR/timing.rpt
+{{ final_timing_block }}report_checks -path_delay max -fields {slew cap input nets fanout} -format full_clock_expanded > $OUT_DIR/timing.rpt
 # Max-slew, max-capacitance and max-fanout violators over every corner, as
 # ORFS report_metrics counts them; the list goes to electrical.rpt.
 foreach rb_check {slew capacitance fanout} {
@@ -189,11 +226,15 @@ if {[catch {
   report_check_types -max_slew -max_capacitance -max_fanout -violators > $OUT_DIR/electrical.rpt
 } rb_err]} { puts "rb: electrical.rpt unavailable: $rb_err" }
 
+# Again for cells a before-reports hook added.
+rb::global_connect
 puts ">>> Write outputs"
 write_def     $OUT_DIR/${DESIGN}.def
 write_verilog $OUT_DIR/${DESIGN}.routed.v
+# The powered netlist for LVS: supply ports and every instance supply pin.
+write_verilog -include_pwr_gnd $OUT_DIR/${DESIGN}.routed.pwr.v
 write_sdc     $OUT_DIR/${DESIGN}.routed.sdc
-# OpenROAD binary DB: placement, routing and parasitic annotations, so
+{{ routed_corner_sdcs }}# OpenROAD binary DB: placement, routing and parasitic annotations, so
 # downstream tools (rb power with netlist-source: pnr) can re-enter at the
 # post-route state.
 #

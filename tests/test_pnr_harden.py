@@ -51,7 +51,7 @@ def _pdk(tmp_path):
     _touch(
         pdk.get_klayout_tech(),
         pdk.get_tech_lef(),
-        pdk.get_macro_lef(),
+        pdk.get_macro_lef_paths()[0],
         *pdk.get_cell_gds_paths(),
     )
     Path(pdk.get_tech_lef()).write_text("TECH\n")
@@ -150,7 +150,9 @@ def _fake_tools(backend, monkeypatch, *, lef=True, lib=True, missing=()):
         result.stdout = ""
         result.stderr = ""
         if hasattr(_kwargs.get("stdout"), "write"):
-            _kwargs["stdout"].write("Design area 100.0 um^2 10% utilization\n")
+            _kwargs["stdout"].write(
+                "Design area 100.0 um^2 10% utilization\n>>> DONE\n"
+            )
             (artefacts / "demo_top.routed.odb").write_bytes(b"\x00odb\x00")
             (artefacts / "demo_top.def").write_text("DESIGN demo_top ;\n")
             staging.mkdir(exist_ok=True)

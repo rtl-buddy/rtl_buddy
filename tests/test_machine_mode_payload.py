@@ -471,7 +471,7 @@ def test_machine_summary_tally_without_the_filter(tmp_path, capsys):
     )
 
     stderr = capsys.readouterr().err
-    assert "row_pass" in stderr
+    assert "row_pass" not in stderr
     assert "Results: 1 PASS, 1 FAIL (2 total)" in stderr
 
 

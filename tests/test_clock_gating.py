@@ -1,6 +1,7 @@
 """Clock gating with Yosys `clockgate` before `dfflibmap` (#786)."""
 
 import logging
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,12 @@ from rtl_buddy.config.synth import (
 )
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.tools.synth_openroad import OpenRoadSynth
-from rtl_buddy.tools.synth_yosys import YosysSynth
+from rtl_buddy.tools import icg_split
+from rtl_buddy.tools.synth_yosys import (
+    YosysSynth,
+    _exec_quote,
+    warn_icg_split_skipped,
+)
 
 from test_abc_constr import _ConstrPlatform, _Root, _options, _platform_cfg
 from test_split_liberty import _ns_lib
@@ -46,6 +52,7 @@ def _synth(
     *,
     tool_opts=None,
     effort=0,
+    effort_max=0,
     overrides=None,
     icg="",
     mapped=True,
@@ -82,7 +89,9 @@ def _synth(
         effort_cfg=SynthEffortConfig(
             SynthEffortConfigFile(
                 name="e",
-                yosys=SynthEffortYosysFile(clock_gating_min_flops=effort),
+                yosys=SynthEffortYosysFile(
+                    clock_gating_min_flops=effort, clock_gating_max_flops=effort_max
+                ),
             )
         ),
     )
@@ -169,3 +178,86 @@ def test_the_keys_load_from_yaml():
 def test_a_malformed_icg_is_a_config_error(spec):
     with pytest.raises(FatalRtlBuddyError, match="clock-gating-cell"):
         _platform_cfg(f"name: p\npdk: k\nclock-gating-cell: '{spec}'\n")
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_max_flops_splits_through_an_rtlil_round_trip(tmp_path, backend):
+    synth, script, lib = _synth(tmp_path, backend, effort=8, effort_max=16)
+    lines = script.splitlines()
+    i = lines.index(f"clockgate -liberty {lib} -dont_use FILL* -min_net_size 8")
+    tmp = synth.artefact_dir + "/yosys-tmp"
+    assert lines[i + 1] == f'write_rtlil "{tmp}/clockgate.il"'
+    assert lines[i + 2].startswith("exec -expect-return 0 -- ")
+    assert lines[i + 2].endswith(
+        f'icg_split.py" "{tmp}/clockgate.il" "{tmp}/clockgate_split.il" "16"'
+    )
+    assert lines[i + 3 : i + 5] == [
+        "design -reset",
+        f'read_rtlil "{tmp}/clockgate_split.il"',
+    ]
+    assert lines[i + 5].startswith("dfflibmap ")
+    assert _options(synth, backend)["clock_gating"] == {
+        "min_flops": 8,
+        "cell": None,
+        "max_flops": 16,
+    }
+
+
+@pytest.mark.parametrize("word", ["a  b", "c#d;e", 'q"r', "s$t`u", "v\\w", "x  $HOME"])
+def test_exec_words_reach_the_shell_whole(word):
+    out = subprocess.run(
+        ["sh", "-c", f"printf '%s\\n' {_exec_quote(word)}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert out == word + "\n"
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_max_flops_without_gating_warns_and_does_nothing(tmp_path, backend, caplog):
+    with caplog.at_level(logging.WARNING):
+        synth, script, _lib = _synth(tmp_path, backend, effort_max=16)
+    assert "clockgate" not in script
+    assert "icg_split" not in script
+    [rec] = _events(caplog, "synth.clock_gating_max_ignored")
+    assert rec.rtl_fields == {"synth": synth.synth_cfg.get_name(), "max_flops": 16}
+    assert "without clock-gating-min-flops" in rec.getMessage()
+    caplog.clear()
+    _options(synth, backend)
+    assert not _events(caplog, "synth.clock_gating_max_ignored")
+
+
+def test_an_icg_left_unsplit_warns_from_the_log(caplog):
+    log_text = (
+        "icg_split: top $auto$clockgate.cc:1$2: 40 loads over 3 cells\n"
+        f"{icg_split.WARNING_PREFIX}top $auto$clockgate.cc:1$3: ICG2 has 2 output "
+        "bits, so its 40 loads are not split\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        warn_icg_split_skipped(log_text, "s", "synth.log")
+    [rec] = _events(caplog, "synth.icg_not_split")
+    assert rec.rtl_fields["detail"] == (
+        "top $auto$clockgate.cc:1$3: ICG2 has 2 output bits, so its 40 loads are not split"
+    )
+    assert "could not split an ICG" in rec.getMessage()
+
+
+def test_max_flops_below_min_flops_is_a_config_error(tmp_path):
+    with pytest.raises(FatalRtlBuddyError, match="clock-gating-max-flops"):
+        _synth(tmp_path, "yosys", effort=8, effort_max=4)
+
+
+@pytest.mark.parametrize("bad", [-1, True, "8"])
+def test_a_bad_max_flops_is_a_config_error(tmp_path, bad):
+    with pytest.raises(FatalRtlBuddyError, match="clock_gating_max_flops|clock-gating"):
+        _synth(tmp_path, "yosys", effort=8, overrides={"clock_gating_max_flops": bad})
+
+
+def test_the_max_flops_keys_load_from_yaml():
+    opts = from_yaml(SynthToolOptsFile, "clock-gating-max-flops: 16\n")
+    assert opts.clock_gating_max_flops == 16
+    effort = from_yaml(
+        SynthEffortConfigFile, "name: e\nyosys:\n  clock-gating-max-flops: 32\n"
+    )
+    assert SynthEffortConfig(effort).get_yosys_clock_gating_max_flops() == 32

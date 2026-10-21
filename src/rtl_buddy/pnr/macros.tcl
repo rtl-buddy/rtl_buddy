@@ -1,8 +1,8 @@
 # Per-macro placement directives for the `rb pnr` OpenROAD flow
-# (`floorplan.macros`).
+# (`floorplan.macros` and `floorplan.macros-file`).
 #
 # Substituted into pnr.tcl at the start of the macro placement stage, only when
-# the run sets `floorplan.macros`. `rb::macros::apply` orients the macros,
+# the run has macro directives. `rb::macros::apply` orients the macros,
 # records their cell halos, and fixes the ones with a location before the
 # packer or RTL-MP runs. Both leave a fixed macro where it is; the packer also
 # keeps the others a macro halo away from it.
@@ -72,13 +72,17 @@ proc rb::macros::match {block where pattern} {
 # in `macros` still to be placed, those without a location.
 #
 # A macro matched by several entries takes each key from the one entry that
-# sets it; two entries setting the same key on one macro is an error. A located
-# macro is snapped to the site grid from the core's lower-left corner (`grid`
-# is {site_width row_height} in DBU), must lie inside the core and clear of
-# every other fixed macro, and is LOCKED. Its box grown by `halo_dbu` (the
-# macro halo) is appended to the global MACRO_KEEPOUTS for the packer; its
-# cell halo goes into the global MACRO_CELL_HALOS.
-proc rb::macros::apply {block macros entries grid halo_dbu dbu_per_micron} {
+# sets it; two entries setting the same key on one macro is an error. Every
+# orientation is applied before any location, so `location` is the lower-left
+# corner of the oriented macro whichever entry orients it. A located macro is
+# snapped to the site grid from the core's lower-left corner (`grid` is
+# {site_width row_height} in DBU) unless `snap` is 0, must lie inside the core
+# and clear of every other fixed macro, and is LOCKED. Its box grown by
+# `halo_dbu` (the macro halo) is appended to the global MACRO_KEEPOUTS for the
+# packer; its cell halo goes into the global MACRO_CELL_HALOS. Each fixed macro
+# is reported on a `RB-FLOORPLAN-MACRO: x y orientation name` line in DBU,
+# which rb compares with the routed DEF.
+proc rb::macros::apply {block macros entries grid halo_dbu dbu_per_micron {snap 1}} {
     upvar #0 MACRO_CELL_HALOS cell_halos MACRO_KEEPOUTS keepouts
     if {![info exists keepouts]} {
         set keepouts {}
@@ -87,8 +91,12 @@ proc rb::macros::apply {block macros entries grid halo_dbu dbu_per_micron} {
     set core_box [list [$core xMin] [$core yMin] [$core xMax] [$core yMax]]
     lassign $core_box cx0 cy0 cx1 cy1
     lassign $grid grid_x grid_y
+    if {!$snap} {
+        set grid_x 1
+        set grid_y 1
+    }
     set owner [dict create]
-    set fixed {}
+    set located {}
     foreach entry $entries {
         lassign $entry where pattern location orientation halo
         set insts [match $block $where $pattern]
@@ -113,10 +121,16 @@ proc rb::macros::apply {block macros entries grid halo_dbu dbu_per_micron} {
                 dict set cell_halos $name $halo
             }
         }
-        if {$location eq ""} {
-            continue
+        if {$location ne ""} {
+            lappend located [list $where [lindex $insts 0] $location]
         }
-        set inst [lindex $insts 0]
+    }
+    if {[llength $located] > 0} {
+        puts "RB-FLOORPLAN-DBU: $dbu_per_micron"
+    }
+    set fixed {}
+    foreach entry $located {
+        lassign $entry where inst location
         set name [$inst getName]
         lassign $location x_um y_um
         set bbox [$inst getBBox]
@@ -144,9 +158,11 @@ proc rb::macros::apply {block macros entries grid halo_dbu dbu_per_micron} {
         lappend keepouts [list \
             [expr {$x - $halo_dbu}] [expr {$y - $halo_dbu}] \
             [expr {$x + $width + $halo_dbu}] [expr {$y + $height + $halo_dbu}]]
+        set placed [$inst getBBox]
         puts [format ">>>   %s: fixed %s at (%s, %s) um %s (requested (%s, %s))" \
-            $where $name [um $x $dbu_per_micron] [um $y $dbu_per_micron] \
+            $where $name [um [$placed xMin] $dbu_per_micron] [um [$placed yMin] $dbu_per_micron] \
             [$inst getOrient] $x_um $y_um]
+        puts "RB-FLOORPLAN-MACRO: [$placed xMin] [$placed yMin] [$inst getOrient] $name"
     }
     set movable {}
     foreach inst $macros {

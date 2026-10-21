@@ -1,23 +1,33 @@
 """Hardened-block abstracts: the outputs of a P&R run with `harden: true`, and their use by `blocks:`.
 
-A hardened run publishes `<artefact-dir>/abstract/` holding `<top>.lef`, `<top>.lib`, `<top>.gds` and `abstract.manifest.json`. The directory is published all at once, by renaming a staging directory, so a parent never reads a mix of fresh and stale views. The manifest records `{path, size, sha256}` for the inputs, outputs and configuration the abstract was built from, with project-relative paths.
+A hardened run publishes `<artefact-dir>/abstract/` holding `<top>.lef`, `<top>.lib`, `<top>.gds` (left out with `abstract: {gds: false}`) and `abstract.manifest.json`. The directory is published all at once, by renaming a staging directory, so a parent never reads a mix of fresh and stale views. The manifest records `{path, size, sha256}` for the inputs, outputs and configuration the abstract was built from, with project-relative paths.
 """
 
 import hashlib
 import json
 import os
 import shutil
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
+from enum import Enum
 from importlib.metadata import version
 from pathlib import Path
 
 from ..config.blocks import BlockRef
 from ..config.pdk import (
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
+    DEFAULT_ROTATED_MACRO_FOOTPRINT,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
+    MacroPinLimitsFile,
 )
-from ..config.pnr import ABSTRACT_BLOAT_OCCUPIED, MacroPlacement, PnrAbstract
+from ..config.pnr_repair import GlobalRouteRepair
+from ..config.pnr_signoff import effective_gates
+from ..config.pnr import (
+    ABSTRACT_BLOAT_OCCUPIED,
+    BlockageLifetime,
+    MacroPlacement,
+    PnrAbstract,
+)
 from .artifact_paths import project_relative, project_root_or_none
 
 ABSTRACT_DIR_NAME = "abstract"
@@ -250,6 +260,52 @@ def _pdn_config(pdn) -> dict:
     }
 
 
+def _repair_digest(platform) -> dict:
+    """The timing repairs after global and detailed route, each emitted only when set so existing digests do not change.
+
+    A hold-only global-route repair with no margin is what `global-route-hold-repair: true` always ran, so it keeps that key.
+    """
+    digest = {}
+    gr = platform.get_global_route_repair()
+    if gr == GlobalRouteRepair(hold_margin=0.0):
+        digest["global_route_hold_repair"] = True
+    elif gr is not None:
+        digest["global_route_repair"] = _jsonable(asdict(gr))
+    pr = platform.get_post_route_repair()
+    if pr is not None:
+        digest["post_route_repair"] = _jsonable(asdict(pr))
+    for block in digest.values():
+        design = block.get("repair_design") if isinstance(block, dict) else None
+        if design:
+            # Emitted only when set so existing digests do not change.
+            if design["wire_rc"] is None:
+                del design["wire_rc"]
+            else:
+                design["wire_rc"] = {
+                    k: v for k, v in design["wire_rc"].items() if v is not None
+                }
+            if not design["after_timing"]:
+                del design["after_timing"]
+    post_route = digest.get("post_route_repair")
+    if post_route is not None:
+        electrical = post_route.pop("electrical_repair")
+        if electrical is not None:
+            post_route["electrical_repair"] = {
+                "slew_margin": electrical["slew_margin"],
+                "cap_margin": electrical["cap_margin"],
+            }
+    return digest
+
+
+def _jsonable(value):
+    """`value` with every enum as its string, for a digest."""
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, Enum):
+        return value.value
+    return value
+
+
 def abstract_config(pnr_cfg, platform) -> dict:
     """Return the configuration a hardened result depends on, with project-relative paths.
 
@@ -260,15 +316,30 @@ def abstract_config(pnr_cfg, platform) -> dict:
     def _rel(path):
         return project_relative(path, root) if root and path else path
 
+    # A one-corner mapping means its one SDC, as a plain path does.
+    constraints = pnr_cfg.get_constraints()
+    if isinstance(constraints, dict):
+        constraints = (
+            _rel(next(iter(constraints.values())))
+            if len(constraints) == 1
+            else {c: _rel(p) for c, p in constraints.items()}
+        )
+    else:
+        constraints = _rel(constraints)
     fp = pnr_cfg.get_floorplan()
-    hooks = dict(platform.get_pdk().get_tcl_hooks())
+    platform = platform.with_run_placement(pnr_cfg.get_placement(), pnr_cfg.get_name())
+    platform = platform.with_run_repairs(
+        pnr_cfg.global_route_repair, pnr_cfg.post_route_repair, pnr_cfg.get_name()
+    )
+    platform = platform.with_run_overrides(pnr_cfg.get_overrides())
+    hooks = platform.get_tcl_hooks()
     return {
         "platform": pnr_cfg.get_platform(),
         "synth": {
             "name": pnr_cfg.get_synth_name(),
             "path": _rel(pnr_cfg.get_synth_suite_path()),
         },
-        "constraints": _rel(pnr_cfg.get_constraints()),
+        "constraints": constraints,
         "pin_constraints": _rel(pnr_cfg.pin_constraints),
         # Emitted only when set so existing digests do not change.
         **(
@@ -294,6 +365,12 @@ def abstract_config(pnr_cfg, platform) -> dict:
                     "rect": list(b.rect),
                     "type": str(b.type),
                     "max_density": b.max_density,
+                    # Emitted only when non-default so existing digests do not change.
+                    **(
+                        {"lifetime": str(b.lifetime)}
+                        if b.lifetime is not BlockageLifetime.FLOW
+                        else {}
+                    ),
                 }
                 for b in fp.blockages
             ],
@@ -305,6 +382,12 @@ def abstract_config(pnr_cfg, platform) -> dict:
             ),
             **({"pins": [_pin_config(p) for p in fp.pins]} if fp.pins else {}),
             **({"macros": [_macro_config(m) for m in fp.macros]} if fp.macros else {}),
+            # Planner files by path; their contents are fingerprinted as inputs.
+            **({"macros_file": _rel(fp.macros_file)} if fp.macros_file else {}),
+            **({"macro_snap": False} if not fp.macro_snap else {}),
+            **({"pins_file": _rel(fp.pins_file)} if fp.pins_file else {}),
+            **({"pin_snap": False} if not fp.pin_snap else {}),
+            **({"pins_complete": True} if fp.pins_complete else {}),
             **(
                 {"die_area": list(fp.die_area), "core_area": list(fp.core_area)}
                 if fp.die_area is not None
@@ -348,6 +431,35 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 if platform.get_placement_routability_use_grt() is True
                 else {}
             ),
+            **(
+                {"timing_driven": True}
+                if platform.get_placement_timing_driven() is True
+                else {}
+            ),
+            **(
+                {
+                    "rotated_macro_footprint": str(
+                        platform.get_placement_rotated_macro_footprint()
+                    )
+                }
+                if platform.get_placement_rotated_macro_footprint()
+                != DEFAULT_ROTATED_MACRO_FOOTPRINT
+                else {}
+            ),
+            **(
+                {
+                    "macro_pin_limits": {
+                        "buffers": list(macro_pin_limits.buffers),
+                        "margin": macro_pin_limits.margin,
+                        "capacitance_margin": macro_pin_limits.capacitance_margin,
+                    }
+                }
+                if isinstance(
+                    macro_pin_limits := platform.get_placement_macro_pin_limits(),
+                    MacroPinLimitsFile,
+                )
+                else {}
+            ),
         },
         "routing": {
             "signal_layers": platform.get_signal_layers(),
@@ -358,6 +470,11 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 if isinstance(platform.get_routing_layer_adjustment(), float)
                 else {}
             ),
+            **(
+                {"global_route": digest}
+                if (digest := platform.get_global_route().digest())
+                else {}
+            ),
         },
         "cts_buffers": list(platform.get_cts_buffers()),
         "dont_use_cells": list(platform.get_dont_use_cells()),
@@ -366,9 +483,35 @@ def abstract_config(pnr_cfg, platform) -> dict:
             if platform.get_post_cts_setup_repair() is True
             else {}
         ),
+        **_repair_digest(platform),
+        # Emitted only when set so existing digests do not change: the corners the post-route rounds judge each side at decide the round kept. `fail_on` is the effective gates, so equivalent configs share a digest.
         **(
-            {"global_route_hold_repair": True}
-            if platform.get_global_route_hold_repair() is True
+            {
+                "signoff": {
+                    "setup_corners": list(signoff.setup_corners),
+                    "hold_corners": list(signoff.hold_corners),
+                    "fail_on": list(
+                        effective_gates(signoff, pnr_cfg.get_fail_on_electrical())
+                    ),
+                }
+            }
+            if (signoff := platform.get_signoff()) is not None
+            else {}
+        ),
+        # The CTS knobs below are emitted only when set so existing digests do not change.
+        **(
+            {"cts_clock_nets": list(platform.get_cts_clock_nets())}
+            if platform.get_cts_clock_nets()
+            else {}
+        ),
+        **(
+            {"cts_latency_balancing": False}
+            if platform.get_cts_latency_balancing() is False
+            else {}
+        ),
+        **(
+            {"cts_repair_clock_nets": True}
+            if platform.get_cts_repair_clock_nets() is True
             else {}
         ),
         **(
@@ -376,6 +519,13 @@ def abstract_config(pnr_cfg, platform) -> dict:
             if isinstance(platform.get_cts_apply_ndr(), str)
             else {}
         ),
+        # The threshold-voltage keys, likewise only when set.
+        **(
+            {"cts_dont_use_cells": cts_dont_use}
+            if (cts_dont_use := list(platform.get_cts_dont_use_cells()))
+            else {}
+        ),
+        **({"keep_sizing_vt": True} if platform.get_keep_sizing_vt() is True else {}),
         **(
             {"max_fanout": platform.get_max_fanout()}
             if isinstance(platform.get_max_fanout(), int)
@@ -389,8 +539,20 @@ def abstract_config(pnr_cfg, platform) -> dict:
             if pnr_cfg.get_buffer_ports() and platform.get_port_buffer()
             else {}
         ),
-        # Emitted only when a PDK Tcl hook is set so existing digests do not change.
+        # Emitted only when a Tcl hook is set so existing digests do not change; `tapcell-tcl` is the run's, the platform's or the PDK's.
         **({"tcl_hooks": {k: _rel(v) for k, v in hooks.items()}} if hooks else {}),
+        # Emitted only when a run hook is set so existing digests do not change.
+        **(
+            {"hooks": {k: [_rel(p) for p in v] for k, v in pnr_cfg.get_hooks().items()}}
+            if pnr_cfg.get_hooks()
+            else {}
+        ),
+        # Emitted only when `inputs:` is set so existing digests do not change.
+        **(
+            {"inputs": [_rel(p) for p in pnr_cfg.get_inputs()]}
+            if pnr_cfg.get_inputs()
+            else {}
+        ),
         # Emitted only when non-default so existing digests do not change; a change regenerates.
         **(
             {
@@ -399,6 +561,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
                     "feedthrough_layers": list(
                         pnr_cfg.get_abstract().feedthrough_layers
                     ),
+                    **({"gds": False} if not pnr_cfg.get_abstract().gds else {}),
                 }
             }
             if not pnr_cfg.get_abstract().is_default()
@@ -425,10 +588,11 @@ def write_manifest(
     technology: dict,
     inputs: dict,
     config: dict,
+    gds: bool = True,
 ) -> str:
     """Write `abstract.manifest.json` into the staging directory and return its path.
 
-    `inputs` maps a role to an absolute path, a list of paths, or None. `technology` names the technology LEF and corner Liberty a parent must share; it is fingerprinted the same way. Output paths are recorded at their published location, not the staging one.
+    `inputs` maps a role to an absolute path, a list of paths, or None. `technology` names the technology LEF and corner Liberty a parent must share; it is fingerprinted the same way. Output paths are recorded at their published location, not the staging one. Without `gds` the GDS output is recorded as null.
     """
     root = project_root_or_none(artefact_dir)
     published = abstract_dir(artefact_dir)
@@ -444,6 +608,9 @@ def write_manifest(
         v for v in OPTIONAL_VIEWS if os.path.isfile(view_path(staging, design, v))
     ]
     for view in (*ABSTRACT_VIEWS, *optional):
+        if view == "gds" and not gds:
+            outputs[view] = None
+            continue
         record = file_fingerprint(view_path(staging, design, view), root) or {}
         record["path"] = (
             project_relative(view_path(published, design, view), root)
@@ -494,7 +661,8 @@ class ResolvedBlock:
     manifest: dict
     lef: str
     lib: str
-    gds: str
+    #: None when the block was hardened with `abstract: {gds: false}`.
+    gds: str | None
     run_cfg: object = None
     changes: tuple[str, ...] = ()
 
@@ -534,6 +702,12 @@ def read_manifest(directory: str) -> dict | None:
     return data
 
 
+def has_gds(manifest: dict) -> bool:
+    """Whether an abstract has a GDS: one hardened with `abstract: {gds: false}` records its GDS output as null."""
+    outputs = manifest.get("outputs") or {}
+    return not ("gds" in outputs and outputs["gds"] is None)
+
+
 def resolve_block(ref: BlockRef) -> ResolvedBlock:
     """Resolve one `blocks:` entry to its published abstract, or raise BlockResolutionError.
 
@@ -571,7 +745,11 @@ def resolve_block(ref: BlockRef) -> ResolvedBlock:
             f"{where}: the abstract is of module {manifest.get('block')!r}, "
             f"not {ref.name!r}"
         )
-    views = {view: view_path(directory, ref.name, view) for view in ABSTRACT_VIEWS}
+    views = {
+        view: view_path(directory, ref.name, view)
+        for view in ABSTRACT_VIEWS
+        if view != "gds" or has_gds(manifest)
+    }
     missing = [os.path.basename(p) for p in views.values() if not os.path.isfile(p)]
     if missing:
         raise BlockResolutionError(
@@ -584,7 +762,7 @@ def resolve_block(ref: BlockRef) -> ResolvedBlock:
         manifest=manifest,
         lef=views["lef"],
         lib=views["lib"],
-        gds=views["gds"],
+        gds=views.get("gds"),
         run_cfg=run_cfg,
     )
 

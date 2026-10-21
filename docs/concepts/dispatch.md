@@ -26,6 +26,7 @@ rb test --filter '^smoke_' --dispatch slurm
 - `rb test` takes the same name list or regex filter locally and under dispatch. See [Run tests](tests.md#run-tests).
 - Dispatch cannot be combined with `--early-stop`.
 - Dispatch implies [`--share-build`](tests.md#sharing-compiled-builds-across-tests).
+- `rb pnr --dispatch slurm` runs each stage of a P&R run as a chained job, sized by the run's `resources:` over `cfg-dispatch.resources`. See [Dispatch the stages to Slurm](pnr.md#dispatch-the-stages-to-slurm).
 
 ## Run on one host
 
@@ -54,7 +55,9 @@ Before using `--dispatch slurm`, provide:
 
 For each suite, dispatch submits one build job that compiles each distinct build once, then groups simulations with identical resolved resources into Slurm arrays that start after the build succeeds. Where [verilation is split off](#split-verilation-from-the-c-build), the build is two chained jobs. Results come back into the normal summary and exit status.
 
-A compile or verilate failure fails the tests that use that build, with the compiler's exit status and error lines; unrelated builds continue, and the build job still exits 0 so its dependents run. A failed build is compiled once: the other tests on that build whose inputs are identical take its exit status, and their `compile.log` carries its transcript. A failure that may be transient is not shared, and each of those tests compiles for itself: one that waited for a license seat, or whose transcript ends in an out-of-memory signature (`Killed signal terminated program`, `virtual memory exhausted`, `out of memory`, `Cannot allocate memory`, make's `Error 137`). Each test reads the build's most recent failed compile: after a transient failure the next test compiles again, and once a compile fails for another reason the remaining tests take that compile's exit status and transcript. A transient failure never replaces a non-transient one already recorded, so a test whose inputs differ and whose compile then runs out of memory does not send the remaining tests back to compiling. A job that produces no result (scheduler kill, node failure, dependency failure) is reported as a failed test, never dropped.
+A compile or verilate failure fails its tests with the compiler's exit status and error lines. Unrelated builds continue; the build job exits 0 so dependent jobs can report results. Tests with identical inputs reuse the latest failed compile's status and transcript in `compile.log`.
+
+License waits and out-of-memory failures are treated as transient, so the next test recompiles. Recognized memory signatures include `Killed signal terminated program`, `virtual memory exhausted`, `out of memory`, `Cannot allocate memory`, and make's `Error 137`. A transient failure cannot replace a recorded non-transient failure, including when a test with different inputs attempts compilation. A job that returns no result (scheduler kill, node failure, dependency failure) counts as failed.
 
 `max-jobs-per-array` throttles each array, so total concurrency can approach the throttle times the number of arrays (or slices, for [large groups](#split-large-groups-into-several-arrays)).
 
@@ -101,7 +104,9 @@ Quote every `time` value; an unquoted `4:00:00` is rejected.
 
 ## Run the coverage tail as a job
 
-Under `--dispatch slurm`, the coverage tail of `rb test`, `rb randtest` and `rb regression` runs as one job instead of on the submit host: the raw merge, the `coverage-model.json` build, the LCOV exports and the manifest. It is submitted once every simulation is collected, the head waits on it like the fleet (`max-wait` applies), then reads back the summary lines and machine payload. Nothing is submitted when no test recorded coverage. A manifest-only tail (`--coverage-model none` with no merge, LCOV, HTML, Coverview, directory or source summary requested) also runs in the head, since a job would only add a queue wait. Without dispatch and under `local-parallel` the tail runs in the head as before.
+Under Slurm, `test`, `randtest`, and `regression` submit one coverage job after collecting all simulations. It merges raw coverage, builds `coverage-model.json`, exports LCOV, and writes the manifest. The head waits under `max-wait`, then reads its summary and machine payload.
+
+No job is submitted without recorded coverage. A manifest-only tail (`--coverage-model none` without merge, LCOV, HTML, Coverview, directory or source summaries) runs in the head, as do tails without Slurm dispatch.
 
 Size it with `cfg-dispatch.coverage`, which inherits `cfg-dispatch.resources` field by field and takes a `modes:` block. The tail only exists under a coverage build, so `modes.cov` is the usual place:
 
@@ -113,7 +118,7 @@ cfg-dispatch:
       cov: {mem: 8G}
 ```
 
-The raw merge runs as many `verilator_coverage --write` processes at once as the job has `cpus`, fewer when `mem` is set and would not fit them at about eight times the largest raw database each (see [Merge and export results](coverage.md#merge-and-export-results)). With the default single CPU it is one merge, as before.
+The raw merge runs up to `cpus` concurrent `verilator_coverage --write` processes, limited by `mem` at about eight times the largest raw database per process. The default is one. See [Merge and export results](coverage.md#merge-and-export-results).
 
 The job writes `cov_dir/` under the head's command root, logs to `.dispatch/coverage/` under the artefact root, and is named `rb:coverage`. If it fails, see [Read a failed merge](coverage.md#read-a-failed-merge).
 
@@ -341,17 +346,24 @@ Logs are separated by process:
 
 ## Apply reservation advice
 
-After a Slurm run, rtl_buddy compares reservations with `sacct` usage and prints a Reservation Advice table. Machine output returns the findings in `payload.reservation_advice`. rtl_buddy never edits configuration. Turn the report off with `rightsize: {report: false}`. Without `sacct` accounting there is no advice.
+After a Slurm run, rtl_buddy compares reservations with `sacct` usage and reports suggested edits. It never changes configuration. Disable advice with `rightsize: {report: false}`; it requires accounting data. Query `sacct` without `-X` for step rows.
 
-Advice is per test, from the peak across runs in this invocation:
+Advice uses each test's peak across this invocation:
 
-- Utilization below `over-threshold` suggests a reduction. A lower value reports fewer tests: `0.3` lists only tests that used under a third of what they asked for.
-- Utilization above `near-limit`, a `TIMEOUT`, or an `OUT_OF_MEMORY` suggests an increase. These are listed first because under-reservation costs failed work.
-- Suggestions are peak times `margin`, with floors of 5 minutes and 128 MiB.
-- Time advice is given for Verilator only, because VCS license waits distort elapsed time. Memory advice is skipped for runs shorter than the accounting sample interval, except after an out-of-memory kill.
-- `phase` is `sim`, `compile+sim`, `compile`, or `verilate`, and `edit_hint` names the field that controlled the allocation.
+- Below `over-threshold`, reduce the reservation. Lower the threshold to report fewer reductions.
+- Above `near-limit`, or after `TIMEOUT` or `OUT_OF_MEMORY`, raise it. Increases appear first because under-reservation fails work.
+- Suggestions are peak times `margin`, floored at 5 minutes and 128 MiB.
+- Simulation time advice requires Verilator; VCS license waits distort elapsed time. Memory advice needs a run longer than the accounting interval, except after an OOM kill.
 
-Do not use a smoke run to shrink a nightly reservation. Apply the `edit_hint`, rerun, and confirm the finding clears. Query `sacct` without `-X` to see step rows.
+Apply the explicit `edit_hint`, rerun, and confirm the finding clears. Use representative levels and seeds; a smoke run cannot size a nightly reservation.
+
+Machine output always includes all findings in `payload.reservation_advice`:
+
+- `edit_hint.file` is absolute; `edit_hint.path` names the controlling YAML field. Environment overrides use `path: env` without a file. Never derive the target from a test name: inheritance and modes can point elsewhere.
+- `phase` is `sim`, `compile+sim`, `compile`, or `verilate`.
+- Inapplicable `reg_level`, `allocated`, `suggested_total`, and `aggregate_delta` are omitted; treat absence as null. Regression levels are per finding; build jobs have no simulation-level filter. Findings have no `event` field.
+
+A nonempty list logs one INFO `rightsize.summary` with `total` and direction `counts` (`raise`, `reduce`). Individual `rightsize.advice` events require `--debug`.
 
 ## Read advice for the build and verilate jobs
 
@@ -360,7 +372,7 @@ The build job gets a row named `(build job)` with `phase: compile`, and a split 
 - The `cpus` suggestion appears only when the job ran one build at a time. With `compile.parallel` above 1, size `parallel` first, then read `cpus` from a `parallel: 1` run.
 - A `reduce` is withheld when every build was reused, when the head has no per-build records, or when the job ended within one accounting interval. `rightsize.build_advice_withheld` records why. `raise` advice is unaffected.
 - When the value is a sum of several builds, or a figure that two builds or the whole-job floor produce equally, no single entry can lower it, so `reduce` is withheld. A `raise` names the contributing testbench and translates the total into that entry's own new value.
-- `edit_hint` names the file holding the winning value: `compile.<field>` in the suite's `tests.yaml` when the suite set it, otherwise `cfg-dispatch.compile.<field>` in `root_config.yaml`. Verilate paths add `.verilate`.
+- `edit_hint` identifies the winning testbench, suite, or root compile field, including its mode and `.verilate` layer where applicable.
 
 ## Judge cpu advice against requested cpus
 
@@ -399,7 +411,7 @@ A test whose retries ran under different cpu requests gets no `cpus` row (`right
 
 ## Troubleshoot reservations, arrays, and waits
 
-- **`config.unknown_key`:** a reservation or `cfg-dispatch` key was misspelt and ignored, so the job gets the inherited value. Rename it to the suggested key. See [Parallel dispatch](../reference/yaml.md#parallel-dispatch).
+- **`config.unknown_key_rejected`:** an unknown reservation or `cfg-dispatch` key stops configuration loading with exit code 2. Rename it to the suggested key or remove it. See [Parallel dispatch](../reference/yaml.md#parallel-dispatch).
 - **`dispatch.reservations_ignored`:** `local-parallel` does not enforce `cpus`, `mem`, or `time`. Lower `--jobs` if memory runs out.
 - **`OUT_OF_MEMORY` (Slurm) or `Killed` / exit 137 (local):** raise the field named by `reservation_advice[*].edit_hint`, not `sim_timeout`. Elaboration of large generated structures can be the memory peak.
 - **sbatch refuses an array:** set `cfg-dispatch.max-array-size` or `max-array-tasks`. `dispatch.max_array_size_unknown` (INFO) means no limit could be read.
