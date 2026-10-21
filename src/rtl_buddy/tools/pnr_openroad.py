@@ -2870,7 +2870,7 @@ class OpenRoadPnr:
             fp,
             platform.get_placement_rotated_macro_footprint(),
             self.pnr_cfg.get_hooks(),
-            checkpoints=self._ckpt_run_dir is not None and not self._staged,
+            checkpoints=self._arms_checkpoints() and not self._staged,
         )
         # With `rcx-rules`, extract after fill and time the final reports on the SPEF; otherwise they use the global-route estimate.
         rcx_rules = pdk.get_rcx_rules()
@@ -2894,7 +2894,7 @@ class OpenRoadPnr:
         final_timing = (
             "rb::ckpt::timing_event finish stage_end "
             f"{'extracted' if rcx_rules else 'global_route'}\n"
-            if self._ckpt_run_dir is not None
+            if self._arms_checkpoints()
             else ""
         )
 
@@ -3051,7 +3051,7 @@ class OpenRoadPnr:
                 self._ps_per_unit,
                 gp_blocks.dpl_options,
                 platform.get_global_route(),
-                timing=self._ckpt_run_dir is not None,
+                timing=self._arms_checkpoints(),
             ),
             "gp_blockages_create": gp_blocks.create,
             "gp_blockages_destroy": gp_blocks.destroy,
@@ -3082,25 +3082,37 @@ class OpenRoadPnr:
             "fill_cells": fill_cells,
             "out_dir": self.artefact_dir,
             "extra_libs_lefs": extra_libs_lefs,
-            # A run that continues in sessions after detailed route stops there, with the state the next session reads.
-            "checkpoint_block": (
-                pnr_checkpoints.render_tcl_block(
-                    self._ckpt_run_dir,
-                    self.pnr_cfg.get_checkpoints() or (),
-                    order=self._stages,
-                    stop_after="detailed_route" if self._split else self.stop_after,
-                    state=pnr_checkpoints.SESSION_STATE if self._split else (),
-                    corners=self._timing_corners,
-                    scenes=multi_corner,
-                    modes=self._mode_corners,
-                )
-                if self._ckpt_run_dir is not None and not self._staged
-                else ""
-            ),
         }
         self._flow = pnr_stages.FlowTemplate(self._load_template())
         self._substitutions = substitutions
         self._gp_blocks = gp_blocks
+
+    def _arms_checkpoints(self) -> bool:
+        """Whether the run writes checkpoints, and so whether its scripts call the `rb::ckpt` procs.
+
+        Decided by the config and options alone, never by the checkpoint run directory, which is allocated after a `--resume` check renders the scripts it compares.
+        """
+        return (
+            self.pnr_cfg.get_checkpoints() is not None
+            or self._staged
+            or self.stop_after is not None
+            or self._split
+        )
+
+    def _unbroken_checkpoint_block(self) -> str:
+        """A one-session run's checkpoint block, bound to its checkpoint run directory, or "" when it writes no checkpoints. A run that continues in sessions after detailed route stops there, with the state the next session reads."""
+        if not self._arms_checkpoints():
+            return ""
+        return pnr_checkpoints.render_tcl_block(
+            self._ckpt_run_dir,
+            self.pnr_cfg.get_checkpoints() or (),
+            order=self._stages,
+            stop_after="detailed_route" if self._split else self.stop_after,
+            state=pnr_checkpoints.SESSION_STATE if self._split else (),
+            corners=self._timing_corners,
+            scenes=bool(self._corners),
+            modes=self._mode_corners,
+        )
 
     def _render(self, text: str, substitutions: dict) -> str:
         for key, value in substitutions.items():
@@ -3114,7 +3126,7 @@ class OpenRoadPnr:
 
     def _unbroken_marker(self, marker: str) -> str:
         """A one-session run's text for a template marker: nothing, except that with checkpoints armed the global-route stage ends after any global-route repair, before the `before-detailed-route` hooks, and `place` is timed before the clocks are propagated, as a staged `place` session and its report time it (its checkpoint is written on entering clock-tree synthesis)."""
-        if self._ckpt_run_dir is None:
+        if not self._arms_checkpoints():
             return ""
         if marker == "cts":
             return "rb::ckpt::stage_timing place stage_end\n"
@@ -3573,11 +3585,13 @@ class OpenRoadPnr:
                     + f"\nrb::ckpt::stage_end {stop} stop\n"
                     + _stage_report_tcl(stop, self._substitutions["corner_reports"])
                 )
+            substitutions = {
+                **self._substitutions,
+                "checkpoint_block": self._unbroken_checkpoint_block(),
+            }
             text = self._render(
                 text,
-                _with_hook_tracer(self._substitutions)
-                if self._split
-                else self._substitutions,
+                _with_hook_tracer(substitutions) if self._split else substitutions,
             )
             records = [self._write_stage_scripts(s) for s in self._session_stages()]
             if records:
@@ -6371,12 +6385,7 @@ class OpenRoadPnr:
             netlist_failure = self._prepare_netlist()
             if netlist_failure is not None:
                 return netlist_failure
-        if (
-            self.pnr_cfg.get_checkpoints() is not None
-            or self._staged
-            or self.stop_after is not None
-            or self._split
-        ):
+        if self._arms_checkpoints():
             try:
                 self._ckpt_run_dir = pnr_checkpoints.allocate_run_dir(self.artefact_dir)
             except (OSError, RuntimeError) as e:

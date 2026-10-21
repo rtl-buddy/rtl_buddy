@@ -77,6 +77,8 @@ def _platform(tmp_path, pdk_placement=None, placement=None, **overrides):
 def _render(
     tmp_path, fp: PnrFloorplan, platform=None, *, checkpoints=False, **overrides
 ) -> str:
+    if checkpoints:
+        overrides["checkpoints"] = ()
     pnr_cfg = _make_pnr_cfg(tmp_path, floorplan=fp, **overrides)
     synth = MagicMock()
     synth.get_top.return_value = "demo_top"

@@ -115,6 +115,8 @@ def _render(tmp_path, platform, *, mode=PnrMode.CLOSURE, hooks=None) -> str:
     )
     backend = OpenRoadPnr("demo/openroad", pnr_cfg, str(tmp_path), MagicMock())
     backend._ps_per_unit = 1.0
+    if backend.stop_after is not None:
+        backend._ckpt_run_dir = str(tmp_path / "ck" / "run")
     return Path(backend._write_script(platform, pnr_cfg.get_floorplan())).read_text()
 
 

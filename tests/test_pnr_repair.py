@@ -337,13 +337,15 @@ def test_stages_refuse_a_partial_checkpoint_list(tmp_path):
 
 
 def _render(tmp_path, platform, *, ps_per_unit=1.0, **overrides) -> str:
-    """The one-session `pnr.tcl` `platform` and the run's `overrides` render."""
+    """The one-session `pnr.tcl` `platform` and the run's `overrides` render, with checkpoints armed (`checkpoints: []`)."""
     pnr_cfg = replace(_pnr_cfg(tmp_path, ()), **overrides)
     pnr_cfg.resolve_synth_cfg = MagicMock(
         return_value=MagicMock(get_top=lambda: "demo_top", get_name=lambda: "s")
     )
     backend = OpenRoadPnr("demo/openroad", pnr_cfg, str(tmp_path), MagicMock())
     backend._ps_per_unit = ps_per_unit
+    backend._ckpt_run_dir = str(tmp_path / "ck" / "run")
+    os.makedirs(backend._ckpt_run_dir, exist_ok=True)
     return Path(backend._write_script(platform, pnr_cfg.get_floorplan())).read_text()
 
 
@@ -464,7 +466,8 @@ def test_global_route_repair_passes_margins_in_the_liberty_unit(
     )
     text = _render(tmp_path, platform, ps_per_unit=ps_per_unit)
     assert (
-        _GLOBAL_ROUTE_CMD + 'puts ">>> Global-route repair (reroute incremental)"\n'
+        _GLOBAL_ROUTE_CMD + "rb::ckpt::stage_timing global_route before_repair\n"
+        'puts ">>> Global-route repair (reroute incremental)"\n'
         "estimate_parasitics -global_routing\n"
         'puts ">>> Global-route repair: repair_design -slew_margin 20 '
         '-max_wire_length 500"\n'
@@ -723,11 +726,15 @@ def _rcx_pdk(tmp_path, corners=None) -> PdkConfig:
     )
 
 
-def _with_repair(backend, tmp_path, *, post_route=None, rcx=True, corners=None) -> None:
-    """Give a stub-harness backend a platform whose `post-route-repair` is `post_route`, and the round stubs. `corners` makes it a multi-corner platform."""
+def _with_repair(
+    backend, tmp_path, *, post_route=None, rcx=True, corners=None, platform=None
+) -> None:
+    """Give a stub-harness backend a platform whose `post-route-repair` is `post_route`, and the round stubs. `corners` makes it a multi-corner platform; `platform` holds further platform fields."""
     pdk_corners = {c: "pdk/lib/typ.lib" for c in corners} if corners else None
     pdk = _rcx_pdk(tmp_path, pdk_corners) if rcx else _pdk(tmp_path)
-    extra = {"post_route_repair": post_route} if post_route is not None else {}
+    extra = dict(platform or {})
+    if post_route is not None:
+        extra["post_route_repair"] = post_route
     if corners:
         extra["sta_corners"] = list(corners)
     backend.root_cfg.get_pnr_platform_cfg.return_value = _platform(pdk, **extra)
@@ -749,16 +756,24 @@ def _repair_backend(
     env=None,
     corners=None,
     gate=False,
+    platform=None,
     **options,
 ):
-    """A stub-harness backend whose platform sets `post_route` as its `post-route-repair`; `gate` sets `fail-on-electrical`."""
+    """A stub-harness backend whose platform sets `post_route` as its `post-route-repair` and the fields in `platform`; `gate` sets `fail-on-electrical`."""
     pnr_cfg = replace(
         _pnr_cfg(tmp_path, stages=stages), mode=mode, fail_on_electrical=gate
     )
     backend, artefacts = _backend(
         tmp_path, monkeypatch, pnr_cfg=pnr_cfg, env=env, stages=stages, **options
     )
-    _with_repair(backend, tmp_path, post_route=post_route, rcx=rcx, corners=corners)
+    _with_repair(
+        backend,
+        tmp_path,
+        post_route=post_route,
+        rcx=rcx,
+        corners=corners,
+        platform=platform,
+    )
     return backend, artefacts
 
 
