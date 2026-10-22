@@ -1,6 +1,7 @@
 """Clock gating with Yosys `clockgate` before `dfflibmap` (#786)."""
 
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from rtl_buddy.tools import icg_split
 from rtl_buddy.tools.synth_yosys import (
     YosysSynth,
     _exec_quote,
+    clock_gating_cmds,
     warn_icg_split_skipped,
 )
 
@@ -102,7 +104,7 @@ def _synth(
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_off_by_default(tmp_path, backend):
     synth, script, _lib = _synth(tmp_path, backend)
-    assert "clockgate" not in script
+    assert "clockgate" not in script and "dfflegalize" not in script
     assert "clock_gating" not in _options(synth, backend)
 
 
@@ -111,8 +113,13 @@ def test_effort_inserts_clockgate_between_chformal_and_dfflibmap(tmp_path, backe
     synth, script, lib = _synth(tmp_path, backend, effort=8)
     lines = script.splitlines()
     i = lines.index("chformal -remove")
-    assert lines[i + 1] == f"clockgate -liberty {lib} -dont_use FILL* -min_net_size 8"
-    assert lines[i + 2].startswith("dfflibmap ")
+    assert lines[i + 1 : i + 4] == [
+        "dfflegalize -cell $_SDFFCE_????_ 01 t:$_SDFFE_*",
+        "opt_merge",
+        "opt_clean",
+    ]
+    assert lines[i + 4] == f"clockgate -liberty {lib} -dont_use FILL* -min_net_size 8"
+    assert lines[i + 5].startswith("dfflibmap ")
     assert _options(synth, backend)["clock_gating"] == {"min_flops": 8, "cell": None}
 
 
@@ -147,7 +154,7 @@ def test_precedence_is_override_then_effort_then_tool(tmp_path, backend):
 def test_an_unmapped_run_warns_and_gates_nothing(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         _synth_obj, script, _lib = _synth(tmp_path, "yosys", effort=8, mapped=False)
-    assert "clockgate" not in script
+    assert "clockgate" not in script and "dfflegalize" not in script
     [rec] = _events(caplog, "synth.clock_gating_ignored")
     assert rec.rtl_fields["min_flops"] == 8
 
@@ -261,3 +268,66 @@ def test_the_max_flops_keys_load_from_yaml():
         SynthEffortConfigFile, "name: e\nyosys:\n  clock-gating-max-flops: 32\n"
     )
     assert SynthEffortConfig(effort).get_yosys_clock_gating_max_flops() == 32
+
+
+_YOSYS = shutil.which("yosys")
+
+# Synchronous resets with priority over the enable, at each reset and enable polarity; q and r share an enable.
+_SDFFE_DESIGN = """\
+module t(input clk, rst, rstn, en, input [7:0] d,
+         output reg [7:0] q, output reg [7:0] r, output reg [7:0] s);
+  always @(posedge clk) if (rst) q <= 0; else if (en) q <= d;
+  always @(posedge clk) if (!rstn) r <= 8'hff; else if (en) r <= d;
+  always @(posedge clk) if (rst) s <= 8'h5a; else if (!en) s <= d;
+endmodule
+"""
+
+# A latch-based ICG, as the Liberty cells are.
+_ICG_MODEL = """\
+module CLKGATE_X1(input CK, E, output GCK);
+  reg l;
+  always @* if (!CK) l = E;
+  assign GCK = CK & l;
+endmodule
+"""
+
+
+@pytest.mark.skipif(_YOSYS is None, reason="yosys not installed")
+def test_gating_a_reset_over_enable_flop_keeps_its_reset(tmp_path):
+    rtl, icg = tmp_path / "t.v", tmp_path / "icg.v"
+    rtl.write_text(_SDFFE_DESIGN)
+    icg.write_text(_ICG_MODEL)
+    gating = {"min_flops": 8, "cell": "CLKGATE_X1 E:CK:GCK"}
+    lines = [
+        f'read_verilog -sv "{rtl}"',
+        "rename t gold",
+        "design -save gold",
+        "design -reset",
+        f'read_verilog -sv "{rtl}"',
+        "synth -top t",
+        *clock_gating_cmds(gating, "", "", "t", True, str(tmp_path)),
+        "opt_clean",
+        # One ICG per enable and reset pair: q's, r's and s's.
+        "select -assert-count 3 t:CLKGATE_X1",
+        f'read_verilog -sv "{icg}"',
+        "hierarchy -top t",
+        "proc",
+        "flatten",
+        "rename t gate",
+        "design -stash gate",
+        "design -load gold",
+        "proc",
+        "design -copy-from gate -as gate gate",
+        # Clock edges become logic, so the proof sees the gated clocks.
+        "clk2fflogic",
+        "miter -equiv -flatten -make_assert gold gate miter",
+        "hierarchy -top miter",
+        "sat -verify -tempinduct -prove-asserts -set-init-zero -seq 1 -maxsteps 20 miter",
+    ]
+    script = tmp_path / "run.ys"
+    script.write_text("\n".join(lines) + "\n")
+    run = subprocess.run(
+        [_YOSYS, "-s", str(script)], capture_output=True, text=True, check=False
+    )
+    assert run.returncode == 0, run.stdout[-3000:] + run.stderr
+    assert "Induction step proven: SUCCESS!" in run.stdout
