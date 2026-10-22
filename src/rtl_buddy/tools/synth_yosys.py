@@ -897,6 +897,13 @@ def resolve_clock_gating(
     return gating
 
 
+#: The Yosys lines that make each flop whose synchronous reset has priority over its enable (`$_SDFFE_*`) one whose enable has priority (`$_SDFFCE_*`), enabled by its enable or its reset, so `clockgate` keeps the reset when it gates the enable (#938). `opt_merge` and `opt_clean` merge the enable gates, so flops that shared an enable and a reset share the new enable.
+SDFFE_AS_SDFFCE_CMDS = (
+    "dfflegalize -cell $_SDFFCE_????_ 01 t:$_SDFFE_*",
+    "opt_merge",
+    "opt_clean",
+)
+
 #: Where `clock_gating_cmds` round-trips the design through `icg_split`, below the artefact directory.
 ICG_SPLIT_RTLIL = ("clockgate.il", "clockgate_split.il")
 
@@ -968,8 +975,9 @@ def clock_gating_cmds(
     """Return the ``clockgate`` lines a run adds between ``chformal -remove`` and ``dfflibmap``, or ``[]``.
 
     The ICG comes from the platform's ``clock-gating-cell`` (``-pos``), else ``-liberty`` picks one from
-    the cell libraries, skipping ``dont-use-cells``. Only rising-edge flops are gated. With ``max_flops``,
-    :func:`icg_split_cmds` follows. An unmapped run has no ICG to map to, so it warns
+    the cell libraries, skipping ``dont-use-cells``. Only rising-edge flops are gated. :data:`SDFFE_AS_SDFFCE_CMDS`
+    runs first, so a flop whose synchronous reset has priority over its enable is gated on its enable or its
+    reset. With ``max_flops``, :func:`icg_split_cmds` follows. An unmapped run has no ICG to map to, so it warns
     ``synth.clock_gating_ignored`` and gates nothing.
     """
     if gating is None:
@@ -983,10 +991,15 @@ def clock_gating_cmds(
             min_flops=gating["min_flops"],
         )
         return []
+    lines = list(SDFFE_AS_SDFFCE_CMDS)
     if gating["cell"]:
-        lines = [f"clockgate -pos {gating['cell']} -min_net_size {gating['min_flops']}"]
+        lines.append(
+            f"clockgate -pos {gating['cell']} -min_net_size {gating['min_flops']}"
+        )
     else:
-        lines = [f"clockgate{cell_libs}{dont_use} -min_net_size {gating['min_flops']}"]
+        lines.append(
+            f"clockgate{cell_libs}{dont_use} -min_net_size {gating['min_flops']}"
+        )
     if gating.get("max_flops"):
         lines.extend(icg_split_cmds(gating["max_flops"], artefact_dir))
     return lines

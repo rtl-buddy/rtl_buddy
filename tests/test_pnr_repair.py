@@ -3291,29 +3291,41 @@ def _electrical(setup, slew, cap=0, drcs=0):
 
 
 @pytest.mark.parametrize(
-    "new, best, gated, improves",
+    "new, best, breaks",
     [
-        # No violators beats violators at timing as good, only when gated.
-        (_electrical(-100.0, 0), _electrical(-100.0, 3), True, True),
-        (_electrical(-100.0, 0), _electrical(-100.0, 0, cap=2), True, True),
-        (_electrical(-50.0, 0), _electrical(-100.0, 3), False, True),
-        (_electrical(-100.0, 0), _electrical(-100.0, 3), False, False),
-        # Worse timing, fewer but some violators, or a route with DRCs: no.
-        (_electrical(-150.0, 0), _electrical(-100.0, 3), True, False),
-        (_electrical(-100.0, 1), _electrical(-100.0, 3), True, False),
-        (_electrical(-100.0, 0, drcs=1), _electrical(-100.0, 3, drcs=1), True, False),
-        (_electrical(-100.0, 0), _electrical(-100.0, 3, drcs=1), True, True),
+        # Fewer violators at the same timing and DRCs.
+        (_electrical(-100.0, 0), _electrical(-100.0, 3), True),
+        (_electrical(-100.0, 0), _electrical(-100.0, 0, cap=2), True),
+        (_electrical(-100.0, 25), _electrical(-100.0, 26), True),
+        (_electrical(-100.0, 0, drcs=1), _electrical(-100.0, 3, drcs=1), True),
+        # Met timing ties whatever the positive slack.
+        (_electrical(20.0, 0), _electrical(10.0, 9), True),
+        (_electrical(-100.0, 3), _electrical(-100.0, 3), False),
+        (_electrical(-100.0, 3), _electrical(-100.0, 0), False),
+        # Not a tie: other timing or other DRCs.
+        (_electrical(-150.0, 0), _electrical(-100.0, 3), False),
+        (_electrical(-50.0, 0), _electrical(-100.0, 3), False),
+        (_electrical(-100.0, 0), _electrical(-100.0, 3, drcs=1), False),
+        (_electrical(-100.0, 0, drcs=1), _electrical(-100.0, 3), False),
         # Counts the extraction did not report decide nothing.
-        (_electrical(-100.0, None), _electrical(-100.0, 3), True, False),
-        (_electrical(-100.0, 0), _electrical(-100.0, None), True, False),
-        # Better timing still wins with violators.
-        (_electrical(-50.0, 3), _electrical(-100.0, 0), True, True),
+        (_electrical(-100.0, None), _electrical(-100.0, 3), False),
+        (_electrical(-100.0, 0), _electrical(-100.0, None), False),
     ],
 )
-def test_a_gated_run_keeps_a_clean_round_without_electrical_violators(
-    new, best, gated, improves
-):
-    assert pnr_openroad._round_improves(new, best, ["setup"], gated) is improves
+def test_fewer_electrical_violators_break_a_tie_on_timing_and_drcs(new, best, breaks):
+    assert pnr_openroad._electrically_cleaner(new, best, ["setup"]) is breaks
+
+
+def test_electrical_violators_do_not_outrank_timing_or_drcs():
+    assert pnr_openroad._round_improves(
+        _electrical(-50.0, 3), _electrical(-100.0, 0), ["setup"]
+    )
+    assert pnr_openroad._round_improves(
+        _electrical(-100.0, 3), _electrical(-100.0, 0, drcs=1), ["setup"]
+    )
+    assert not pnr_openroad._round_improves(
+        _electrical(-100.0, 0), _electrical(-100.0, 3), ["setup"]
+    )
 
 
 _PR_E = {
@@ -3508,7 +3520,7 @@ def test_an_electrical_round_with_worse_timing_is_not_kept(tmp_path, monkeypatch
     )
 
 
-def test_an_ungated_run_does_not_keep_an_electrical_round_for_its_violators_alone(
+def test_an_ungated_run_keeps_an_electrical_round_that_ties_with_fewer_violators(
     tmp_path, monkeypatch
 ):
     backend, artefacts = _repair_backend(
@@ -3516,21 +3528,27 @@ def test_an_ungated_run_does_not_keep_an_electrical_round_for_its_violators_alon
         monkeypatch,
         post_route=_PR_E,
         env={
-            "RB_STUB_SETUP": "-0.1 -0.05 -0.05",
-            "RB_STUB_SLEW": "0 2 0",
+            "RB_STUB_SETUP": "-0.1 0.01 0.02",
+            "RB_STUB_SLEW": "0 9 0",
             "RB_STUB_CAP": "0 0 0",
         },
     )
 
-    assert backend.run().results["result"] == "PASS"
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
     (run_dir,) = _runs(artefacts)
     done = _done(run_dir)
-    assert done["kept_round"] == 1
-    assert done["reason"] == "all 1 round(s) ran"
-    assert done["electrical_round"]["status"] == "not_kept"
-    assert done["electrical_round"]["reason"].endswith(
-        "and does not improve on round 1: electrical violators decide the kept "
-        "round only on a run that gates on them"
+    assert done["kept_round"] == 2
+    assert done["stop"] == "timing_met"
+    assert done["reason"] == (
+        "timing met; round 2 ties round 1 on timing and DRC violations and has "
+        "fewer electrical violators: no violators against 9 max-slew violator(s)"
+    )
+    assert done["electrical_round"]["status"] == "kept"
+    assert "post-route electrical round 2 kept" in res.results["desc"]
+    assert (run_dir / "06_post_route_repair.odb").samefile(
+        run_dir / "06_post_route_repair.r2.odb"
     )
 
 
@@ -3584,11 +3602,41 @@ def test_a_gated_run_keeps_a_round_that_clears_electrical_violators_and_says_so(
     assert done["kept_round"] == 1
     assert done["stop"] == "no_improvement"
     assert done["reason"] == (
-        "round 2 did not improve timing; round 1 has no electrical violators and "
-        "timing as good as round 0, which has 3 max-slew violator(s)"
+        "round 2 did not improve timing; round 1 ties round 0 on timing and DRC "
+        "violations and has fewer electrical violators: no violators against 3 "
+        "max-slew violator(s)"
     )
     assert "electrical_round" not in done
     assert "electrical_round" not in res.results["post_route_repair"]
+
+
+def test_a_gated_run_keeps_a_tied_round_that_only_reduces_electrical_violators(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={"setup-margin": 0.1, "rounds": 3},
+        gate=True,
+        env={
+            "RB_STUB_SETUP": "-0.1 -0.1 -0.1",
+            "RB_STUB_SLEW": "26 25 25",
+            "RB_STUB_CAP": "0 0 0",
+        },
+    )
+
+    backend.run()
+
+    (run_dir,) = _runs(artefacts)
+    assert [r["best_round"] for r in _rounds(run_dir)] == [0, 1, 1]
+    done = _done(run_dir)
+    assert done["kept_round"] == 1
+    # The tie-break names the kept round's violators once.
+    assert done["reason"] == (
+        "round 2 did not improve timing; round 1 ties round 0 on timing and DRC "
+        "violations and has fewer electrical violators: 25 max-slew violator(s) "
+        "against 26 max-slew violator(s)"
+    )
 
 
 def test_an_ungated_run_compares_rounds_without_electrical_violators(
