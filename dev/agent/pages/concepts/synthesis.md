@@ -115,14 +115,16 @@ Liberty files may be gzipped. SDC values are in the Liberty `time_unit`, which r
 `rb` reads SDC and XDC text with one of two readers. `rb tool-check` names the active one under `In-process readers`.
 
 - **`tcl`**: a safe Tcl interpreter, so line continuations, braces, nested collections, `$variables` and `[expr ...]` read as they do in Vivado and OpenSTA. It has no `exec`, `open`, `file`, `socket`, `cd`, `glob` or `source`; `source` includes are not followed, so name the included file directly. The synthesis clock-period read is the exception below.
-- **`tokenizer`**: the fallback when no Tcl interpreter can start, typically a Python without `_tkinter`. It splits words but evaluates nothing, so `-period $p` or `-period [expr ...]` is reported as unevaluated. Install tkinter to restore the `tcl` reader: `uv python install --managed-python`, `brew install python-tk@<X.Y>`, or `dnf install python3-tkinter`.
+- **`tokenizer`**: the fallback when no Tcl interpreter can start, typically a Python without `_tkinter`, or when the interpreter refuses a file. It splits words but evaluates nothing, so `-period $p` or `-period [expr ...]` is reported as unevaluated, and a command inside a `foreach`, `if` or `proc` body is not read. Install tkinter to restore the `tcl` reader: `uv python install --managed-python`, `brew install python-tk@<X.Y>`, or `dnf install python3-tkinter`.
 
 Either reader returns syntax only. `get_ports`, `get_cells` and `-filter` collections stay opaque names, because OpenROAD or Vivado resolves them against a netlist.
 
 When `rb synth` reads the SDC for ABC's delay target, it also:
 
 - follows `source`, relative to the sourcing file's directory and then the working directory. `[info script]` names the file being read, and `file dirname`, `join`, `normalize`, `tail` and the other path subcommands answer as Tcl's do, so `source [file join [file dirname [file normalize [info script]]] clocks.sdc]` works. The `tokenizer` follows only a literal path. An include it cannot read warns `constraints.source_unreadable`.
-- re-reads a file the interpreter refused with `get_ports`, `get_pins`, `get_cells`, `get_nets`, `get_clocks` and `all_*` returning their name arguments as a list, so a `proc` or `foreach` over `[get_ports {a b}]` runs. `get_full_name`, `get_name` and `get_object_name` return the name they are given. The reader has no design, so a check such as `[get_property $p direction] ne "input"` cannot be answered: in the re-read, an `error` call returns instead of stopping the file. Each skipped check is logged at DEBUG as `constraints.tcl_check_skipped`, and each file with skipped checks warns once with their count as `constraints.tcl_checks_skipped`. A Tcl error raised any other way, such as an unset variable or a `source` loop, still fails the read.
+- re-reads a file the interpreter refused with `get_ports`, `get_pins`, `get_cells`, `get_nets`, `get_clocks` and `all_*` returning their name arguments as a list, so a `proc` or `foreach` over `[get_ports {a b}]` runs. `get_full_name`, `get_name` and `get_object_name` return the name they are given. The reader has no design, so a check such as `[get_property $p direction] ne "input"` cannot be answered: in the re-read, a check raised with `error`, `throw` or `return -code error` is skipped and the file carries on after it. Each skipped check is logged at DEBUG as `constraints.tcl_check_skipped`, and each file with skipped checks warns once with their count as `constraints.tcl_checks_skipped`. A Tcl error raised any other way, such as an unset variable, a failed `source` or a `source` loop, still fails the read; the `constraints.tcl_error` warning gives the re-read's error.
+
+When the SDC yields no clock period, `synth.sdc_no_clock` warns. If the SDC has `create_clock` commands whose period could not be resolved, the warning says how many, and each one has its own warning with its file and line: `synth.sdc_period_unevaluated` for a period that is not a number, `synth.sdc_clock_unread` for a `create_clock` inside a body the `tokenizer` does not evaluate. Otherwise the warning says the SDC has no `create_clock` period.
 
 Set `RTL_BUDDY_CONSTRAINT_READER=tokenizer` to force the fallback, or `=tcl` to require the interpreter and fail if none can start.
 
@@ -455,8 +457,8 @@ Each entry is a console message and the action it calls for.
 - **Interface instance could not be bound:** use `frontend: slang`, or accept the fallback with `unresolved-interfaces: warn|allow`.
 - **Yosys stops after ABC, `output.blif` written, no netlist:** set `abc-persistent: false`; see [Run ABC in batch mode](#run-abc-in-batch-mode).
 - **multi-clock SDC, abc constraint set to minimum:** use `tool: openroad` for multi-clock timing, or split into one run per clock domain.
-- **no `create_clock` found, or `create_clock -period` did not evaluate:** ABC runs unconstrained or skips that clock. Add a literal clock or restore the `tcl` reader.
-- **no Tcl interpreter is reachable, or Tcl refused a line:** the tokenizer reader is in use, so `$variables` and `[expr]` stay unevaluated. Install tkinter.
+- **no `create_clock` found, `create_clock -period` did not evaluate, or `create_clock` is inside a body the tokenizer does not evaluate:** ABC runs unconstrained or skips that clock. Add a literal clock or restore the `tcl` reader.
+- **no Tcl interpreter is reachable, or Tcl refused a line:** the tokenizer reader is in use, so `$variables`, `[expr]`, loops and procs stay unevaluated. Install tkinter, or fix the Tcl error the warning names.
 - **`single_unit` or `best_effort_hierarchy` has no effect:** the frontend is not `slang`. Set `frontend: slang` or remove the option.
 - **`abc-args` has no effect on a Liberty-mapped run:** set `abc-script` to change the mapping script; keep `abc-args` for unmapped runs.
 - **`tool_overrides.yosys` unknown key ignored:** override keys are snake case; the message lists the accepted ones.
