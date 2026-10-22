@@ -114,6 +114,114 @@ def test_a_clock_behind_a_proc_over_get_ports_gives_abc_its_period(
     assert not _events(caplog, "constraints.tcl_error")
 
 
+_LOOP_SDC = (
+    "array set periods {clk_a 2000 clk_b 4000}\n"
+    "foreach c [array names periods] {"
+    " create_clock -name $c -period $periods($c) [get_ports $c] }\n"
+)
+_VARIABLE_SDC = "set p 2000\ncreate_clock -name clk -period $p [get_ports clk]\n"
+#: A sourced helper that checks port directions, which the reader cannot answer.
+_HELPER_TCL = (
+    "proc window {kind clock max patterns} {\n"
+    "  foreach p [get_ports $patterns] {\n"
+    "    if {[get_property $p direction] ne $kind} {\n"
+    '      return -code error "port [get_full_name $p] is not an $kind"\n'
+    "    }\n"
+    "  }\n"
+    "  set_input_delay -clock $clock -max $max [get_ports $patterns]\n"
+    "}\n"
+)
+_SOURCED_HELPER_SDC = (
+    "source [file join [file dirname [info script]] helpers.tcl]\n"
+    "set clk_period 2000\n"
+    "create_clock -name clk -period $clk_period [get_ports clk]\n"
+    "window input clk 500 {a b}\n"
+)
+_FORMS = {
+    "loop": _LOOP_SDC,
+    "variable": _VARIABLE_SDC,
+    "sourced-helper": _SOURCED_HELPER_SDC,
+}
+
+
+def _write_form(tmp_path, form):
+    (tmp_path / "helpers.tcl").write_text(_HELPER_TCL)
+    sdc = tmp_path / "top.sdc"
+    sdc.write_text(_FORMS[form])
+    return sdc
+
+
+@pytest.mark.parametrize("form", list(_FORMS))
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_computed_clock_gives_abc_its_period(
+    tmp_path, backend, form, caplog, tcl_backend
+):
+    sdc = _write_form(tmp_path, form)
+    with caplog.at_level(logging.WARNING):
+        _synth_obj, script = _synth(
+            tmp_path, backend, sdc, abc_script="strash; &get -n; &nf {D}; &put"
+        )
+    # The ns Liberty takes the SDC in ns, so 2000 is 2,000,000 ps.
+    assert " -D 2000000 -script " in _abc_line(script)
+    assert not _events(caplog, "constraints.tcl_error")
+    assert not _events(caplog, "synth.sdc_no_clock")
+
+
+@pytest.mark.parametrize(
+    "form, unresolved, per_clock",
+    [
+        ("loop", 1, "synth.sdc_clock_unread"),
+        ("variable", 1, "synth.sdc_period_unevaluated"),
+        ("sourced-helper", 1, "synth.sdc_period_unevaluated"),
+    ],
+)
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_an_unresolved_clock_is_named_and_not_called_missing(
+    tmp_path, backend, form, unresolved, per_clock, caplog, tokenizer_backend
+):
+    sdc = _write_form(tmp_path, form)
+    with caplog.at_level(logging.WARNING):
+        _synth_obj, script = _synth(
+            tmp_path, backend, sdc, abc_script="strash; &get -n; &nf {D}; &put"
+        )
+    assert " -D " not in _abc_line(script)
+    [clock] = _events(caplog, per_clock)
+    assert clock.rtl_fields["line"] in (2, 3)
+    [rec] = _events(caplog, "synth.sdc_no_clock")
+    assert rec.rtl_fields["unresolved"] == unresolved
+    message = rec.getMessage()
+    assert "could not resolve" in message
+    assert "no create_clock period found" not in message
+    assert "{D}" in message
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_an_unread_clock_says_where_it_is(tmp_path, backend, caplog, tokenizer_backend):
+    sdc = _write_form(tmp_path, "loop")
+    with caplog.at_level(logging.WARNING):
+        _synth(tmp_path, backend, sdc, abc_script="strash; map")
+    [rec] = _events(caplog, "synth.sdc_clock_unread")
+    assert rec.rtl_fields["sdc"] == str(sdc)
+    assert rec.rtl_fields["line"] == 2
+    assert rec.rtl_fields["enclosing"] == "foreach"
+    assert "`foreach`" in rec.getMessage()
+    [no_clock] = _events(caplog, "synth.sdc_no_clock")
+    assert "abc runs unconstrained" in no_clock.getMessage()
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_period_that_is_not_a_number_is_unresolved(tmp_path, backend, caplog):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text("set p fast\ncreate_clock -name c -period $p [get_ports clk]\n")
+    with caplog.at_level(logging.WARNING):
+        _synth(tmp_path, backend, sdc, abc_script="strash; &get -n; &nf {D}; &put")
+    [clock] = _events(caplog, "synth.sdc_period_unevaluated")
+    assert clock.rtl_fields["value"] == "fast"
+    assert clock.rtl_fields["line"] == 2
+    [rec] = _events(caplog, "synth.sdc_no_clock")
+    assert rec.rtl_fields["unresolved"] == 1
+
+
 @pytest.mark.parametrize("backend", BACKENDS)
 def test_no_period_with_d_in_the_script_warns_loudly(tmp_path, backend, caplog):
     sdc = tmp_path / "c.sdc"
@@ -126,7 +234,11 @@ def test_no_period_with_d_in_the_script_warns_loudly(tmp_path, backend, caplog):
     [rec] = _events(caplog, "synth.sdc_no_clock")
     assert rec.levelno == logging.WARNING
     assert rec.rtl_fields["abc_delay_target"] is True
-    assert "{D}" in rec.getMessage()
+    assert rec.rtl_fields["unresolved"] == 0
+    assert rec.getMessage() == (
+        f'no create_clock period found in SDC "{sdc}"; '
+        "abc-script uses {D}, so ABC maps with no delay target"
+    )
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
