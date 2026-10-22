@@ -11,7 +11,7 @@
      "warnings": [{"kind": "include_unsupported", "line": 1,
                    "included": "shared/clocks.sdc"}]}
 
-With ``script_path``, ``[info script]`` returns it, the child gets a path-only ``file`` command, and ``source`` reads and evaluates the named file (relative to the sourcing file's directory, then the working directory) in the same interp: commands carry ``"file"``, and an unreadable include is a ``source_unreadable`` warning. With ``query_names``, the object queries (``get_ports`` ...) and the name accessors (``get_full_name`` ...) return their name arguments as a Tcl list instead of their source form, so a loop over a query's result runs, and ``error`` returns instead of raising, so a check the stubs cannot answer (``[get_property $p direction] ne "input"``) does not stop the read; each skipped ``error`` is a ``check_skipped`` warning.
+With ``script_path``, ``[info script]`` returns it, the child gets a path-only ``file`` command, and ``source`` reads and evaluates the named file (relative to the sourcing file's directory, then the working directory) in the same interp: commands carry ``"file"``, and an unreadable include is a ``source_unreadable`` warning. With ``query_names``, the object queries (``get_ports`` ...) and the name accessors (``get_full_name`` ...) return their name arguments as a Tcl list instead of their source form, so a loop over a query's result runs, and ``error``, ``throw`` and ``return -code error`` return instead of raising, so a check the stubs cannot answer (``[get_property $p direction] ne "input"``) does not stop the read; each skipped ``error`` is a ``check_skipped`` warning.
 
     {"ok": false, "kind": "tcl_error"|"resource_limit"|"unavailable",
      "error": "...", "line": 12, "warnings": [...]}
@@ -58,7 +58,7 @@ proc file args {
 }
 """
 
-#: The child's `source` under ``script_path``: the parent reads and evaluates the file in this interp. It raises with `return -code error`, which the lenient `error` (`_ERROR_PROC`) cannot skip.
+#: The child's `source` under ``script_path``: the parent reads and evaluates the file in this interp. ``RETURN`` is the interp's own `return`, renamed under ``query_names`` (`_RETURN_PROC`), so the lenient checks cannot skip a failed `source`.
 _SOURCE_PROC = r"""
 proc source args {
     if {[catch {dict get [info frame -1] line} __rb_line]} {
@@ -67,9 +67,9 @@ proc source args {
     set __rb_result [__rb_source $__rb_line {*}$args]
     set __rb_error [__rb_source_error]
     if {$__rb_error ne ""} {
-        return -code error $__rb_error
+        RETURN -code error $__rb_error
     }
-    return $__rb_result
+    RETURN $__rb_result
 }
 """
 
@@ -81,6 +81,45 @@ proc error args {
     }
     __rb_check $__rb_line {*}$args
     return
+}
+"""
+
+#: The child's `throw` under ``query_names``: recorded and skipped like `error`.
+_THROW_PROC = r"""
+proc throw {type message} {
+    if {[catch {dict get [info frame -1] line} __rb_line]} {
+        set __rb_line {}
+    }
+    __rb_check $__rb_line $message
+    return
+}
+"""
+
+#: The interp's `return`, renamed under ``query_names`` so `_RETURN_PROC` can stand in for it.
+_REAL_RETURN = "__rb_return"
+
+#: The child's `return` under ``query_names``: `return -code error` (or ``-code 1``, or ``-options`` with either) is recorded and skipped like `error`, and the script carries on after it; any other `return` runs the real one in the caller's frame via `tailcall`.
+_RETURN_PROC = r"""
+proc return args {
+    set code ok
+    set n [llength $args]
+    for {set i 0} {$i + 1 < $n} {incr i 2} {
+        set key [lindex $args $i]
+        set value [lindex $args [expr {$i + 1}]]
+        if {$key eq "-code"} {
+            set code $value
+        } elseif {$key eq "-options" && [catch {dict get $value -code} c] == 0} {
+            set code $c
+        }
+    }
+    if {$code in {error 1}} {
+        if {[catch {dict get [info frame -1] line} line]} {
+            set line {}
+        }
+        __rb_check $line [expr {$n % 2 ? [lindex $args end] : ""}]
+        __rb_return
+    }
+    tailcall __rb_return {*}$args
 }
 """
 
@@ -352,10 +391,17 @@ def _evaluate(
                 pass  # already absent from a safe interp
         app.call("interp", "alias", _CHILD, "__rb_record", "", "__rb_record_impl")
         app.call(_CHILD, "eval", _UNKNOWN_PROC)
+        real_return = "return"
         if query_names:
             app.createcommand("__rb_check_impl", check_skipped)
             app.call("interp", "alias", _CHILD, "__rb_check", "", "__rb_check_impl")
             app.call(_CHILD, "eval", _ERROR_PROC)
+            app.call(_CHILD, "eval", _THROW_PROC)
+            # `tailcall` (Tcl 8.6) keeps a plain `return` exact; without it `return` is left alone.
+            if app.call(_CHILD, "eval", "info commands tailcall"):
+                app.call(_CHILD, "eval", ["rename", "return", _REAL_RETURN])
+                app.call(_CHILD, "eval", _RETURN_PROC)
+                real_return = _REAL_RETURN
         if scripts:
             for alias, impl in (
                 ("__rb_file", file_command),
@@ -365,7 +411,7 @@ def _evaluate(
                 app.createcommand(alias + "_impl", impl)
                 app.call("interp", "alias", _CHILD, alias, "", alias + "_impl")
             app.call(_CHILD, "eval", _FILE_PROC)
-            app.call(_CHILD, "eval", _SOURCE_PROC)
+            app.call(_CHILD, "eval", _SOURCE_PROC.replace("RETURN", real_return))
             app.call(_CHILD, "eval", ["info", "script", scripts[0]])
         app.call(
             "interp",

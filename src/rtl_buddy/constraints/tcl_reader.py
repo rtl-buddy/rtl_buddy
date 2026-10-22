@@ -31,7 +31,10 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "TclCommand",
+    "UnreadCommand",
+    "ReadResult",
     "read_commands",
+    "read_constraints",
     "backend_name",
     "backend_description",
     "extract_names",
@@ -89,6 +92,28 @@ class TclCommand:
     raw: str | None = None
     #: The file the command was read from when ``read_commands`` followed ``source`` (``script_path``); ``line`` counts in it. ``None`` otherwise.
     file: str | None = None
+
+
+@dataclass(frozen=True)
+class UnreadCommand:
+    """A command of interest the ``tokenizer`` saw inside another command's ``{...}`` or ``[...]`` word (a ``foreach``, ``if`` or ``proc`` body, a command substitution), which it does not evaluate, so the command is absent from the result."""
+
+    name: str
+    #: The command that holds it, such as ``foreach``.
+    enclosing: str
+    #: 1-based line of ``name`` in ``file`` (or the read text), or ``None`` when unknown.
+    line: int | None = None
+    file: str | None = None
+
+
+@dataclass
+class ReadResult:
+    """What :func:`read_constraints` read: the commands, the backend that answered, and, under ``tokenizer``, the commands of interest it could not read."""
+
+    commands: list[TclCommand]
+    backend: str
+    #: Always empty under ``tcl``, which evaluates bodies.
+    unread: list[UnreadCommand] = field(default_factory=list)
 
 
 #: Wall-clock budget for evaluating one constraint file.
@@ -381,11 +406,14 @@ def _read_with_tcl(
     Returns the commands in ``interest``, or ``None`` when the interp did not read the file (syntax error, unset variable, resource limit, no answer). With ``lenient_queries``, a failed read is retried once with object queries answering their name arguments as a list (see :func:`read_commands`).
     """
     response = _run_worker(text, interest=interest, script_path=script_path)
+    failure = response
 
     if not response.get("ok") and lenient_queries:
         retry = _run_worker(
             text, interest=interest, script_path=script_path, query_names=True
         )
+        # The retry's error is the one that stopped the read; the first one may be the very query form the retry answers.
+        failure = retry
         if retry.get("ok"):
             line = response.get("line")
             log_event(
@@ -402,14 +430,14 @@ def _read_with_tcl(
     _log_worker_warnings(response, source)
 
     if not response.get("ok"):
-        line = response.get("line")
+        line = failure.get("line")
         log_event(
             logger,
             logging.WARNING,
             "constraints.tcl_error",
             source=source,
             line=line if isinstance(line, int) else None,
-            message=str(response.get("error") or "the Tcl reader worker failed"),
+            message=str(failure.get("error") or "the Tcl reader worker failed"),
         )
         return None
 
@@ -547,17 +575,49 @@ def _tokenizer_source_target(words: list[str], script_path: str) -> str | None:
     return os.path.abspath(found) if found else None
 
 
+def _nested_unread(
+    words: list[str],
+    span: str,
+    line_no: int,
+    interest: frozenset[str],
+    enclosing: str,
+    file: str | None,
+) -> list[UnreadCommand]:
+    """Commands in ``interest`` inside the ``{...}`` and ``[...]`` words of one command, at any depth; found, not evaluated."""
+    found: list[UnreadCommand] = []
+    for word in words:
+        if len(word) < 2 or (word[0], word[-1]) not in (("{", "}"), ("[", "]")):
+            continue
+        inner = word[1:-1]
+        offset = span.find(word)
+        base = line_no + (span[: offset + 1].count("\n") if offset >= 0 else 0)
+        for inner_line, inner_span in _logical_spans(inner):
+            inner_words = [w for group in _tokenize(inner_span) for w in group]
+            if not inner_words:
+                continue
+            at = base + inner_line - 1
+            if inner_words[0] in interest:
+                found.append(UnreadCommand(inner_words[0], enclosing, at, file))
+            found.extend(
+                _nested_unread(
+                    inner_words[1:], inner_span, at, interest, enclosing, file
+                )
+            )
+    return found
+
+
 def _read_with_tokenizer(
     text: str,
     *,
     interest: frozenset[str] | None,
     source: str | None,
     script_path: str | None = None,
+    unread: list[UnreadCommand] | None = None,
     _depth: int = 0,
 ) -> list[TclCommand]:
     """Split ``text`` into words without evaluating it.
 
-    Logs at most one ``constraints.tokenizer_skipped`` warning per call, at the first ``$`` reference or scripting command; the whole file is still read. With ``script_path``, a ``source`` of a literal path is read in place.
+    Logs at most one ``constraints.tokenizer_skipped`` warning per call, at the first ``$`` reference or scripting command; the whole file is still read. With ``script_path``, a ``source`` of a literal path is read in place. With ``unread``, each command in ``interest`` found inside another command's braced or bracketed word is appended to it (:class:`UnreadCommand`).
     """
     commands: list[TclCommand] = []
     warned = False
@@ -600,6 +660,12 @@ def _read_with_tokenizer(
                     file=script_path,
                 )
             )
+        elif unread is not None:
+            unread.extend(
+                _nested_unread(
+                    words[1:], span, line_no, interest, name, script_path or source
+                )
+            )
 
         if (
             name == "source"
@@ -628,6 +694,7 @@ def _read_with_tokenizer(
                     interest=interest,
                     source=included,
                     script_path=included,
+                    unread=unread,
                     _depth=_depth + 1,
                 )
             )
@@ -649,8 +716,27 @@ def read_commands(
 
     ``script_path`` names the file ``text`` was read from. With it, ``source`` is followed: relative to the sourcing file's directory, then the working directory, with ``[info script]`` and path-only ``file`` subcommands (``dirname``, ``join``, ``normalize`` ...) answering as Tcl would; each command's ``file`` says where it came from. The tokenizer follows only a literal path. Without it, ``source`` is reported as unsupported.
 
-    ``lenient_queries`` retries a file the interp refused with object queries (``get_ports`` ...) and name accessors (``get_full_name`` ...) answering their name arguments as a Tcl list rather than their source form, so a proc or loop that iterates a query's result is evaluated. The retry skips each ``error`` the file raises, logged at DEBUG as ``constraints.tcl_check_skipped``: a check such as ``[get_property $p direction] ne "input"`` needs the design, which the reader does not have. Words then hold the names, not ``[get_ports ...]``; use it only where the query form does not matter.
+    ``lenient_queries`` retries a file the interp refused with object queries (``get_ports`` ...) and name accessors (``get_full_name`` ...) answering their name arguments as a Tcl list rather than their source form, so a proc or loop that iterates a query's result is evaluated. The retry skips each error the file raises with ``error``, ``throw`` or ``return -code error``, logged at DEBUG as ``constraints.tcl_check_skipped``, and carries on after it: a check such as ``[get_property $p direction] ne "input"`` needs the design, which the reader does not have. A failed ``source`` still fails the read. Words then hold the names, not ``[get_ports ...]``; use it only where the query form does not matter.
     """
+    result = read_constraints(
+        text,
+        interest=interest,
+        source=source,
+        script_path=script_path,
+        lenient_queries=lenient_queries,
+    )
+    return result.commands, result.backend
+
+
+def read_constraints(
+    text: str,
+    *,
+    interest: frozenset[str] | None,
+    source: str | None = None,
+    script_path: str | None = None,
+    lenient_queries: bool = False,
+) -> ReadResult:
+    """:func:`read_commands`, plus the commands in ``interest`` that the ``tokenizer`` found inside a body or command substitution and so could not read (``unread``), for a caller that must say why a command is missing. ``unread`` is collected only when ``interest`` is set."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     if script_path is not None:
         script_path = os.path.abspath(script_path)
@@ -675,10 +761,13 @@ def read_commands(
             )
             commands = None
         if commands is not None:
-            return commands, TCL_BACKEND
-    return (
-        _read_with_tokenizer(
-            text, interest=interest, source=source, script_path=script_path
-        ),
-        TOKENIZER_BACKEND,
+            return ReadResult(commands, TCL_BACKEND)
+    unread: list[UnreadCommand] = []
+    commands = _read_with_tokenizer(
+        text,
+        interest=interest,
+        source=source,
+        script_path=script_path,
+        unread=unread if interest is not None else None,
     )
+    return ReadResult(commands, TOKENIZER_BACKEND, unread)

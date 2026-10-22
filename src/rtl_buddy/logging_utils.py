@@ -1859,12 +1859,32 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('log')}"
             )
         case "synth.sdc_no_clock":
+            consequence = (
+                "abc-script uses {D}, so ABC maps with no delay target"
+                if fields.get("abc_delay_target")
+                else "abc runs unconstrained"
+            )
+            if fields.get("unresolved"):
+                return (
+                    f'SDC "{fields.get("sdc")}" has {fields.get("unresolved")} '
+                    "create_clock command(s) whose period the constraint reader "
+                    "could not resolve (each is named in a warning above) and "
+                    f"no other clock; {consequence}"
+                )
             if fields.get("abc_delay_target"):
                 return (
                     f'no create_clock period found in SDC "{fields.get("sdc")}"; '
-                    "abc-script uses {D}, so ABC maps with no delay target"
+                    f"{consequence}"
                 )
-            return f'no create_clock found in SDC "{fields.get("sdc")}"; abc runs unconstrained'
+            return f'no create_clock found in SDC "{fields.get("sdc")}"; {consequence}'
+        case "synth.sdc_clock_unread":
+            return (
+                f'create_clock in SDC "{fields.get("sdc")}" line {fields.get("line")} '
+                f"is inside a `{fields.get('enclosing')}` that the tokenizer backend "
+                "does not evaluate, so that clock is skipped for the abc timing "
+                "constraint; an earlier warning says why the tcl reader did not "
+                "read the file"
+            )
         case "synth.sdc_period_unevaluated":
             return (
                 f"create_clock -period {fields.get('value')} in SDC "
@@ -1893,7 +1913,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'constraint file "{fields.get("source")}" line {fields.get("line")}: '
                 f"Tcl refused to evaluate it ({fields.get('message')}); falling "
                 "back to the word tokenizer, which does not evaluate "
-                "$variables or [expr]"
+                "$variables, [expr], loops or procs"
             )
         case "constraints.tcl_check_skipped":
             return (
@@ -1904,7 +1924,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "constraints.tcl_checks_skipped":
             return (
                 f'constraint file "{fields.get("source")}": '
-                f"{fields.get('count')} `error` check(s) skipped; the reader "
+                f"{fields.get('count')} error check(s) skipped; the reader "
                 "has no design to answer them, so each is assumed to pass "
                 "(each one is logged at DEBUG as constraints.tcl_check_skipped)"
             )

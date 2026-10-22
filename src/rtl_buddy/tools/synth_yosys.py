@@ -28,7 +28,7 @@ from ..config.synth import (
     resolve_static_functions_mode,
     resolve_unresolved_interfaces_mode,
 )
-from ..constraints.tcl_reader import read_commands
+from ..constraints.tcl_reader import read_constraints
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
 from ..phys.manifest import project_relative
@@ -543,39 +543,61 @@ def abc_batch_cmds(
 def sdc_clock_period_ps(
     sdc_path: str, time_unit_ps: Callable[[], float], synth_name: str
 ) -> int | None:
-    """Return the minimum ``create_clock`` period in the SDC, in picoseconds, or None.
+    """Return the minimum ``create_clock`` period in the SDC, in picoseconds, or None (:func:`sdc_clock_periods`)."""
+    return sdc_clock_periods(sdc_path, time_unit_ps, synth_name)[0]
+
+
+def sdc_clock_periods(
+    sdc_path: str, time_unit_ps: Callable[[], float], synth_name: str
+) -> tuple[int | None, int]:
+    """Return ``(period_ps, unresolved)``: the minimum ``create_clock`` period in the SDC, in picoseconds, or None, and how many ``create_clock`` commands gave no period.
 
     Shared by both synthesis backends. Periods are in the Liberty `time_unit`, which
     ``time_unit_ps`` returns in picoseconds. ABC ``-D`` takes one timing window, so
     multi-clock designs use the minimum, which over-constrains slower domains. Periods
     are read via the constraint reader, so ``\\``-continued commands and ``{10.0}``
     work, ``source`` is followed relative to the sourcing file, and a file the interp
-    refuses is retried with object queries answering as name lists, so a proc or loop
-    over ``[get_ports ...]`` is evaluated (#788). A period that is not a number (``$p``
-    under the tokenizer backend, or ``[get_property ...]``) is skipped with
-    ``synth.sdc_period_unevaluated``.
+    refuses is retried with object queries answering as name lists and the file's own
+    error checks skipped, so a proc or loop over ``[get_ports ...]`` is evaluated
+    (#788). A period that is not a number (``$p`` under the tokenizer backend,
+    or ``[get_property ...]``) is skipped with ``synth.sdc_period_unevaluated``, and
+    a ``create_clock`` the tokenizer found inside a loop, ``proc`` or ``if`` body with
+    ``synth.sdc_clock_unread``; both count as unresolved.
     """
     try:
         with open(sdc_path) as f:
             text = f.read()
     except OSError:
-        return None
+        return None, 0
 
-    commands, _backend = read_commands(
+    result = read_constraints(
         text,
         interest=frozenset({"create_clock"}),
         source=sdc_path,
         script_path=sdc_path,
         lenient_queries=True,
     )
+    unresolved = 0
+    for unread in result.unread:
+        unresolved += 1
+        log_event(
+            logger,
+            logging.WARNING,
+            "synth.sdc_clock_unread",
+            synth=synth_name,
+            sdc=unread.file or sdc_path,
+            line=unread.line,
+            enclosing=unread.enclosing,
+        )
     periods: list[float] = []
-    for cmd in commands:
+    for cmd in result.commands:
         value = _flag_value(cmd.words, "-period")
         if value is None:
             continue
         if value.startswith("{") and value.endswith("}"):
             value = value[1:-1].strip()
         if value.startswith("$") or value.startswith("["):
+            unresolved += 1
             log_event(
                 logger,
                 logging.WARNING,
@@ -591,7 +613,7 @@ def sdc_clock_period_ps(
         except ValueError:
             continue
     if not periods:
-        return None
+        return None, unresolved
     ps_per_unit = time_unit_ps()
     if len(periods) > 1:
         ns_per_unit = ps_per_unit / 1000.0
@@ -605,7 +627,7 @@ def sdc_clock_period_ps(
             used_ns=min(periods) * ns_per_unit,
             sdc=sdc_path,
         )
-    return int(min(periods) * ps_per_unit)
+    return int(min(periods) * ps_per_unit), unresolved
 
 
 def resolve_abc_period_ps(
@@ -618,11 +640,13 @@ def resolve_abc_period_ps(
 
     Shared by both synthesis backends. None without an SDC. An SDC that yields no
     period warns ``synth.sdc_no_clock``; its ``abc_delay_target`` field says whether
-    ``abc_script`` writes ``{D}``, which then maps with no delay target (#788).
+    ``abc_script`` writes ``{D}``, which then maps with no delay target (#788), and
+    its ``unresolved`` field counts the ``create_clock`` commands the reader found
+    but could not resolve.
     """
     if not constraints:
         return None
-    period_ps = sdc_clock_period_ps(constraints, time_unit_ps, synth_name)
+    period_ps, unresolved = sdc_clock_periods(constraints, time_unit_ps, synth_name)
     if period_ps is not None:
         log_event(
             logger,
@@ -640,6 +664,7 @@ def resolve_abc_period_ps(
             synth=synth_name,
             sdc=constraints,
             abc_delay_target="{D}" in abc_script,
+            unresolved=unresolved,
         )
     return period_ps
 
