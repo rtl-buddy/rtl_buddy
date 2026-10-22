@@ -407,13 +407,14 @@ def _read_with_tcl(
     """
     response = _run_worker(text, interest=interest, script_path=script_path)
     failure = response
+    warned = response
 
     if not response.get("ok") and lenient_queries:
         retry = _run_worker(
             text, interest=interest, script_path=script_path, query_names=True
         )
         # The retry's error is the one that stopped the read; the first one may be the very query form the retry answers.
-        failure = retry
+        failure = warned = retry
         if retry.get("ok"):
             line = response.get("line")
             log_event(
@@ -426,8 +427,8 @@ def _read_with_tcl(
             )
             response = retry
 
-    # Warnings arrive even when evaluation failed.
-    _log_worker_warnings(response, source)
+    # Warnings arrive even when evaluation failed; a retry's include the checks it skipped.
+    _log_worker_warnings(warned, source)
 
     if not response.get("ok"):
         line = failure.get("line")
@@ -575,7 +576,46 @@ def _tokenizer_source_target(words: list[str], script_path: str) -> str | None:
     return os.path.abspath(found) if found else None
 
 
+#: Commands whose braced words include Tcl scripts (bodies, conditions, scripts to evaluate); the braced words of any other command are data.
+_SCRIPT_BODY_COMMANDS = frozenset(
+    {
+        "apply",
+        "catch",
+        "dict",
+        "else",
+        "elseif",
+        "eval",
+        "for",
+        "foreach",
+        "if",
+        "lmap",
+        "namespace",
+        "proc",
+        "switch",
+        "time",
+        "try",
+        "uplevel",
+        "while",
+    }
+)
+
+
+def _split_commands(words: list[str]) -> list[list[str]]:
+    """Split one tokenized span into its ``;``-separated commands."""
+    commands: list[list[str]] = [[]]
+    for word in words:
+        if word == ";":
+            commands.append([])
+        elif word.endswith(";") and not word.endswith("\\;"):
+            commands[-1].append(word[:-1])
+            commands.append([])
+        else:
+            commands[-1].append(word)
+    return [command for command in commands if command]
+
+
 def _nested_unread(
+    name: str,
     words: list[str],
     span: str,
     line_no: int,
@@ -583,26 +623,36 @@ def _nested_unread(
     enclosing: str,
     file: str | None,
 ) -> list[UnreadCommand]:
-    """Commands in ``interest`` inside the ``{...}`` and ``[...]`` words of one command, at any depth; found, not evaluated."""
+    """Commands in ``interest`` inside the ``[...]`` words of command ``name``, and inside its ``{...}`` words when it takes scripts (`_SCRIPT_BODY_COMMANDS`), at any depth; found, not evaluated."""
     found: list[UnreadCommand] = []
     for word in words:
-        if len(word) < 2 or (word[0], word[-1]) not in (("{", "}"), ("[", "]")):
+        if len(word) < 2:
+            continue
+        pair = (word[0], word[-1])
+        if pair != ("[", "]") and not (
+            pair == ("{", "}") and name in _SCRIPT_BODY_COMMANDS
+        ):
             continue
         inner = word[1:-1]
         offset = span.find(word)
         base = line_no + (span[: offset + 1].count("\n") if offset >= 0 else 0)
         for inner_line, inner_span in _logical_spans(inner):
-            inner_words = [w for group in _tokenize(inner_span) for w in group]
-            if not inner_words:
-                continue
             at = base + inner_line - 1
-            if inner_words[0] in interest:
-                found.append(UnreadCommand(inner_words[0], enclosing, at, file))
-            found.extend(
-                _nested_unread(
-                    inner_words[1:], inner_span, at, interest, enclosing, file
+            tokens = [w for group in _tokenize(inner_span) for w in group]
+            for command in _split_commands(tokens):
+                if command[0] in interest:
+                    found.append(UnreadCommand(command[0], enclosing, at, file))
+                found.extend(
+                    _nested_unread(
+                        command[0],
+                        command[1:],
+                        inner_span,
+                        at,
+                        interest,
+                        enclosing,
+                        file,
+                    )
                 )
-            )
     return found
 
 
@@ -663,7 +713,13 @@ def _read_with_tokenizer(
         elif unread is not None:
             unread.extend(
                 _nested_unread(
-                    words[1:], span, line_no, interest, name, script_path or source
+                    name,
+                    words[1:],
+                    span,
+                    line_no,
+                    interest,
+                    name,
+                    script_path or source,
                 )
             )
 

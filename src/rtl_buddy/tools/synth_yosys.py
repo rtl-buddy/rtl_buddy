@@ -596,7 +596,9 @@ def sdc_clock_periods(
             continue
         if value.startswith("{") and value.endswith("}"):
             value = value[1:-1].strip()
-        if value.startswith("$") or value.startswith("["):
+        try:
+            periods.append(float(value))
+        except ValueError:
             unresolved += 1
             log_event(
                 logger,
@@ -607,11 +609,6 @@ def sdc_clock_periods(
                 line=cmd.line,
                 value=value,
             )
-            continue
-        try:
-            periods.append(float(value))
-        except ValueError:
-            continue
     if not periods:
         return None, unresolved
     ps_per_unit = time_unit_ps()

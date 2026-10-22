@@ -1138,6 +1138,37 @@ def test_the_tokenizer_names_commands_inside_bodies_it_does_not_evaluate(
     ) == (result.commands, "tokenizer")
 
 
+def test_the_tokenizer_reads_only_script_bodies_and_splits_their_commands(
+    tokenizer_backend,
+):
+    text = (
+        "set description {create_clock -period 5 clk}\n"
+        "array set saved {c {create_clock -period 5 clk}}\n"
+        "foreach c {clk} {set x 1; create_clock -period 5 $c}\n"
+    )
+    result = read_constraints(text, interest=CLOCK, source="b.sdc")
+    assert result.unread == [UnreadCommand("create_clock", "foreach", 3, "b.sdc")]
+
+
+def test_a_failed_lenient_retry_logs_the_checks_it_skipped(tcl_backend, caplog):
+    text = (
+        "proc must_input {p} {\n"
+        '  if {[get_property $p direction] ne "input"} { return -code error "bad $p" }\n'
+        "}\n"
+        "must_input [get_ports {a b}]\n"
+        "create_clock -period $undefined_period c\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        _cmds, used = read_commands(
+            text, interest=CLOCK, source="r.sdc", lenient_queries=True
+        )
+    assert used == "tokenizer"
+    [rec] = _events(caplog, "constraints.tcl_checks_skipped")
+    assert rec.rtl_fields["count"] == 1
+    [error] = _events(caplog, "constraints.tcl_error")
+    assert "undefined_period" in error.rtl_fields["message"]
+
+
 def test_the_tcl_reader_has_no_unread_commands(tcl_backend):
     text = "foreach c {a b} { create_clock -name $c -period 2 [get_ports $c] }\n"
     result = read_constraints(text, interest=CLOCK)

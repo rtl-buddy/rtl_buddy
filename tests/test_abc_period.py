@@ -210,6 +210,19 @@ def test_an_unread_clock_says_where_it_is(tmp_path, backend, caplog, tokenizer_b
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
+def test_a_period_that_is_not_a_number_is_unresolved(tmp_path, backend, caplog):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text("set p fast\ncreate_clock -name c -period $p [get_ports clk]\n")
+    with caplog.at_level(logging.WARNING):
+        _synth(tmp_path, backend, sdc, abc_script="strash; &get -n; &nf {D}; &put")
+    [clock] = _events(caplog, "synth.sdc_period_unevaluated")
+    assert clock.rtl_fields["value"] == "fast"
+    assert clock.rtl_fields["line"] == 2
+    [rec] = _events(caplog, "synth.sdc_no_clock")
+    assert rec.rtl_fields["unresolved"] == 1
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
 def test_no_period_with_d_in_the_script_warns_loudly(tmp_path, backend, caplog):
     sdc = tmp_path / "c.sdc"
     sdc.write_text("set_input_delay 1 [get_ports a]\n")
