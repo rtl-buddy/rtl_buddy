@@ -1016,8 +1016,13 @@ def test_write_script_frontend_slang_quotes_define_value_with_spaces(tmp_path):
     assert "-DMULTI='a b c'" in script
 
 
-def test_write_script_frontend_slang_whitespace_only_plugin_path_raises(tmp_path):
+def test_write_script_frontend_slang_whitespace_only_plugin_path_raises(
+    tmp_path, monkeypatch
+):
     """A whitespace-only plugin path raises the same FatalRtlBuddyError as an empty one."""
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    monkeypatch.delenv(SLANG_PLUGIN_ENV, raising=False)
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
