@@ -1838,23 +1838,22 @@ def _electrical_violators(round_: dict) -> int | None:
 
 
 def _electrically_cleaner(new: dict, best: dict, sides) -> bool:
-    """Whether round `new` and round `best` both route clean and `new` has no electrical violators where `best` has some, at timing as good on every repaired side."""
+    """Whether round `new` ties round `best` on DRC violations and on worst slack on every repaired side, and has fewer electrical violators; a count its extraction did not report decides nothing."""
+    counts = (_electrical_violators(new), _electrical_violators(best))
     return (
-        not new["drcs"]
-        and not best["drcs"]
-        and _electrical_violators(new) == 0
-        and bool(_electrical_violators(best))
+        None not in counts
+        and counts[0] < counts[1]
+        and new["drcs"] == best["drcs"]
         and _timing_as_good(new, best, sides)
+        and _timing_as_good(best, new, sides)
     )
 
 
-def _round_improves(new: dict, best: dict, sides, electrical: bool = False) -> bool:
-    """Whether round `new` improves on the best round `best`, each `{"timing": ..., "drcs": n}`: better timing (`_improves`) without more DRC violations, or timing as good on every repaired side with fewer. With `electrical` (a run that gates on electrical violators), also a clean round without electrical violators over a clean one with some at timing as good (`_electrically_cleaner`)."""
+def _round_improves(new: dict, best: dict, sides) -> bool:
+    """Whether round `new` improves on the best round `best`, each `{"timing": ..., "drcs": n}`: better timing (`_improves`) without more DRC violations, or timing as good on every repaired side with fewer."""
     if new["drcs"] <= best["drcs"] and _improves(new["timing"], best["timing"], sides):
         return True
-    if new["drcs"] < best["drcs"] and _timing_as_good(new, best, sides):
-        return True
-    return electrical and _electrically_cleaner(new, best, sides)
+    return new["drcs"] < best["drcs"] and _timing_as_good(new, best, sides)
 
 
 def _round_summary(round_: dict) -> str:
@@ -1961,11 +1960,11 @@ def run_post_route_repair(
 
     `session(path, label)` runs OpenROAD on one script and returns its exit code, stderr, resources and log; `note(line)` appends a line of rb's own to the log and returns it. Each session's part of the log begins with `_SESSION_BEGIN_MARKER`.
 
-    Round 0 is the detailed route: its extraction session extracts it and times every corner. Round k from 1 repairs round k-1's database on that round's SPEF, routes, and writes the stage's checkpoint, which rb renames `06_post_route_repair.r<k>.*` (`_round_files`); its extraction session then times the result. Each round's DRC violations are counted from its router's report. A round becomes the best when it improves on the best (`_round_improves`), or when its route is clean and the best's is not. A round whose route has violations never stops the rounds, so the next one gets another detailed route on its database. The rounds stop when a clean round is the best and meets timing on every side they repair (setup with `setup-margin` set, hold with `hold-margin` set), when a clean round does not become the best, when a round's timing is not reported, when a session of a later round fails, or after the last round. The stage keeps the best round's database as its checkpoint (`_keep_round`); a round from 1 whose timing was not reported or whose session failed is never kept. When a round with violations has better timing than the clean round kept, the stop reason names both (`_passed_over`).
+    Round 0 is the detailed route: its extraction session extracts it and times every corner. Round k from 1 repairs round k-1's database on that round's SPEF, routes, and writes the stage's checkpoint, which rb renames `06_post_route_repair.r<k>.*` (`_round_files`); its extraction session then times the result. Each round's DRC violations are counted from its router's report. A round becomes the best when it improves on the best (`_round_improves`), when its route is clean and the best's is not, or when it ties the best on timing and DRC violations with fewer max-slew and max-capacitance violators (`_electrically_cleaner`), and the stop reason then names the tie-break. A round whose route has violations never stops the rounds, so the next one gets another detailed route on its database. The rounds stop when a clean round is the best and meets timing on every side they repair (setup with `setup-margin` set, hold with `hold-margin` set), when a clean round does not become the best, when a round's timing is not reported, when a session of a later round fails, or after the last round. The stage keeps the best round's database as its checkpoint (`_keep_round`); a round from 1 whose timing was not reported or whose session failed is never kept. When a round with violations has better timing than the clean round kept, the stop reason names both (`_passed_over`).
 
     With `judged` in the plan (a multi-corner run that sets `signoff:`), the rounds judge each side's worst slack only over the corners it names for that side (`_judged_timing`): which sides are met, which round is the best and when they stop. Each round's event keeps every corner's timing and adds the judged worst slack as `signoff_timing`.
 
-    On a run that gates on electrical violators (`gate_electrical` in the plan), a clean round without max-slew or max-capacitance violators also becomes the best over a clean one with some at timing as good (`_electrically_cleaner`), and the stop reason names that and the kept round's violators. With `electrical-repair` (`electrical` in the plan) one more round runs after the others when the best round has such violators: rb links the best round's checkpoint and SPEF as `POST_ROUTE_ELECTRICAL_SOURCE`, and the round's `repair_design` runs on them. It is timed and compared as any round; `electrical_round` in the done event says whether it was kept, not kept, skipped or failed, and why.
+    Rounds count those violators only on a run that gates on electrical violators (`gate_electrical` in the plan) or sets `electrical-repair`; a gated run's stop reason also names the kept round's violators. With `electrical-repair` (`electrical` in the plan) one more round runs after the others when the best round has such violators: rb links the best round's checkpoint and SPEF as `POST_ROUTE_ELECTRICAL_SOURCE`, and the round's `repair_design` runs on them. It is timed and compared as any round; `electrical_round` in the done event says whether it was kept, not kept, skipped or failed, and why.
 
     A failed session of round k from 1 is set aside: rb warns, notes it after the session's part of the log, whose `[ERROR` lines then do not fail the run (`_error_lines`), and the stage keeps the best round. Round 0's extraction failing fails the stage, as does a failed stage report: a `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint the stage kept.
     """
@@ -2026,7 +2025,6 @@ def run_post_route_repair(
 
     rounds = plan["rounds"]
     sides = plan["sides"]
-    # A run that gates on electrical violators compares rounds on them too.
     gate = plan.get("gate_electrical", False)
     electrical = plan.get("electrical")
     judged = plan.get("judged")
@@ -2038,7 +2036,7 @@ def run_post_route_repair(
     repaired = 0
     files: dict[int, dict | None] = {}
     timed: dict[int, dict] = {}
-    # Each round that became the best only for having no electrical violators, with the round it replaced.
+    # Each round that became the best only for having fewer electrical violators, with the round it replaced.
     cleaner: dict[int, int] = {}
 
     def _record(round_: int, drcs: int, timing: dict, view: dict) -> None:
@@ -2110,12 +2108,17 @@ def run_post_route_repair(
             return None, _set_aside(round_, "repair", failure, section)
         return files[round_], None
 
-    def _becomes_best(current: dict) -> bool:
+    def _becomes_best(round_: int, current: dict) -> bool:
         prior = timed[best]
         # A clean route is never passed over for one with violations.
-        return _round_improves(current, prior, sides, gate) or (
+        if _round_improves(current, prior, sides) or (
             not current["drcs"] and prior["drcs"]
-        )
+        ):
+            return True
+        if _electrically_cleaner(current, prior, sides):
+            cleaner[round_] = best
+            return True
+        return False
 
     for round_ in range(len(rounds) + 1):
         if round_:
@@ -2151,11 +2154,7 @@ def run_post_route_repair(
             )
             break
         current = {"timing": view, "drcs": drcs}
-        if round_ and _becomes_best(current):
-            if not _round_improves(current, timed[best], sides) and (
-                drcs or not timed[best]["drcs"]
-            ):
-                cleaner[round_] = best
+        if round_ and _becomes_best(round_, current):
             best = round_
         timed[round_] = current
         _record(round_, drcs, timing, view)
@@ -2214,7 +2213,7 @@ def run_post_route_repair(
                         status = "not_kept"
                         why = f"{had}; round {e}'s timing was not reported"
                     else:
-                        status = "kept" if _becomes_best(current) else "not_kept"
+                        status = "kept" if _becomes_best(e, current) else "not_kept"
                         if status == "kept":
                             best = e
                         timed[e] = current
@@ -2224,13 +2223,6 @@ def run_post_route_repair(
                             why += " and is kept"
                         else:
                             why += f" and does not improve on round {source}"
-                            if not gate and _electrically_cleaner(
-                                current, timed[source], sides
-                            ):
-                                why += (
-                                    ": electrical violators decide the kept round "
-                                    "only on a run that gates on them"
-                                )
                     _record(e, drcs, timing, view)
         electrical_round = {
             "round": e,
@@ -2241,8 +2233,9 @@ def run_post_route_repair(
     reason = stop[1]
     if best in cleaner:
         reason += (
-            f"; round {best} has no electrical violators and timing as good as "
-            f"round {cleaner[best]}, which has "
+            f"; round {best} ties round {cleaner[best]} on timing and DRC "
+            f"violations and has fewer electrical violators: "
+            f"{_electrical_desc(timed[best]['timing']) or 'no violators'} against "
             f"{_electrical_desc(timed[cleaner[best]]['timing'])}"
         )
     passed = _passed_over(timed, best, sides)
@@ -2256,7 +2249,12 @@ def run_post_route_repair(
             reason += (
                 "; more `rounds` give the detailed router more passes at the violations"
             )
-    if gate and best in timed and _electrical_violators(timed[best]):
+    if (
+        gate
+        and best not in cleaner
+        and best in timed
+        and _electrical_violators(timed[best])
+    ):
         reason += (
             f"; the kept round {best} has {_electrical_desc(timed[best]['timing'])}"
         )
