@@ -1882,8 +1882,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'create_clock in SDC "{fields.get("sdc")}" line {fields.get("line")} '
                 f"is inside a `{fields.get('enclosing')}` that the tokenizer backend "
                 "does not evaluate, so that clock is skipped for the abc timing "
-                "constraint; an earlier warning says why the tcl reader did not "
-                "read the file"
+                "constraint; the tcl reader evaluates it when it can read the file"
             )
         case "synth.sdc_period_unevaluated":
             return (
