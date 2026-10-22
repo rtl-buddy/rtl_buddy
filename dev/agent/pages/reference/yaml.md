@@ -888,7 +888,7 @@ runs:
 | `global-route-repair`, `post-route-repair` | Platform's | Overrides the platform's block field by field; `null` turns it off. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing) |
 | `mode` | `closure` | `probe` skips timing repair and stops after global route. Not with `harden: true`. See [Probe a floorplan](../concepts/pnr.md#probe-a-floorplan) |
 | `signoff` | Platform's | Overrides the platform's block field by field; `null` turns it off. See [Gate signoff](../concepts/pnr.md#gate-signoff) |
-| `fail-on-electrical` | `false` | `true` fails a routed run with any max-slew, max-capacitance or max-fanout violator, and post-route repair prefers a round without max-slew or max-capacitance violators. It adds `electrical` to `signoff.fail-on` |
+| `fail-on-electrical` | `false` | `true` fails a routed run with any max-slew, max-capacitance or max-fanout violator, and post-route repair counts each round's max-slew and max-capacitance violators, so a round that ties on timing and DRCs wins with fewer. It adds `electrical` to `signoff.fail-on` |
 | `threads` | 1 | Positive integer, or `auto` for the CPUs of the current allocation. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `detailed-route-verbose` | 1 | `detailed_route -verbose` level; 0 silences the iteration log |
 | `checkpoints` | `false` | `true`, a stage, or a list of `floorplan`, `place`, `cts`, `global_route`, `detailed_route`, `post_route_repair`. `[]` writes only the progress log. See [Keep stage checkpoints](../concepts/pnr.md#keep-stage-checkpoints) |
