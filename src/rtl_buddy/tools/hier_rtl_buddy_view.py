@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import NamedTuple
 
 from .vlog_filelist import VlogFilelist
 from ..config.model import ModelConfig
@@ -31,12 +32,52 @@ _VERSION_PROBE_TIMEOUT = 30
 #: First `rtl-buddy-sch` release that accepts `--block-diagram`.
 VIEW_BLOCK_DIAGRAM_MIN_VERSION = "0.8.0"
 
+#: First `rtl-buddy-sch` release with `--params`, `--prune-flags` and the `clock-colors` overlay.
+VIEW_PRESENTATION_MIN_VERSION = "0.12.0"
+
+#: Values `--params` accepts.
+PARAMS_MODES = ("all", "none")
+
+#: Formats that draw a figure; the renderer ignores `--params` and clock colours for the others.
+_FIGURE_FORMATS = ("dot", "mermaid")
+
 #: Unknown-option messages, matched case-insensitively against whitespace-collapsed stderr.
 _UNKNOWN_OPTION_MARKERS = (
     "no such option",
     "unrecognized argument",
     "unknown option",
 )
+
+
+class _GatedOption(NamedTuple):
+    """An `rb hier` option that only some renderer releases accept."""
+
+    #: The `rb hier` spelling, used in messages.
+    option: str
+    min_version: str
+    #: The renderer change that added it.
+    ref: str
+    #: Lower-case stderr text an older renderer prints when it rejects the option.
+    signature: str
+    #: True: `signature` is a flag that must directly follow an unknown-option marker. False: it is the whole rejection.
+    unknown_option: bool = True
+
+    def rejected_in(self, text: str) -> bool:
+        if not self.unknown_option:
+            return self.signature in text
+        # Anchored on the marker so a "possible options" hint that lists the flag is not a rejection of it.
+        # Rich's error box may wrap between the two, leaving a border character.
+        markers = "|".join(re.escape(marker) for marker in _UNKNOWN_OPTION_MARKERS)
+        pattern = rf"(?:{markers})s?[:\s│|]*{re.escape(self.signature)}(?![\w-])"
+        return re.search(pattern, text) is not None
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    """Return the leading numeric release components of `version`; a dev suffix is dropped."""
+    match = re.match(r"(\d+(?:\.\d+)*)", version)
+    if match is None:
+        return ()
+    return tuple(int(part) for part in match.group(1).split("."))
 
 
 def resolve_view_executable(executable: str = "rtl-buddy-view") -> str:
@@ -111,6 +152,9 @@ class RtlBuddyView:
         axi_perf_annotations: str | None = None,
         clock_legend: bool = False,
         block_diagram: bool = False,
+        params: str | None = None,
+        prune_flags: bool = False,
+        clock_colors: str | None = None,
         executable: str = "rtl-buddy-view",
         test_cfg: TestConfig | None = None,
         test_suite_dir: str | None = None,
@@ -127,6 +171,11 @@ class RtlBuddyView:
         self.clock_legend = clock_legend
         # Forwarded only when set so viewers that predate the flag see an unchanged command.
         self.block_diagram = block_diagram
+        # Presentation controls; like `block_diagram`, each is forwarded only when set.
+        self.params = params
+        self.prune_flags = prune_flags
+        # Clock → colour map JSON; passed as `--overlay clock-colors=PATH`.
+        self.clock_colors = clock_colors
         self.executable = executable
         # Set: TB-rooted view with a merged DUT+TB filelist and `--tb-top`.
         self.test_cfg = test_cfg
@@ -217,7 +266,87 @@ class RtlBuddyView:
             cmd += ["--clock-legend"]
         if self.block_diagram:
             cmd += ["--block-diagram"]
+        if self.params is not None:
+            cmd += ["--params", self.params]
+        if self.prune_flags:
+            cmd += ["--prune-flags"]
+        if self.clock_colors is not None:
+            cmd += ["--overlay", f"clock-colors={self.clock_colors}"]
         return cmd
+
+    def _check_option_combinations(self) -> None:
+        """Refuse a presentation control the renderer would ignore.
+
+        The renderer only warns, and its stderr goes to `hier.log`, so an ignored control would be silent.
+        """
+        if self.params is not None and self.params not in PARAMS_MODES:
+            raise FatalRtlBuddyError(
+                f"hier: --params must be one of {', '.join(PARAMS_MODES)}, "
+                f"got {self.params!r}"
+            )
+        figure_only = []
+        if self.params is not None:
+            figure_only.append("--params")
+        if self.clock_colors is not None:
+            figure_only.append("--clock-colors")
+        if figure_only and self.format not in _FIGURE_FORMATS:
+            raise FatalRtlBuddyError(
+                f"hier: {' and '.join(figure_only)} apply only to --format dot "
+                f"or mermaid, not {self.format!r}"
+            )
+        if self.prune_flags and not (self.block_diagram and self.format == "dot"):
+            raise FatalRtlBuddyError(
+                "hier: --prune-flags applies only to a block diagram; add "
+                "--format dot --block-diagram, or drop --prune-flags"
+            )
+        if self.clock_colors is not None and self.cdc_annotations is None:
+            raise FatalRtlBuddyError(
+                "hier: --clock-colors colours the clock domains of a "
+                "--cdc-annotations map; pass one, or drop --clock-colors"
+            )
+
+    def _gated_options(self) -> list[_GatedOption]:
+        """Return the requested options that need a minimum renderer release."""
+        gated = []
+        if self.block_diagram:
+            gated.append(
+                _GatedOption(
+                    "--block-diagram",
+                    VIEW_BLOCK_DIAGRAM_MIN_VERSION,
+                    "rtl-buddy-sch#160",
+                    "--block-diagram",
+                )
+            )
+        if self.params is not None:
+            gated.append(
+                _GatedOption(
+                    "--params",
+                    VIEW_PRESENTATION_MIN_VERSION,
+                    "rtl-buddy-sch#196",
+                    "--params",
+                )
+            )
+        if self.prune_flags:
+            gated.append(
+                _GatedOption(
+                    "--prune-flags",
+                    VIEW_PRESENTATION_MIN_VERSION,
+                    "rtl-buddy-sch#196",
+                    "--prune-flags",
+                )
+            )
+        if self.clock_colors is not None:
+            # `--overlay` itself is old; an older renderer rejects the overlay name instead.
+            gated.append(
+                _GatedOption(
+                    "--clock-colors",
+                    VIEW_PRESENTATION_MIN_VERSION,
+                    "rtl-buddy-sch#196",
+                    "unknown overlay 'clock-colors'",
+                    unknown_option=False,
+                )
+            )
+        return gated
 
     def _captured_stderr(self, log_path: str, cmd_echo: str) -> str:
         """Return the viewer's stderr for this run, without the `cmd_echo` line.
@@ -234,17 +363,27 @@ class RtlBuddyView:
             return ""
         return text.removeprefix(cmd_echo)
 
-    def _check_block_diagram_supported(self, log_path: str, cmd_echo: str) -> None:
-        """Raise a clear error when the viewer's stderr shows it rejected `--block-diagram`.
+    def _check_options_supported(self, log_path: str, cmd_echo: str) -> None:
+        """Raise a clear error when the viewer's stderr shows it rejected a version-gated option.
 
-        The version is probed only on this failure path, so a dev build that supports the flag is never refused up front.
+        The version is probed only on this failure path, so a dev build that supports the options is never refused up front.
         """
+        requested = self._gated_options()
         text = " ".join(self._captured_stderr(log_path, cmd_echo).split()).lower()
-        if "--block-diagram" not in text:
-            return
-        if not any(marker in text for marker in _UNKNOWN_OPTION_MARKERS):
+        rejected = [opt for opt in requested if opt.rejected_in(text)]
+        if not rejected:
             return
         version = probe_view_version(self.executable)
+        installed_key = _version_key(version) if version else None
+        # Name every requested option the installed release lacks: the renderer reports only the first.
+        blocking = [
+            opt
+            for opt in requested
+            if installed_key is None or _version_key(opt.min_version) > installed_key
+        ] or rejected
+        required = max((opt.min_version for opt in blocking), key=_version_key)
+        options = " ".join(opt.option for opt in blocking)
+        refs = ", ".join(dict.fromkeys(opt.ref for opt in blocking))
         installed = (
             f"the installed viewer is {version}"
             if version
@@ -255,22 +394,21 @@ class RtlBuddyView:
             logging.ERROR,
             f"{self._event_name}.tool_too_old",
             model=self.model_cfg.name,
-            option="--block-diagram",
-            required=VIEW_BLOCK_DIAGRAM_MIN_VERSION,
+            option=options,
+            required=required,
             installed=version,
         )
         raise FatalRtlBuddyError(
-            f"hier: --block-diagram needs rtl-buddy-sch >= "
-            f"{VIEW_BLOCK_DIAGRAM_MIN_VERSION} (rtl-buddy-sch#160), but "
-            f"{installed}. Upgrade the renderer, or drop --block-diagram "
-            f"to render the hierarchy instead:\n"
+            f"hier: {options} {'needs' if len(blocking) == 1 else 'need'} "
+            f"rtl-buddy-sch >= {required} ({refs}), but {installed}. "
+            f"Upgrade the renderer, or drop {options}:\n"
             f"    pip uninstall -y rtl-buddy-view && "
-            f'pip install -U "rtl-buddy-sch >= '
-            f'{VIEW_BLOCK_DIAGRAM_MIN_VERSION}"\n'
+            f'pip install -U "rtl-buddy-sch >= {required}"\n'
             f"The renderer's own message is in {log_path}."
         )
 
     def run(self) -> int:
+        self._check_option_combinations()
         if os.sep in self.executable or (os.altsep and os.altsep in self.executable):
             if not (
                 os.path.isfile(self.executable) and os.access(self.executable, os.X_OK)
@@ -308,6 +446,10 @@ class RtlBuddyView:
         ):
             raise FatalRtlBuddyError(
                 f"hier: rdc-annotations file not found: {self.rdc_annotations}"
+            )
+        if self.clock_colors is not None and not os.path.isfile(self.clock_colors):
+            raise FatalRtlBuddyError(
+                f"hier: clock-colors file not found: {self.clock_colors}"
             )
 
         fl_path = self._write_filelist()
@@ -348,9 +490,9 @@ class RtlBuddyView:
                         cwd=self.artefact_dir,
                     )
 
-        if self.block_diagram and proc.returncode != 0:
+        if proc.returncode != 0 and self._gated_options():
             # Failure path only: a healthy render must not pay for a version probe.
-            self._check_block_diagram_supported(log_path, cmd_echo)
+            self._check_options_supported(log_path, cmd_echo)
 
         log_event(
             logger,

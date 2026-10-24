@@ -48,12 +48,16 @@ def _make_old_view(
     version: str | None = "0.7.1",
     option: str = "--block-diagram",
     name: str = "old-view",
+    stderr: str | None = None,
+    exit_code: int = 2,
 ) -> Path:
     """A fake viewer that predates ``option``.
 
-    It rejects the unknown option with a stderr message and non-zero exit and, unless
-    ``version`` is None, answers ``--version``.
+    It rejects the unknown option with a stderr message (``stderr`` replaces the default
+    one) and non-zero exit and, unless ``version`` is None, answers ``--version``.
     """
+    if stderr is None:
+        stderr = f"Error: No such option: {option}"
     script = tmp_path / name
     version_branch = (
         f'if [ "$1" = "--version" ]; then\n'
@@ -64,10 +68,8 @@ def _make_old_view(
         else ""
     )
     script.write_text(
-        "#!/usr/bin/env bash\n"
-        + version_branch
-        + f'echo "Error: No such option: {option}" >&2\n'
-        "exit 2\n"
+        "#!/usr/bin/env bash\n" + version_branch + f"echo {shlex.quote(stderr)} >&2\n"
+        f"exit {exit_code}\n"
     )
     script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return script
@@ -272,6 +274,299 @@ def test_wrapper_block_diagram_does_not_claim_another_flags_rejection(tmp_path: 
     )
     # Propagates as an exit code with no misattributed version error.
     assert view.run() == 2
+
+
+# --params / --prune-flags / --clock-colors
+
+
+def _clock_maps(tmp_path: Path) -> tuple[Path, Path]:
+    """Write a domain map and a clock-colour map; return their paths."""
+    domain_map = tmp_path / "domain_map.json"
+    domain_map.write_text("{}")
+    clock_colors = tmp_path / "clock-colors.json"
+    clock_colors.write_text(
+        json.dumps({"schema_version": "1.0", "clocks": {"clk_a": "blue"}})
+    )
+    return domain_map, clock_colors
+
+
+def test_wrapper_forwards_presentation_controls(tmp_path: Path):
+    """The three sch 0.12 controls reach the renderer in its own spelling."""
+    domain_map, clock_colors = _clock_maps(tmp_path)
+    script, record = _make_fake_view(tmp_path)
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="dot",
+        cdc_annotations=str(domain_map),
+        block_diagram=True,
+        params="none",
+        prune_flags=True,
+        clock_colors=str(clock_colors),
+        executable=str(script),
+    )
+    assert view.run() == 0
+    argv = json.loads(record.read_text())
+    tail = argv[argv.index("--block-diagram") :]
+    assert tail == [
+        "--block-diagram",
+        "--params",
+        "none",
+        "--prune-flags",
+        "--overlay",
+        f"clock-colors={clock_colors}",
+    ]
+
+
+def test_wrapper_omits_presentation_controls_when_unset(tmp_path: Path):
+    """Unset controls leave the command unchanged, so pre-0.12 renderers still work."""
+    script, record = _make_fake_view(tmp_path)
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="dot",
+        block_diagram=True,
+        executable=str(script),
+    )
+    assert view.run() == 0
+    argv = json.loads(record.read_text())
+    assert "--params" not in argv
+    assert "--prune-flags" not in argv
+    assert "--overlay" not in argv
+
+
+def test_wrapper_params_and_clock_colors_apply_to_plain_mermaid(tmp_path: Path):
+    """`--params` and clock colours style any figure, not only a block diagram."""
+    domain_map, clock_colors = _clock_maps(tmp_path)
+    script, record = _make_fake_view(tmp_path)
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="mermaid",
+        cdc_annotations=str(domain_map),
+        params="all",
+        clock_colors=str(clock_colors),
+        executable=str(script),
+    )
+    assert view.run() == 0
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--params") + 1] == "all"
+    assert f"clock-colors={clock_colors}" in argv
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"format": "dot", "prune_flags": True}, "--prune-flags applies only"),
+        (
+            {"format": "mermaid", "block_diagram": True, "prune_flags": True},
+            "--prune-flags applies only",
+        ),
+        ({"format": "tree", "params": "none"}, "--params apply only"),
+        ({"format": "json", "params": "all"}, "--params apply only"),
+        ({"format": "dot", "params": "some"}, "--params must be one of all, none"),
+        (
+            {"format": "json", "clock_colors": True, "cdc": True},
+            "--clock-colors apply only",
+        ),
+        ({"format": "dot", "clock_colors": True}, "--cdc-annotations map"),
+    ],
+)
+def test_wrapper_refuses_a_control_the_renderer_would_ignore(
+    tmp_path: Path, kwargs: dict, expected: str
+):
+    """The renderer only warns about an ignored control, into hier.log, so rtl_buddy
+    refuses it before running anything."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    domain_map, clock_colors = _clock_maps(tmp_path)
+    if kwargs.pop("clock_colors", False):
+        kwargs["clock_colors"] = str(clock_colors)
+    if kwargs.pop("cdc", False):
+        kwargs["cdc_annotations"] = str(domain_map)
+    script, record = _make_fake_view(tmp_path)
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        executable=str(script),
+        **kwargs,
+    )
+    with pytest.raises(FatalRtlBuddyError, match=expected):
+        view.run()
+    assert not record.exists()
+
+
+def test_wrapper_rejects_missing_clock_colors(tmp_path: Path):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    domain_map, _ = _clock_maps(tmp_path)
+    script, record = _make_fake_view(tmp_path)
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="dot",
+        cdc_annotations=str(domain_map),
+        clock_colors=str(tmp_path / "missing.json"),
+        executable=str(script),
+    )
+    with pytest.raises(FatalRtlBuddyError, match="clock-colors file not found"):
+        view.run()
+    assert not record.exists()
+
+
+@pytest.mark.parametrize(
+    ("option", "kwargs"),
+    [
+        ("--params", {"params": "none"}),
+        ("--prune-flags", {"block_diagram": True, "prune_flags": True}),
+    ],
+)
+def test_wrapper_old_viewer_rejects_presentation_option_with_clear_error(
+    tmp_path: Path, option: str, kwargs: dict
+):
+    """A pre-0.12 renderer's unknown-option failure names the 0.12 floor."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.hier_rtl_buddy_view import VIEW_PRESENTATION_MIN_VERSION
+
+    script = _make_old_view(tmp_path, version="0.11.0", option=option)
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="dot",
+        executable=str(script),
+        **kwargs,
+    )
+    with pytest.raises(FatalRtlBuddyError) as exc:
+        view.run()
+    message = str(exc.value)
+    assert f"hier: {option} needs rtl-buddy-sch >= {VIEW_PRESENTATION_MIN_VERSION}" in (
+        message
+    )
+    assert "rtl-buddy-sch#196" in message
+    assert "the installed viewer is 0.11.0" in message
+    assert "hier.log" in message
+    # The release that already has --block-diagram is not blamed for it.
+    assert "--block-diagram" not in message.split("Upgrade")[0]
+
+
+def test_wrapper_old_viewer_rejects_clock_colors_overlay_with_clear_error(
+    tmp_path: Path,
+):
+    """`--overlay` predates 0.12, so an older renderer rejects the overlay name instead."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.hier_rtl_buddy_view import VIEW_PRESENTATION_MIN_VERSION
+
+    domain_map, clock_colors = _clock_maps(tmp_path)
+    script = _make_old_view(
+        tmp_path,
+        version="0.11.0",
+        stderr=(
+            "overlay: unknown overlay 'clock-colors' (known: axi-perf, clock, "
+            "reset); third-party overlays register via the "
+            "'rtl_buddy_view.overlays' entry-point group"
+        ),
+        exit_code=1,
+    )
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="dot",
+        cdc_annotations=str(domain_map),
+        clock_colors=str(clock_colors),
+        executable=str(script),
+    )
+    with pytest.raises(FatalRtlBuddyError) as exc:
+        view.run()
+    message = str(exc.value)
+    assert f"--clock-colors needs rtl-buddy-sch >= {VIEW_PRESENTATION_MIN_VERSION}" in (
+        message
+    )
+    assert "0.11.0" in message
+
+
+def test_wrapper_old_viewer_error_names_every_option_it_lacks(tmp_path: Path):
+    """The renderer reports only its first unknown option, so the error names every
+    requested option the installed release lacks, at the highest floor among them."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.hier_rtl_buddy_view import VIEW_PRESENTATION_MIN_VERSION
+
+    script = _make_old_view(tmp_path, version="0.7.1", option="--block-diagram")
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="dot",
+        block_diagram=True,
+        params="none",
+        prune_flags=True,
+        executable=str(script),
+    )
+    with pytest.raises(FatalRtlBuddyError) as exc:
+        view.run()
+    message = str(exc.value)
+    assert (
+        f"hier: --block-diagram --params --prune-flags need rtl-buddy-sch >= "
+        f"{VIEW_PRESENTATION_MIN_VERSION}"
+    ) in message
+
+
+def test_wrapper_does_not_claim_a_flag_named_only_in_a_suggestion(tmp_path: Path):
+    """A rejection of another flag whose suggestion list names a gated flag is not a
+    version problem for that flag."""
+    script = _make_old_view(
+        tmp_path,
+        stderr=(
+            "Error: No such option: --prune-flag (Possible options: --params, "
+            "--prune-flags)"
+        ),
+    )
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="dot",
+        block_diagram=True,
+        params="none",
+        prune_flags=True,
+        executable=str(script),
+    )
+    assert view.run() == 2
+
+
+def test_wrapper_presentation_controls_do_not_hijack_unrelated_failures(
+    tmp_path: Path,
+):
+    """An ordinary renderer failure, or another overlay's rejection, propagates as
+    an exit code."""
+    domain_map, clock_colors = _clock_maps(tmp_path)
+    script, _ = _make_fake_view(tmp_path, exit_code=1)
+    kwargs = dict(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="dot",
+        cdc_annotations=str(domain_map),
+        block_diagram=True,
+        params="none",
+        prune_flags=True,
+        clock_colors=str(clock_colors),
+    )
+    assert RtlBuddyView(executable=str(script), **kwargs).run() == 1
+
+    other = _make_old_view(
+        tmp_path,
+        stderr="overlay: unknown overlay 'axi-perf' (known: clock, reset)",
+        exit_code=1,
+        name="other-view",
+    )
+    assert RtlBuddyView(executable=str(other), **kwargs).run() == 1
 
 
 def test_wrapper_forwards_axi_perf_annotations_as_overlay(tmp_path: Path):
@@ -600,6 +895,125 @@ def test_rb_hier_view_tb_forwards_block_diagram(minimal_project: Path):
     )
     assert result.exit_code == 0, result.output
     assert "--block-diagram" in json.loads(record.read_text())
+
+
+def test_rb_hier_forwards_presentation_controls_with_resolved_paths(
+    minimal_project: Path, monkeypatch
+):
+    """Relative map paths resolve from the invocation directory, because the renderer
+    runs in the artefact directory."""
+    sub = minimal_project / "figures"
+    sub.mkdir()
+    domain_map, clock_colors = _clock_maps(sub)
+    monkeypatch.chdir(sub)
+    script, record = _make_fake_view(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "hier",
+            "example",
+            "-c",
+            "../models.yaml",
+            "--format",
+            "dot",
+            "--block-diagram",
+            "--params",
+            "none",
+            "--prune-flags",
+            "--cdc-annotations",
+            domain_map.name,
+            "--clock-colors",
+            clock_colors.name,
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--params") + 1] == "none"
+    assert "--prune-flags" in argv
+    assert argv[argv.index("--cdc-annotations") + 1] == str(domain_map.resolve())
+    assert f"clock-colors={clock_colors.resolve()}" in argv
+
+
+def test_rb_hier_prune_flags_without_block_diagram_is_a_usage_error(
+    minimal_project: Path,
+):
+    script, record = _make_fake_view(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "hier",
+            "example",
+            "-c",
+            "models.yaml",
+            "--format",
+            "dot",
+            "--prune-flags",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "--prune-flags applies only" in result.output + str(result.exception or "")
+    assert not record.exists()
+
+
+def test_rb_hier_params_on_old_viewer_reports_the_version(minimal_project: Path):
+    from rtl_buddy.tools.hier_rtl_buddy_view import VIEW_PRESENTATION_MIN_VERSION
+
+    script = _make_old_view(minimal_project, version="0.11.0", option="--params")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "hier",
+            "example",
+            "-c",
+            "models.yaml",
+            "--format",
+            "mermaid",
+            "--params",
+            "none",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code != 0
+    rendered = result.output + str(result.exception or "")
+    assert VIEW_PRESENTATION_MIN_VERSION in rendered
+    assert "0.11.0" in rendered
+    assert "Traceback" not in result.output
+
+
+def test_rb_hier_view_tb_forwards_presentation_controls(minimal_project: Path):
+    script, record = _make_fake_view(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "hier",
+            "basic",
+            "--view",
+            "tb",
+            "--test-config",
+            "tests.yaml",
+            "--format",
+            "dot",
+            "--block-diagram",
+            "--params",
+            "none",
+            "--prune-flags",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--params") + 1] == "none"
+    assert "--prune-flags" in argv
 
 
 def test_rb_hier_unknown_model_exits_nonzero(minimal_project: Path):

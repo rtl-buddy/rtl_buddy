@@ -238,6 +238,7 @@ from .tools.artifact_paths import (
 )
 from .tools.hier_rtl_buddy_view import (
     VIEW_BLOCK_DIAGRAM_MIN_VERSION,
+    VIEW_PRESENTATION_MIN_VERSION,
     RtlBuddyView,
     RtlBuddyViewQuery,
     probe_view_version,
@@ -8338,6 +8339,43 @@ class RtlBuddy:
                 ),
             ),
         ] = False,
+        params: Annotated[
+            str | None,
+            typer.Option(
+                "--params",
+                help=(
+                    "dot and mermaid only: which parameter overrides each "
+                    "instance box shows: 'all' (renderer default, narrowed "
+                    "by `// rbsch: params=` pragmas) or 'none' (no parameter "
+                    "rows, overriding the pragmas); requires rtl-buddy-sch "
+                    f">= {VIEW_PRESENTATION_MIN_VERSION}"
+                ),
+            ),
+        ] = None,
+        prune_flags: Annotated[
+            bool,
+            typer.Option(
+                "--prune-flags",
+                help=(
+                    "with --block-diagram: drop root-port flags that no edge "
+                    "lands on, typically clock and reset ports; requires "
+                    f"rtl-buddy-sch >= {VIEW_PRESENTATION_MIN_VERSION}"
+                ),
+            ),
+        ] = False,
+        clock_colors: Annotated[
+            str | None,
+            typer.Option(
+                "--clock-colors",
+                help=(
+                    "dot and mermaid only, with a clock-domain map: clock to "
+                    "colour map JSON, "
+                    '{"schema_version": "1.0", "clocks": {"<clock>": '
+                    '"<swatch name or #rrggbb>"}}; requires rtl-buddy-sch '
+                    f">= {VIEW_PRESENTATION_MIN_VERSION}"
+                ),
+            ),
+        ] = None,
         tool: Annotated[
             str,
             typer.Option("--tool", help="path to the rtl-buddy-view binary"),
@@ -8351,6 +8389,7 @@ class RtlBuddy:
                 f"hier: --view must be 'dut' or 'tb', got {view!r}"
             )
 
+        test_cfg = None
         if view == "tb":
             from .config.suite import SuiteConfig
 
@@ -8371,46 +8410,40 @@ class RtlBuddy:
                 output=output,
                 view="tb",
             )
-            runner = RtlBuddyView(
-                name=self.name + "/hier",
-                model_cfg=model_cfg,
-                suite_dir=str(ctx.command_root),
+        else:
+            ctx = self._enter_command_context(primary_config=model_config)
+            model_cfg = ModelConfigLoader(str(ctx.primary_config)).get_model(name)
+            log_event(
+                logger,
+                logging.INFO,
+                "command.hier",
+                command="hier",
+                model=name,
                 format=fmt,
-                output=str(ctx.resolve_input(output)) if output else None,
-                frontend=frontend,
-                cdc_annotations=cdc_annotations,
-                rdc_annotations=rdc_annotations,
-                clock_legend=clock_legend,
-                block_diagram=block_diagram,
-                executable=tool,
-                test_cfg=test_cfg,
+                output=output,
+                view="dut",
             )
-            raise typer.Exit(runner.run())
 
-        ctx = self._enter_command_context(primary_config=model_config)
-        model_cfg = ModelConfigLoader(str(ctx.primary_config)).get_model(name)
-        log_event(
-            logger,
-            logging.INFO,
-            "command.hier",
-            command="hier",
-            model=name,
-            format=fmt,
-            output=output,
-            view="dut",
-        )
+        def _input(path: str | None) -> str | None:
+            # The renderer runs in the artefact directory, so relative paths must be resolved first.
+            return str(ctx.resolve_input(path)) if path else None
+
         runner = RtlBuddyView(
             name=self.name + "/hier",
             model_cfg=model_cfg,
             suite_dir=str(ctx.command_root),
             format=fmt,
-            output=str(ctx.resolve_input(output)) if output else None,
+            output=_input(output),
             frontend=frontend,
-            cdc_annotations=cdc_annotations,
-            rdc_annotations=rdc_annotations,
+            cdc_annotations=_input(cdc_annotations),
+            rdc_annotations=_input(rdc_annotations),
             clock_legend=clock_legend,
             block_diagram=block_diagram,
+            params=params,
+            prune_flags=prune_flags,
+            clock_colors=_input(clock_colors),
             executable=tool,
+            test_cfg=test_cfg,
         )
         raise typer.Exit(runner.run())
 
