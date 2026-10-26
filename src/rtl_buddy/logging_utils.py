@@ -2923,9 +2923,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "hier.tool_too_old":
             installed = fields.get("installed") or "an older build"
             return (
-                f"hier: the renderer rejected {fields.get('option')} — "
-                f"{installed} is installed, and that option needs "
-                f"rtl-buddy-sch >= {fields.get('required')}"
+                f"hier: {fields.get('option')} requires rtl-buddy-sch >= "
+                f"{fields.get('required')}, and {installed} is installed"
             )
         case "graph_config.suite_load_failed":
             return (
