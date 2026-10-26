@@ -12,7 +12,11 @@ from ..cov import model as model_mod
 from ..cov.raw import METRICS as cov_metrics
 from .artifact_paths import COV_DIRNAME
 from .coverview import CoverviewPacker
-from .vlog_cov import CoverageMetrics, VlogCov, aggregate_cover_records
+from .vlog_cov import (
+    CoverageMetrics,
+    aggregate_cover_records,
+    coverage_collector_for,
+)
 
 
 class CoverageReporter:
@@ -29,14 +33,14 @@ class CoverageReporter:
         self.merge_mem_bytes = merge_mem_bytes
 
     def _get_cov_tool(self):
-        """Create a `VlogCov` for the platform-selected builder's simulator family.
+        """Create the coverage collector for the platform-selected builder's simulator family.
 
         A per-test or per-suite ``builder:`` override is not consulted, so the family can
         differ from the one a test simulated on unless ``--builder`` is given.
         """
         simulator_family = self.root_cfg.get_rtl_builder_cfg().get_simulator_family()
-        return VlogCov(
-            simulator_name=simulator_family,
+        return coverage_collector_for(
+            simulator_family,
             use_lcov=self.root_cfg.get_use_lcov(simulator_family),
             root_cfg=self.root_cfg,
             merge_jobs=self.merge_jobs,
@@ -912,8 +916,14 @@ class CoverageReporter:
             coverage["merge_failed"] = True
             coverage["failed_metrics"] = failed
             lost = ", ".join(failed) if failed else "no metric"
+            family = self.root_cfg.get_rtl_builder_cfg().get_simulator_family()
+            tool = (
+                "the xezim count-sum"
+                if family == "xezim"
+                else "verilator_coverage --write"
+            )
             metadata.append(
-                "Coverage merge FAILED: verilator_coverage --write wrote no merged "
+                f"Coverage merge FAILED: {tool} wrote no merged "
                 f"database, so {lost} read FAIL (measurement lost), not UNSP "
                 "(not instrumented) — see the coverage.merge.failed event"
             )

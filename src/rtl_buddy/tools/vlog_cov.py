@@ -1385,3 +1385,32 @@ class VlogCov:
         if total == 0:
             return None
         return hit / total
+
+
+def coverage_collector_for(
+    simulator_family,
+    *,
+    use_lcov=False,
+    root_cfg=None,
+    merge_jobs=None,
+    merge_mem_bytes=None,
+):
+    """Return the coverage collector for a simulator family.
+
+    xezim gets :class:`~rtl_buddy.tools.xezim_cov.XezimCov`; every other family gets
+    :class:`VlogCov`, whose ``is_supported()`` admits only Verilator, so an unsupported
+    family still collects nothing.
+    """
+    if simulator_family == "xezim":
+        from .xezim_cov import XezimCov
+
+        cls = XezimCov
+    else:
+        cls = VlogCov
+    return cls(
+        simulator_name=simulator_family,
+        use_lcov=use_lcov,
+        root_cfg=root_cfg,
+        merge_jobs=merge_jobs,
+        merge_mem_bytes=merge_mem_bytes,
+    )

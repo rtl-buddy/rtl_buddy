@@ -34,7 +34,7 @@ from .vlog_filelist import VlogFilelist
 from .vlog_post import VlogPost
 from .vlog_post import UvmVlogPost
 from .vlog_post import grade_unknown_sim_exit
-from .vlog_cov import VlogCov
+from .vlog_cov import coverage_collector_for
 from .artifact_paths import (
     ARTIFACT_DIRNAME,
     BUILD_DIR_PREFIX,
@@ -150,6 +150,8 @@ TEST_LOG_NAME = "test.log"
 TEST_ERR_NAME = "test.err"
 TEST_RANDSEED_NAME = "test.randseed"
 COVERAGE_DAT_NAME = "coverage.dat"
+# xezim's per-test coverage file (its `xezim_cov.json`, routed by `XEZIM_COV_DB`).
+XEZIM_COVERAGE_NAME = "coverage.json"
 SIMV_NAME = "simv"
 ICARUS_SNAPSHOT_NAME = "simv.vvp"
 
@@ -158,6 +160,7 @@ _RUN_OUTPUT_NAMES = (
     TEST_LOG_NAME,
     TEST_ERR_NAME,
     COVERAGE_DAT_NAME,
+    XEZIM_COVERAGE_NAME,
     COMPILE_RETRY_TRANSCRIPT_NAME,
     RESULT_JSON_NAME,
 )
@@ -539,6 +542,7 @@ _MANAGED_OUTPUT_FILE_PATTERNS = (
     TEST_ERR_NAME,
     TEST_RANDSEED_NAME,
     COVERAGE_DAT_NAME,
+    XEZIM_COVERAGE_NAME,
     SIMV_NAME,
     ICARUS_SNAPSHOT_NAME,
     SHARED_BUILD_STAMP_NAME,
@@ -1830,6 +1834,12 @@ class VlogSim:
 
     def _coverage_enabled(self):
         compile_opts = self._get_builder_compile_opts()
+        if self._get_simulator_family() == "xezim":
+            # xezim records assertion counts in every run; code coverage is the gate.
+            return any(
+                opt.startswith("--code-coverage") or opt.startswith("+cover")
+                for opt in compile_opts
+            )
         if any(opt.startswith("--coverage") for opt in compile_opts):
             return True
         # Verilator `--coverage-user` from assertions=true is enough to produce a
@@ -2006,8 +2016,26 @@ class VlogSim:
     def _get_extra_sim_env(self, run_id=None) -> dict:
         return {}
 
+    def _get_cov_raw_name(self):
+        """The per-test raw coverage file name for this builder's simulator family."""
+        if self._get_simulator_family() == "xezim":
+            return XEZIM_COVERAGE_NAME
+        return COVERAGE_DAT_NAME
+
     def _get_cov_path(self, run_id=None):
-        return str(Path(self._get_artifact_dir(run_id=run_id)) / COVERAGE_DAT_NAME)
+        return str(
+            Path(self._get_artifact_dir(run_id=run_id)) / self._get_cov_raw_name()
+        )
+
+    def _get_coverage_sim_env(self, run_id=None) -> dict:
+        """Env vars that route the simulator's coverage output to `_get_cov_path`.
+
+        xezim writes its coverage file where `XEZIM_COV_DB` says; Verilator takes a
+        plusarg on the run line instead (see `execute`), so it gets nothing here.
+        """
+        if self._get_simulator_family() != "xezim" or not self._coverage_enabled():
+            return {}
+        return {"XEZIM_COV_DB": self._get_cov_abspath(run_id=run_id)}
 
     def _get_cov_abspath(self, run_id=None):
         return str(Path(self._get_cov_path(run_id=run_id)).resolve())
@@ -5515,7 +5543,10 @@ class VlogSim:
             f"Running simulation {self.test_name}{'' if run_id is None else f' #{run_id:04d}'}",
             spinner="dots12",
         ):
-            extra_env = self._get_extra_sim_env(run_id=run_id)
+            extra_env = {
+                **self._get_extra_sim_env(run_id=run_id),
+                **self._get_coverage_sim_env(run_id=run_id),
+            }
             sim_env = {**os.environ, **extra_env} if extra_env else None
             with open(err_path, "w+") as test_err_fp:
                 with open(log_path, "w+") as test_out_fp:
@@ -5630,8 +5661,8 @@ class VlogSim:
             results.results, sim_returncode, test=self.test_name, run_id=run_id
         )
         if self._coverage_enabled():
-            cov = VlogCov(
-                simulator_name=self._get_simulator_family(),
+            cov = coverage_collector_for(
+                self._get_simulator_family(),
                 use_lcov=self.root_cfg.get_use_lcov(self._get_simulator_family()),
                 root_cfg=self.root_cfg,
             )

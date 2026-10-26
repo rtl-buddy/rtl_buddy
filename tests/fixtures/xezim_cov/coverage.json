@@ -1,0 +1,64 @@
+{
+  "sim_time": 135,
+  "assertion_sites": 2,
+  "assertion_pass_total": 1,
+  "assertion_fail_total": 0,
+  "assertions": [
+    {"file": "tb_counter.sv", "line": 14, "span_start": 241, "kind": "cover", "pass": 0, "fail": 0},
+    {"file": "tb_counter.sv", "line": 15, "span_start": 290, "kind": "cover", "pass": 1, "fail": 0}
+  ],
+  "covergroups": [
+  ],
+  "code_coverage": {
+    "kinds": ["statement", "branch", "toggle"],
+    "statement": {"covered": 14, "total": 14, "percent": 100.00},
+    "branch": {"covered": 3, "total": 3, "percent": 100.00},
+    "toggle": {"covered": 19, "total": 22, "percent": 86.36},
+    "scopes": [
+      {
+        "scope": "tb_counter",
+        "design_unit": "tb_counter",
+        "kind": "instance",
+        "statement": {"covered": 11, "total": 11, "percent": 100.00},
+        "branch": {"covered": 0, "total": 0, "percent": null},
+        "toggle": {"covered": 12, "total": 14, "percent": 85.71},
+        "statements": [{"file": "tb_counter.sv", "line": 12, "kind": "always", "count": 27}, {"file": "tb_counter.sv", "line": 12, "kind": "statement", "count": 27}, {"file": "tb_counter.sv", "line": 18, "kind": "delay", "count": 1}, {"file": "tb_counter.sv", "line": 18, "kind": "statement", "count": 1}, {"file": "tb_counter.sv", "line": 19, "kind": "statement", "count": 1}, {"file": "tb_counter.sv", "line": 20, "kind": "repeat", "count": 1}, {"file": "tb_counter.sv", "line": 20, "kind": "event", "count": 10}, {"file": "tb_counter.sv", "line": 21, "kind": "statement", "count": 1}, {"file": "tb_counter.sv", "line": 22, "kind": "repeat", "count": 1}, {"file": "tb_counter.sv", "line": 22, "kind": "event", "count": 2}, {"file": "tb_counter.sv", "line": 23, "kind": "statement", "count": 1}],
+        "branches": [],
+        "toggles": [{"signal": "clk", "width": 1, "rise": [13], "fall": [13]}, {"signal": "count", "width": 4, "rise": [5, 3, 1, 1], "fall": [5, 2, 1, 0]}, {"signal": "enable", "width": 1, "rise": [1], "fall": [1]}, {"signal": "rst_n", "width": 1, "rise": [1], "fall": [0]}]
+      },
+      {
+        "scope": "tb_counter.dut",
+        "design_unit": "counter",
+        "kind": "instance",
+        "statement": {"covered": 3, "total": 3, "percent": 100.00},
+        "branch": {"covered": 3, "total": 3, "percent": 100.00},
+        "toggle": {"covered": 7, "total": 8, "percent": 87.50},
+        "statements": [{"file": "counter.sv", "line": 13, "kind": "always_ff", "count": 14}, {"file": "counter.sv", "line": 14, "kind": "statement", "count": 2}, {"file": "counter.sv", "line": 15, "kind": "statement", "count": 10}],
+        "branches": [{"file": "counter.sv", "line": 14, "kind": "if", "arms": [{"line": 14, "arm": "if", "count": 2}, {"line": 15, "arm": "else if", "count": 10}, {"line": 14, "arm": "else (implicit)", "count": 2}]}],
+        "toggles": [{"signal": "count", "width": 4, "rise": [5, 3, 1, 1], "fall": [5, 2, 1, 0]}]
+      }
+    ],
+    "design_units": [
+      {
+        "design_unit": "counter",
+        "instances": 1,
+        "statement": {"covered": 3, "total": 3, "percent": 100.00},
+        "branch": {"covered": 3, "total": 3, "percent": 100.00},
+        "toggle": {"covered": 7, "total": 8, "percent": 87.50},
+        "statements": [{"file": "counter.sv", "line": 13, "kind": "always_ff", "count": 14}, {"file": "counter.sv", "line": 14, "kind": "statement", "count": 2}, {"file": "counter.sv", "line": 15, "kind": "statement", "count": 10}],
+        "branches": [{"file": "counter.sv", "line": 14, "kind": "if", "arms": [{"line": 14, "arm": "if", "count": 2}, {"line": 15, "arm": "else if", "count": 10}, {"line": 14, "arm": "else (implicit)", "count": 2}]}],
+        "toggles": [{"signal": "count", "width": 4, "rise": [5, 3, 1, 1], "fall": [5, 2, 1, 0]}]
+      },
+      {
+        "design_unit": "tb_counter",
+        "instances": 1,
+        "statement": {"covered": 11, "total": 11, "percent": 100.00},
+        "branch": {"covered": 0, "total": 0, "percent": null},
+        "toggle": {"covered": 12, "total": 14, "percent": 85.71},
+        "statements": [{"file": "tb_counter.sv", "line": 12, "kind": "always", "count": 27}, {"file": "tb_counter.sv", "line": 12, "kind": "statement", "count": 27}, {"file": "tb_counter.sv", "line": 18, "kind": "delay", "count": 1}, {"file": "tb_counter.sv", "line": 18, "kind": "statement", "count": 1}, {"file": "tb_counter.sv", "line": 19, "kind": "statement", "count": 1}, {"file": "tb_counter.sv", "line": 20, "kind": "repeat", "count": 1}, {"file": "tb_counter.sv", "line": 20, "kind": "event", "count": 10}, {"file": "tb_counter.sv", "line": 21, "kind": "statement", "count": 1}, {"file": "tb_counter.sv", "line": 22, "kind": "repeat", "count": 1}, {"file": "tb_counter.sv", "line": 22, "kind": "event", "count": 2}, {"file": "tb_counter.sv", "line": 23, "kind": "statement", "count": 1}],
+        "branches": [],
+        "toggles": [{"signal": "clk", "width": 1, "rise": [13], "fall": [13]}, {"signal": "count", "width": 4, "rise": [5, 3, 1, 1], "fall": [5, 2, 1, 0]}, {"signal": "enable", "width": 1, "rise": [1], "fall": [1]}, {"signal": "rst_n", "width": 1, "rise": [1], "fall": [0]}]
+      }
+    ]
+  }
+}

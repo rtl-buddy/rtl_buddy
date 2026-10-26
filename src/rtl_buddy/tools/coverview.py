@@ -339,6 +339,9 @@ class CoverviewPacker:
         Convert one raw Verilator coverage metric into an LCOV-like `.info` file by filtering the
         raw database to one record type and running `verilator_coverage --write-info`.
         """
+        if not str(raw_path).endswith(".dat"):
+            # Not a Verilator database (xezim writes JSON): no per-type dataset.
+            return None
         metric_dat = os.path.join(outdir, f"coverage_{metric_name}_{dataset_name}.dat")
         metric_info = os.path.join(
             outdir, f"coverage_{metric_name}_{dataset_name}.info"

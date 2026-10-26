@@ -13,7 +13,7 @@ Use Verilator by default. Use Icarus Verilog for lightweight smoke tests, or whe
 | SystemVerilog procedural code | Yes | Yes | Yes |
 | Concurrent SVA and `cover property` | Yes | No | Yes |
 | `interface class` frameworks | Yes | No | Yes |
-| RTL Buddy line/toggle coverage | Yes | No | No |
+| RTL Buddy line/toggle coverage | Yes | No | Yes (statement-level) |
 | cocotb through VPI | Yes | Yes | Yes (VCS-flavour VPI library) |
 | Default waveform | FST | VCD | FST, with `--fst` |
 
@@ -41,4 +41,4 @@ To convert an Icarus dump to FST after simulation, set `wave-format: fst-postpro
 
 ## Collect coverage
 
-RTL Buddy coverage supports Verilator only and follows the platform-selected builder. Pass `--builder verilator` or make Verilator the platform default; a suite- or test-level override alone is not enough. See [Coverage uses the platform builder](../known-issues.md#coverage-uses-the-platform-builder).
+RTL Buddy coverage supports Verilator and xezim and follows the platform-selected builder. Pass `--builder <name>` or make that builder the platform default; a suite- or test-level override alone is not enough. See [Coverage uses the platform builder](../known-issues.md#coverage-uses-the-platform-builder). xezim coverage is statement-level and has no expression metric; see [Collect coverage with xezim](coverage.md#collect-coverage-with-xezim).

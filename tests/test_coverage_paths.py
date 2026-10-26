@@ -301,7 +301,9 @@ def test_vlog_sim_post_passes_suite_work_dir_as_coverage_source_root(
     )
 
     monkeypatch.setattr(vlog_sim_module, "VlogPost", FakePost)
-    monkeypatch.setattr(vlog_sim_module, "VlogCov", lambda **_kwargs: FakeCov())
+    monkeypatch.setattr(
+        vlog_sim_module, "coverage_collector_for", lambda *_a, **_kwargs: FakeCov()
+    )
     (tmp_path / "verif" / "sandbox").mkdir(parents=True, exist_ok=True)
 
     results = sim.post()
