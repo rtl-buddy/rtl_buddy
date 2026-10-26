@@ -199,11 +199,16 @@ def _artefacts(project_root: Path, scope_dir: Path, test_dir: Path) -> dict:
         ("log", "test.log"),
         ("err", "test.err"),
         ("randseed", "test.randseed"),
-        ("coverage", "coverage.dat"),
     ):
         candidate = scope_dir / name
         if candidate.is_file():
             found[key] = _rel(project_root, candidate)
+    # The raw coverage file: Verilator's `coverage.dat`, else xezim's `coverage.json`.
+    for name in ("coverage.dat", "coverage.json"):
+        candidate = scope_dir / name
+        if candidate.is_file():
+            found["coverage"] = _rel(project_root, candidate)
+            break
     # Whichever dumper ran last wins, as for `rb wave` and `rb axi-profile`.
     traces = [
         scope_dir / name for name in TRACE_CANDIDATES if (scope_dir / name).is_file()

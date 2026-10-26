@@ -1,10 +1,10 @@
 ---
-description: Collect Verilator coverage, merge and export results, and inspect saved coverage by file, module, point, and test.
+description: Collect Verilator or xezim coverage, merge and export results, and inspect saved coverage by file, module, point, and test.
 ---
 
 # Coverage
 
-rtl_buddy collects Verilator coverage during tests, can merge it across a run, and saves a structured model that `rb cov`, machine output, MCP and the hub read.
+rtl_buddy collects Verilator or xezim coverage during tests, can merge it across a run, and saves a structured model that `rb cov`, machine output, MCP and the hub read.
 
 ```bash
 rb -M cov regression --coverage-merge --coverage-html
@@ -36,6 +36,37 @@ rb -M cov regression
 ```
 
 `cfg-coverage.name` must match the simulator family. `use-lcov: true` enables LCOV conversion and HTML generation. Coverview packaging is configured under `cfg-coverview`; see [YAML formats](../reference/yaml.md#root_configyaml).
+
+## Collect coverage with xezim
+
+A xezim builder collects coverage when a `compile-time` option starts with `--code-coverage` or `+cover`. SVA `assertions:` alone does not turn it on. Add a `cfg-coverage` entry named `xezim`:
+
+```yaml
+cfg-rtl-builder:
+  - name: xezim
+    builder: xezim
+    builder-simv: simv
+    builder-opts:
+      cov:
+        compile-time: --code-coverage=all
+        run-time: ""
+
+cfg-coverage:
+  - name: xezim
+    use-lcov: true
+```
+
+Each run writes `artefacts/<test>/coverage.json` (`run-NNNN/coverage.json` for `randtest`) through `XEZIM_COV_DB`. The merge flags work as for Verilator. `--coverage-merge` sums the per-test files in Python into `cov_dir/coverage_merged.json`; there is no xezim merge tool, and `merge-timeout` bounds the merge. The points read differently from Verilator's:
+
+| Metric | xezim points |
+|---|---|
+| Line | One point per statement, so a line with two statements has two points. `column` numbers the statements on a line from 0. |
+| Branch | One point per arm, on the arm's line, named by the arm (`if`, `else`, a case item). |
+| Toggle | One point per bit, named `sig[i]`. A bit is hit only when it rose and fell. xezim counts each direction separately, so its own toggle percentage is higher. Toggles have no source line: they are filed under the module's file at line 0. |
+| Cover | One point per `cover` statement, named by its label (`label: cover property ...`), else `cover@<line>`. These give the `F:` figure. Covergroups are not imported. |
+| Expression | Not collected. Shows as `UNSP`. |
+
+LCOV export, and the HTML built from it, has line and branch data only. A line's count is its highest statement count, and each branch construct is one block on the construct's line. Coverview gets no toggle or expression datasets.
 
 ## Merge and export results
 
@@ -123,7 +154,7 @@ Source points come from the coverage model. A run with only LCOV fallback record
 
 ## Inspect cover-property hits
 
-For Verilator, machine output lists each labeled user cover point as `{name, file, line, module, hits}` on the test result and in the run-level aggregate. The data comes from the per-test `coverage.dat`; no merge flag is needed. Hits are combined across tests by file, line, name and module, so the same included property compiled into different modules stays separate.
+For Verilator and xezim, machine output lists each labeled user cover point as `{name, file, line, module, hits}` on the test result and in the run-level aggregate. The data comes from the per-test `coverage.dat` (or xezim `coverage.json`); no merge flag is needed. Hits are combined across tests by file, line, name and module, so the same included property compiled into different modules stays separate.
 
 Other simulator families omit the field. Omitted means not collected, not zero coverage.
 
@@ -131,7 +162,7 @@ Other simulator families omit the field. Omitted means not collected, not zero c
 
 Every coverage run writes `<command root>/cov_dir/manifest.json`, even without merging, and `cov_dir/coverage-model.json` with the per-file, per-module and per-point detail. `rb cov` and the hub read these; you do not need to open them.
 
-Toggle, expression and labeled cover detail need raw Verilator databases. Without them the model falls back to LCOV and holds only unnamed line and branch data.
+Toggle, expression and labeled cover detail need the raw per-test files (`coverage.dat`, or `coverage.json` for xezim). Without them the model falls back to LCOV and holds only unnamed line and branch data.
 
 ## Skip the model when nothing will read it
 

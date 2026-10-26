@@ -4,7 +4,7 @@
 #
 """The structured coverage model: a versioned, simulator-agnostic JSON document of what a run covered.
 
-- Each file carries its individual line, branch, toggle, expression and cover points, not only percentages. Toggle and expression detail comes from the raw database (:mod:`rtl_buddy.cov.raw`).
+- Each file carries its individual line, branch, toggle, expression and cover points, not only percentages. Toggle and expression detail comes from the raw database (:mod:`rtl_buddy.cov.raw` for Verilator, :mod:`rtl_buddy.cov.xezim_raw` for xezim, chosen by extension).
 - Each point carries per-test hit counts (attribution) unless built with ``--coverage-model totals``; ``attribution`` records which.
 - Points are keyed by project-relative source path via :mod:`rtl_buddy.cov.source_paths`.
 - ``totals`` counts points with the elaborated module in their identity (:func:`~rtl_buddy.cov.raw.point_key`), one per record of the merged raw database, in the same unit at every scope; ``source_totals`` drops ``module`` so a point is hit when any elaboration hit it (:func:`~rtl_buddy.cov.raw.source_point_key`). Both appear on the run, each test and each file; see ``docs/concepts/coverage.md``.
@@ -30,6 +30,7 @@ from .raw import (
     source_point_key,
 )
 from .source_paths import SourcePathResolver
+from .xezim_raw import is_xezim_raw, parse_xezim_records
 
 #: Bumped when the document's shape changes incompatibly; adding a key is compatible.
 MODEL_SCHEMA_VERSION = 1
@@ -321,7 +322,9 @@ def _resolver(project_root: str, base_dir, source_roots) -> SourcePathResolver:
 
 
 def _raw_records(raw_path: str, project_root: str, source_roots):
-    records = parse_raw_records(raw_path)
+    # The raw format follows the simulator: Verilator's `.dat`, xezim's `.json`.
+    parse = parse_xezim_records if is_xezim_raw(raw_path) else parse_raw_records
+    records = parse(raw_path)
     if not records:
         return []
     resolver = _resolver(project_root, os.path.dirname(raw_path), source_roots)

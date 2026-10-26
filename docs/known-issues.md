@@ -27,6 +27,10 @@ See [Coverage](concepts/coverage.md#per-elaboration-vs-source-point-figures).
 
 Coverage collection and labels use the platform-selected builder, even when a suite or test selects another `builder:`. A mismatch can mislabel or misparse coverage. Pass `--builder <name>` for the run, or make that builder the platform default. See [YAML Formats](reference/yaml.md).
 
+## xezim coverage figures differ from xezim's own report
+
+rtl_buddy scores a xezim toggle bit as hit only when it both rose and fell, while xezim counts each direction as a point, so `T:` reads lower than xezim's toggle percentage. Line points are statements, so a line holding two statements counts twice. LCOV and HTML hold line and branch only. See [Collect coverage with xezim](concepts/coverage.md#collect-coverage-with-xezim).
+
 ## Coverage merging runs in the submitting process without a Slurm backend
 
 Under `--dispatch slurm` the coverage tail (merge, model build, LCOV exports and manifest) runs as one job sized by `cfg-dispatch.coverage` (see [Run the coverage tail as a job](concepts/dispatch.md#run-the-coverage-tail-as-a-job)). Without dispatch, and under `--dispatch local-parallel`, it runs in the process that invoked `rb`.

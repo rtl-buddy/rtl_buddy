@@ -2693,6 +2693,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'coverage metric "{fields.get("metric")}" summary missing'
                 f" for {fields.get('raw_path')}"
             )
+        case "coverage.raw_unreadable":
+            return (
+                f"coverage file {fields.get('path')} is unreadable;"
+                " no coverage collected for this test"
+            )
         case "coverage.metric.unsupported":
             return (
                 f'coverage metric "{fields.get("metric")}" unsupported'
