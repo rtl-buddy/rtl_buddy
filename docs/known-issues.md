@@ -56,7 +56,7 @@ Python `print()` output is captured as `hook.stdout` events, but child-process o
 
 ## `toplevel:` must name the testbench in a plain SystemVerilog test
 
-For a plain SystemVerilog testbench, `toplevel:` becomes Verilator `--top-module`, VCS `-top` or Icarus `-s`. It must name the testbench, not the DUT. cocotb and SystemC testbenches need no review.
+For a plain SystemVerilog testbench, `toplevel:` becomes Verilator `--top-module`, VCS `-top` or Icarus and xezim `-s`. It must name the testbench, not the DUT. cocotb and SystemC testbenches need no review.
 
 - A `toplevel:` naming the DUT compiles, then the simulation exits at once and the test ends `NA` with `no PASS/FAIL markers found in .../test.log; result is NA`. Nothing in that output names `toplevel:`. A DUT with unconnected interface ports fails with `%Error-UNSUPPORTED: Interfaced port on top level module` instead.
 - Without `toplevel:`, the top is chosen from filelist order, not the testbench `name`.
@@ -162,13 +162,17 @@ On a cluster with different mount paths per node, a build stamp from one node ma
 A build stamp decides whether a shared build can be reused.
 
 - **Verilator** tracks the headers, libraries, standard includes and binary it reports consuming. Inputs under the project root are compared by content hash; inputs outside it, and any single input above 64 MB, by size and mtime.
-- **VCS and Icarus** report no dependencies, so their stamps list every file in each `+incdir+` and `-y` directory and compare content. Adding, removing or editing a file there rebuilds, even one nothing includes. Verilator also compares that listing by file name.
+- **VCS, Icarus and xezim** report no dependencies, so their stamps list every file in each `+incdir+` and `-y` directory and compare content. Adding, removing or editing a file there rebuilds, even one nothing includes. Verilator also compares that listing by file name.
 
 The listing skips dot-directories, `artefacts/`, `obj_dir*`, a coverage run's `cov_dir/` and HTML/Coverview reports, and rtl_buddy's own outputs, including every `rtl_buddy.log`, so a project directory with one of those names under an include path is not tracked. An `+incdir+` on a large tree slows every reuse check.
 
 Do not point `+incdir+` at a directory a simulator or tool writes into: its scratch files change the listing and every run recompiles.
 
-Environment variables, undeclared tool inputs and symlinked subdirectories are not tracked. For VCS and Icarus, an include resolved relative to the including file is also untracked. Force a compile with `--rebuild` after editing any of these.
+Environment variables, undeclared tool inputs and symlinked subdirectories are not tracked. For VCS, Icarus and xezim, an include resolved relative to the including file is also untracked. Force a compile with `--rebuild` after editing any of these.
+
+## xezim builds read sources at run time
+
+A xezim `simv` is a wrapper that re-reads the sources each run, through a copy of `run.f` kept in the build directory. With `shared-build-root`, a build compiled in one checkout reads that checkout's sources when another checkout reuses it, so removing the first checkout breaks the reuse. Pass `--rebuild` after moving or deleting a checkout.
 
 ## Shared-build locking
 

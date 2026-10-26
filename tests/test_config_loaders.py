@@ -88,6 +88,19 @@ def test_resolve_extra_sim_timeout_zero_when_neither_set():
     assert root.resolve_extra_sim_timeout(_verilator_builder()) == 0
 
 
+def test_rtl_builder_empty_run_time_adds_no_argument():
+    """`run-time: ""` must not pass an empty argument, which xezim reads as a source file."""
+    cfg = from_yaml(
+        RtlBuilderConfig,
+        _VERILATOR_BUILDER_YAML.replace(
+            'run-time: "+verilator+rand+reset+2"', 'run-time: ""'
+        ).replace('compile-time: "--binary -sv -o simv"', 'compile-time: " -sv  "'),
+    )
+    assert cfg.get_run_time_opts("reg") == []
+    assert cfg.get_run_time_opts("reg", seed=3) == ["+verilator+seed+3"]
+    assert cfg.get_compile_time_opts("reg") == ["-sv"]
+
+
 def test_rtl_builder_simulator_family_from_explicit_field():
     cfg = from_yaml(
         RtlBuilderConfig,

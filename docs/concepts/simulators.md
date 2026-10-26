@@ -1,23 +1,29 @@
 ---
-description: Choose between Verilator and Icarus Verilog simulation backends and understand their coverage and waveform differences.
+description: Choose between Verilator, Icarus Verilog and xezim simulation backends and understand their coverage and waveform differences.
 ---
 
 # Simulation Backends
 
-Use Verilator by default. Use Icarus Verilog for lightweight smoke tests, or where installing Verilator is impractical.
+Use Verilator by default. Use Icarus Verilog for lightweight smoke tests, or where installing Verilator is impractical. Use xezim for a 4-state simulator that checks concurrent SVA without a C++ build step.
 
 ## Choose a backend
 
-| Capability | Verilator | Icarus 12 |
-| --- | --- | --- |
-| SystemVerilog procedural code | Yes | Yes |
-| Concurrent SVA and `cover property` | Yes | No |
-| `interface class` frameworks | Yes | No |
-| RTL Buddy line/toggle coverage | Yes | No |
-| cocotb through VPI | Yes | Yes |
-| Default waveform | FST | VCD |
+| Capability | Verilator | Icarus 12 | xezim |
+| --- | --- | --- | --- |
+| SystemVerilog procedural code | Yes | Yes | Yes |
+| Concurrent SVA and `cover property` | Yes | No | Yes |
+| `interface class` frameworks | Yes | No | Yes |
+| RTL Buddy line/toggle coverage | Yes | No | No |
+| cocotb through VPI | Yes | Yes | Yes (VCS-flavour VPI library) |
+| Default waveform | FST | VCD | FST, with `--fst` |
 
 Verilator compiles a cycle-based `simv` binary. Icarus compiles a `.vvp` snapshot and runs it with `vvp`; RTL Buddy generates a `simv` wrapper so the rest of the flow is the same.
+
+xezim parses, elaborates and simulates in one invocation. The compile runs `xezim --compile`, which stops after elaboration, so syntax and elaboration errors fail the compile as with the other backends. RTL Buddy then writes a `simv` wrapper that reruns the same command line without `--compile`. Both point `--cache-dir` at the build directory, so runs reuse the elaborated design. The wrapper also adds `--error-exit`: without it xezim exits 0 after `$error` or a failed assertion, and a test with no PASS/FAIL marker could not be graded. Failed assertions print `** Error: Assertion error.`, which `assertions: true` counts. Note that:
+
+- `$dumpfile`/`$dumpvars` do nothing without `--wave`. Put `--wave`, or `--fst dump.fst`, in the builder's `compile-time` options for the modes that need waves.
+- xezim stops at `--max-time`, 100 ms of simulated time by default. Raise it in `compile-time` for longer tests.
+- xezim is built from source: `cargo build --release` in a [xezim](https://github.com/aionhw/xezim) checkout (Rust 1.92+). `rb tool-check` lists it as optional.
 
 If a suite must run on Icarus, gate unsupported constructs. Use [expected failures](expected-failures.md) only when the failure mode is understood.
 
@@ -29,7 +35,7 @@ Set `simulator-family` on the `cfg-rtl-builder` entry, or use an executable name
 
 ## Open waveforms
 
-Verilator writes `dump.fst` and Icarus writes `dump.vcd`. `rb wave` opens the newest supported dump under `artefacts/<test>/`.
+Verilator writes `dump.fst`, Icarus writes `dump.vcd`, and xezim writes the file `--fst` names. `rb wave` opens the newest supported dump under `artefacts/<test>/`.
 
 To convert an Icarus dump to FST after simulation, set `wave-format: fst-postproc` on the builder. If `vcd2fst` is missing, the VCD is kept.
 

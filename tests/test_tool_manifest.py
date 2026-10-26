@@ -558,6 +558,23 @@ def test_icarus_simulator_declared():
     assert icarus.used_by == ("test", "randtest", "regression")
 
 
+def test_xezim_simulator_declared():
+    """xezim is an optional source-built sim backend whose `-V` banner yields the version."""
+    import re
+
+    by_name = {s.name: s for s in tm.get_manifest()}
+
+    xezim = by_name["xezim"]
+    assert xezim.binaries == ("xezim",)
+    assert xezim.version_cmd == ("xezim", "-V")
+    assert xezim.optional
+    assert xezim.used_by == ("test", "randtest", "regression")
+    assert "cargo build --release" in xezim.install_hint["linux"]
+    assert "github.com/aionhw/xezim" in xezim.install_hint["source"]
+    banner = "xezim version 0.11.3\ngit 058f2bba (2026-10-23T17:05:55-07:00)\n"
+    assert re.search(xezim.version_regex, banner).group(1) == "0.11.3"
+
+
 def test_slurm_gates_test_as_well_as_regression():
     """`rb test --dispatch slurm` needs the slurm client too.
 

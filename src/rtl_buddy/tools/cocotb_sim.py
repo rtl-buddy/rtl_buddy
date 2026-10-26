@@ -39,11 +39,12 @@ def _cocotb_config(*args) -> str:
 class CocotbSim(VlogSim):
     """cocotb simulation: an RTL simulator driven by a Python testbench over VPI.
 
-    Supports Verilator, VCS and Icarus, selected by the builder's simulator family.
+    Supports Verilator, VCS, Icarus and xezim, selected by the builder's simulator
+    family.
     Results come from cocotb's JUnit XML.
     """
 
-    _SUPPORTED_FAMILIES = ("verilator", "vcs", "icarus")
+    _SUPPORTED_FAMILIES = ("verilator", "vcs", "icarus", "xezim")
 
     def _cocotb_family(self) -> str:
         """Resolve and validate the simulator family for this cocotb run."""
@@ -85,12 +86,20 @@ class CocotbSim(VlogSim):
         lib_dir = _cocotb_config("--lib-dir")
         return ["-M", lib_dir, "-m", "libcocotbvpi_icarus"]
 
+    def _xezim_extra_args(self) -> list:
+        """xezim arguments that load the cocotb VPI module at run time.
+
+        cocotb ships no xezim flavour; xezim loads the plain-VPI VCS build.
+        """
+        return ["--vpi-lib", _cocotb_config("--lib-name-path", "vpi", "vcs")]
+
     def _get_extra_compile_flags(self) -> list:
         family = self._cocotb_family()
         if family == "verilator":
             flags = self._verilator_compile_flags()
-        elif family == "icarus":
-            flags = self._icarus_compile_flags()
+        elif family in ("icarus", "xezim"):
+            # The VPI module is loaded at run time, by the `simv` wrapper.
+            flags = []
         else:
             flags = self._vcs_compile_flags()
         log_event(
@@ -102,10 +111,6 @@ class CocotbSim(VlogSim):
             flags=flags,
         )
         return flags
-
-    def _icarus_compile_flags(self) -> list:
-        # The VPI module is loaded at run time (_icarus_vvp_extra_args).
-        return []
 
     def _verilator_compile_flags(self) -> list:
         share = _cocotb_config("--share")

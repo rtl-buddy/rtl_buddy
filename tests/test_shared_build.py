@@ -505,6 +505,35 @@ def test_share_build_reuses_snapshot_across_tests_on_icarus(tmp_path, monkeypatc
     assert sim_b._get_simv_path() == sim_a._get_simv_path()
 
 
+def test_share_build_reuses_wrapper_across_tests_on_xezim(tmp_path, monkeypatch):
+    """The xezim wrapper and elaboration cache live in the shared dir; the wrapper reads a run.f copy kept there, so it outlives the compiling test's artefacts."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="xezim", family="xezim"
+    )
+    sim_b = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", exe="xezim", family="xezim"
+    )
+
+    assert sim_a.compile() == 0
+    assert sim_b.compile() == 0
+    assert len(calls) == 1
+    shared = Path(sim_a._get_simv_path()).parent
+    cmd = calls[0]["cmd"]
+    assert cmd[cmd.index("--cache-dir") + 1] == str(shared)
+    assert cmd[cmd.index("-f") + 1] == str(shared / "run.f")
+    assert (shared / "run.f").read_text() == Path(
+        sim_a._get_filelist_path()
+    ).read_text()
+    wrapper = Path(sim_a._get_simv_path()).read_text()
+    assert str(shared / "run.f") in wrapper
+    assert "--error-exit" in wrapper and "--compile" not in wrapper
+    assert sim_b._get_simv_path() == sim_a._get_simv_path()
+
+
 def test_share_build_falls_back_for_unsupported_builders(tmp_path, monkeypatch):
     _write_source(tmp_path)
     calls = []
@@ -754,6 +783,7 @@ def test_share_build_supported_is_the_single_capability_source():
     assert vlog_sim_module.share_build_supported("verilator")
     assert vlog_sim_module.share_build_supported("vcs")
     assert vlog_sim_module.share_build_supported("icarus")
+    assert vlog_sim_module.share_build_supported("xezim")
     assert not vlog_sim_module.share_build_supported("questa")
     assert not vlog_sim_module.share_build_supported(None)
 
@@ -3377,6 +3407,32 @@ def test_icarus_wrapper_args_separate_the_compile_key(tmp_path, monkeypatch):
     assert plain._get_simv_path() != vpi._get_simv_path()
     assert "libcocotbvpi" in Path(vpi._get_simv_path()).read_text()
     assert "libcocotbvpi" not in Path(plain._get_simv_path()).read_text()
+
+
+def test_xezim_wrapper_args_separate_the_compile_key(tmp_path, monkeypatch):
+    """The shared xezim `simv` wrapper includes _xezim_extra_args() (CocotbSim's `--vpi-lib`), so tests that differ only there get different builds."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    plain = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="xezim", family="xezim"
+    )
+    vpi = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", exe="xezim", family="xezim"
+    )
+    monkeypatch.setattr(
+        vpi, "_xezim_extra_args", lambda: ["--vpi-lib", "/libs/libcocotbvpi_vcs.so"]
+    )
+
+    assert plain.compile() == 0
+    assert vpi.compile() == 0
+    assert len(calls) == 2
+    assert plain._get_simv_path() != vpi._get_simv_path()
+    # The VPI module loads at run time only, never on the `--compile` line.
+    assert all("--vpi-lib" not in call["cmd"] for call in calls)
+    assert "libcocotbvpi_vcs" in Path(vpi._get_simv_path()).read_text()
+    assert "libcocotbvpi_vcs" not in Path(plain._get_simv_path()).read_text()
 
 
 def test_relative_builder_simv_override_is_logged(tmp_path, monkeypatch, caplog):
@@ -8133,7 +8189,7 @@ def test_shared_build_pruning_only_applies_to_opted_in_completed_shared_builds(
     assert _PRUNABLE <= {p.name for p in directory.iterdir()}
 
 
-@pytest.mark.parametrize("family", ["vcs", "icarus", "questa"])
+@pytest.mark.parametrize("family", ["vcs", "icarus", "xezim", "questa"])
 def test_other_simulators_do_not_prune(tmp_path, monkeypatch, family):
     _write_source(tmp_path)
     _install_fake_builder(monkeypatch, [])

@@ -80,7 +80,7 @@ Project-local environment defaults belong in [`.rtl-buddy/.env`](../concepts/roo
 | `sim-rand-seed-prefix` | Required | Simulator argument prefix for the seed |
 | `builder-opts.<mode>.compile-time` | Required per used mode | Compile arguments |
 | `builder-opts.<mode>.run-time` | Required per used mode | Simulation arguments |
-| `simulator-family` | Optional | `verilator`, `vcs`, or `icarus`; inferred from the executable when unset |
+| `simulator-family` | Optional | `verilator`, `vcs`, `icarus`, or `xezim`; inferred from the executable when unset |
 | `wave-format` | Optional | `fst-postproc` converts VCD to FST with `vcd2fst` before `rb wave`. A missing `vcd2fst` falls back to VCD |
 | `extra-sim-timeout` | Optional, default 0 | Non-negative seconds added to each test timeout for this builder. CLI `--extra-sim-timeout` overrides it |
 
@@ -678,7 +678,7 @@ Top-level fields:
 | `compile` | Optional | This suite's whole-job dispatch compile reservation: `cpus`, `mem`, quoted `time`, `parallel`, `split-verilate`, a `verilate` sub-block, and a [`modes`](#per-mode-reservations) sub-block. See below |
 | `preproc-sets-plusdefines` | Default true | Suite default for the test field of the same name |
 
-`compile-opts` maps a simulator family (`verilator`, `vcs`, `icarus`, or a builder's `simulator-family`) to options for every test in the suite:
+`compile-opts` maps a simulator family (`verilator`, `vcs`, `icarus`, `xezim`, or a builder's `simulator-family`) to options for every test in the suite:
 
 ```yaml
 compile-opts:
@@ -779,17 +779,17 @@ The entries are compile inputs of that mode's build only, so they are in that mo
 
 <a id="pinning-the-elaboration-top"></a>
 
-A testbench `toplevel:` roots the compile at that module. It is passed as Verilator `--top-module`, VCS `-top`, or Icarus `-s`, and to cocotb as `COCOTB_TOPLEVEL`. Other simulator families get no top flag. It is not defaulted to the testbench `name`, which is a config label rather than a module.
+A testbench `toplevel:` roots the compile at that module. It is passed as Verilator `--top-module`, VCS `-top`, or Icarus and xezim `-s`, and to cocotb as `COCOTB_TOPLEVEL`. Other simulator families get no top flag. It is not defaulted to the testbench `name`, which is a config label rather than a module.
 
 - Without `toplevel:`, the simulator elects a top from filelist order. Verilator takes the first ordinary (non-`-v`) entry, so recomposing a model filelist renames the model and every emitted C++ file, and an ordinary input carrying a module nothing instantiates fails the build with `MULTITOP`.
 - With `toplevel:`, a testbench missing from the composed filelist fails at compile.
 - For a plain SystemVerilog testbench, `toplevel:` names the testbench, not the DUT it instantiates. A `toplevel:` that points at the DUT compiles and runs but reports `NA`; see [Known Issues](../known-issues.md).
-- A top pinned in the builder's `compile-time` opts wins, in any spelling the family accepts. Verilator takes `--top-module`, `-top-module`, `--top`, and `-top`, and Icarus accepts the module glued to the flag (`-stb`). A disagreement logs `compile.toplevel_conflict` once per run, naming both tops. SystemC and cocotb follow the same rule.
+- A top pinned in the builder's `compile-time` opts wins, in any spelling the family accepts. Verilator takes `--top-module`, `-top-module`, `--top`, and `-top`, and Icarus and xezim accept the module glued to the flag (`-stb`). A disagreement logs `compile.toplevel_conflict` once per run, naming both tops. SystemC and cocotb follow the same rule.
 - The flag is part of the compile fingerprint, so two testbenches over one model with different `toplevel:` values do not share a build.
 
 ### cocotb, hooks, and command root
 
-Cocotb supports Verilator, Icarus, and VCS. `cocotb` must be installed and `cocotb-config` available. An unsupported family or a missing `toplevel` is fatal. rtl_buddy reads `cocotb_results.xml`, so cocotb tests do not need PASS/FAIL console markers.
+Cocotb supports Verilator, Icarus, xezim, and VCS. `cocotb` must be installed and `cocotb-config` available. An unsupported family or a missing `toplevel` is fatal. rtl_buddy reads `cocotb_results.xml`, so cocotb tests do not need PASS/FAIL console markers.
 
 Hooks receive the paths and variables documented in [Test plugins](../concepts/plugins.md). Generated outputs, logs, and artefacts use the directory containing `tests.yaml` as the command root. The invocation cwd does not change YAML path meaning.
 

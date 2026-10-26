@@ -30,6 +30,22 @@ def test_count_assertion_failures_matches_timing_prefixed_lines(tmp_path):
     assert vlog_post.count_assertion_failures(str(log)) == 1
 
 
+def test_count_assertion_failures_matches_xezim_error_lines(tmp_path):
+    # xezim prints `** Error: Assertion error.` for an SVA failure with no action block, and `** Error: <msg>` for `$error`, which is not an assertion line.
+    log = tmp_path / "test.log"
+    log.write_text(
+        "** Error: imm fail\n"
+        "   Time: 0  Scope: tb_err\n"
+        "** Error: Assertion error.\n"
+        "   Time: 1  Scope: tb_err.ap2\n"
+        "** Error: Assertion error.\n"
+        "   Time: 3  Scope: tb_err.ap2\n"
+        "PASS done\n",
+    )
+    assert vlog_post.count_assertion_failures(str(log)) == 2
+    assert vlog_post.first_assertion_failure(str(log)) == "** Error: Assertion error."
+
+
 def test_count_assertion_failures_handles_missing_file(tmp_path):
     log = tmp_path / "exists.log"
     log.write_text("nothing fired\n")
@@ -243,6 +259,18 @@ def test_assertion_flags_no_op_for_non_verilator(tmp_path):
     sim = _make_sim(tmp_path, assertions=True, family="vcs")
     flags = sim._get_verilator_assertion_flags([])
     assert flags == []
+
+
+def test_assertion_flags_quiet_for_xezim(tmp_path, caplog):
+    # xezim checks SVA unconditionally, so `assertions: true` needs no flag and no warning.
+    import logging
+
+    sim = _make_sim(tmp_path, assertions=True, family="xezim")
+    with caplog.at_level(logging.WARNING):
+        assert sim._get_verilator_assertion_flags([]) == []
+    events = [getattr(r, "rtl_event", None) for r in caplog.records]
+    assert "compile.assertions_not_verilator" not in events
+    assert sim._coverage_enabled() is False
 
 
 def test_coverage_enabled_when_assertions_alone_on_verilator(tmp_path):

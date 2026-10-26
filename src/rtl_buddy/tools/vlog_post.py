@@ -15,16 +15,19 @@ from ..runner.xfail import FAIL_STAGE_KEY, FIRST_ERROR_KEY
 from ..logging_utils import log_event
 
 
-# Matches immediate and concurrent SVA failures, e.g.
+# Matches immediate and concurrent SVA failures, e.g. Verilator's
 # `%Error: dut.sv:42: Assertion failed in top.dut: 'signal == expected'`.
 # `--timing` adds a leading `[<time>] `, so it is optional.
+# xezim reports a failed assertion without an action block as
+# `** Error: Assertion error.`, with the time and scope on the next line.
 _ASSERTION_FAILED_RE = re.compile(
-    r"^(?:\[\d+\]\s+)?%Error[^:]*:\s*[^:]+:\s*\d+:\s*Assertion failed",
+    r"^(?:(?:\[\d+\]\s+)?%Error[^:]*:\s*[^:]+:\s*\d+:\s*Assertion failed"
+    r"|\*\* Error: Assertion error\.)",
 )
 
 
 def count_assertion_failures(*paths) -> int:
-    """Count Verilator `%Error: <file>:<line>: Assertion failed` lines in the given files, skipping missing ones."""
+    """Count Verilator `%Error: <file>:<line>: Assertion failed` and xezim `** Error: Assertion error.` lines in the given files, skipping missing ones."""
     total = 0
     for path in paths:
         if not path or not os.path.exists(path):
@@ -40,7 +43,7 @@ def count_assertion_failures(*paths) -> int:
 
 
 def first_assertion_failure(*paths) -> str | None:
-    """Return the first Verilator `Assertion failed` line in the given files, stripped, or None; missing files are skipped."""
+    """Return the first Verilator or xezim assertion-failure line in the given files, stripped, or None; missing files are skipped."""
     for path in paths:
         if not path or not os.path.exists(path):
             continue

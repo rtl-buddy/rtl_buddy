@@ -324,6 +324,40 @@ def icarus_sim(tmp_path, monkeypatch):
     )
 
 
+@pytest.fixture()
+def xezim_sim(tmp_path, monkeypatch):
+    """A CocotbSim on the xezim builder, with cocotb-config stubbed to a known VCS VPI lib."""
+    monkeypatch.chdir(tmp_path)
+    from rtl_buddy.tools import cocotb_sim as cocotb_sim_module
+
+    def _fake_cocotb_config(*args):
+        if args == ("--lib-name-path", "vpi", "vcs"):
+            return "/fake/cocotb/libs/libcocotbvpi_vcs.so"
+        if args == ("--lib-dir",):
+            return "/fake/cocotb/libs"
+        return "/fake/cocotb"
+
+    monkeypatch.setattr(cocotb_sim_module, "_cocotb_config", _fake_cocotb_config)
+
+    builder = _DummyBuilderCfg()
+    builder.get_exe = lambda: "xezim"
+    builder.get_name = lambda: "xezim"
+    builder.get_simulator_family = lambda: "xezim"
+    builder.get_compile_time_opts = lambda _m: ["--sv2017"]
+
+    root = _DummyRootCfg()
+    root.get_rtl_builder_cfg = lambda: builder
+    root.resolve_rtl_builder_cfg = lambda _n=None: builder
+
+    return CocotbSim(
+        name="rtl_buddy/cocotb_sim",
+        root_cfg=root,
+        test_cfg=_DummyTestCfg(),
+        rtl_builder_mode="sim",
+        sim_mode={"sim_to_stdout": True},
+    )
+
+
 def test_verilator_compile_flags_and_binary_filter(tmp_path, monkeypatch):
     sim = _make_sim(tmp_path, monkeypatch, "verilator", ["--binary", "-sv"])
     flags = sim._get_extra_compile_flags()
@@ -448,6 +482,47 @@ def test_icarus_simv_wrapper_embeds_cocotb_vpi_flags(icarus_sim):
     assert "-m libcocotbvpi_icarus" in wrapper_text
     snapshot = icarus_sim._get_icarus_snapshot_path()
     assert wrapper_text.index("libcocotbvpi_icarus") < wrapper_text.index(snapshot)
+
+
+def test_xezim_compile_flags_are_empty(xezim_sim):
+    # xezim loads the VPI module at run time, so it needs no compile flags.
+    assert xezim_sim._get_extra_compile_flags() == []
+
+
+def test_xezim_cocotb_gains_the_top_flag(xezim_sim):
+    extra = xezim_sim._get_extra_compile_flags()
+    assert xezim_sim._get_top_module_flags(["--sv2017"], extra) == ["-s", "my_dut"]
+
+
+def test_xezim_extra_args_load_the_vcs_flavour_vpi_lib(xezim_sim):
+    # cocotb ships no xezim flavour; xezim loads the plain-VPI VCS build.
+    assert xezim_sim._xezim_extra_args() == [
+        "--vpi-lib",
+        "/fake/cocotb/libs/libcocotbvpi_vcs.so",
+    ]
+
+
+def test_xezim_simv_wrapper_embeds_the_vpi_lib(xezim_sim):
+    import shlex
+
+    xezim_sim._ensure_artifact_dir()
+    xezim_sim._write_xezim_simv_wrapper(
+        ["xezim", "--sv2017", "--compile", "--cache-dir", "/b", "-f", "run.f"]
+    )
+    cmd = Path(xezim_sim._get_simv_path()).read_text().splitlines()[1]
+    assert shlex.split(cmd) == [
+        "exec",
+        "xezim",
+        "--vpi-lib",
+        "/fake/cocotb/libs/libcocotbvpi_vcs.so",
+        "--error-exit",
+        "--sv2017",
+        "--cache-dir",
+        "/b",
+        "-f",
+        "run.f",
+        "$@",
+    ]
 
 
 def test_a_run_clears_the_previous_cocotb_results(tmp_path, monkeypatch):
