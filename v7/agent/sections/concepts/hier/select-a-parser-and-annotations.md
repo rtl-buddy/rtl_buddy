@@ -9,4 +9,4 @@ rb hier demo_top --format dot --clock-legend | dot -Tsvg -o clocks.svg
 rb hier demo_top --format dot --rdc-annotations resets.json | dot -Tsvg -o resets.svg
 ```
 
-rtl_buddy checks that annotation files exist before starting the renderer. `--clock-legend` applies only to DOT output.
+rtl_buddy resolves annotation paths from the current directory and checks that the files exist before starting the renderer. `--clock-legend` applies only to DOT output.

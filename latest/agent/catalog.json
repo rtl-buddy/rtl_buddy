@@ -830,6 +830,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v7/agent/sections/concepts/hier/render-a-block-diagram.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v7/concepts/hier/#trim-a-figure-for-a-document",
+          "slug": "trim-a-figure-for-a-document",
+          "title": "Trim a figure for a document",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v7/agent/sections/concepts/hier/trim-a-figure-for-a-document.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v7/concepts/hier/#query-hierarchy-data",
           "slug": "query-hierarchy-data",
           "title": "Query hierarchy data",

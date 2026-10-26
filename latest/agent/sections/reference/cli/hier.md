@@ -31,6 +31,18 @@ Usage: rtl-buddy hier [OPTIONS] NAME
 │                                  diagram (cluster nesting + net-labeled edges)       │
 │                                  instead of the hierarchy dump; requires             │
 │                                  rtl-buddy-sch >= 0.8.0                              │
+│ --params                   TEXT  dot and mermaid only: which parameter overrides     │
+│                                  each instance box shows: 'all' (renderer default,   │
+│                                  narrowed by `// rbsch: params=` pragmas) or 'none'  │
+│                                  (no parameter rows, overriding the pragmas);        │
+│                                  requires rtl-buddy-sch >= 0.12.0                    │
+│ --prune-flags                    with --block-diagram: drop root-port flags that no  │
+│                                  edge lands on, typically clock and reset ports;     │
+│                                  requires rtl-buddy-sch >= 0.12.0                    │
+│ --clock-colors             TEXT  dot and mermaid only, with a clock-domain map:      │
+│                                  clock to colour map JSON, {"schema_version": "1.0", │
+│                                  "clocks": {"<clock>": "<swatch name or #rrggbb>"}}; │
+│                                  requires rtl-buddy-sch >= 0.12.0                    │
 │ --tool                     TEXT  path to the rtl-buddy-view binary                   │
 │                                  [default: rtl-buddy-view]                           │
 │ --help                           Show this message and exit.                         │

@@ -2091,6 +2091,27 @@ rb hier demo_top --format dot --block-diagram | dot -Tsvg -o demo_top_block.svg
 
 This needs `rtl-buddy-sch >= 0.8.0`; older renderers fail with an upgrade message. It applies only to DOT output.
 
+## Trim a figure for a document
+
+Three options strip detail from a DOT or Mermaid figure:
+
+```bash
+rb hier demo_top --format dot --block-diagram --params none --prune-flags | dot -Tsvg -o demo_top.svg
+rb hier demo_top --format mermaid --clock-colors clock-colors.json -o demo_top.mmd
+```
+
+- `--params none` drops the parameter rows from every instance box, overriding `// rbsch: params=` pragmas. `--params all`, the default, shows every override the pragmas allow.
+- `--prune-flags` drops root-port flags that no edge lands on, typically clock and reset ports. It works only with `--format dot --block-diagram`.
+- `--clock-colors` pins a colour to named clocks of the clock-domain annotations, so a clock keeps its colour across a set of figures. Other clocks get the remaining swatches. The file is:
+
+```json
+{"schema_version": "1.0", "clocks": {"clk_a": "blue", "clk_b": "#dcfce7"}}
+```
+
+A colour is a swatch name (`blue`, `green`, `yellow`, `pink`, `purple`, `orange`, `cyan`) or `#rrggbb`. To keep a colour with the RTL instead, put a `// rbsch: clock color=blue` pragma on the clock port; the file wins where both name a clock.
+
+These options need `rtl-buddy-sch >= 0.12.0`; older renderers fail with an upgrade message. rtl_buddy refuses a combination the renderer would ignore: `--params` or `--clock-colors` with `tree` or `json` output, `--prune-flags` without a block diagram, and `--clock-colors` without clock-domain annotations.
+
 ## Query hierarchy data
 
 `rb hier-query` answers a focused question without rendering the whole hierarchy:
@@ -2118,7 +2139,7 @@ rb hier demo_top --format dot --clock-legend | dot -Tsvg -o clocks.svg
 rb hier demo_top --format dot --rdc-annotations resets.json | dot -Tsvg -o resets.svg
 ```
 
-rtl_buddy checks that annotation files exist before starting the renderer. `--clock-legend` applies only to DOT output.
+rtl_buddy resolves annotation paths from the current directory and checks that the files exist before starting the renderer. `--clock-legend` applies only to DOT output.
 
 ## Find outputs and diagnose failures
 
@@ -7310,6 +7331,18 @@ Usage: rtl-buddy hier [OPTIONS] NAME
 │                                  diagram (cluster nesting + net-labeled edges)       │
 │                                  instead of the hierarchy dump; requires             │
 │                                  rtl-buddy-sch >= 0.8.0                              │
+│ --params                   TEXT  dot and mermaid only: which parameter overrides     │
+│                                  each instance box shows: 'all' (renderer default,   │
+│                                  narrowed by `// rbsch: params=` pragmas) or 'none'  │
+│                                  (no parameter rows, overriding the pragmas);        │
+│                                  requires rtl-buddy-sch >= 0.12.0                    │
+│ --prune-flags                    with --block-diagram: drop root-port flags that no  │
+│                                  edge lands on, typically clock and reset ports;     │
+│                                  requires rtl-buddy-sch >= 0.12.0                    │
+│ --clock-colors             TEXT  dot and mermaid only, with a clock-domain map:      │
+│                                  clock to colour map JSON, {"schema_version": "1.0", │
+│                                  "clocks": {"<clock>": "<swatch name or #rrggbb>"}}; │
+│                                  requires rtl-buddy-sch >= 0.12.0                    │
 │ --tool                     TEXT  path to the rtl-buddy-view binary                   │
 │                                  [default: rtl-buddy-view]                           │
 │ --help                           Show this message and exit.                         │
