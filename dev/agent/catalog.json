@@ -181,7 +181,7 @@
       "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/axi-profile.md"
     },
     {
-      "description": "Configure cocotb testbenches for Verilator, Icarus Verilog, or VCS and interpret their results.",
+      "description": "Configure cocotb testbenches for Verilator, Icarus Verilog, xezim, or VCS and interpret their results.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/cocotb/",
       "sections": [
         {
@@ -208,7 +208,7 @@
       "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/cocotb.md"
     },
     {
-      "description": "Collect Verilator coverage, merge and export results, and inspect saved coverage by file, module, point, and test.",
+      "description": "Collect Verilator or xezim coverage, merge and export results, and inspect saved coverage by file, module, point, and test.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/",
       "sections": [
         {
@@ -216,6 +216,12 @@
           "slug": "enable-coverage",
           "title": "Enable coverage",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/coverage/enable-coverage.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/#collect-coverage-with-xezim",
+          "slug": "collect-coverage-with-xezim",
+          "title": "Collect coverage with xezim",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/coverage/collect-coverage-with-xezim.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/#merge-and-export-results",
@@ -1558,7 +1564,7 @@
       "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/root-config.md"
     },
     {
-      "description": "Choose between Verilator and Icarus Verilog simulation backends and understand their coverage and waveform differences.",
+      "description": "Choose between Verilator, Icarus Verilog and xezim simulation backends and understand their coverage and waveform differences.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/simulators/",
       "sections": [
         {
@@ -2447,6 +2453,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/coverage-uses-the-platform-builder.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#xezim-coverage-figures-differ-from-xezims-own-report",
+          "slug": "xezim-coverage-figures-differ-from-xezims-own-report",
+          "title": "xezim coverage figures differ from xezim's own report",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/xezim-coverage-figures-differ-from-xezims-own-report.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#coverage-merging-runs-in-the-submitting-process-without-a-slurm-backend",
           "slug": "coverage-merging-runs-in-the-submitting-process-without-a-slurm-backend",
           "title": "Coverage merging runs in the submitting process without a Slurm backend",
@@ -2595,6 +2607,12 @@
           "slug": "shared-build-stamps-track-dependencies-differently-per-simulator",
           "title": "Shared-build stamps track dependencies differently per simulator",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/shared-build-stamps-track-dependencies-differently-per-simulator.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#xezim-builds-read-sources-at-run-time",
+          "slug": "xezim-builds-read-sources-at-run-time",
+          "title": "xezim builds read sources at run time",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/xezim-builds-read-sources-at-run-time.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#shared-build-locking",

@@ -64,7 +64,7 @@ Project-local environment defaults belong in [`.rtl-buddy/.env`](https://rtl-bud
 | `sim-rand-seed-prefix` | Required | Simulator argument prefix for the seed |
 | `builder-opts.<mode>.compile-time` | Required per used mode | Compile arguments |
 | `builder-opts.<mode>.run-time` | Required per used mode | Simulation arguments |
-| `simulator-family` | Optional | `verilator`, `vcs`, or `icarus`; inferred from the executable when unset |
+| `simulator-family` | Optional | `verilator`, `vcs`, `icarus`, or `xezim`; inferred from the executable when unset |
 | `wave-format` | Optional | `fst-postproc` converts VCD to FST with `vcd2fst` before `rb wave`. A missing `vcd2fst` falls back to VCD |
 | `extra-sim-timeout` | Optional, default 0 | Non-negative seconds added to each test timeout for this builder. CLI `--extra-sim-timeout` overrides it |
 
@@ -77,7 +77,7 @@ Project-local environment defaults belong in [`.rtl-buddy/.env`](https://rtl-bud
 | Block | Fields and behavior |
 |---|---|
 | `cfg-verible` | `name`, `path`; optional `extra_args` keyed by `lint`, `format`, `syntax`, or `preprocessor` (default empty); optional `exclude` globs. Configured args precede CLI args. For the active platform, an invalid configured directory warns and falls back to `PATH` when possible |
-| `cfg-coverage` | `name` is the simulator family. `use-lcov: true` enables LCOV info and HTML. `merge-timeout` is the seconds the raw merge may run before it is stopped and reported as failed; unset, the default, is no limit, since a merge of a few hundred databases can take minutes |
+| `cfg-coverage` | `name` is the simulator family (`verilator` or `xezim`). `use-lcov: true` enables LCOV info and HTML. `merge-timeout` is the seconds the raw merge may run before it is stopped and reported as failed; unset, the default, is no limit, since a merge of a few hundred databases can take minutes |
 | `cfg-coverview` | `name`, `generate-tables`, and inline Coverview `config` |
 | `cfg-surfer` | `name`, `path`; optional `wcp-port` (0 asks the OS), `editor-cmd` with `%f`/`%l`, `editor-terminal` (`tmux`, `iterm2`, `terminal`, or empty), `editor-sock`, and `ctrl-sock` |
 

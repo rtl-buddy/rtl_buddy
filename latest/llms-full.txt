@@ -424,12 +424,12 @@ The overlay is a hub view-builder option, not an `rb hier` option. See [Hub](hub
 <!-- source: concepts/cocotb -->
 
 ---
-description: Configure cocotb testbenches for Verilator, Icarus Verilog, or VCS and interpret their results.
+description: Configure cocotb testbenches for Verilator, Icarus Verilog, xezim, or VCS and interpret their results.
 ---
 
 # cocotb Testbenches
 
-RTL Buddy runs cocotb tests through VPI on builders whose simulator family is `verilator`, `icarus`, or `vcs`.
+RTL Buddy runs cocotb tests through VPI on builders whose simulator family is `verilator`, `icarus`, `xezim`, or `vcs`. cocotb ships no xezim library, so xezim loads the VCS-flavour `libcocotbvpi_vcs` through `--vpi-lib`.
 
 ## Install cocotb
 
@@ -471,7 +471,7 @@ rb --builder icarus test cocotb_smoke
 ```
 
 - An unsupported simulator family or a missing `toplevel:` is a fatal configuration error.
-- `toplevel:` becomes `COCOTB_TOPLEVEL` and also sets the compile top (Verilator `--top-module`, VCS `-top`, Icarus `-s`), unless the builder's `compile-time` options already set one.
+- `toplevel:` becomes `COCOTB_TOPLEVEL` and also sets the compile top (Verilator `--top-module`, VCS `-top`, Icarus and xezim `-s`), unless the builder's `compile-time` options already set one.
 
 See [Tests YAML](../reference/yaml.md#testsyaml) for the schema and [Simulation Backends](simulators.md) for backend differences.
 
@@ -485,12 +485,12 @@ cocotb writes `cocotb_results.xml`, which RTL Buddy parses. The result reports u
 <!-- source: concepts/coverage -->
 
 ---
-description: Collect Verilator coverage, merge and export results, and inspect saved coverage by file, module, point, and test.
+description: Collect Verilator or xezim coverage, merge and export results, and inspect saved coverage by file, module, point, and test.
 ---
 
 # Coverage
 
-rtl_buddy collects Verilator coverage during tests, can merge it across a run, and saves a structured model that `rb cov`, machine output, MCP and the hub read.
+rtl_buddy collects Verilator or xezim coverage during tests, can merge it across a run, and saves a structured model that `rb cov`, machine output, MCP and the hub read.
 
 ```bash
 rb -M cov regression --coverage-merge --coverage-html
@@ -522,6 +522,37 @@ rb -M cov regression
 ```
 
 `cfg-coverage.name` must match the simulator family. `use-lcov: true` enables LCOV conversion and HTML generation. Coverview packaging is configured under `cfg-coverview`; see [YAML formats](../reference/yaml.md#root_configyaml).
+
+## Collect coverage with xezim
+
+A xezim builder collects coverage when a `compile-time` option starts with `--code-coverage` or `+cover`. SVA `assertions:` alone does not turn it on. Add a `cfg-coverage` entry named `xezim`:
+
+```yaml
+cfg-rtl-builder:
+  - name: xezim
+    builder: xezim
+    builder-simv: simv
+    builder-opts:
+      cov:
+        compile-time: --code-coverage=all
+        run-time: ""
+
+cfg-coverage:
+  - name: xezim
+    use-lcov: true
+```
+
+Each run writes `artefacts/<test>/coverage.json` (`run-NNNN/coverage.json` for `randtest`) through `XEZIM_COV_DB`. The merge flags work as for Verilator. `--coverage-merge` sums the per-test files in Python into `cov_dir/coverage_merged.json`; there is no xezim merge tool, and `merge-timeout` bounds the merge. The points read differently from Verilator's:
+
+| Metric | xezim points |
+|---|---|
+| Line | One point per statement, so a line with two statements has two points. `column` numbers the statements on a line from 0. |
+| Branch | One point per arm, on the arm's line, named by the arm (`if`, `else`, a case item). |
+| Toggle | One point per bit, named `sig[i]`. A bit is hit only when it rose and fell. xezim counts each direction separately, so its own toggle percentage is higher. Toggles have no source line: they are filed under the module's file at line 0. |
+| Cover | One point per `cover` statement, named by its label (`label: cover property ...`), else `cover@<line>`. These give the `F:` figure. Covergroups are not imported. |
+| Expression | Not collected. Shows as `UNSP`. |
+
+LCOV export, and the HTML built from it, has line and branch data only. A line's count is its highest statement count, and each branch construct is one block on the construct's line. Coverview gets no toggle or expression datasets.
 
 ## Merge and export results
 
@@ -609,7 +640,7 @@ Source points come from the coverage model. A run with only LCOV fallback record
 
 ## Inspect cover-property hits
 
-For Verilator, machine output lists each labeled user cover point as `{name, file, line, module, hits}` on the test result and in the run-level aggregate. The data comes from the per-test `coverage.dat`; no merge flag is needed. Hits are combined across tests by file, line, name and module, so the same included property compiled into different modules stays separate.
+For Verilator and xezim, machine output lists each labeled user cover point as `{name, file, line, module, hits}` on the test result and in the run-level aggregate. The data comes from the per-test `coverage.dat` (or xezim `coverage.json`); no merge flag is needed. Hits are combined across tests by file, line, name and module, so the same included property compiled into different modules stays separate.
 
 Other simulator families omit the field. Omitted means not collected, not zero coverage.
 
@@ -617,7 +648,7 @@ Other simulator families omit the field. Omitted means not collected, not zero c
 
 Every coverage run writes `<command root>/cov_dir/manifest.json`, even without merging, and `cov_dir/coverage-model.json` with the per-file, per-module and per-point detail. `rb cov` and the hub read these; you do not need to open them.
 
-Toggle, expression and labeled cover detail need raw Verilator databases. Without them the model falls back to LCOV and holds only unnamed line and branch data.
+Toggle, expression and labeled cover detail need the raw per-test files (`coverage.dat`, or `coverage.json` for xezim). Without them the model falls back to LCOV and holds only unnamed line and branch data.
 
 ## Skip the model when nothing will read it
 
@@ -739,7 +770,7 @@ License waits and out-of-memory failures are treated as transient, so the next t
 
 `max-jobs-per-array` throttles each array, so total concurrency can approach the throttle times the number of arrays (or slices, for [large groups](#split-large-groups-into-several-arrays)).
 
-Verilator, VCS, and Icarus can share a build. Other builders, and builders with an absolute `builder-simv`, compile inside each simulation job, which then reserves the field-wise maximum of its simulation and compile reservations. If no planned test can share a build and none is fanned out over seeds, no build job is submitted (`dispatch.build_job_skipped`).
+Verilator, VCS, Icarus, and xezim can share a build. Other builders, and builders with an absolute `builder-simv`, compile inside each simulation job, which then reserves the field-wise maximum of its simulation and compile reservations. If no planned test can share a build and none is fanned out over seeds, no build job is submitted (`dispatch.build_job_skipped`).
 
 ## Configure dispatch
 
@@ -3743,7 +3774,7 @@ The default upper level is 0, so an unqualified regression runs only tests with 
 rb regression --share-build
 ```
 
-When tests share compile inputs this reuses one build. Reuse is reported once per build directory on the console, and each test's `compile.log` and the log file record their own. `--rebuild` compiles even when the stamp says the build is current. Verilator, VCS and Icarus support sharing; see [Sharing compiled builds](tests.md#sharing-compiled-builds-across-tests) for invalidation and limits.
+When tests share compile inputs this reuses one build. Reuse is reported once per build directory on the console, and each test's `compile.log` and the log file record their own. `--rebuild` compiles even when the stamp says the build is current. Verilator, VCS, Icarus and xezim support sharing; see [Sharing compiled builds](tests.md#sharing-compiled-builds-across-tests) for invalidation and limits.
 
 ## Replay a seeded regression
 
@@ -4071,25 +4102,31 @@ Every command loads this file after finding the project root and passes the valu
 <!-- source: concepts/simulators -->
 
 ---
-description: Choose between Verilator and Icarus Verilog simulation backends and understand their coverage and waveform differences.
+description: Choose between Verilator, Icarus Verilog and xezim simulation backends and understand their coverage and waveform differences.
 ---
 
 # Simulation Backends
 
-Use Verilator by default. Use Icarus Verilog for lightweight smoke tests, or where installing Verilator is impractical.
+Use Verilator by default. Use Icarus Verilog for lightweight smoke tests, or where installing Verilator is impractical. Use xezim for a 4-state simulator that checks concurrent SVA without a C++ build step.
 
 ## Choose a backend
 
-| Capability | Verilator | Icarus 12 |
-| --- | --- | --- |
-| SystemVerilog procedural code | Yes | Yes |
-| Concurrent SVA and `cover property` | Yes | No |
-| `interface class` frameworks | Yes | No |
-| RTL Buddy line/toggle coverage | Yes | No |
-| cocotb through VPI | Yes | Yes |
-| Default waveform | FST | VCD |
+| Capability | Verilator | Icarus 12 | xezim |
+| --- | --- | --- | --- |
+| SystemVerilog procedural code | Yes | Yes | Yes |
+| Concurrent SVA and `cover property` | Yes | No | Yes |
+| `interface class` frameworks | Yes | No | Yes |
+| RTL Buddy line/toggle coverage | Yes | No | Yes (statement-level) |
+| cocotb through VPI | Yes | Yes | Yes (VCS-flavour VPI library) |
+| Default waveform | FST | VCD | FST, with `--fst` |
 
 Verilator compiles a cycle-based `simv` binary. Icarus compiles a `.vvp` snapshot and runs it with `vvp`; RTL Buddy generates a `simv` wrapper so the rest of the flow is the same.
+
+xezim parses, elaborates and simulates in one invocation. The compile runs `xezim --compile`, which stops after elaboration, so syntax and elaboration errors fail the compile as with the other backends. RTL Buddy then writes a `simv` wrapper that reruns the same command line without `--compile`. Both point `--cache-dir` at the build directory, so runs reuse the elaborated design. The wrapper also adds `--error-exit`: without it xezim exits 0 after `$error` or a failed assertion, and a test with no PASS/FAIL marker could not be graded. Failed assertions print `** Error: Assertion error.`, which `assertions: true` counts. Note that:
+
+- `$dumpfile`/`$dumpvars` do nothing without `--wave`. Put `--wave`, or `--fst dump.fst`, in the builder's `compile-time` options for the modes that need waves.
+- xezim stops at `--max-time`, 100 ms of simulated time by default. Raise it in `compile-time` for longer tests.
+- xezim is built from source: `cargo build --release` in a [xezim](https://github.com/aionhw/xezim) checkout (Rust 1.92+). `rb tool-check` lists it as optional.
 
 If a suite must run on Icarus, gate unsupported constructs. Use [expected failures](expected-failures.md) only when the failure mode is understood.
 
@@ -4101,13 +4138,13 @@ Set `simulator-family` on the `cfg-rtl-builder` entry, or use an executable name
 
 ## Open waveforms
 
-Verilator writes `dump.fst` and Icarus writes `dump.vcd`. `rb wave` opens the newest supported dump under `artefacts/<test>/`.
+Verilator writes `dump.fst`, Icarus writes `dump.vcd`, and xezim writes the file `--fst` names. `rb wave` opens the newest supported dump under `artefacts/<test>/`.
 
 To convert an Icarus dump to FST after simulation, set `wave-format: fst-postproc` on the builder. If `vcd2fst` is missing, the VCD is kept.
 
 ## Collect coverage
 
-RTL Buddy coverage supports Verilator only and follows the platform-selected builder. Pass `--builder verilator` or make Verilator the platform default; a suite- or test-level override alone is not enough. See [Coverage uses the platform builder](../known-issues.md#coverage-uses-the-platform-builder).
+RTL Buddy coverage supports Verilator and xezim and follows the platform-selected builder. Pass `--builder <name>` or make that builder the platform default; a suite- or test-level override alone is not enough. See [Coverage uses the platform builder](../known-issues.md#coverage-uses-the-platform-builder). xezim coverage is statement-level and has no expression metric; see [Collect coverage with xezim](coverage.md#collect-coverage-with-xezim).
 
 
 ---
@@ -4729,7 +4766,7 @@ tests:
 
 - `plusargs` are runtime arguments. `plusdefines` are compile-time defines.
 - `model_path`, testbench filelists and hook paths resolve from the directory containing `tests.yaml`. A model's filelist entries resolve from the directory containing that filelist.
-- `toplevel` names the module to elaborate: Verilator `--top-module`, VCS `-top`, Icarus `-s`. Declare it on every testbench, naming the bench and not the DUT. Without it the simulator picks a top from filelist order, and recomposing a filelist can rename the model or raise a `MULTITOP` error. A top pinned in the builder's `compile-time` opts wins; see [Pinning the elaboration top](../reference/yaml.md#pinning-the-elaboration-top).
+- `toplevel` names the module to elaborate: Verilator `--top-module`, VCS `-top`, Icarus and xezim `-s`. Declare it on every testbench, naming the bench and not the DUT. Without it the simulator picks a top from filelist order, and recomposing a filelist can rename the model or raise a `MULTITOP` error. A top pinned in the builder's `compile-time` opts wins; see [Pinning the elaboration top](../reference/yaml.md#pinning-the-elaboration-top).
 
 See [YAML Formats: tests.yaml](../reference/yaml.md#testsyaml) for all fields and [cocotb Testbenches](cocotb.md) for Python-driven tests.
 
@@ -4878,12 +4915,12 @@ rb test --share-build
 rb regression --share-build
 ```
 
-`--dispatch` implies it. Verilator, VCS and Icarus support it; with another builder, or an absolute `builder-simv`, the test uses its own build directory and logs why sharing was declined.
+`--dispatch` implies it. Verilator, VCS, Icarus and xezim support it; with another builder, or an absolute `builder-simv`, the test uses its own build directory and logs why sharing was declined.
 
 - Builds live in `artefacts/.shared-builds/obj_dir_<hash>/`. Plusargs, seeds and simulation timeouts do not affect the build; compile options, plusdefines, the simulator and the resolved filelist do.
 - Reuse requires that no tracked input under the project root changed by content. Regenerating a file byte-for-byte reuses the build; any real edit rebuilds it.
 - Verilator reports the files it read, so headers, `-y` library files and the Verilator binary itself invalidate the build.
-- VCS and Icarus report none, so every file under each `+incdir+` directory (recursively) and `-y` directory (flat) is tracked. Editing, adding or removing any of them rebuilds.
+- VCS, Icarus and xezim report none, so every file under each `+incdir+` directory (recursively) and `-y` directory (flat) is tracked. Editing, adding or removing any of them rebuilds.
 - After a change rtl_buddy cannot see, such as a toolchain change or an include reached through a path no `+incdir+` names, force a compile with `--rebuild`.
 
 ### See whether a build was reused
@@ -6054,7 +6091,7 @@ RTL Buddy gives an RTL project one command surface for simulation, regressions, 
 
 ## Supported workflows
 
-- Simulation and randomized testing with Verilator, Icarus Verilog, or VCS
+- Simulation and randomized testing with Verilator, Icarus Verilog, xezim, or VCS
 - Multi-suite regressions with local, local-parallel, or Slurm dispatch
 - Yosys synthesis and OpenROAD timing, place-and-route, and power analysis
 - SymbiYosys formal verification and mutation testing
@@ -6113,7 +6150,7 @@ External tools stay optional until you run the workflow that uses them.
 
 | Workflow | Required tools | Notes |
 | --- | --- | --- |
-| `test`, `randtest`, `regression` | A configured simulator: Verilator, Icarus Verilog, or VCS | Install `lcov` for Verilator LCOV/HTML export. |
+| `test`, `randtest`, `regression` | A configured simulator: Verilator, Icarus Verilog, xezim, or VCS | Install `lcov` for Verilator or xezim LCOV/HTML export. |
 | `elab`, `elab-regression` | `rtl_buddy[elab]` | `uv add "rtl_buddy[elab]"`. Supports pyslang 10.x and 11.x; needs no simulator. |
 | Slurm dispatch | `sbatch`, `squeue`, `scancel`; `sacct` and `scontrol` recommended | Linux submit host and shared filesystem. See [Slurm dispatch tools](#slurm-dispatch-tools). |
 | `verible` | Verible | macOS: `brew tap chipsalliance/verible && brew install verible`. |
@@ -6213,6 +6250,10 @@ See [Coverage](concepts/coverage.md#per-elaboration-vs-source-point-figures).
 
 Coverage collection and labels use the platform-selected builder, even when a suite or test selects another `builder:`. A mismatch can mislabel or misparse coverage. Pass `--builder <name>` for the run, or make that builder the platform default. See [YAML Formats](reference/yaml.md).
 
+## xezim coverage figures differ from xezim's own report
+
+rtl_buddy scores a xezim toggle bit as hit only when it both rose and fell, while xezim counts each direction as a point, so `T:` reads lower than xezim's toggle percentage. Line points are statements, so a line holding two statements counts twice. LCOV and HTML hold line and branch only. See [Collect coverage with xezim](concepts/coverage.md#collect-coverage-with-xezim).
+
 ## Coverage merging runs in the submitting process without a Slurm backend
 
 Under `--dispatch slurm` the coverage tail (merge, model build, LCOV exports and manifest) runs as one job sized by `cfg-dispatch.coverage` (see [Run the coverage tail as a job](concepts/dispatch.md#run-the-coverage-tail-as-a-job)). Without dispatch, and under `--dispatch local-parallel`, it runs in the process that invoked `rb`.
@@ -6242,7 +6283,7 @@ Python `print()` output is captured as `hook.stdout` events, but child-process o
 
 ## `toplevel:` must name the testbench in a plain SystemVerilog test
 
-For a plain SystemVerilog testbench, `toplevel:` becomes Verilator `--top-module`, VCS `-top` or Icarus `-s`. It must name the testbench, not the DUT. cocotb and SystemC testbenches need no review.
+For a plain SystemVerilog testbench, `toplevel:` becomes Verilator `--top-module`, VCS `-top` or Icarus and xezim `-s`. It must name the testbench, not the DUT. cocotb and SystemC testbenches need no review.
 
 - A `toplevel:` naming the DUT compiles, then the simulation exits at once and the test ends `NA` with `no PASS/FAIL markers found in .../test.log; result is NA`. Nothing in that output names `toplevel:`. A DUT with unconnected interface ports fails with `%Error-UNSUPPORTED: Interfaced port on top level module` instead.
 - Without `toplevel:`, the top is chosen from filelist order, not the testbench `name`.
@@ -6348,13 +6389,17 @@ On a cluster with different mount paths per node, a build stamp from one node ma
 A build stamp decides whether a shared build can be reused.
 
 - **Verilator** tracks the headers, libraries, standard includes and binary it reports consuming. Inputs under the project root are compared by content hash; inputs outside it, and any single input above 64 MB, by size and mtime.
-- **VCS and Icarus** report no dependencies, so their stamps list every file in each `+incdir+` and `-y` directory and compare content. Adding, removing or editing a file there rebuilds, even one nothing includes. Verilator also compares that listing by file name.
+- **VCS, Icarus and xezim** report no dependencies, so their stamps list every file in each `+incdir+` and `-y` directory and compare content. Adding, removing or editing a file there rebuilds, even one nothing includes. Verilator also compares that listing by file name.
 
 The listing skips dot-directories, `artefacts/`, `obj_dir*`, a coverage run's `cov_dir/` and HTML/Coverview reports, and rtl_buddy's own outputs, including every `rtl_buddy.log`, so a project directory with one of those names under an include path is not tracked. An `+incdir+` on a large tree slows every reuse check.
 
 Do not point `+incdir+` at a directory a simulator or tool writes into: its scratch files change the listing and every run recompiles.
 
-Environment variables, undeclared tool inputs and symlinked subdirectories are not tracked. For VCS and Icarus, an include resolved relative to the including file is also untracked. Force a compile with `--rebuild` after editing any of these.
+Environment variables, undeclared tool inputs and symlinked subdirectories are not tracked. For VCS, Icarus and xezim, an include resolved relative to the including file is also untracked. Force a compile with `--rebuild` after editing any of these.
+
+## xezim builds read sources at run time
+
+A xezim `simv` is a wrapper that re-reads the sources each run, through a copy of `run.f` kept in the build directory. With `shared-build-root`, a build compiled in one checkout reads that checkout's sources when another checkout reuses it, so removing the first checkout breaks the reuse. Pass `--rebuild` after moving or deleting a checkout.
 
 ## Shared-build locking
 
@@ -9854,7 +9899,7 @@ Project-local environment defaults belong in [`.rtl-buddy/.env`](../concepts/roo
 | `sim-rand-seed-prefix` | Required | Simulator argument prefix for the seed |
 | `builder-opts.<mode>.compile-time` | Required per used mode | Compile arguments |
 | `builder-opts.<mode>.run-time` | Required per used mode | Simulation arguments |
-| `simulator-family` | Optional | `verilator`, `vcs`, or `icarus`; inferred from the executable when unset |
+| `simulator-family` | Optional | `verilator`, `vcs`, `icarus`, or `xezim`; inferred from the executable when unset |
 | `wave-format` | Optional | `fst-postproc` converts VCD to FST with `vcd2fst` before `rb wave`. A missing `vcd2fst` falls back to VCD |
 | `extra-sim-timeout` | Optional, default 0 | Non-negative seconds added to each test timeout for this builder. CLI `--extra-sim-timeout` overrides it |
 
@@ -9867,7 +9912,7 @@ Project-local environment defaults belong in [`.rtl-buddy/.env`](../concepts/roo
 | Block | Fields and behavior |
 |---|---|
 | `cfg-verible` | `name`, `path`; optional `extra_args` keyed by `lint`, `format`, `syntax`, or `preprocessor` (default empty); optional `exclude` globs. Configured args precede CLI args. For the active platform, an invalid configured directory warns and falls back to `PATH` when possible |
-| `cfg-coverage` | `name` is the simulator family. `use-lcov: true` enables LCOV info and HTML. `merge-timeout` is the seconds the raw merge may run before it is stopped and reported as failed; unset, the default, is no limit, since a merge of a few hundred databases can take minutes |
+| `cfg-coverage` | `name` is the simulator family (`verilator` or `xezim`). `use-lcov: true` enables LCOV info and HTML. `merge-timeout` is the seconds the raw merge may run before it is stopped and reported as failed; unset, the default, is no limit, since a merge of a few hundred databases can take minutes |
 | `cfg-coverview` | `name`, `generate-tables`, and inline Coverview `config` |
 | `cfg-surfer` | `name`, `path`; optional `wcp-port` (0 asks the OS), `editor-cmd` with `%f`/`%l`, `editor-terminal` (`tmux`, `iterm2`, `terminal`, or empty), `editor-sock`, and `ctrl-sock` |
 
@@ -10452,7 +10497,7 @@ Top-level fields:
 | `compile` | Optional | This suite's whole-job dispatch compile reservation: `cpus`, `mem`, quoted `time`, `parallel`, `split-verilate`, a `verilate` sub-block, and a [`modes`](#per-mode-reservations) sub-block. See below |
 | `preproc-sets-plusdefines` | Default true | Suite default for the test field of the same name |
 
-`compile-opts` maps a simulator family (`verilator`, `vcs`, `icarus`, or a builder's `simulator-family`) to options for every test in the suite:
+`compile-opts` maps a simulator family (`verilator`, `vcs`, `icarus`, `xezim`, or a builder's `simulator-family`) to options for every test in the suite:
 
 ```yaml
 compile-opts:
@@ -10553,17 +10598,17 @@ The entries are compile inputs of that mode's build only, so they are in that mo
 
 <a id="pinning-the-elaboration-top"></a>
 
-A testbench `toplevel:` roots the compile at that module. It is passed as Verilator `--top-module`, VCS `-top`, or Icarus `-s`, and to cocotb as `COCOTB_TOPLEVEL`. Other simulator families get no top flag. It is not defaulted to the testbench `name`, which is a config label rather than a module.
+A testbench `toplevel:` roots the compile at that module. It is passed as Verilator `--top-module`, VCS `-top`, or Icarus and xezim `-s`, and to cocotb as `COCOTB_TOPLEVEL`. Other simulator families get no top flag. It is not defaulted to the testbench `name`, which is a config label rather than a module.
 
 - Without `toplevel:`, the simulator elects a top from filelist order. Verilator takes the first ordinary (non-`-v`) entry, so recomposing a model filelist renames the model and every emitted C++ file, and an ordinary input carrying a module nothing instantiates fails the build with `MULTITOP`.
 - With `toplevel:`, a testbench missing from the composed filelist fails at compile.
 - For a plain SystemVerilog testbench, `toplevel:` names the testbench, not the DUT it instantiates. A `toplevel:` that points at the DUT compiles and runs but reports `NA`; see [Known Issues](../known-issues.md).
-- A top pinned in the builder's `compile-time` opts wins, in any spelling the family accepts. Verilator takes `--top-module`, `-top-module`, `--top`, and `-top`, and Icarus accepts the module glued to the flag (`-stb`). A disagreement logs `compile.toplevel_conflict` once per run, naming both tops. SystemC and cocotb follow the same rule.
+- A top pinned in the builder's `compile-time` opts wins, in any spelling the family accepts. Verilator takes `--top-module`, `-top-module`, `--top`, and `-top`, and Icarus and xezim accept the module glued to the flag (`-stb`). A disagreement logs `compile.toplevel_conflict` once per run, naming both tops. SystemC and cocotb follow the same rule.
 - The flag is part of the compile fingerprint, so two testbenches over one model with different `toplevel:` values do not share a build.
 
 ### cocotb, hooks, and command root
 
-Cocotb supports Verilator, Icarus, and VCS. `cocotb` must be installed and `cocotb-config` available. An unsupported family or a missing `toplevel` is fatal. rtl_buddy reads `cocotb_results.xml`, so cocotb tests do not need PASS/FAIL console markers.
+Cocotb supports Verilator, Icarus, xezim, and VCS. `cocotb` must be installed and `cocotb-config` available. An unsupported family or a missing `toplevel` is fatal. rtl_buddy reads `cocotb_results.xml`, so cocotb tests do not need PASS/FAIL console markers.
 
 Hooks receive the paths and variables documented in [Test plugins](../concepts/plugins.md). Generated outputs, logs, and artefacts use the directory containing `tests.yaml` as the command root. The invocation cwd does not change YAML path meaning.
 

@@ -7,12 +7,12 @@ rb test --share-build
 rb regression --share-build
 ```
 
-`--dispatch` implies it. Verilator, VCS and Icarus support it; with another builder, or an absolute `builder-simv`, the test uses its own build directory and logs why sharing was declined.
+`--dispatch` implies it. Verilator, VCS, Icarus and xezim support it; with another builder, or an absolute `builder-simv`, the test uses its own build directory and logs why sharing was declined.
 
 - Builds live in `artefacts/.shared-builds/obj_dir_<hash>/`. Plusargs, seeds and simulation timeouts do not affect the build; compile options, plusdefines, the simulator and the resolved filelist do.
 - Reuse requires that no tracked input under the project root changed by content. Regenerating a file byte-for-byte reuses the build; any real edit rebuilds it.
 - Verilator reports the files it read, so headers, `-y` library files and the Verilator binary itself invalidate the build.
-- VCS and Icarus report none, so every file under each `+incdir+` directory (recursively) and `-y` directory (flat) is tracked. Editing, adding or removing any of them rebuilds.
+- VCS, Icarus and xezim report none, so every file under each `+incdir+` directory (recursively) and `-y` directory (flat) is tracked. Editing, adding or removing any of them rebuilds.
 - After a change rtl_buddy cannot see, such as a toolchain change or an include reached through a path no `+incdir+` names, force a compile with `--rebuild`.
 
 ### See whether a build was reused

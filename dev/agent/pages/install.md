@@ -28,7 +28,7 @@ External tools stay optional until you run the workflow that uses them.
 
 | Workflow | Required tools | Notes |
 | --- | --- | --- |
-| `test`, `randtest`, `regression` | A configured simulator: Verilator, Icarus Verilog, or VCS | Install `lcov` for Verilator LCOV/HTML export. |
+| `test`, `randtest`, `regression` | A configured simulator: Verilator, Icarus Verilog, xezim, or VCS | Install `lcov` for Verilator or xezim LCOV/HTML export. |
 | `elab`, `elab-regression` | `rtl_buddy[elab]` | `uv add "rtl_buddy[elab]"`. Supports pyslang 10.x and 11.x; needs no simulator. |
 | Slurm dispatch | `sbatch`, `squeue`, `scancel`; `sacct` and `scontrol` recommended | Linux submit host and shared filesystem. See [Slurm dispatch tools](#slurm-dispatch-tools). |
 | `verible` | Verible | macOS: `brew tap chipsalliance/verible && brew install verible`. |

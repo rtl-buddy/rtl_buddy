@@ -8,4 +8,4 @@ License waits and out-of-memory failures are treated as transient, so the next t
 
 `max-jobs-per-array` throttles each array, so total concurrency can approach the throttle times the number of arrays (or slices, for [large groups](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#split-large-groups-into-several-arrays)).
 
-Verilator, VCS, and Icarus can share a build. Other builders, and builders with an absolute `builder-simv`, compile inside each simulation job, which then reserves the field-wise maximum of its simulation and compile reservations. If no planned test can share a build and none is fanned out over seeds, no build job is submitted (`dispatch.build_job_skipped`).
+Verilator, VCS, Icarus, and xezim can share a build. Other builders, and builders with an absolute `builder-simv`, compile inside each simulation job, which then reserves the field-wise maximum of its simulation and compile reservations. If no planned test can share a build and none is fanned out over seeds, no build job is submitted (`dispatch.build_job_skipped`).

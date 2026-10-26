@@ -50,7 +50,7 @@ The default upper level is 0, so an unqualified regression runs only tests with 
 rb regression --share-build
 ```
 
-When tests share compile inputs this reuses one build. Reuse is reported once per build directory on the console, and each test's `compile.log` and the log file record their own. `--rebuild` compiles even when the stamp says the build is current. Verilator, VCS and Icarus support sharing; see [Sharing compiled builds](tests.md#sharing-compiled-builds-across-tests) for invalidation and limits.
+When tests share compile inputs this reuses one build. Reuse is reported once per build directory on the console, and each test's `compile.log` and the log file record their own. `--rebuild` compiles even when the stamp says the build is current. Verilator, VCS, Icarus and xezim support sharing; see [Sharing compiled builds](tests.md#sharing-compiled-builds-across-tests) for invalidation and limits.
 
 ## Replay a seeded regression
 
