@@ -13,7 +13,12 @@ from .toolpath import resolve_tool_path
 
 
 def process_opts(opts):
-    return re.sub(r"\s+", " ", opts).split(" ")
+    """Split an options string on whitespace, dropping empty tokens.
+
+    An empty ``run-time: ""`` must add no argument: a single-invocation simulator
+    such as xezim reads an empty argument as a source file named ``''``.
+    """
+    return [t for t in re.sub(r"\s+", " ", opts).split(" ") if t]
 
 
 #: The ``compile-opts`` mode-map entry that applies when the compiling mode has none.
@@ -39,9 +44,9 @@ def _compile_opts_tokens(opts, *, where, key) -> list[str]:
 def normalize_compile_opts(value, *, where) -> dict[str, CompileOptsValue] | None:
     """Validate a suite's ``compile-opts`` and return it as ``{family: tokens}``.
 
-    ``value`` maps a simulator family (``verilator``, ``vcs``, ``icarus`` or a builder's
-    ``simulator-family``) to options appended after the builder mode's ``compile-time``
-    for that family only. A string is split on whitespace as ``compile-time`` is; a
+    ``value`` maps a simulator family (``verilator``, ``vcs``, ``icarus``, ``xezim``
+    or a builder's ``simulator-family``) to options appended after the builder mode's
+    ``compile-time`` for that family only. A string is split on whitespace as ``compile-time`` is; a
     list is taken token by token; both apply in every builder mode. A map keyed by
     builder mode, with an optional ``default`` entry, holds a string or list per mode
     and normalizes to ``{mode: [token, ...]}``; :func:`select_compile_opts` picks the
@@ -216,6 +221,8 @@ class RtlBuilderConfig:
             return "vcs"
         if exe_base.startswith("iverilog") or exe_base.startswith("icarus"):
             return "icarus"
+        if exe_base.startswith("xezim"):
+            return "xezim"
         return exe_base
 
     def get_wave_format(self) -> str | None:

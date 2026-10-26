@@ -1,10 +1,10 @@
 ---
-description: Configure cocotb testbenches for Verilator, Icarus Verilog, or VCS and interpret their results.
+description: Configure cocotb testbenches for Verilator, Icarus Verilog, xezim, or VCS and interpret their results.
 ---
 
 # cocotb Testbenches
 
-RTL Buddy runs cocotb tests through VPI on builders whose simulator family is `verilator`, `icarus`, or `vcs`.
+RTL Buddy runs cocotb tests through VPI on builders whose simulator family is `verilator`, `icarus`, `xezim`, or `vcs`. cocotb ships no xezim library, so xezim loads the VCS-flavour `libcocotbvpi_vcs` through `--vpi-lib`.
 
 ## Install cocotb
 
@@ -46,7 +46,7 @@ rb --builder icarus test cocotb_smoke
 ```
 
 - An unsupported simulator family or a missing `toplevel:` is a fatal configuration error.
-- `toplevel:` becomes `COCOTB_TOPLEVEL` and also sets the compile top (Verilator `--top-module`, VCS `-top`, Icarus `-s`), unless the builder's `compile-time` options already set one.
+- `toplevel:` becomes `COCOTB_TOPLEVEL` and also sets the compile top (Verilator `--top-module`, VCS `-top`, Icarus and xezim `-s`), unless the builder's `compile-time` options already set one.
 
 See [Tests YAML](../reference/yaml.md#testsyaml) for the schema and [Simulation Backends](simulators.md) for backend differences.
 

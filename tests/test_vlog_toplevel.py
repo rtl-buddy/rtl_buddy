@@ -157,6 +157,7 @@ def _make_sim(
         ("verilator", "verilator", "--top-module"),
         ("vcs", "vcs", "-top"),
         ("icarus", "iverilog", "-s"),
+        ("xezim", "xezim", "-s"),
     ],
 )
 def test_top_flag_per_family(tmp_path, family, exe, flag):
@@ -316,6 +317,14 @@ def test_icarus_glued_top_that_agrees_is_debug(tmp_path, caplog):
     assert "compile.toplevel_already_pinned" in _events(caplog)
 
 
+def test_xezim_glued_top_counts_as_pinned(tmp_path, caplog):
+    # `xezim -stb` is `-s tb`, as for iverilog.
+    sim = _make_sim(tmp_path, toplevel="tb_top", family="xezim", exe="xezim")
+    with caplog.at_level(logging.DEBUG):
+        assert sim._get_top_module_flags(["-stb_top"], []) == []
+    assert "compile.toplevel_already_pinned" in _events(caplog)
+
+
 def test_bare_dash_s_is_not_read_as_glued():
     # `-s` alone is the separate-token spelling; with no value there is no configured top.
     assert vlog_sim_module._find_configured_top(
@@ -407,6 +416,14 @@ def test_compile_argv_carries_dash_s_for_icarus(tmp_path):
     plan = sim._build_compile_plan()
     argv = sim._compile_argv(plan, quiet=True)
     assert argv[argv.index("-s") + 1] == "tb_top"
+
+
+def test_compile_argv_carries_dash_s_for_xezim(tmp_path):
+    sim = _make_sim(tmp_path, toplevel="tb_top", family="xezim", exe="xezim")
+    plan = sim._build_compile_plan()
+    argv = sim._compile_argv(plan, quiet=True)
+    assert argv[argv.index("-s") + 1] == "tb_top"
+    assert "--compile" in argv
 
 
 # ---------------------------------------------------------------------------

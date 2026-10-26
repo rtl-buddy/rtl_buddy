@@ -43,7 +43,7 @@ Slurm `OUT_OF_MEMORY` or compiler `Killed`/SIGKILL needs more memory. Large gene
 
 `--share-build` reuses identical compile inputs. Sources, headers, filelists, plusdefines, compile options, configured extra compile environment, builders, and toolchains can invalidate it; runtime plusargs, seeds, and timeouts do not. Batch edits before expensive compilation.
 
-- Verilator tracks consumed files plus directory listings: additions/removals rebuild; an edit rebuilds only if consumed. VCS/Icarus report no header dependencies, so they track all files in listed include/library directories. See `concepts/tests#sharing-compiled-builds-across-tests` for limits.
+- Verilator tracks consumed files plus directory listings: additions/removals rebuild; an edit rebuilds only if consumed. VCS/Icarus/xezim report no header dependencies, so they track all files in listed include/library directories. See `concepts/tests#sharing-compiled-builds-across-tests` for limits.
 - Preprocessor outputs in `artifact_dir` are tracked. Dispatched same-key configs reuse the first build; differing consumed inputs fail with `build_job.group_input_drift`. New library files or shadowing headers decline adoption.
 - Set `preproc-sets-plusdefines: false` on stimulus-only hooks to avoid reserving one build per test. A hook that changes the key anyway logs `build_job.preproc_changed_compile_key`.
 - Inspect `compile.build_reused` and `compile.log` for reused directories and stamp ages. Force compilation with `--rebuild`; dispatch implies sharing even without `--share-build`.

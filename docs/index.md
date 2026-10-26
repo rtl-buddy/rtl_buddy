@@ -8,7 +8,7 @@ RTL Buddy gives an RTL project one command surface for simulation, regressions, 
 
 ## Supported workflows
 
-- Simulation and randomized testing with Verilator, Icarus Verilog, or VCS
+- Simulation and randomized testing with Verilator, Icarus Verilog, xezim, or VCS
 - Multi-suite regressions with local, local-parallel, or Slurm dispatch
 - Yosys synthesis and OpenROAD timing, place-and-route, and power analysis
 - SymbiYosys formal verification and mutation testing

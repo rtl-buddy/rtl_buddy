@@ -883,6 +883,94 @@ def test_vlog_sim_icarus_compile_emits_dash_o_snapshot(tmp_path, monkeypatch):
     assert _os.access(wrapper, _os.X_OK)
 
 
+def test_simulator_family_recognizes_xezim():
+    from rtl_buddy.config.rtl import RtlBuilderConfig
+
+    cfg = RtlBuilderConfig.__new__(RtlBuilderConfig)
+    cfg.name = "xezim-builder"
+    cfg.exe = "xezim"
+    cfg.simulator_family = None
+    assert cfg.get_simulator_family() == "xezim"
+
+    cfg.exe = "/opt/xezim/target/release/xezim"
+    assert cfg.get_simulator_family() == "xezim"
+
+
+def test_vlog_sim_xezim_simv_path_is_wrapper_in_compile_work_dir(tmp_path, monkeypatch):
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        builder_cfg=DummyBuilderCfg(
+            exe="xezim", simv="ignored", simulator_family="xezim"
+        ),
+    )
+    assert sim._get_simv_path() == str(tmp_path / "artefacts" / "basic" / "simv")
+    assert sim._get_xezim_cache_dir() == str(
+        tmp_path / "artefacts" / "basic" / "obj_dir_basic"
+    )
+    assert not vlog_sim_module.pinned_simv_path(
+        DummyBuilderCfg(exe="xezim", simv="/abs/simv", simulator_family="xezim")
+    )
+
+
+def _run_xezim_compile(tmp_path, monkeypatch, returncode=0):
+    captured = {}
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        builder_cfg=DummyBuilderCfg(
+            exe="xezim", simulator_family="xezim", compile_opts=["--sv2017"]
+        ),
+    )
+
+    def _fake_run(cmd, capture_output, text, cwd, **kwargs):
+        captured["cmd"] = list(cmd)
+        return ManagedProcessResult(returncode=returncode, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
+    )
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
+    return sim, sim.compile(), captured["cmd"]
+
+
+def test_vlog_sim_xezim_compile_is_an_elaboration_gate(tmp_path, monkeypatch):
+    _sim, rc, cmd = _run_xezim_compile(tmp_path, monkeypatch)
+    assert rc == 0
+    cache_dir = str(tmp_path / "artefacts" / "basic" / "obj_dir_basic")
+    run_f = str(tmp_path / "artefacts" / "basic" / "run.f")
+    assert cmd[0] == "xezim"
+    assert cmd[1] == "--sv2017"
+    assert cmd[cmd.index("--cache-dir") + 1] == cache_dir
+    assert "--compile" in cmd
+    assert "--error-exit" not in cmd
+    assert cmd[-2:] == ["-f", run_f]
+    assert Path(cache_dir).is_dir()
+
+
+def test_vlog_sim_xezim_wrapper_reruns_the_compile_line(tmp_path, monkeypatch):
+    import os as _os
+    import shlex as _shlex
+
+    _sim, _rc, cmd = _run_xezim_compile(tmp_path, monkeypatch)
+    wrapper = Path(tmp_path / "artefacts" / "basic" / "simv")
+    assert _os.access(wrapper, _os.X_OK)
+    lines = wrapper.read_text().splitlines()
+    assert lines[0] == "#!/bin/sh"
+    argv = _shlex.split(lines[1])
+    assert argv[:3] == ["exec", "xezim", "--error-exit"]
+    assert argv[-1] == "$@"
+    # The compile line, minus `--compile`, in its order.
+    assert argv[3:-1] == [a for a in cmd[1:] if a != "--compile"]
+    assert "--cache-dir" in argv
+
+
+def test_vlog_sim_xezim_failed_compile_writes_no_wrapper(tmp_path, monkeypatch):
+    _sim, rc, _cmd = _run_xezim_compile(tmp_path, monkeypatch, returncode=1)
+    assert rc != 0
+    assert not (tmp_path / "artefacts" / "basic" / "simv").exists()
+
+
 def test_artifact_path_helpers_match_existing_sanitization():
     assert sanitize_artifact_component("basic") == "basic"
     assert (

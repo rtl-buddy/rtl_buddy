@@ -104,12 +104,14 @@ def test_every_test_in_the_suite_carries_the_options(tmp_path, _patch_model_load
     suite = SuiteConfig(
         _write_suite(
             tmp_path,
-            'compile-opts:\n  verilator: "-MAKEFLAGS OPT_FAST=-O0"\n  vcs: [-kdb]',
+            'compile-opts:\n  verilator: "-MAKEFLAGS OPT_FAST=-O0"\n  vcs: [-kdb]\n'
+            "  xezim: --sv2017",
         )
     )
     for test in suite.tests.values():
         assert test.get_compile_opts("verilator") == ["-MAKEFLAGS", "OPT_FAST=-O0"]
         assert test.get_compile_opts("vcs") == ["-kdb"]
+        assert test.get_compile_opts("xezim") == ["--sv2017"]
         assert test.get_compile_opts("icarus") == []
 
 

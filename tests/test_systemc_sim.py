@@ -138,6 +138,15 @@ def _make_sim(tmp_path, sc_cfg, *, systemc_cfg=None, compile_opts=None):
 # Compile-flag emission
 
 
+def test_non_verilator_builder_is_fatal(tmp_path):
+    # SystemC is a Verilator --sc build; another family would get Verilator flags.
+    sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
+    sim = _make_sim(tmp_path, sc, systemc_cfg=SystemCConfig(home="/opt/sc", cxx=None))
+    sim.rtl_builder_cfg.get_simulator_family = lambda: "xezim"
+    with pytest.raises(FatalRtlBuddyError, match="needs a verilator builder"):
+        sim._filter_builder_opts(["-sv"])
+
+
 def test_filter_builder_opts_drops_binary(tmp_path):
     sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
     sim = _make_sim(tmp_path, sc, systemc_cfg=SystemCConfig(home="/opt/sc", cxx=None))

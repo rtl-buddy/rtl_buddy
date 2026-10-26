@@ -164,7 +164,15 @@ _RUN_OUTPUT_NAMES = (
 
 # Simulator families whose compile output can be redirected into a shared build dir.
 # Other families compile inside each test's own artefact dir.
-SHARE_BUILD_FAMILIES = frozenset({"verilator", "vcs", "icarus"})
+SHARE_BUILD_FAMILIES = frozenset({"verilator", "vcs", "icarus", "xezim"})
+
+# Families whose executable rtl_buddy derives from the build dir, ignoring
+# `builder-simv:`. Icarus and xezim get a `simv` shell wrapper.
+DERIVED_SIMV_FAMILIES = ("verilator", "icarus", "xezim")
+
+# Simulator families that run from a `simv` shell wrapper rtl_buddy writes after the
+# compile.
+WRAPPER_SIMV_FAMILIES = ("icarus", "xezim")
 
 
 @dataclass(frozen=True)
@@ -193,6 +201,7 @@ TOP_MODULE_FLAGS = {
     ),
     "vcs": _TopFlagSpec(emit="-top", aliases=("-top",)),
     "icarus": _TopFlagSpec(emit="-s", aliases=("-s",), glued=("-s",)),
+    "xezim": _TopFlagSpec(emit="-s", aliases=("-s",), glued=("-s",)),
 }
 
 
@@ -245,6 +254,7 @@ def _reset_toplevel_conflicts() -> None:
 _TOOLCHAIN_VERSION_ARGS = {
     "verilator": ("--version",),
     "icarus": ("-V",),
+    "xezim": ("-V",),
 }
 
 # (resolved path, mtime_ns) -> version line; one probe per binary per process.
@@ -390,11 +400,11 @@ def share_build_unsupported_reason(builder_cfg):
 def pinned_simv_path(builder_cfg):
     """The absolute executable this builder pins every test to, or ``None``.
 
-    Verilator and Icarus derive their output from the build dir and ignore
+    Verilator, Icarus and xezim derive their output from the build dir and ignore
     ``builder-simv:``. This is a sharing predicate only; compile-pool grouping uses
     the resolved path from ``_get_simv_path()``.
     """
-    if builder_cfg.get_simulator_family() in ("verilator", "icarus"):
+    if builder_cfg.get_simulator_family() in DERIVED_SIMV_FAMILIES:
         return None
     simv = builder_cfg.get_simv()
     return simv if os.path.isabs(simv) else None
@@ -1637,6 +1647,8 @@ class VlogSim:
 
         - Verilator: `<artefact>/<build>/simv`.
         - Icarus: `<artefact>/simv`, a shell wrapper around `vvp <build>/simv.vvp`.
+        - xezim: `<artefact>/simv`, a shell wrapper that re-runs the compile line
+          as a simulation, with `--cache-dir <build>`.
         - Other backends: `builder-simv:` from the builder config.
 
         Under an active shared build it is always `simv` inside the shared dir, the
@@ -1650,7 +1662,7 @@ class VlogSim:
             return str(
                 Path(self._get_compile_work_dir()) / self._get_build_dir() / SIMV_NAME
             )
-        if self._get_simulator_family() == "icarus":
+        if self._get_simulator_family() in WRAPPER_SIMV_FAMILIES:
             return str(Path(self._get_compile_work_dir()) / SIMV_NAME)
         simv_path = self.rtl_builder_cfg.get_simv()
         if os.path.isabs(simv_path):
@@ -1684,6 +1696,51 @@ class VlogSim:
         wrapper_path = self._get_simv_path()
         snapshot = self._get_icarus_snapshot_path()
         argv = ["exec", "vvp", *self._icarus_vvp_extra_args(), snapshot]
+        cmd = " ".join(shlex.quote(part) for part in argv)
+        Path(wrapper_path).write_text(f'#!/bin/sh\n{cmd} "$@"\n')
+        os.chmod(wrapper_path, 0o755)
+
+    def _get_xezim_cache_dir(self):
+        """The build dir xezim's elaborated-design cache (`--cache-dir`) lives in."""
+        if self._shared_build_dir is not None:
+            return str(self._shared_build_dir)
+        return str(Path(self._get_compile_work_dir()) / self._get_build_dir())
+
+    def _get_xezim_filelist_path(self, plan):
+        """The `-f` filelist the xezim compile and its `simv` wrapper read.
+
+        A shared build's wrapper outlives the test that compiled it, so it reads a
+        copy of `run.f` kept in the shared dir rather than that test's own.
+        """
+        if self._shared_build_dir is not None:
+            return str(Path(self._shared_build_dir) / FILELIST_NAME)
+        return plan.filelist_path
+
+    def _xezim_extra_args(self) -> list:
+        """Extra xezim arguments the `simv` wrapper adds to the simulate line.
+
+        None in the base class. CocotbSim loads the cocotb VPI module here; it is kept
+        off the `--compile` line, which runs no simulation.
+        """
+        return []
+
+    def _write_xezim_simv_wrapper(self, compile_argv):
+        """Write a shell wrapper that re-runs ``compile_argv`` as a simulation.
+
+        xezim elaborates and simulates in one invocation, so the wrapper drops
+        `--compile` and adds `--error-exit`, which makes `$error` and assertion
+        failures exit nonzero. The shared `--cache-dir` lets the run reuse the
+        elaboration.
+        """
+        wrapper_path = self._get_simv_path()
+        exe, *rest = compile_argv
+        argv = [
+            "exec",
+            exe,
+            *self._xezim_extra_args(),
+            "--error-exit",
+            *(arg for arg in rest if arg != "--compile"),
+        ]
         cmd = " ".join(shlex.quote(part) for part in argv)
         Path(wrapper_path).write_text(f'#!/bin/sh\n{cmd} "$@"\n')
         os.chmod(wrapper_path, 0o755)
@@ -1791,6 +1848,9 @@ class VlogSim:
         Skips flags already present in the builder's configured opts.
         """
         if not self._assertions_enabled():
+            return []
+        if self._get_simulator_family() == "xezim":
+            # xezim checks SVA unconditionally; there is nothing to enable.
             return []
         if self._get_simulator_family() != "verilator":
             log_event(
@@ -3261,6 +3321,10 @@ class VlogSim:
             # (CocotbSim adds the VPI module), so tests differing only there need
             # different keys.
             key_cmd = key_cmd + self._icarus_vvp_extra_args()
+        elif self._get_simulator_family() == "xezim":
+            # The same for the xezim wrapper. `--cache-dir` derives from the key and
+            # `--error-exit` is constant, so neither is keyed.
+            key_cmd = key_cmd + self._xezim_extra_args()
         plan.key_cmd = key_cmd
         # Keyed on the configured compile line, not the output flags compile() appends
         # later; those derive from the key.
@@ -3554,6 +3618,13 @@ class VlogSim:
                     parents=True, exist_ok=True
                 )
             run_cmd += ["-o", self._get_icarus_snapshot_path()]
+        elif family == "xezim":
+            # An elaboration gate: the `simv` wrapper reruns this line without
+            # `--compile`, sharing the elaborated-design cache in the build dir.
+            cache_dir = self._get_xezim_cache_dir()
+            if not quiet:
+                Path(cache_dir).mkdir(parents=True, exist_ok=True)
+            run_cmd += ["--compile", "--cache-dir", cache_dir]
         elif shared and family == "vcs":
             run_cmd += self._vcs_shared_output_argv(build_dir)
 
@@ -3576,7 +3647,12 @@ class VlogSim:
 
         run_cmd += plan.plusdefines
 
-        run_cmd += ["-f", plan.filelist_path]
+        filelist_path = plan.filelist_path
+        if family == "xezim":
+            filelist_path = self._get_xezim_filelist_path(plan)
+            if not quiet and filelist_path != plan.filelist_path:
+                shutil.copyfile(plan.filelist_path, filelist_path)
+        run_cmd += ["-f", filelist_path]
         return run_cmd
 
     def _compile_argv(self, plan, *, quiet=False):
@@ -4894,7 +4970,7 @@ class VlogSim:
                 # unused.
                 configured_simv = self.rtl_builder_cfg.get_simv()
                 if (
-                    self._get_simulator_family() not in ("verilator", "icarus")
+                    self._get_simulator_family() not in DERIVED_SIMV_FAMILIES
                     and configured_simv != "simv"
                 ):
                     log_event(
@@ -5168,6 +5244,8 @@ class VlogSim:
                 logger.debug("compile stdout\n%s", result.stdout)
             if self._get_simulator_family() == "icarus":
                 self._write_icarus_simv_wrapper()
+            elif self._get_simulator_family() == "xezim":
+                self._write_xezim_simv_wrapper(base_argv)
             if fingerprint is not None and not verilate_only:
                 # A shared build stamps its own directory; an unshared build's stamp
                 # goes beside the test's compile outputs, since `build_dir` is a bare

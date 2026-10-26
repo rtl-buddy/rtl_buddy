@@ -352,6 +352,26 @@ def _builtin_manifest() -> list[ToolSpec]:
             "execs vvp, so both binaries must be present.",
         ),
         ToolSpec(
+            name="xezim",
+            binaries=("xezim",),
+            version_cmd=("xezim", "-V"),
+            version_regex=r"xezim version\s+([\d.]+)",
+            minimum_version=None,
+            detection=(PathDetector(),),
+            install_hint={
+                "macos": "build from source: cargo build --release (Rust 1.92+)",
+                "linux": "build from source: cargo build --release (Rust 1.92+)",
+                "source": "https://github.com/aionhw/xezim",
+            },
+            used_by=("test", "randtest", "regression"),
+            optional=True,
+            description="xezim 4-state SystemVerilog simulator (single invocation)",
+            notes="Opt-in alternate sim backend, selected per suite/test via a "
+            "cfg-rtl-builder entry with simulator-family: xezim (or builder: "
+            "xezim in tests.yaml). Compile runs xezim --compile as an "
+            "elaboration gate; the simv wrapper reruns it as a simulation.",
+        ),
+        ToolSpec(
             name="slurm",
             binaries=("sbatch", "squeue", "sacct", "scancel"),
             version_cmd=("sbatch", "--version"),

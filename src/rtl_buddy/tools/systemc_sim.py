@@ -78,6 +78,12 @@ class SystemCSim(VlogSim):
         return _PIN_STYLE_FLAGS[style]
 
     def _filter_builder_opts(self, opts: list) -> list:
+        family = self._get_simulator_family()
+        if family != "verilator":
+            raise FatalRtlBuddyError(
+                f"testbench '{self.testbench.name}' requires SystemC, which needs a "
+                f"verilator builder; builder family is '{family}'"
+            )
         # --binary conflicts with --exe/--build.
         return [o for o in opts if o != "--binary"]
 

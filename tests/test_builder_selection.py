@@ -53,6 +53,47 @@ def test_suite_config_parses_suite_and_per_test_builder():
     assert by_name["explicit"].builder_name == "verilator"
 
 
+def test_xezim_builder_entry_parses_and_is_selectable():
+    from rtl_buddy.config.rtl import RtlBuilderConfig
+
+    builder = from_yaml(
+        RtlBuilderConfig,
+        dedent(
+            """
+            name: xezim
+            builder: /opt/xezim/target/release/xezim
+            builder-simv: simv
+            sim-rand-seed: 1
+            sim-rand-seed-prefix: "+seed="
+            builder-opts:
+              reg:
+                compile-time: "-DSIM_XEZIM"
+                run-time: ""
+            """
+        ),
+    )
+    assert builder.get_simulator_family() == "xezim"
+    explicit = from_yaml(
+        RtlBuilderConfig,
+        dedent(
+            """
+            name: xz
+            builder: /opt/bin/xz-wrapper
+            simulator-family: xezim
+            builder-simv: simv
+            sim-rand-seed: 1
+            sim-rand-seed-prefix: "+seed="
+            builder-opts: {}
+            """
+        ),
+    )
+    assert explicit.get_simulator_family() == "xezim"
+
+    other = object()
+    root = _make_root(other, {"verilator": other, "xezim": builder})
+    assert root.resolve_rtl_builder_cfg("xezim") is builder
+
+
 def test_suite_config_builder_defaults_to_none_when_absent():
     yaml = dedent(
         """
