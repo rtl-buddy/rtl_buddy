@@ -12,6 +12,7 @@ Unless stated otherwise:
 - `reglvl` defaults to 0. It is an integer, or a per-tool or per-builder map with a `default` fallback. A run is selected when its level is at most the CLI regression level.
 - `xfail: true` is non-strict; `xfail_strict: true` makes an unexpected pass fail. Neither excuses a failure that happened instead of a verdict, such as a setup or compile failure, a sim timeout, or a lost dispatch job. `xfail_match: "<regex>"` names the expected failure, so a run that fails for another reason stays `FAIL`. See [Expected failures](../concepts/expected-failures.md).
 - Unknown references and invalid required combinations fail during configuration loading.
+- A missing required key fails during configuration loading. The `load_failed` error names the file, the entry by its `name` (or index), and every required key it leaves out, for example `runs 'top': missing required key 'desc'`.
 - A key written twice in one mapping fails during configuration loading, naming the file, the key and both line numbers. Plain YAML keeps only the last value. A key set after a `<<:` merge overrides the merged value and is not a duplicate.
 
 ## root_config.yaml

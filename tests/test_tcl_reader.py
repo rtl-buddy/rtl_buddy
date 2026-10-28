@@ -940,11 +940,13 @@ def test_lenient_queries_warn_once_per_file_with_skipped_checks(
     ] == [("top.sdc", 1), ("inner.sdc", 2)]
 
 
-def test_lenient_queries_still_fall_back_when_a_sourced_file_errors(
+def test_lenient_queries_skip_a_failing_statement_in_a_sourced_file(
     tcl_backend, tmp_path, caplog
 ):
     (tmp_path / "clocks.sdc").write_text(
-        "set p $undefined_var\ncreate_clock -name fast -period 1.0 [get_ports f]\n"
+        "create_clock -name early -period 2.0 [get_ports e]\n"
+        "set p $undefined_var\n"
+        "create_clock -name fast -period 1.0 [get_ports f]\n"
     )
     top = tmp_path / "top.sdc"
     top.write_text(
@@ -952,11 +954,19 @@ def test_lenient_queries_still_fall_back_when_a_sourced_file_errors(
     )
     with caplog.at_level(logging.WARNING):
         cmds, used = _read_file(top, lenient_queries=True)
-    assert used == "tokenizer"
-    assert [c.words[c.words.index("-period") + 1] for c in cmds] == ["1.0", "3.0"]
-    [rec] = _events(caplog, "constraints.tcl_error")
+    assert used == "tcl"
+    assert [(c.words[1], c.words[3], c.line) for c in cmds] == [
+        ("early", "2.0", 1),
+        ("fast", "1.0", 3),
+        ("late", "3.0", 2),
+    ]
+    [rec] = _events(caplog, "constraints.tcl_statement_skipped")
+    assert rec.levelno == logging.WARNING
+    assert rec.rtl_fields["source"] == str(tmp_path / "clocks.sdc")
+    assert rec.rtl_fields["line"] == 2
     assert "undefined_var" in rec.rtl_fields["message"]
-    assert not _events(caplog, "constraints.tcl_checks_skipped")
+    assert "skipped it and read on" in rec.getMessage()
+    assert not _events(caplog, "constraints.tcl_error")
 
 
 def test_lenient_queries_still_fail_a_file_that_sources_itself(
@@ -1069,10 +1079,11 @@ def test_lenient_queries_keep_every_other_return(tcl_backend):
     assert [c.words[3] for c in cmds] == ["6.0", "7", "0"]
 
 
-def test_lenient_queries_still_fail_a_return_code_error_from_a_failed_source(
+def test_lenient_queries_still_fail_a_source_loop_inside_a_proc(
     tcl_backend, tmp_path, caplog
 ):
-    (tmp_path / "inner.sdc").write_text("set p $undefined_var\n")
+    # Neither the lenient `return` nor the statement skip may swallow a failed `source`.
+    (tmp_path / "inner.sdc").write_text("source inner.sdc\n")
     top = tmp_path / "top.sdc"
     top.write_text(
         "proc load {} { source inner.sdc }\n"
@@ -1083,14 +1094,18 @@ def test_lenient_queries_still_fail_a_return_code_error_from_a_failed_source(
         _cmds, used = _read_file(top, lenient_queries=True)
     assert used == "tokenizer"
     [rec] = _events(caplog, "constraints.tcl_error")
-    assert "undefined_var" in rec.rtl_fields["message"]
+    assert "source nesting" in rec.rtl_fields["message"]
+    assert rec.rtl_fields["source"] == str(tmp_path / "inner.sdc")
+    assert rec.rtl_fields["line"] == 1
+    assert not _events(caplog, "constraints.tcl_statement_skipped")
 
 
 def test_a_failed_lenient_retry_reports_the_retry_error(tcl_backend, caplog):
     # The first read stops at the query form `[get_ports {a b}]`; the retry gets past it to the real problem.
     text = (
         "foreach p [get_ports {a b}] { set_input_delay 1 $p }\n"
-        "create_clock -period $undefined_period c\n"
+        "create_clock -period 2 c\n"
+        "create_clock -period {3 d\n"
     )
     with caplog.at_level(logging.WARNING):
         _cmds, used = read_commands(
@@ -1098,7 +1113,8 @@ def test_a_failed_lenient_retry_reports_the_retry_error(tcl_backend, caplog):
         )
     assert used == "tokenizer"
     [rec] = _events(caplog, "constraints.tcl_error")
-    assert "undefined_period" in rec.rtl_fields["message"]
+    assert "close-brace" in rec.rtl_fields["message"]
+    assert rec.rtl_fields["line"] == 3
 
 
 def test_the_tokenizer_names_commands_inside_bodies_it_does_not_evaluate(
@@ -1156,7 +1172,7 @@ def test_a_failed_lenient_retry_logs_the_checks_it_skipped(tcl_backend, caplog):
         '  if {[get_property $p direction] ne "input"} { return -code error "bad $p" }\n'
         "}\n"
         "must_input [get_ports {a b}]\n"
-        "create_clock -period $undefined_period c\n"
+        "create_clock -period {2 c\n"
     )
     with caplog.at_level(logging.WARNING):
         _cmds, used = read_commands(
@@ -1166,7 +1182,7 @@ def test_a_failed_lenient_retry_logs_the_checks_it_skipped(tcl_backend, caplog):
     [rec] = _events(caplog, "constraints.tcl_checks_skipped")
     assert rec.rtl_fields["count"] == 1
     [error] = _events(caplog, "constraints.tcl_error")
-    assert "undefined_period" in error.rtl_fields["message"]
+    assert "close-brace" in error.rtl_fields["message"]
 
 
 def test_the_tcl_reader_has_no_unread_commands(tcl_backend):
@@ -1175,3 +1191,467 @@ def test_the_tcl_reader_has_no_unread_commands(tcl_backend):
     assert result.backend == "tcl"
     assert [c.words[1] for c in result.commands] == ["a", "b"]
     assert result.unread == []
+
+
+# `source` runs in the caller's scope (#956)
+
+_SCOPE_SETTERS = {
+    "array set": ("array set per { clk 10.0 }", "$per(clk)"),
+    "set per(clk)": ("set per(clk) 10.0", "$per(clk)"),
+    "set": ("set clk_period 10.0", "$clk_period"),
+}
+_SOURCE_LINES = {
+    "literal": "source inc.sdc",
+    "info script": (
+        "source [file join [file dirname [file normalize [info script]]] inc.sdc]"
+    ),
+}
+
+
+@pytest.mark.parametrize("source_line", list(_SOURCE_LINES))
+@pytest.mark.parametrize("setter", list(_SCOPE_SETTERS))
+def test_a_sourced_file_reads_the_sourcing_files_variables(
+    tcl_backend, tmp_path, caplog, setter, source_line
+):
+    assignment, reference = _SCOPE_SETTERS[setter]
+    (tmp_path / "inc.sdc").write_text(
+        f"create_clock -name clk -period {reference} [get_ports clk]\n"
+    )
+    top = tmp_path / "top.sdc"
+    top.write_text(f"{assignment}\n{_SOURCE_LINES[source_line]}\n")
+    with caplog.at_level(logging.WARNING):
+        cmds, used = _read_file(top)
+    assert used == "tcl"
+    assert [(c.words, c.line, c.file) for c in cmds] == [
+        (
+            ["-name", "clk", "-period", "10.0", "[get_ports clk]"],
+            1,
+            str(tmp_path / "inc.sdc"),
+        )
+    ]
+    assert not caplog.records
+
+
+def test_a_sourced_file_shares_procs_and_variables_with_the_caller(
+    tcl_backend, tmp_path
+):
+    (tmp_path / "inc.sdc").write_text(
+        "set from_inc 8\ncreate_clock -name a -period [half 10] a\n"
+    )
+    top = tmp_path / "top.sdc"
+    top.write_text(
+        "proc half {p} { expr {$p / 2.0} }\n"
+        "source inc.sdc\n"
+        "create_clock -name b -period $from_inc b\n"
+    )
+    cmds, used = _read_file(top)
+    assert used == "tcl"
+    assert [(c.words[1], c.words[3]) for c in cmds] == [("a", "5.0"), ("b", "8")]
+
+
+def test_a_file_sourced_in_a_proc_runs_in_that_procs_frame(tcl_backend, tmp_path):
+    (tmp_path / "inc.sdc").write_text("set q [expr {$p * 2}]\n")
+    top = tmp_path / "top.sdc"
+    top.write_text(
+        "set p 1\n"
+        "proc load {p} { source inc.sdc; return $q }\n"
+        "create_clock -name c -period [load 4] c\n"
+        "create_clock -name g -period $p g\n"
+        "create_clock -name h -period [info exists q] h\n"
+    )
+    cmds, used = _read_file(top)
+    assert used == "tcl"
+    assert [(c.words[1], c.words[3]) for c in cmds] == [
+        ("c", "8"),
+        ("g", "1"),
+        ("h", "0"),
+    ]
+
+
+def test_info_script_names_the_sourced_file_while_it_runs(tcl_backend, tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "inc.sdc").write_text(
+        "create_clock -name [file tail [info script]] -period 2 b\n"
+    )
+    top = tmp_path / "top.sdc"
+    top.write_text(
+        "source sub/inc.sdc\ncreate_clock -name [file tail [info script]] -period 1 a\n"
+    )
+    cmds, used = _read_file(top)
+    assert used == "tcl"
+    assert [c.words[1] for c in cmds] == ["inc.sdc", "top.sdc"]
+
+
+def test_a_top_level_return_ends_only_its_own_file(tcl_backend, tmp_path):
+    (tmp_path / "inc.sdc").write_text(
+        "create_clock -period 1 a\nreturn\ncreate_clock -period 2 b\n"
+    )
+    top = tmp_path / "top.sdc"
+    top.write_text(
+        "source inc.sdc\ncreate_clock -period 3 c\nreturn\ncreate_clock -period 4 d\n"
+    )
+    cmds, used = _read_file(top)
+    assert used == "tcl"
+    assert [c.words[-1] for c in cmds] == ["a", "c"]
+
+
+#: Fails the plain read, so a read with ``lenient_queries`` takes the lenient re-read.
+_QUERY_LOOP = "foreach p [get_ports {x y}] { set_load 1 $p }\n"
+
+
+@pytest.mark.parametrize("lenient", [False, True])
+def test_a_multi_level_return_in_a_sourced_file_returns_from_its_caller(
+    tcl_backend, tmp_path, lenient
+):
+    (tmp_path / "inc.sdc").write_text(
+        "create_clock -name a -period 1 a\n"
+        "return -level 2 7\n"
+        "create_clock -name b -period 2 b\n"
+    )
+    top = tmp_path / "top.sdc"
+    top.write_text(
+        (_QUERY_LOOP if lenient else "")
+        + "proc load {} { source inc.sdc; create_clock -name c -period 3 c; return 0 }\n"
+        "create_clock -name d -period [load] d\n"
+    )
+    cmds, used = _read_file(top, lenient_queries=lenient)
+    assert used == "tcl"
+    assert [(c.words[1], c.words[3]) for c in cmds] == [("a", "1"), ("d", "7")]
+
+
+@pytest.mark.parametrize("lenient", [False, True])
+def test_a_break_in_a_sourced_file_breaks_the_callers_loop(
+    tcl_backend, tmp_path, lenient
+):
+    (tmp_path / "inc.sdc").write_text(
+        "create_clock -name a -period 1 a\nbreak\ncreate_clock -name b -period 2 b\n"
+    )
+    top = tmp_path / "top.sdc"
+    top.write_text(
+        (_QUERY_LOOP if lenient else "") + "foreach f {inc.sdc inc.sdc} {\n"
+        "  source $f\n"
+        "  create_clock -name c -period 3 c\n"
+        "}\n"
+        "create_clock -name d -period 4 d\n"
+    )
+    cmds, used = _read_file(top, lenient_queries=lenient)
+    assert used == "tcl"
+    assert [c.words[1] for c in cmds] == ["a", "d"]
+
+
+def test_a_failed_read_names_the_statement_and_file_that_stopped_it(
+    tcl_backend, tmp_path, caplog
+):
+    (tmp_path / "inc.sdc").write_text("\n\nset p $nope\n")
+    top = tmp_path / "top.sdc"
+    top.write_text("create_clock -period 1 a\nsource inc.sdc\n")
+    with caplog.at_level(logging.WARNING):
+        _cmds, used = _read_file(top)
+    assert used == "tokenizer"
+    [rec] = _events(caplog, "constraints.tcl_error")
+    assert rec.rtl_fields["source"] == str(tmp_path / "inc.sdc")
+    assert rec.rtl_fields["line"] == 3
+    assert "nope" in rec.rtl_fields["message"]
+
+
+# A statement the lenient re-read cannot evaluate keeps the clocks around it (#946)
+
+#: The #946 example: a helper doing `expr` on a created clock's period, after a loop that creates the clocks.
+_PERIOD_HELPER = (
+    "proc helper {clk} {\n"
+    "  set p [get_property [get_clocks $clk] period]\n"
+    "  return [expr {$p - 100}]\n"
+    "}\n"
+)
+_LOOP_CLOCKS = (
+    "set period 2000\n"
+    "foreach c {a b} {\n"
+    "  create_clock -name ${c}_clk -period $period [get_ports ${c}_clk]\n"
+    "}\n"
+    "helper a_clk\n"
+)
+
+
+@pytest.mark.parametrize("layout", ["inline", "sourced helper"])
+def test_a_helper_on_a_created_clocks_period_keeps_the_loop_clocks(
+    tcl_backend, tmp_path, caplog, layout
+):
+    top = tmp_path / "top.sdc"
+    if layout == "inline":
+        top.write_text(_PERIOD_HELPER + _LOOP_CLOCKS)
+    else:
+        (tmp_path / "helpers.tcl").write_text(_PERIOD_HELPER)
+        top.write_text(
+            "source [file join [file dirname [info script]] helpers.tcl]\n"
+            + _LOOP_CLOCKS
+        )
+    with caplog.at_level(logging.WARNING):
+        result = read_constraints(
+            top.read_text(),
+            interest=CLOCK,
+            source=str(top),
+            script_path=str(top),
+            lenient_queries=True,
+        )
+    assert result.backend == "tcl"
+    assert [(c.words[1], c.words[3]) for c in result.commands] == [
+        ("a_clk", "2000"),
+        ("b_clk", "2000"),
+    ]
+    assert result.unread == []
+    assert not caplog.records
+
+
+def test_a_helper_on_a_created_clocks_period_still_stops_a_strict_read(tcl_backend):
+    _cmds, used = read_commands(_PERIOD_HELPER + _LOOP_CLOCKS, interest=CLOCK)
+    assert used == "tokenizer"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "get_property [get_clocks base] period",
+        "get_property -object_type clock [get_clocks base] period",
+        "get_property PERIOD [get_clocks base]",
+        "get_attribute [get_clocks base] period",
+        "get_property [get_clocks clk] period",
+    ],
+)
+def test_lenient_queries_answer_a_created_clocks_period(tcl_backend, query):
+    text = (
+        "create_clock -name base -period 4 [get_ports clk]\n"
+        f"create_clock -name gen -period [expr {{2 * [{query}]}}] [get_ports g]\n"
+    )
+    if "clocks clk" in query:
+        text = text.replace("-name base ", "")
+    cmds, used = read_commands(text, interest=CLOCK, lenient_queries=True)
+    assert used == "tcl"
+    assert [c.words[-2] for c in cmds] == ["4", "8"]
+
+
+@pytest.mark.parametrize(
+    "query, answered",
+    [
+        ("get_property [get_clocks clk] period", True),
+        ("get_property [get_ports clk] period", False),
+        ("get_attribute [get_cells clk] period", False),
+        ("get_property PERIOD [get_ports clk]", False),
+    ],
+)
+def test_a_period_is_answered_only_for_an_object_get_clocks_returned(
+    tcl_backend, caplog, query, answered
+):
+    # The clock and its source port share the name `clk`.
+    text = (
+        "create_clock -name clk -period 4 [get_ports clk]\n"
+        f"create_clock -name gen -period [expr {{2 * [{query}]}}] [get_ports g]\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        result = read_constraints(
+            text, interest=CLOCK, source="q.sdc", lenient_queries=True
+        )
+    assert result.backend == "tcl"
+    if answered:
+        assert [c.words[3] for c in result.commands] == ["4", "8"]
+        assert not caplog.records
+    else:
+        assert [c.words[1] for c in result.commands] == ["clk"]
+        [rec] = _events(caplog, "constraints.tcl_statement_skipped")
+        assert rec.rtl_fields["line"] == 2
+        assert [(u.name, u.line) for u in result.unread] == [("create_clock", 2)]
+
+
+def test_a_period_of_a_clock_the_file_did_not_create_is_not_invented(
+    tcl_backend, caplog
+):
+    text = (
+        "create_clock -name a -period 4 [get_ports a]\n"
+        "create_clock -name b -period [expr {2 * [get_property [get_clocks nope] period]}] b\n"
+        "create_clock -name c -period 6 [get_ports c]\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        result = read_constraints(
+            text, interest=CLOCK, source="n.sdc", lenient_queries=True
+        )
+    assert result.backend == "tcl"
+    assert [(c.words[1], c.words[3]) for c in result.commands] == [
+        ("a", "4"),
+        ("c", "6"),
+    ]
+    [rec] = _events(caplog, "constraints.tcl_statement_skipped")
+    assert (rec.rtl_fields["source"], rec.rtl_fields["line"]) == ("n.sdc", 2)
+    assert result.unread == [
+        UnreadCommand(
+            "create_clock", "create_clock", 2, "n.sdc", rec.rtl_fields["message"]
+        )
+    ]
+
+
+def test_a_skip_covers_only_the_failing_command_on_its_line(tcl_backend, caplog):
+    text = (
+        "create_clock -name a -period 1 a; set p $missing; create_clock -name b -period 2 b\n"
+        "set q $missing ; create_clock -name c -period 3 c\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        result = read_constraints(
+            text, interest=CLOCK, source="s.sdc", lenient_queries=True
+        )
+    assert result.backend == "tcl"
+    assert [(c.words[1], c.line) for c in result.commands] == [
+        ("a", 1),
+        ("b", 1),
+        ("c", 2),
+    ]
+    assert result.unread == []
+    assert [
+        (r.rtl_fields["line"], r.rtl_fields["message"])
+        for r in _events(caplog, "constraints.tcl_statement_skipped")
+    ] == [
+        (1, 'can\'t read "missing": no such variable'),
+        (2, 'can\'t read "missing": no such variable'),
+    ]
+
+
+def test_separators_inside_braces_quotes_and_brackets_do_not_split(tcl_backend):
+    text = (
+        'set s "a;b"; set t {c;d}; set u [join {e f} ";"]; set v g\\;h\n'
+        "set_false_path -from $s -to $t -through $u -fall_to $v;"
+        " set p $missing; create_clock -name k -period 2 k\n"
+    )
+    cmds, used = read_commands(
+        text,
+        interest=frozenset({"create_clock", "set_false_path"}),
+        lenient_queries=True,
+    )
+    assert used == "tcl"
+    assert [(c.name, c.words) for c in cmds] == [
+        (
+            "set_false_path",
+            ["-from", "a;b", "-to", "c;d", "-through", "e;f", "-fall_to", "g;h"],
+        ),
+        ("create_clock", ["-name", "k", "-period", "2", "k"]),
+    ]
+
+
+def test_a_comment_runs_to_the_end_of_its_line_in_the_lenient_read(tcl_backend):
+    text = (
+        "set p $missing; create_clock -name a -period 1 a ;# c; create_clock -name z -period 9 z\n"
+        "# set q $missing; create_clock -name y -period 8 y \\\n"
+        "create_clock -name w -period 7 w\n"
+        "create_clock -name b -period 2 b\n"
+    )
+    cmds, used = read_commands(text, interest=CLOCK, lenient_queries=True)
+    assert used == "tcl"
+    assert [(c.words[1], c.line) for c in cmds] == [("a", 1), ("b", 4)]
+
+
+def test_break_outside_a_loop_is_a_skipped_error_in_the_lenient_read(
+    tcl_backend, caplog
+):
+    text = (
+        "set p $missing\n"
+        "create_clock -name a -period 1 a; break; create_clock -name b -period 2 b\n"
+        "return\n"
+        "create_clock -name c -period 3 c\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        cmds, used = read_commands(
+            text, interest=CLOCK, source="b.sdc", lenient_queries=True
+        )
+    assert used == "tcl"
+    assert [c.words[1] for c in cmds] == ["a", "b"]
+    assert [
+        (r.rtl_fields["line"], r.rtl_fields["message"])
+        for r in _events(caplog, "constraints.tcl_statement_skipped")
+    ] == [
+        (1, 'can\'t read "missing": no such variable'),
+        (2, 'invoked "break" outside of a loop'),
+    ]
+
+
+def test_a_skipped_statement_is_named_by_its_file_and_line(
+    tcl_backend, tmp_path, caplog
+):
+    (tmp_path / "helpers.tcl").write_text(
+        "proc cap {p} {\n  expr {[get_property [get_ports $p] capacitance] * 2}\n}\n"
+    )
+    (tmp_path / "inc.sdc").write_text(
+        "create_clock -name a -period 2 [get_ports a]\n"
+        "\n"
+        "set_load \\\n"
+        "  [cap a] [get_ports a]\n"
+        "create_clock -name b -period 3 [get_ports b]\n"
+    )
+    top = tmp_path / "top.sdc"
+    top.write_text(
+        "source helpers.tcl\nsource inc.sdc\ncreate_clock -name c -period 4 c\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        result = read_constraints(
+            top.read_text(),
+            interest=CLOCK,
+            source=str(top),
+            script_path=str(top),
+            lenient_queries=True,
+        )
+    assert result.backend == "tcl"
+    assert [
+        (c.words[1], c.line, pathlib.Path(c.file).name) for c in result.commands
+    ] == [
+        ("a", 1, "inc.sdc"),
+        ("b", 5, "inc.sdc"),
+        ("c", 3, "top.sdc"),
+    ]
+    assert result.unread == []
+    [rec] = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert rec.rtl_event == "constraints.tcl_statement_skipped"
+    assert rec.rtl_fields["source"] == str(tmp_path / "inc.sdc")
+    assert rec.rtl_fields["line"] == 3
+    assert "operand" in rec.rtl_fields["message"]
+
+
+@pytest.mark.parametrize("names", ["a", "x a", "a b"])
+def test_a_loop_that_fails_after_creating_its_clock_reports_none_unread(
+    tcl_backend, caplog, names
+):
+    # The pass over `a` fails after its create_clock ran; with "a b" the loop stops there.
+    text = (
+        f"foreach c {{{names}}} {{\n"
+        "  create_clock -name $c -period 2 [get_ports $c]\n"
+        '  if {$c eq "a"} { set_load [expr {[get_property [get_ports $c] cap] * 2}] $c }\n'
+        "}\n"
+        "create_clock -name z -period 5 [get_ports z]\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        result = read_constraints(
+            text, interest=CLOCK, source="l.sdc", lenient_queries=True
+        )
+    assert result.backend == "tcl"
+    created = [n for n in names.split() if n != "b"]
+    assert [c.words[1] for c in result.commands] == [*created, "z"]
+    assert result.unread == []
+    [rec] = _events(caplog, "constraints.tcl_statement_skipped")
+    assert rec.rtl_fields["line"] == 1
+
+
+def test_a_loop_that_fails_before_its_clock_names_it_unread(tcl_backend):
+    text = (
+        "foreach c {a b} {\n"
+        "  set_load [expr {[get_property [get_ports $c] cap] * 2}] $c\n"
+        "  create_clock -name $c -period 2 [get_ports $c]\n"
+        "}\n"
+        "create_clock -name z -period 5 [get_ports z]\n"
+    )
+    result = read_constraints(
+        text, interest=CLOCK, source="l.sdc", lenient_queries=True
+    )
+    assert result.backend == "tcl"
+    assert [c.words[1] for c in result.commands] == ["z"]
+    [unread] = result.unread
+    assert (unread.name, unread.enclosing, unread.line, unread.file) == (
+        "create_clock",
+        "foreach",
+        3,
+        "l.sdc",
+    )
+    assert unread.error

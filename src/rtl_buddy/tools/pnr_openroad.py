@@ -1983,6 +1983,79 @@ def _round_improves(new: dict, best: dict, sides) -> bool:
     return new["drcs"] < best["drcs"] and _timing_as_good(new, best, sides)
 
 
+def _trades(timing: dict, other: dict, sides) -> bool:
+    """Whether `timing`'s worst slack is higher than `other`'s on one repaired side and lower on another, so neither is better (`_improves`)."""
+    gains = [_side_slack(timing, side) - _side_slack(other, side) for side in sides]
+    return any(gain > 0 for gain in gains) and any(gain < 0 for gain in gains)
+
+
+def _worst_side(timing: dict, sides) -> str:
+    """The repaired side with `timing`'s lowest worst slack (`_side_slack`), its worst violation; the first of `sides` on a tie."""
+    return min(sides, key=lambda side: _side_slack(timing, side))
+
+
+def _worst_violation_gain(timing: dict, other: dict, sides) -> float:
+    """How much smaller `timing`'s worst violation over the repaired sides is than `other`'s, in ps."""
+    return _side_slack(timing, _worst_side(timing, sides)) - _side_slack(
+        other, _worst_side(other, sides)
+    )
+
+
+def _times_better(timing: dict, other: dict, sides) -> bool:
+    """Whether `timing` is better than `other`: better on the repaired sides (`_improves`), or, when each is better on one of them (`_trades`), with the smaller worst violation."""
+    if _improves(timing, other, sides):
+        return True
+    return (
+        _trades(timing, other, sides)
+        and _worst_violation_gain(timing, other, sides) > 0
+    )
+
+
+def _compare_rounds(new: dict, best: dict, sides) -> tuple[bool, str]:
+    """Whether round `new` becomes the best over round `best`, each `{"timing": ..., "drcs": n}`, and the comparison that decided it, the first of:
+
+    - `drc_violations`: a clean route beats one with violations, and a round with more violations never wins;
+    - `timing` or `drc_violations`: the round improves (`_round_improves`), with better timing or with timing as good and fewer violations;
+    - `worst_violation`: each round is better on one repaired side (`_trades`), and the one with the smaller worst violation wins;
+    - `timing`: the best's timing is better;
+    - `electrical_violators`: a tie on timing and DRC violations goes to fewer electrical violators (`_electrically_cleaner`);
+    - `tie`: nothing separates them, including equal worst violations, and the best stays.
+    """
+    if not new["drcs"] and best["drcs"]:
+        return True, "drc_violations"
+    if new["drcs"] > best["drcs"]:
+        return False, "drc_violations"
+    if _round_improves(new, best, sides):
+        better = _improves(new["timing"], best["timing"], sides)
+        return True, "timing" if better else "drc_violations"
+    if _trades(new["timing"], best["timing"], sides):
+        gain = _worst_violation_gain(new["timing"], best["timing"], sides)
+        return (gain > 0, "worst_violation") if gain else (False, "tie")
+    if _improves(best["timing"], new["timing"], sides):
+        return False, "timing"
+    if _electrically_cleaner(new, best, sides):
+        return True, "electrical_violators"
+    return False, "tie"
+
+
+def _slack_desc(timing: dict, side: str) -> str:
+    return f"{side} WNS {timing[f'wns_{side}_ps'] / 1000:.4f} ns"
+
+
+def _trade_desc(round_: int, timing: dict, other_round: int, other: dict, sides) -> str:
+    """How round `round_`'s timing trades with round `other_round`'s (`_trades`): the sides each is better on and how their worst violations compare."""
+    better = [s for s in sides if _side_slack(timing, s) > _side_slack(other, s)]
+    worse = [s for s in sides if _side_slack(timing, s) < _side_slack(other, s)]
+    gain = _worst_violation_gain(timing, other, sides)
+    relation = "smaller than" if gain > 0 else "larger than" if gain < 0 else "equal to"
+    return (
+        f"round {round_} times better on {' and '.join(better)} and worse on "
+        f"{' and '.join(worse)} than round {other_round}, and its worst violation, "
+        f"{_slack_desc(timing, _worst_side(timing, sides))}, is {relation} round "
+        f"{other_round}'s, {_slack_desc(other, _worst_side(other, sides))}"
+    )
+
+
 def _round_summary(round_: dict) -> str:
     """A round's setup and hold WNS, in ns, and its DRC violation count, for a stop reason."""
 
@@ -1996,13 +2069,13 @@ def _round_summary(round_: dict) -> str:
 
 
 def _passed_over(timed: dict, kept: int, sides) -> int | None:
-    """The round with the best timing among those whose timing is better than the kept round's but whose route has DRC violations, when the kept round's is clean; else None. With no repaired side (`sides` empty) timing decides nothing, so None."""
+    """The round with the best timing among those whose timing is better than the kept round's (`_times_better`) but whose route has DRC violations, when the kept round's is clean; else None. With no repaired side (`sides` empty) timing decides nothing, so None."""
     if not sides or kept not in timed or timed[kept]["drcs"]:
         return None
     passed = None
     for round_, entry in timed.items():
         reference = timed[kept if passed is None else passed]["timing"]
-        if entry["drcs"] and _improves(entry["timing"], reference, sides):
+        if entry["drcs"] and _times_better(entry["timing"], reference, sides):
             passed = round_
     return passed
 
@@ -2087,7 +2160,7 @@ def run_post_route_repair(
 
     `session(path, label)` runs OpenROAD on one script and returns its exit code, stderr, resources and log; `note(line)` appends a line of rb's own to the log and returns it. Each session's part of the log begins with `_SESSION_BEGIN_MARKER`.
 
-    Round 0 is the detailed route: its extraction session extracts it and times every corner. Round k from 1 repairs round k-1's database on that round's SPEF, routes, and writes the stage's checkpoint, which rb renames `06_post_route_repair.r<k>.*` (`_round_files`); its extraction session then times the result. Each round's DRC violations are counted from its router's report. A round becomes the best when it improves on the best (`_round_improves`), when its route is clean and the best's is not, or when it ties the best on timing and DRC violations with fewer max-slew and max-capacitance violators (`_electrically_cleaner`), and the stop reason then names the tie-break. A round whose route has violations never stops the rounds, so the next one gets another detailed route on its database. The rounds stop when a clean round is the best and meets timing on every side they repair (setup with `setup-margin` set, hold with `hold-margin` set), when a clean round does not become the best, when a round's timing is not reported, when a session of a later round fails, or after the last round. The stage keeps the best round's database as its checkpoint (`_keep_round`); a round from 1 whose timing was not reported or whose session failed is never kept. When a round with violations has better timing than the clean round kept, the stop reason names both (`_passed_over`).
+    Round 0 is the detailed route: its extraction session extracts it and times every corner. Round k from 1 repairs round k-1's database on that round's SPEF, routes, and writes the stage's checkpoint, which rb renames `06_post_route_repair.r<k>.*` (`_round_files`); its extraction session then times the result. Each round's DRC violations are counted from its router's report. A round becomes the best when it beats the best (`_compare_rounds`): its route is clean and the best's is not; it improves on the best (`_round_improves`); each is better on one repaired side and its worst violation is smaller; or it ties the best on timing and DRC violations with fewer max-slew and max-capacitance violators (`_electrically_cleaner`). Each round's event names the comparison that decided (`decided_by`). The stop reason names the worst violations or the electrical violators when they made the kept round the best, and the worst violations when a clean round that trades sides with the best stopped the rounds. A round whose route has violations never stops the rounds, so the next one gets another detailed route on its database. The rounds stop when a clean round is the best and meets timing on every side they repair (setup with `setup-margin` set, hold with `hold-margin` set), when a clean round does not become the best, when a round's timing is not reported, when a session of a later round fails, or after the last round. The stage keeps the best round's database as its checkpoint (`_keep_round`); a round from 1 whose timing was not reported or whose session failed is never kept. When a round with violations has better timing than the clean round kept, the stop reason names both (`_passed_over`).
 
     With `judged` in the plan (a multi-corner run that sets `signoff:`), the rounds judge each side's worst slack only over the corners it names for that side (`_judged_timing`): which sides are met, which round is the best and when they stop. Each round's event keeps every corner's timing and adds the judged worst slack as `signoff_timing`.
 
@@ -2163,8 +2236,8 @@ def run_post_route_repair(
     repaired = 0
     files: dict[int, dict | None] = {}
     timed: dict[int, dict] = {}
-    # Each round that became the best only for having fewer electrical violators, with the round it replaced.
-    cleaner: dict[int, int] = {}
+    # Each compared round's deciding comparison (`_compare_rounds`) and the best round it was compared with.
+    decided: dict[int, tuple[str, int]] = {}
 
     def _record(round_: int, drcs: int, timing: dict, view: dict) -> None:
         if electrical is not None and round_ == electrical["round"]:
@@ -2189,6 +2262,7 @@ def run_post_route_repair(
                 else {}
             ),
             "best_round": best,
+            "decided_by": decided[round_][0] if round_ in decided else None,
         }
         log_event(logger, logging.INFO, "pnr.post_route_round", pnr=run_name, **fields)
         pnr_checkpoints.record_event(run_dir, "post_route_round", **fields)
@@ -2243,16 +2317,20 @@ def run_post_route_repair(
         return files[round_], None
 
     def _becomes_best(round_: int, current: dict) -> bool:
-        prior = timed[best]
-        # A clean route is never passed over for one with violations.
-        if _round_improves(current, prior, sides) or (
-            not current["drcs"] and prior["drcs"]
+        wins, how = _compare_rounds(current, timed[best], sides)
+        decided[round_] = how, best
+        return wins
+
+    def _traded(round_: int) -> str:
+        """How round `round_` trades sides with the round it was compared with, when the worst violation or a tie of them decided; else ""."""
+        how, other = decided.get(round_, ("", 0))
+        if how not in ("worst_violation", "tie") or not _trades(
+            timed[round_]["timing"], timed[other]["timing"], sides
         ):
-            return True
-        if _electrically_cleaner(current, prior, sides):
-            cleaner[round_] = best
-            return True
-        return False
+            return ""
+        return _trade_desc(
+            round_, timed[round_]["timing"], other, timed[other]["timing"], sides
+        )
 
     for round_ in range(len(rounds) + 1):
         if round_:
@@ -2295,7 +2373,12 @@ def run_post_route_repair(
         if drcs:
             continue
         if best != round_:
-            stop = "no_improvement", f"round {round_} did not improve timing"
+            traded = _traded(round_)
+            stop = (
+                "no_improvement",
+                f"round {round_} did not improve timing"
+                + (f": {traded}" if traded else ""),
+            )
             break
         if met:
             stop = "timing_met", "timing met"
@@ -2369,13 +2452,16 @@ def run_post_route_repair(
             "reason": why,
         }
     reason = stop[1]
-    if best in cleaner:
+    kept_by, replaced = decided.get(best, ("", 0))
+    if kept_by == "electrical_violators":
         reason += (
-            f"; round {best} ties round {cleaner[best]} on timing and DRC "
+            f"; round {best} ties round {replaced} on timing and DRC "
             f"violations and has fewer electrical violators: "
             f"{_electrical_desc(timed[best]['timing']) or 'no violators'} against "
-            f"{_electrical_desc(timed[cleaner[best]]['timing'])}"
+            f"{_electrical_desc(timed[replaced]['timing'])}"
         )
+    elif kept_by == "worst_violation":
+        reason += f"; {_traded(best)}"
     passed = _passed_over(timed, best, sides)
     if passed is not None:
         reason += (
@@ -2389,7 +2475,7 @@ def run_post_route_repair(
             )
     if (
         gate
-        and best not in cleaner
+        and kept_by != "electrical_violators"
         and best in timed
         and _electrical_violators(timed[best])
     ):
@@ -3511,9 +3597,9 @@ class OpenRoadPnr:
     def _post_route_repair_script(self, round_: int, run_dir: str) -> str:
         """Round `round_`'s repair session, bound to `run_dir`: repair round `round_ - 1`'s database on its SPEF, legalize inside an incremental global route, connect the supply pins of the cells the repair added, run the `before-detailed-route` hooks and connect again, route in detail, run the `stage-end` hooks and write the stage's checkpoint.
 
-        The rounds work on the unfilled database; `finish` fills after the last. A repair in the session that routed fails detailed routing (DRT-0218), so each round is a fresh session that reads the routed database.
+        The rounds work on the unfilled database; `finish` fills after the last. Each round starts with `remove_fillers`, which removes every CORE_SPACER instance that is not LOCKED, spacers a hook placed included. A repair in the session that routed fails detailed routing (DRT-0218), so each round is a fresh session that reads the routed database.
 
-        With `reroute: eco` the session keeps the routed database's wires. It estimates placement parasitics and reads the SPEF over them, opens an incremental global route and runs the repairs in `rb::eco::repair` (`eco_repair.tcl`), which makes `design_is_routed` answer 0 for them alone: `repair_timing` then keeps the placement source instead of switching to detailed-routing parasitics, times the nets it does not change on the SPEF and the nets it changes on Steiner trees, and opens no incremental route of its own, so the session's one sees each netlist change once. Legalizing closes that route, which reroutes only the changed nets, and the detailed route keeps every other net's wires. On detailed-routing parasitics the repairs would build buffer trees from the global routes a fresh session rebuilds from the guides, which can miss pins (RSZ-0074), and a second incremental route open around them delivers each change twice (GRT-0229 on a later rip-up).
+        With `reroute: eco` the session keeps the routed database's wires. It removes the fillers first, since each instance `remove_fillers` destroys disconnects its pins and leaves their nets' parasitics invalid (EST-0104 in the first repair), then estimates placement parasitics and reads the SPEF over them, opens an incremental global route and runs the repairs in `rb::eco::repair` (`eco_repair.tcl`), which makes `design_is_routed` answer 0 for them alone: `repair_timing` then keeps the placement source instead of switching to detailed-routing parasitics, times the nets it does not change on the SPEF and the nets it changes on Steiner trees, and opens no incremental route of its own, so the session's one sees each netlist change once. Legalizing closes that route, which reroutes only the changed nets, and the detailed route keeps every other net's wires. On detailed-routing parasitics the repairs would build buffer trees from the global routes a fresh session rebuilds from the guides, which can miss pins (RSZ-0074), and a second incremental route open around them delivers each change twice (GRT-0229 on a later rip-up).
 
         With `reroute: full` it removes the detailed route and routes globally first, then reads the SPEF over the global-route estimate; the repairs run before `global_route -start_incremental`, in ORFS order, since `repair_timing` on global-route parasitics opens its own incremental route. Its detailed route routes every net again.
 
@@ -3562,9 +3648,9 @@ class OpenRoadPnr:
             )
             parts += [
                 files(_TEMPLATE_PACKAGE).joinpath(_ECO_REPAIR_FILE).read_text(),
+                "remove_fillers\n",
                 "estimate_parasitics -placement\n",
                 spef,
-                "remove_fillers\n",
                 _start_incremental_cmd(gr),
                 f"rb::eco::repair {round_} {{\n{steps}}}\n",
                 "detailed_placement{{ dpl_options }}\n",
