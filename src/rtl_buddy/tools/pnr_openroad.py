@@ -458,7 +458,7 @@ puts ">>>   $rb_freed output port buffer(s) freed"
 
 
 def _free_port_buffers_tcl(ports: PortBuffers | None) -> str:
-    """Return the step right after `global_placement` that frees the output port buffers `hold-outputs-at-pins` fixed at their pins, so `repair_design` repeats each driver net up to its buffer and legalization places the buffer; `""` without it."""
+    """Return the step right after `global_placement` that frees the output port buffers `hold-outputs-at-pins` fixed at their pins, so `repair_design` repairs each driver net up to its buffer and legalization places the buffer; `""` without it."""
     if ports is None or not ports.hold_outputs_at_pins:
         return ""
     return _FREE_PORT_BUFFERS_TCL
