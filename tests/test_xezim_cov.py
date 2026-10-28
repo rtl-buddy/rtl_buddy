@@ -175,6 +175,50 @@ def test_reader_cover_label_falls_back_when_the_source_is_unreadable(tmp_path):
     ]
 
 
+def test_reader_prefers_the_files_name_over_the_source_label(tmp_path):
+    src = tmp_path / "tb.sv"
+    src.write_text(
+        "module tb;\n  c_src: cover property (1);\n  cover property (1);\nendmodule\n"
+    )
+    raw = tmp_path / "coverage.json"
+    raw.write_text(
+        json.dumps(
+            {
+                "assertions": [
+                    {
+                        "name": "c_json",
+                        "file": "tb.sv",
+                        "line": 2,
+                        "kind": "cover",
+                        "pass": 1,
+                    },
+                    {"file": "tb.sv", "line": 3, "kind": "cover", "pass": 0},
+                    {
+                        "name": "a_lbl",
+                        "file": "tb.sv",
+                        "line": 3,
+                        "kind": "assert",
+                        "pass": 4,
+                    },
+                    {
+                        "name": "c_gone",
+                        "file": "gone.sv",
+                        "line": 7,
+                        "kind": "cover",
+                        "pass": 2,
+                    },
+                ]
+            }
+        )
+    )
+    records = parse_xezim_records(raw)
+    assert [(r["name"], r["line"], r["hits"]) for r in records] == [
+        ("c_json", 2, 1),
+        ("cover@3", 3, 0),
+        ("c_gone", 7, 2),
+    ]
+
+
 def test_reader_has_no_expression_points_and_returns_none_when_unreadable(tmp_path):
     assert not [r for r in _records() if r["metric"] == EXPRESSION]
     bad = tmp_path / "coverage.json"
