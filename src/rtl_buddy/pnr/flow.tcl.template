@@ -128,9 +128,7 @@ detailed_placement{{ dpl_options }}
 {{ hook_stage_end_place_block }}
 {{ @cts }}puts ">>> Clock tree synthesis"
 {{ @clocks }}{{ propagated_clocks }}{{ @/clocks }}{{ hook_before_cts_block }}{{ cts_dont_use_block }}clock_tree_synthesis \
-    -root_buf {{ cts_root_buf }} \
-    -buf_list $CTS_BUF \
-    {{ cts_clustering_option }}{{ cts_ndr_option }}{{ cts_clock_nets_option }}{{ cts_insertion_delay_option }}{{ cts_obstruction_option }}
+{{ cts_buffer_options }}    {{ cts_clustering_option }}{{ cts_ndr_option }}{{ cts_clock_nets_option }}{{ cts_insertion_delay_option }}{{ cts_obstruction_option }}
 {{ hook_before_repair_clock_nets_block }}{{ cts_repair_clock_nets }}{{ cts_dont_use_restore_block }}{{ hook_after_cts_block }}
 puts ">>> Detail placement (post-CTS)"
 detailed_placement{{ dpl_options }}
@@ -167,8 +165,7 @@ proc rb::keep_failed_global_route {cmd_string code result op} {
   } err]} { puts ">>> rb: the failed global route's database was not written: $err" }
 }
 trace add execution global_route leave rb::keep_failed_global_route
-{{ @layers }}set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS
-{{ layer_adjustment }}{{ @/layers }}{{ global_route_cmd }}{{ hook_after_global_route_block }}{{ global_route_repair }}{{ hook_after_global_route_repair_block }}rb::global_connect
+{{ @layers }}{{ routing_layers }}{{ layer_adjustment }}{{ @/layers }}{{ global_route_cmd }}{{ hook_after_global_route_block }}{{ global_route_repair }}{{ hook_after_global_route_repair_block }}rb::global_connect
 trace remove execution global_route leave rb::keep_failed_global_route
 file delete -force [file join $OUT_DIR global_route_failed]
 {{ hook_stage_end_global_route_block }}{{ @detailed_route }}{{ grid_origin_guides }}{{ hook_before_detailed_route_block }}

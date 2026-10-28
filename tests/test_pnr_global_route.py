@@ -17,7 +17,7 @@ from rtl_buddy.config.pnr_global_route import (
     PnrGlobalRouteFile,
     read_global_route,
 )
-from rtl_buddy.config.pnr_platform import PnrRunOverrides
+from rtl_buddy.config.pnr_platform import PnrRoutingLayersFile, PnrRunOverrides
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools import pnr_abstract, pnr_checkpoints
@@ -357,6 +357,45 @@ def test_per_layer_adjustments_follow_the_all_layers_one(tmp_path):
         "set_global_routing_layer_adjustment metal3 0.8\n"
         "global_route -congestion_iterations 30 "
     ) in text
+
+
+@pytest.mark.parametrize(
+    ("layers", "call"),
+    [
+        (
+            PnrRoutingLayersFile(signal="metal2-metal6", clock="metal4"),
+            "set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS\n",
+        ),
+        (
+            PnrRoutingLayersFile(signal="metal2-metal6"),
+            "set_routing_layers -signal $SIGNAL_LAYERS\n",
+        ),
+        (
+            PnrRoutingLayersFile(clock="metal4"),
+            "set_routing_layers -clock $CLOCK_LAYERS\n",
+        ),
+        (PnrRoutingLayersFile(), ""),
+    ],
+)
+def test_routing_layers_pass_only_the_ranges_that_are_set(tmp_path, layers, call):
+    text = _render(tmp_path, _platform(_pdk(tmp_path), routing_layers=layers))
+
+    assert text.count("set_routing_layers") == (1 if call else 0)
+    assert call + "global_route " in text
+    assert f"set SIGNAL_LAYERS   {layers.signal or '{}'}\n" in text
+    assert f"set CLOCK_LAYERS    {layers.clock or '{}'}\n" in text
+
+
+def test_the_all_layers_adjustment_covers_every_layer_without_signal_layers(tmp_path):
+    platform = _platform(
+        _pdk(tmp_path),
+        routing_layers=PnrRoutingLayersFile(),
+        routing_layer_adjustment=0.2,
+    )
+
+    assert "set_global_routing_layer_adjustment * 0.2\nglobal_route " in _render(
+        tmp_path, platform
+    )
 
 
 def test_per_layer_adjustments_apply_without_the_all_layers_one(tmp_path):

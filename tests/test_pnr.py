@@ -754,7 +754,6 @@ def test_pnr_flow_is_unchanged_when_no_new_key_is_set(tmp_path):
     assert "set CTS_BUF         BUF_X4\n" in text
     assert (
         "clock_tree_synthesis \\\n"
-        "    -root_buf $CTS_BUF \\\n"
         "    -buf_list $CTS_BUF \\\n"
         "    -sink_clustering_enable\n"
     ) in text
@@ -839,18 +838,15 @@ def test_pnr_flow_sources_the_pdn_snippet_and_runs_pdngen(tmp_path):
 
 
 def test_pnr_flow_renders_a_cts_buffer_list(tmp_path):
-    """Every entry reaches `-buf_list`; the first is the root buffer."""
+    """Every entry reaches `-buf_list`, and CTS picks the root buffer from them."""
     platform = _platform(
         _make_pdk_cfg(tmp_path), cts_buffer=["BUF_X4", "BUF_X8", "BUF_X16"]
     )
     text = _render_flow(tmp_path, platform)
 
     assert "set CTS_BUF         {BUF_X4 BUF_X8 BUF_X16}\n" in text
-    assert (
-        "clock_tree_synthesis \\\n"
-        "    -root_buf [lindex $CTS_BUF 0] \\\n"
-        "    -buf_list $CTS_BUF \\\n"
-    ) in text
+    assert ("clock_tree_synthesis \\\n    -buf_list $CTS_BUF \\\n") in text
+    assert "-root_buf" not in text
 
 
 def test_pnr_flow_renders_a_one_entry_list_exactly_like_a_name(tmp_path):
@@ -2393,8 +2389,8 @@ def test_pnr_template_legalizes_after_every_cell_inserting_repair():
         for line in template.splitlines()
         if line.strip() and not line.strip().startswith(("#", "puts "))
     ]
-    route_at = commands.index(
-        "set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS"
+    route_at = next(
+        i for i, c in enumerate(commands) if c.startswith("{{ routing_layers }}")
     )
     pre_route = commands[:route_at]
     inserters = [
@@ -4782,8 +4778,9 @@ def test_pnr_flow_without_the_knobs_repairs_as_orfs_does_and_keeps_the_router_de
         "estimate_parasitics -placement\nrepair_timing -setup\nrepair_timing -hold\n"
     ) in text
     assert "set_global_routing_layer_adjustment" not in text
+    assert "set_routing_layers" not in text
     assert (
-        "-clock $CLOCK_LAYERS\nglobal_route -congestion_iterations 30 "
+        "\nglobal_route -congestion_iterations 30 "
         "-congestion_report_file $CONGESTION_RPT -verbose\n"
     ) in text
     assert text.count("repair_timing -hold") == 1
@@ -4844,6 +4841,7 @@ def test_pnr_flow_without_ndr_or_fanout_keeps_the_tool_defaults(tmp_path):
 def test_pnr_flow_passes_the_cts_apply_ndr(tmp_path, clustering):
     platform = _platform(
         _make_pdk_cfg(tmp_path),
+        cts_buffer="BUF_X4",
         cts_apply_ndr="none",
         cts_sink_clustering=clustering,
     )

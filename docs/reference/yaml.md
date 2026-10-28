@@ -188,9 +188,9 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `platform-tcl` | PDK | Sourced before the Liberty reads of `rb pnr` and `rb power` |
 | `tracks-tcl` | PDK | `make_tracks` script, replacing the bare `make_tracks` |
 | `tapcell-tcl` | PDK, platform, run | Tap and endcap insertion, after macro placement. Unset runs `cut_rows`, which cuts the rows 2 µm around each placed macro, as ORFS does |
-| `routing-layers.signal`, `routing-layers.clock` | platform, run | Layer ranges for `set_routing_layers -signal` / `-clock` |
-| `cts-buffer` | platform, run | One cell or a list, passed as `-buf_list`. Without `cts-root-buffer`, the first entry is also the root buffer (`-root_buf`) |
-| `cts-root-buffer` | platform, run | One cell, passed as `-root_buf`; `cts-buffer` is then the branch list alone. Not checked against `cts-dont-use-cells` or `dont-use-cells` before the run; a `dont-use-cells` match that CTS places fails the routed-design check. Unset makes the first `cts-buffer` the root |
+| `routing-layers.signal`, `routing-layers.clock` | platform, run | Layer ranges for `set_routing_layers -signal` / `-clock`. Each is passed only when set; with neither, the router keeps the technology's routing layers, as without `set_routing_layers` |
+| `cts-buffer` | platform, run | One cell or a list, passed as `-buf_list`; CTS picks the root buffer from it unless `cts-root-buffer` is set. Unset passes no `-buf_list`, and CTS picks its buffers from the libraries |
+| `cts-root-buffer` | platform, run | One cell, passed as `-root_buf`; `cts-buffer` is then the branch list alone. Not checked against `cts-dont-use-cells` or `dont-use-cells` before the run; a `dont-use-cells` match that CTS places fails the routed-design check. Unset passes no `-root_buf`, and CTS picks the root from the buffer list |
 | `cts-clock-nets` | run | One net or a list: `clock_tree_synthesis -clk_nets`, building trees for those clock nets only. Unset lets CTS find every clock |
 | `cts-latency-balancing` | platform, run | `false` adds `-no_insertion_delay`: CTS does not pad shallow branches of a clock net with delay buffers to match its deepest. Default `true` |
 | `cts-repair-clock-nets` | platform, run | `true` runs `repair_clock_nets` right after CTS and the `before-repair-clock-nets` hooks, before the `after-cts` hooks. A mapping `{max-wire-length: <µm>}`, a positive number, runs it with `-max_wire_length`. A run's value replaces the platform's whole. Default `false` |
@@ -204,7 +204,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `global-route-repair` | platform, run | Repair after global route. See below |
 | `post-route-repair` | platform, run | Repair rounds after detailed route. See below |
 | `signoff` | platform, run | Signoff corners and the gates that fail a routed run. See below |
-| `routing-layer-adjustment` | platform, run | 0 to 1: signal-layer capacity withheld from the global router. Unset keeps the router's default |
+| `routing-layer-adjustment` | platform, run | 0 to 1: signal-layer capacity withheld from the global router, over `routing-layers.signal`, or every layer when that is unset. Unset keeps the router's default |
 | `global-route` | platform, run | `global_route` options. See below |
 | `max-fanout` | platform | Positive integer; `set_max_fanout` after each `read_sdc` in `rb pnr` and `rb power` |
 | `keep-sizing-vt` | platform, run | `true` runs `set_opt_config -keep_sizing_vt true` after `set_dont_use` in every OpenROAD session of the run: resizing keeps each cell's threshold-voltage flavour. Default `false` |

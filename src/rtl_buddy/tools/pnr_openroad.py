@@ -711,11 +711,25 @@ def _global_route_repair_tcl(
     return head + steps + legalize
 
 
+def _routing_layers_tcl(platform) -> str:
+    """Return `set_routing_layers` with the layer ranges `routing-layers` sets, or `""` when it sets neither, which leaves the router the block's own range."""
+    options = "".join(
+        f" -{kind} ${var}"
+        for kind, var, layers in (
+            ("signal", "SIGNAL_LAYERS", platform.get_signal_layers()),
+            ("clock", "CLOCK_LAYERS", platform.get_clock_layers()),
+        )
+        if layers
+    )
+    return f"set_routing_layers{options}\n" if options else ""
+
+
 def _layer_adjustment_tcl(platform) -> str:
-    """Return the `set_global_routing_layer_adjustment` line over the signal layers, as ORFS does, then one per `global-route.layer-adjustment` entry, or `""` when neither is set."""
+    """Return the `set_global_routing_layer_adjustment` line over the signal layers, as ORFS does, or over every layer without them, then one per `global-route.layer-adjustment` entry, or `""` when neither is set."""
     adjustment = platform.get_routing_layer_adjustment()
+    over = "$SIGNAL_LAYERS" if platform.get_signal_layers() else "*"
     lines = (
-        f"set_global_routing_layer_adjustment $SIGNAL_LAYERS {adjustment:g}\n"
+        f"set_global_routing_layer_adjustment {over} {adjustment:g}\n"
         if adjustment is not None
         else ""
     )
@@ -2947,14 +2961,16 @@ class OpenRoadPnr:
         self._mode_corners = tuple(corners) if modes else ()
 
         cts_buffers = platform.get_cts_buffers()
-        if len(cts_buffers) > 1:
-            cts_buf = "{" + " ".join(cts_buffers) + "}"
-            cts_root_buf = "[lindex $CTS_BUF 0]"
-        else:
-            cts_buf = cts_buffers[0] if cts_buffers else ""
-            cts_root_buf = "$CTS_BUF"
-        if isinstance(root_buffer := platform.get_cts_root_buffer(), str):
-            cts_root_buf = root_buffer
+        cts_buf = (
+            cts_buffers[0]
+            if len(cts_buffers) == 1
+            else "{" + " ".join(cts_buffers) + "}"
+        )
+        # Unset, CTS infers them: the root from the buffer list, the list from the libraries.
+        root_buffer = platform.get_cts_root_buffer()
+        cts_buffer_options = (
+            f"    -root_buf {root_buffer} \\\n" if isinstance(root_buffer, str) else ""
+        ) + ("    -buf_list $CTS_BUF \\\n" if cts_buffers else "")
 
         dont_use_cells = platform.get_dont_use_cells()
         dont_use_block = (
@@ -3097,7 +3113,7 @@ class OpenRoadPnr:
             "tie_cells_block": tie_cells_block,
             "tie_fanout_block": tie_fanout_block,
             "cts_buf": cts_buf,
-            "cts_root_buf": cts_root_buf,
+            "cts_buffer_options": cts_buffer_options,
             "place_density": f"{platform.get_placement_density():g}",
             "place_padding": str(platform.get_placement_padding()),
             "reference_hpwl_option": _reference_hpwl_option(platform),
@@ -3230,8 +3246,9 @@ class OpenRoadPnr:
             ),
             "cts_repair_clock_nets": _cts_repair_clock_nets_tcl(platform),
             "max_fanout_block": max_fanout_block,
-            "signal_layers": platform.get_signal_layers(),
-            "clock_layers": platform.get_clock_layers(),
+            "signal_layers": platform.get_signal_layers() or "{}",
+            "clock_layers": platform.get_clock_layers() or "{}",
+            "routing_layers": _routing_layers_tcl(platform),
             "pin_layer_horizontal": pdk.get_pin_layer_horizontal(),
             "pin_layer_vertical": pdk.get_pin_layer_vertical(),
             "fill_cells": fill_cells,

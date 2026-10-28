@@ -23,10 +23,7 @@ from rtl_buddy.tools import pnr_abstract
 from rtl_buddy.tools.pnr_openroad import OpenRoadPnr, _cts_obstruction_option
 
 _PLAIN_CTS_CALL = (
-    "clock_tree_synthesis \\\n"
-    "    -root_buf $CTS_BUF \\\n"
-    "    -buf_list $CTS_BUF \\\n"
-    "    -sink_clustering_enable\n"
+    "clock_tree_synthesis \\\n    -buf_list $CTS_BUF \\\n    -sink_clustering_enable\n"
 )
 
 
@@ -320,13 +317,11 @@ def test_leaving_every_new_key_unset_renders_the_original_cts_flow(tmp_path):
 
     assert (
         "clock_tree_synthesis \\\n"
-        "    -root_buf $CTS_BUF \\\n"
         "    -buf_list $CTS_BUF \\\n"
         "    -sink_clustering_enable\n"
     ) in single
     assert (
         "clock_tree_synthesis \\\n"
-        "    -root_buf [lindex $CTS_BUF 0] \\\n"
         "    -buf_list $CTS_BUF \\\n"
         "    -sink_clustering_enable\n"
     ) in listed
@@ -418,10 +413,7 @@ def test_sink_clustering_renders_its_options(tmp_path, clustering, options):
     )
 
     assert (
-        "clock_tree_synthesis \\\n"
-        "    -root_buf $CTS_BUF \\\n"
-        "    -buf_list $CTS_BUF \\\n"
-        f"    {options}\n"
+        f"clock_tree_synthesis \\\n    -buf_list $CTS_BUF \\\n    {options}\n"
     ) in _render(tmp_path, platform)
 
 
@@ -459,6 +451,23 @@ def test_a_root_buffer_is_the_root_and_cts_buffer_is_the_branch_list(
         "    -buf_list $CTS_BUF \\\n"
         "    -sink_clustering_enable\n"
     ) in text
+
+
+def test_without_cts_buffer_cts_infers_its_buffers(tmp_path):
+    text = _render(tmp_path, _platform(_pdk(tmp_path), cts_buffer=""))
+
+    assert "set CTS_BUF         {}\n" in text
+    assert "clock_tree_synthesis \\\n    -sink_clustering_enable\n" in text
+
+
+def test_a_root_buffer_without_cts_buffer_is_the_only_buffer_option(tmp_path):
+    platform = _platform(_pdk(tmp_path), cts_buffer="", cts_root_buffer="BUF_X16")
+
+    assert (
+        "clock_tree_synthesis \\\n"
+        "    -root_buf BUF_X16 \\\n"
+        "    -sink_clustering_enable\n"
+    ) in _render(tmp_path, platform)
 
 
 def test_a_run_s_root_buffer_reaches_the_cts_call(tmp_path):

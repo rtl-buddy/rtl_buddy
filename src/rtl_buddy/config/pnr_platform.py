@@ -306,7 +306,7 @@ class PnrPlatformConfigFile:
     cts_buffer: str | list[str] = field(rename="cts-buffer", default="")
     # Enable `-sink_clustering_enable`: `true`, `false` or a mapping of `enable`, `size` and `max-diameter`. Typed loosely so the reader names a bad value.
     cts_sink_clustering: Any = field(rename="cts-sink-clustering", default=True)
-    # `clock_tree_synthesis -root_buf`; `None` makes the first `cts-buffer` the root.
+    # `clock_tree_synthesis -root_buf`; `None` lets CTS pick the root from the buffer list.
     cts_root_buffer: str | list | None = field(rename="cts-root-buffer", default=None)
     # `false` adds `clock_tree_synthesis -no_obstruction_aware`; `None` leaves the tool's default.
     cts_obstruction_aware: Any = field(rename="cts-obstruction-aware", default=None)
@@ -708,7 +708,7 @@ class PnrPlatformConfig:
         return list(self._cts_buffers)
 
     def get_cts_root_buffer(self) -> str | None:
-        """The `cts-root-buffer` cell, or `None` when the first `cts-buffer` is the root."""
+        """The `cts-root-buffer` cell, or `None` when CTS picks the root from the buffer list."""
         return self._cts_root_buffer
 
     def get_cts_obstruction_aware(self) -> bool | None:
