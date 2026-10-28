@@ -13,12 +13,12 @@
 
 With ``script_path``, ``[info script]`` returns it, the child gets a path-only ``file`` command, and ``source`` reads the named file (relative to the sourcing file's directory, then the working directory) and evaluates it as Tcl's ``source`` does: in the same interp, in the caller's frame (the global frame for a top-level ``source``), with ``[info script]`` naming it while it runs. Commands carry ``"file"``, and an unreadable include is a ``source_unreadable`` warning.
 
-With ``query_names``, the object queries (``get_ports`` ...) and the name accessors (``get_full_name`` ...) return their name arguments as a Tcl list instead of their source form, so a loop over a query's result runs; ``get_property``/``get_attribute`` of the ``period`` of a name ``get_clocks`` returned last returns the ``-period`` of the clock the file created by that name. ``error``, ``throw`` and ``return -code error`` return instead of raising, so a check the stubs cannot answer (``[get_property $p direction] ne "input"``) does not stop the read; each skipped ``error`` is a ``check_skipped`` warning. A top-level statement of a file (the read text or a sourced file) that still fails is skipped and the file carries on after it; each is a ``statement_skipped`` warning with its ``line``, ``message`` and ``text``. A ``source`` loop, a statement that never closes, or a resource limit still fails the read.
+With ``query_names``, the object queries (``get_ports`` ...) and the name accessors (``get_full_name`` ...) return their name arguments as a Tcl list instead of their source form, so a loop over a query's result runs; ``get_property``/``get_attribute`` of the ``period`` of a name ``get_clocks`` returned last returns the ``-period`` of the clock the file created by that name. ``error``, ``throw`` and ``return -code error`` return instead of raising, so a check the stubs cannot answer (``[get_property $p direction] ne "input"``) does not stop the read; each skipped ``error`` is a ``check_skipped`` warning. A top-level command of a file (the read text or a sourced file; commands split at newlines and ``;`` as Tcl splits them) that still fails is skipped and the file carries on after it; each is a ``statement_skipped`` warning with its ``line``, ``message`` and ``text``. A ``source`` loop, a command that never closes, or a resource limit still fails the read.
 
     {"ok": false, "kind": "tcl_error"|"resource_limit"|"unavailable",
      "error": "...", "line": 12, "file": "/abs/inc.sdc", "warnings": [...]}
 
-A failure's ``line`` is where the statement that raised it starts; ``file`` is present when that statement is in a sourced file.
+A failure's ``line`` is where the command that raised it is; ``file`` is present when that command is in a sourced file.
 
 The rtl_buddy process must never import ``_tkinter``: it starts a Tcl notifier thread that can hang a later fork+exec on macOS. Do not move the interp in process; ``tests/test_tcl_reader.py`` checks ``"_tkinter" not in sys.modules``.
 
@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 
 __all__ = ["TKINTER_HINTS", "main"]
 
@@ -284,8 +285,66 @@ def _path_command(base_dir: str, sub: str, args: tuple[str, ...]) -> str:
     raise ValueError(sub)
 
 
+#: Characters between two top-level commands.
+_COMMAND_GAP = " \t\n\r\f\v;"
+
+
+def _command_start(text: str, pos: int) -> int:
+    """Index of the next command at or after ``pos``: past whitespace, ``;`` and backslash-newlines."""
+    while pos < len(text):
+        if text[pos] in _COMMAND_GAP:
+            pos += 1
+        elif text.startswith("\\\n", pos):
+            pos += 2
+        else:
+            break
+    return pos
+
+
+def _command_stop(text: str, pos: int, complete: Callable[[str], bool]) -> int:
+    """Index of the ``;`` that ends the command at ``pos``: the first not escaped by a backslash and outside braces, quotes and brackets; ``len(text)`` without one."""
+    stop = text.find(";", pos)
+    while stop != -1:
+        escapes = len(text[pos:stop]) - len(text[pos:stop].rstrip("\\"))
+        if escapes % 2 == 0 and complete(text[pos:stop]):
+            return stop
+        stop = text.find(";", stop + 1)
+    return len(text)
+
+
+def _split_commands(
+    body: str, complete: Callable[[str], bool]
+) -> list[tuple[int, str, bool]]:
+    """``(line_index, text, unclosed)`` for each top-level command of ``body``, split as Tcl does.
+
+    Lines are gathered until ``complete`` (Tcl's ``info complete``) accepts them, so a newline inside braces, quotes or brackets does not end a command, then split at each top-level ``;``. A ``#`` comment, which runs to the end of the line (or its backslash-newline continuation), is dropped. ``line_index`` is the 0-based line the command starts on; ``unclosed`` marks a last command that never closes.
+    """
+    commands: list[tuple[int, str, bool]] = []
+    lines = body.split("\n")
+    first = 0
+    while first < len(lines):
+        end = first
+        chunk = ""
+        closed = False
+        while end < len(lines) and not closed:
+            chunk += lines[end] + "\n"
+            end += 1
+            closed = complete(chunk)
+        found = len(commands)
+        pos = _command_start(chunk, 0)
+        while pos < len(chunk) and chunk[pos] != "#":
+            stop = _command_stop(chunk, pos, complete)
+            commands.append((first + chunk.count("\n", 0, pos), chunk[pos:stop], False))
+            pos = _command_start(chunk, stop)
+        if not closed and len(commands) > found:
+            line_index, text, _ = commands[-1]
+            commands[-1] = (line_index, text, True)
+        first = end
+    return commands
+
+
 class _ScriptError(Exception):
-    """A Tcl error that fails the read, with where the statement that raised it starts."""
+    """A Tcl error that fails the read, with where the command that raised it is."""
 
     def __init__(self, message: str, file: str | None, line: int | None) -> None:
         super().__init__(message)
@@ -413,41 +472,25 @@ def _evaluate(
                 pass
         return record(line, "file", *words)
 
-    def statement_span(lines: list[str], first: int, line: int | None):
-        """``(start, end)``, 0-based and end-exclusive, of the top-level statement of ``lines`` that holds 1-based ``line``, splitting from ``first`` as Tcl does; ``None`` when ``line`` is unknown or a statement never closes."""
-        if line is None or line <= first:
-            return None
-        start = first
-        while start < len(lines):
-            end = start
-            text = ""
-            while True:
-                if end == len(lines):
-                    return None
-                text += lines[end] + "\n"
-                end += 1
-                if app.getboolean(app.call("info", "complete", text)):
-                    break
-            if line <= end:
-                return start, end
-            start = end
-        return None
+    def complete(text: str) -> bool:
+        return app.getboolean(app.call("info", "complete", text))
 
     def run_script(
         body: str, *, in_caller: bool
     ) -> tuple[tuple[tuple, str] | None, str]:
-        """Evaluate one file's text in the child, in the caller's frame when ``in_caller``; under ``query_names``, skip each top-level statement that fails.
+        """Evaluate one file's text in the child, one top-level command at a time, in the caller's frame when ``in_caller``; under ``query_names``, skip each command that fails. Each command is padded with the newlines before it, so ``info frame`` lines stay the file's.
 
-        Returns ``(outcome, result)``. ``outcome`` is ``None`` when the file ran to its end or to a plain ``return``; for a sourced file it is otherwise ``(options, message)``, which its ``source`` re-raises, as Tcl's ``source`` passes a ``return -level 2`` or a ``break`` to its caller. A resumed run is padded with the newlines it skips, so ``info frame`` lines stay the file's.
+        Returns ``(outcome, result)``. ``outcome`` is ``None`` when the file ran to its end or to a plain ``return``; for a sourced file it is otherwise ``(options, message)``, which its ``source`` re-raises, as Tcl's ``source`` passes a ``return -level 2`` or a ``break`` to its caller.
         """
-        lines = body.split("\n")
-        first = 0
-        while True:
-            chunk = "\n" * first + "\n".join(lines[first:])
-            script = ["catch", chunk, "::__rb_msg", "::__rb_opts"]
+        units = _split_commands(body, complete)
+        result = ""
+        for index, (first, text, unclosed) in enumerate(units):
+            script = ["catch", "\n" * first + text, "::__rb_msg", "::__rb_opts"]
             if in_caller:
                 script = ["uplevel", "1", script]
             code = int(app.call(_CHILD, "eval", script))
+            if code == 0 and index < len(units) - 1:
+                continue
             message, raw_opts = app.splitlist(
                 app.call(
                     _CHILD,
@@ -459,7 +502,10 @@ def _evaluate(
             opts = dict(zip(items[::2], items[1::2]))
             message = str(message)
             returned = (str(opts.get("-code")), str(opts.get("-level")))
-            if code == 0 or (code == 2 and returned == ("0", "1")):
+            if code == 0:
+                result = message
+                continue
+            if code == 2 and returned == ("0", "1"):
                 return None, message
             if in_caller and code != 1:
                 options = (
@@ -471,32 +517,31 @@ def _evaluate(
             if code == 2:
                 if returned != ("1", "1"):
                     return None, message
-                code = 1
             elif code == 3:
                 message = 'invoked "break" outside of a loop'
             elif code == 4:
                 message = 'invoked "continue" outside of a loop'
+            elif code != 1:
+                message = f"command returned bad code: {code}"
             line = _line(str(opts.get("-errorline", "")))
             errorcode = [str(w) for w in app.splitlist(opts.get("-errorcode", ""))]
             if errorcode[:1] == [_SOURCE_ERRORCODE]:
                 # Raised out of a `source`: where it failed, and never skipped.
                 site = errorcode[1:3] + ["", ""]
                 raise _ScriptError(message, site[0] or None, _line(site[1]))
-            if query_names and code == 1:
-                span = statement_span(lines, first, line)
-                if span is not None:
-                    start, first = span
-                    warning = {
-                        "kind": "statement_skipped",
-                        "line": start + 1,
-                        "message": message,
-                        "text": "\n".join(lines[start:first]),
-                    }
-                    if scripts:
-                        warning["file"] = scripts[-1]
-                    warnings.append(warning)
-                    continue
+            if query_names and not unclosed:
+                warning = {
+                    "kind": "statement_skipped",
+                    "line": first + 1,
+                    "message": message,
+                    "text": text,
+                }
+                if scripts:
+                    warning["file"] = scripts[-1]
+                warnings.append(warning)
+                continue
             raise _ScriptError(message, scripts[-1] if scripts else None, line)
+        return None, result
 
     # A Python exception in a callback reaches Tcl without its message, so `source` hands
     # what ended the file early here, as `(options, message)`, and the child's `source`

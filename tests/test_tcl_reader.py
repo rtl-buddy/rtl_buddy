@@ -1487,6 +1487,88 @@ def test_a_period_of_a_clock_the_file_did_not_create_is_not_invented(
     ]
 
 
+def test_a_skip_covers_only_the_failing_command_on_its_line(tcl_backend, caplog):
+    text = (
+        "create_clock -name a -period 1 a; set p $missing; create_clock -name b -period 2 b\n"
+        "set q $missing ; create_clock -name c -period 3 c\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        result = read_constraints(
+            text, interest=CLOCK, source="s.sdc", lenient_queries=True
+        )
+    assert result.backend == "tcl"
+    assert [(c.words[1], c.line) for c in result.commands] == [
+        ("a", 1),
+        ("b", 1),
+        ("c", 2),
+    ]
+    assert result.unread == []
+    assert [
+        (r.rtl_fields["line"], r.rtl_fields["message"])
+        for r in _events(caplog, "constraints.tcl_statement_skipped")
+    ] == [
+        (1, 'can\'t read "missing": no such variable'),
+        (2, 'can\'t read "missing": no such variable'),
+    ]
+
+
+def test_separators_inside_braces_quotes_and_brackets_do_not_split(tcl_backend):
+    text = (
+        'set s "a;b"; set t {c;d}; set u [join {e f} ";"]; set v g\\;h\n'
+        "set_false_path -from $s -to $t -through $u -fall_to $v;"
+        " set p $missing; create_clock -name k -period 2 k\n"
+    )
+    cmds, used = read_commands(
+        text,
+        interest=frozenset({"create_clock", "set_false_path"}),
+        lenient_queries=True,
+    )
+    assert used == "tcl"
+    assert [(c.name, c.words) for c in cmds] == [
+        (
+            "set_false_path",
+            ["-from", "a;b", "-to", "c;d", "-through", "e;f", "-fall_to", "g;h"],
+        ),
+        ("create_clock", ["-name", "k", "-period", "2", "k"]),
+    ]
+
+
+def test_a_comment_runs_to_the_end_of_its_line_in_the_lenient_read(tcl_backend):
+    text = (
+        "set p $missing; create_clock -name a -period 1 a ;# c; create_clock -name z -period 9 z\n"
+        "# set q $missing; create_clock -name y -period 8 y \\\n"
+        "create_clock -name w -period 7 w\n"
+        "create_clock -name b -period 2 b\n"
+    )
+    cmds, used = read_commands(text, interest=CLOCK, lenient_queries=True)
+    assert used == "tcl"
+    assert [(c.words[1], c.line) for c in cmds] == [("a", 1), ("b", 4)]
+
+
+def test_break_outside_a_loop_is_a_skipped_error_in_the_lenient_read(
+    tcl_backend, caplog
+):
+    text = (
+        "set p $missing\n"
+        "create_clock -name a -period 1 a; break; create_clock -name b -period 2 b\n"
+        "return\n"
+        "create_clock -name c -period 3 c\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        cmds, used = read_commands(
+            text, interest=CLOCK, source="b.sdc", lenient_queries=True
+        )
+    assert used == "tcl"
+    assert [c.words[1] for c in cmds] == ["a", "b"]
+    assert [
+        (r.rtl_fields["line"], r.rtl_fields["message"])
+        for r in _events(caplog, "constraints.tcl_statement_skipped")
+    ] == [
+        (1, 'can\'t read "missing": no such variable'),
+        (2, 'invoked "break" outside of a loop'),
+    ]
+
+
 def test_a_skipped_statement_is_named_by_its_file_and_line(
     tcl_backend, tmp_path, caplog
 ):
