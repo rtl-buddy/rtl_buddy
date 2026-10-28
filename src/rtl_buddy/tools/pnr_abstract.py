@@ -20,6 +20,7 @@ from ..config.pdk import (
     DEFAULT_PLACEMENT_TIE_SEPARATION,
     MacroPinLimitsFile,
 )
+from ..config.pnr_cts import CtsSinkClustering
 from ..config.pnr_repair import GlobalRouteRepair
 from ..config.pnr_signoff import effective_gates
 from ..config.pnr import (
@@ -258,6 +259,28 @@ def _pdn_config(pdn) -> dict:
         "stripes": stripes,
         "connect": [list(pair) for pair in pdn.connect],
     }
+
+
+def _cts_controls_digest(platform) -> dict:
+    """The CTS controls of `cts-repair-clock-nets`, `cts-sink-clustering`, `cts-root-buffer` and `cts-obstruction-aware`, each emitted only when set or non-default so existing digests do not change."""
+    digest: dict = {}
+    if platform.get_cts_repair_clock_nets() is True:
+        max_wire_length = platform.get_cts_repair_max_wire_length()
+        digest["cts_repair_clock_nets"] = (
+            True if max_wire_length is None else {"max_wire_length": max_wire_length}
+        )
+    clustering = CtsSinkClustering(
+        platform.get_cts_sink_clustering(),
+        platform.get_cts_sink_clustering_size(),
+        platform.get_cts_sink_clustering_max_diameter(),
+    ).digest()
+    if clustering is not None:
+        digest["cts_sink_clustering"] = clustering
+    if platform.get_cts_root_buffer() is not None:
+        digest["cts_root_buffer"] = platform.get_cts_root_buffer()
+    if platform.get_cts_obstruction_aware() is not None:
+        digest["cts_obstruction_aware"] = platform.get_cts_obstruction_aware()
+    return digest
 
 
 def _repair_digest(platform) -> dict:
@@ -509,11 +532,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
             if platform.get_cts_latency_balancing() is False
             else {}
         ),
-        **(
-            {"cts_repair_clock_nets": True}
-            if platform.get_cts_repair_clock_nets() is True
-            else {}
-        ),
+        **_cts_controls_digest(platform),
         **(
             {"cts_apply_ndr": platform.get_cts_apply_ndr()}
             if isinstance(platform.get_cts_apply_ndr(), str)

@@ -25,6 +25,7 @@ from .dispatch import (
 )
 from .openroad_threads import validate_threads
 from .pdk import PLACEMENT_SPEC, PlacementFile, validate_placement
+from .pnr_cts import CTS_REPAIR_CLOCK_NETS_SPEC, CTS_SINK_CLUSTERING_SPEC
 from .pnr_global_route import GLOBAL_ROUTE_SPEC, PnrGlobalRouteFile
 from .pnr_platform import PnrRoutingLayersFile, PnrRunOverrides, read_run_overrides
 from .pnr_signoff import SIGNOFF_SPEC
@@ -1283,9 +1284,11 @@ class PnrConfigFile:
     cts_latency_balancing: bool | None = field(
         rename="cts-latency-balancing", default=None
     )
-    cts_repair_clock_nets: bool | None = field(
-        rename="cts-repair-clock-nets", default=None
-    )
+    # `true`, `false` or a mapping of `max-wire-length`; `cts-sink-clustering` is `true`, `false` or a mapping of `enable`, `size` and `max-diameter`. Read by `pnr_cts`.
+    cts_repair_clock_nets: Any = field(rename="cts-repair-clock-nets", default=None)
+    cts_sink_clustering: Any = field(rename="cts-sink-clustering", default=None)
+    cts_root_buffer: str | list | None = field(rename="cts-root-buffer", default=None)
+    cts_obstruction_aware: Any = field(rename="cts-obstruction-aware", default=None)
     post_cts_setup_repair: bool | None = field(
         rename="post-cts-setup-repair", default=None
     )
@@ -1430,6 +1433,9 @@ class PnrConfigFile:
             tapcell_tcl=self.tapcell_tcl,
             config_dir=config_dir,
             cts_dont_use_cells=self.cts_dont_use_cells,
+            cts_sink_clustering=self.cts_sink_clustering,
+            cts_root_buffer=self.cts_root_buffer,
+            cts_obstruction_aware=self.cts_obstruction_aware,
             keep_sizing_vt=self.keep_sizing_vt,
             signoff=self.signoff,
             global_route=self.global_route,
@@ -1597,6 +1603,8 @@ PNR_RUN_SPEC = KeySpec(
         "post-route-repair": POST_ROUTE_REPAIR_SPEC,
         "routing-layers": KeySpec(PnrRoutingLayersFile),
         "global-route": GLOBAL_ROUTE_SPEC,
+        "cts-sink-clustering": CTS_SINK_CLUSTERING_SPEC,
+        "cts-repair-clock-nets": CTS_REPAIR_CLOCK_NETS_SPEC,
         "blocks": KeySpec(BlockRefFile, many=True),
         "resources": KeySpec(PnrResourcesFile, {"stages": _STAGE_RESOURCES_SPEC}),
         "signoff": SIGNOFF_SPEC,
