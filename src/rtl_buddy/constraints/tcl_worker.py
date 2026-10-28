@@ -11,10 +11,14 @@
      "warnings": [{"kind": "include_unsupported", "line": 1,
                    "included": "shared/clocks.sdc"}]}
 
-With ``script_path``, ``[info script]`` returns it, the child gets a path-only ``file`` command, and ``source`` reads and evaluates the named file (relative to the sourcing file's directory, then the working directory) in the same interp: commands carry ``"file"``, and an unreadable include is a ``source_unreadable`` warning. With ``query_names``, the object queries (``get_ports`` ...) and the name accessors (``get_full_name`` ...) return their name arguments as a Tcl list instead of their source form, so a loop over a query's result runs, and ``error``, ``throw`` and ``return -code error`` return instead of raising, so a check the stubs cannot answer (``[get_property $p direction] ne "input"``) does not stop the read; each skipped ``error`` is a ``check_skipped`` warning.
+With ``script_path``, ``[info script]`` returns it, the child gets a path-only ``file`` command, and ``source`` reads the named file (relative to the sourcing file's directory, then the working directory) and evaluates it as Tcl's ``source`` does: in the same interp, in the caller's frame (the global frame for a top-level ``source``), with ``[info script]`` naming it while it runs. Commands carry ``"file"``, and an unreadable include is a ``source_unreadable`` warning.
+
+With ``query_names``, the object queries (``get_ports`` ...) and the name accessors (``get_full_name`` ...) return their name arguments as a Tcl list instead of their source form, so a loop over a query's result runs; ``get_property``/``get_attribute`` of a clock's ``period`` returns the ``-period`` of a clock the file created by that name. ``error``, ``throw`` and ``return -code error`` return instead of raising, so a check the stubs cannot answer (``[get_property $p direction] ne "input"``) does not stop the read; each skipped ``error`` is a ``check_skipped`` warning. A top-level statement of a file (the read text or a sourced file) that still fails is skipped and the file carries on after it; each is a ``statement_skipped`` warning with its ``line``, ``message`` and ``text``. A ``source`` loop, a statement that never closes, or a resource limit still fails the read.
 
     {"ok": false, "kind": "tcl_error"|"resource_limit"|"unavailable",
-     "error": "...", "line": 12, "warnings": [...]}
+     "error": "...", "line": 12, "file": "/abs/inc.sdc", "warnings": [...]}
+
+A failure's ``line`` is where the statement that raised it starts; ``file`` is present when that statement is in a sourced file.
 
 The rtl_buddy process must never import ``_tkinter``: it starts a Tcl notifier thread that can hang a later fork+exec on macOS. Do not move the interp in process; ``tests/test_tcl_reader.py`` checks ``"_tkinter" not in sys.modules``.
 
@@ -58,7 +62,7 @@ proc file args {
 }
 """
 
-#: The child's `source` under ``script_path``: the parent reads and evaluates the file in this interp. ``RETURN`` is the interp's own `return`, renamed under ``query_names`` (`_RETURN_PROC`), so the lenient checks cannot skip a failed `source`.
+#: The child's `source` under ``script_path``: the parent reads the file and evaluates it in this interp, in this proc's caller's frame. A failure is raised with errorcode ``RB_SOURCE <file> <line>``, where the failing statement is, and is never skipped. ``RETURN`` is the interp's own `return`, renamed under ``query_names`` (`_RETURN_PROC`), so the lenient checks cannot skip a failed `source`.
 _SOURCE_PROC = r"""
 proc source args {
     if {[catch {dict get [info frame -1] line} __rb_line]} {
@@ -67,11 +71,15 @@ proc source args {
     set __rb_result [__rb_source $__rb_line {*}$args]
     set __rb_error [__rb_source_error]
     if {$__rb_error ne ""} {
-        RETURN -code error $__rb_error
+        RETURN -code error -errorcode [list RB_SOURCE {*}[lrange $__rb_error 1 2]] \
+            [lindex $__rb_error 0]
     }
     RETURN $__rb_result
 }
 """
+
+#: Errorcode head of a failure raised out of `source` (`_SOURCE_PROC`).
+_SOURCE_ERRORCODE = "RB_SOURCE"
 
 #: The child's `error` under ``query_names``: the check is recorded and the script carries on.
 _ERROR_PROC = r"""
@@ -145,6 +153,10 @@ _QUERY_COMMANDS = frozenset(
 _NAME_COMMANDS = frozenset({"get_full_name", "get_name", "get_object_name"})
 #: Query flags that take a value, which is not a name.
 _QUERY_VALUE_FLAGS = frozenset({"-filter", "-of_objects", "-hsc", "-regexp_filter"})
+#: Property accessors that answer a created clock's ``period`` under ``query_names``.
+_PROPERTY_COMMANDS = frozenset({"get_property", "get_attribute"})
+#: ``create_clock`` flags that take a value.
+_CLOCK_VALUE_FLAGS = frozenset({"-name", "-period", "-waveform", "-comment"})
 #: Deepest ``source`` nesting followed before the read fails (a file sourcing itself).
 _MAX_SOURCE_DEPTH = 16
 #: ``file`` subcommands the child gets under ``script_path``: path arithmetic and read-only tests.
@@ -192,6 +204,46 @@ def _query_names(words: tuple[str, ...]) -> list[str]:
     return names
 
 
+def _clock_definition(words: tuple[str, ...]) -> tuple[str, str] | None:
+    """``(name, period)`` of one ``create_clock``: ``-name``, else its first source, as SDC names the clock."""
+    name = period = None
+    sources: list[str] = []
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if word in _CLOCK_VALUE_FLAGS and i + 1 < len(words):
+            if word == "-name":
+                name = words[i + 1]
+            elif word == "-period":
+                period = words[i + 1]
+            i += 2
+            continue
+        if not word.startswith("-"):
+            sources.extend(word.split())
+        i += 1
+    name = name or (sources[0] if sources else None)
+    return (name, period) if name and period is not None else None
+
+
+def _clock_period(words: tuple[str, ...], periods: dict[str, str]) -> str | None:
+    """The period a ``get_property <clock> period`` (either argument order) asks for, when the file created that clock."""
+    args: list[str] = []
+    skip = False
+    for word in words:
+        if skip:
+            skip = False
+        elif word == "-object_type":
+            skip = True
+        elif not word.startswith("-"):
+            args.append(word)
+    if len(args) != 2:
+        return None
+    for obj, prop in (args, args[::-1]):
+        if prop.lower() == "period" and obj in periods:
+            return periods[obj]
+    return None
+
+
 def _path_command(base_dir: str, sub: str, args: tuple[str, ...]) -> str:
     """Answer one path-only ``file`` subcommand, as Tcl's ``file`` would."""
     import os
@@ -223,6 +275,16 @@ def _path_command(base_dir: str, sub: str, args: tuple[str, ...]) -> str:
     if sub == "isdirectory":
         return "1" if os.path.isdir(os.path.join(base_dir, args[0])) else "0"
     raise ValueError(sub)
+
+
+class _ScriptError(Exception):
+    """A Tcl error that fails the read, with where the statement that raised it starts."""
+
+    def __init__(self, message: str, file: str | None, line: int | None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.file = file
+        self.line = line
 
 
 def _quote_word(word: str) -> str:
@@ -271,6 +333,9 @@ def _evaluate(
         [os.path.abspath(script_path)] if script_path is not None else []
     )
 
+    # Under `query_names`, the `-period` of each clock the file created, by clock name.
+    clock_periods: dict[str, str] = {}
+
     def _line(line: str) -> int | None:
         try:
             return int(line)
@@ -301,8 +366,17 @@ def _evaluate(
                 }
             )
         _append(name, rest, line_no)
-        if query_names and (name in _QUERY_COMMANDS or name in _NAME_COMMANDS):
-            return _tcl_list(_query_names(words[1:]))
+        if query_names:
+            if name in _QUERY_COMMANDS or name in _NAME_COMMANDS:
+                return _tcl_list(_query_names(words[1:]))
+            if name == "create_clock":
+                clock = _clock_definition(words[1:])
+                if clock is not None:
+                    clock_periods[clock[0]] = clock[1]
+            elif name in _PROPERTY_COMMANDS:
+                period = _clock_period(words[1:], clock_periods)
+                if period is not None:
+                    return period
         # Return the command's source form so nested `[get_pins [get_cells u_a]/C]` matches the tokenizer.
         return "[" + " ".join([name, *rest]) + "]"
 
@@ -327,19 +401,97 @@ def _evaluate(
                 pass
         return record(line, "file", *words)
 
-    # A Python exception in a callback reaches Tcl without its message, so `source` reports
-    # failures here and the child's `source` proc raises them (see `_SOURCE_PROC`).
-    source_errors: list[str] = []
+    def statement_span(lines: list[str], first: int, line: int | None):
+        """``(start, end)``, 0-based and end-exclusive, of the top-level statement of ``lines`` that holds 1-based ``line``, splitting from ``first`` as Tcl does; ``None`` when ``line`` is unknown or a statement never closes."""
+        if line is None or line <= first:
+            return None
+        start = first
+        while start < len(lines):
+            end = start
+            text = ""
+            while True:
+                if end == len(lines):
+                    return None
+                text += lines[end] + "\n"
+                end += 1
+                if app.getboolean(app.call("info", "complete", text)):
+                    break
+            if line <= end:
+                return start, end
+            start = end
+        return None
 
-    def source_error() -> str:
+    def run_script(body: str, *, in_caller: bool) -> str:
+        """Evaluate one file's text in the child, in the caller's frame when ``in_caller``; under ``query_names``, skip each top-level statement that fails.
+
+        A resumed run is padded with the newlines it skips, so ``info frame`` lines stay the file's.
+        """
+        lines = body.split("\n")
+        first = 0
+        while True:
+            chunk = "\n" * first + "\n".join(lines[first:])
+            script = ["catch", chunk, "::__rb_msg", "::__rb_opts"]
+            if in_caller:
+                script = ["uplevel", "1", script]
+            code = int(app.call(_CHILD, "eval", script))
+            message, raw_opts = app.splitlist(
+                app.call(
+                    _CHILD,
+                    "eval",
+                    "list $::__rb_msg $::__rb_opts [unset ::__rb_msg ::__rb_opts]",
+                )
+            )[:2]
+            opts = dict(zip(*[iter(app.splitlist(raw_opts))] * 2))
+            if code == 2 and str(opts.get("-level")) == "1":
+                code = int(opts.get("-code", 0))
+            if code in (0, 2):
+                # A top-level `return` ends the file, as in Tcl's `source`.
+                return str(message)
+            message = str(message)
+            if code == 3:
+                message = 'invoked "break" outside of a loop'
+            elif code == 4:
+                message = 'invoked "continue" outside of a loop'
+            line = _line(str(opts.get("-errorline", "")))
+            errorcode = [str(w) for w in app.splitlist(opts.get("-errorcode", ""))]
+            if errorcode[:1] == [_SOURCE_ERRORCODE]:
+                # Raised out of a `source`: where it failed, and never skipped.
+                site = errorcode[1:3] + ["", ""]
+                raise _ScriptError(message, site[0] or None, _line(site[1]))
+            if query_names and code == 1:
+                span = statement_span(lines, first, line)
+                if span is not None:
+                    start, first = span
+                    warning = {
+                        "kind": "statement_skipped",
+                        "line": start + 1,
+                        "message": message,
+                        "text": "\n".join(lines[start:first]),
+                    }
+                    if scripts:
+                        warning["file"] = scripts[-1]
+                    warnings.append(warning)
+                    continue
+            raise _ScriptError(message, scripts[-1] if scripts else None, line)
+
+    # A Python exception in a callback reaches Tcl without its message, so `source` reports
+    # failures here, as `(message, file, line)`, and the child's `source` proc raises them
+    # (see `_SOURCE_PROC`).
+    source_errors: list[tuple[str, str, str]] = []
+
+    def source_error() -> tuple[str, str, str] | str:
         return source_errors.pop() if source_errors else ""
 
     def source_command(line: str, *words: str) -> str:
         try:
             return _source(line, *words)
+        except _ScriptError as exc:
+            source_errors.append(
+                (exc.message, exc.file or "", "" if exc.line is None else str(exc.line))
+            )
         except Exception as exc:
-            source_errors.append(str(exc) or type(exc).__name__)
-            return ""
+            source_errors.append((str(exc) or type(exc).__name__, scripts[-1], line))
+        return ""
 
     def _source(line: str, *words: str) -> str:
         line_no = _line(line)
@@ -376,7 +528,7 @@ def _evaluate(
         scripts.append(path)
         app.call(_CHILD, "eval", ["info", "script", path])
         try:
-            return str(app.call(_CHILD, "eval", body))
+            return run_script(body, in_caller=True)
         finally:
             scripts.pop()
             app.call(_CHILD, "eval", ["info", "script", scripts[-1]])
@@ -433,26 +585,27 @@ def _evaluate(
             "-granularity",
             1,
         )
-        app.setvar("__rb_script", text)
-        # Catch in the parent: a limit error cannot be caught inside the interp it fired on.
-        failed = int(
-            app.eval(
-                f"catch {{interp eval {_CHILD} $::__rb_script}} ::__rb_msg ::__rb_opts"
-            )
-        )
-        if failed:
-            message = str(app.getvar("__rb_msg"))
-            raw_line = app.eval(
-                "if {[dict exists $::__rb_opts -errorline]} "
-                "{dict get $::__rb_opts -errorline} else {return {}}"
-            )
+        top = scripts[0] if scripts else None
+        try:
+            run_script(text, in_caller=False)
+        except _ScriptError as exc:
+            failure = {"error": exc.message, "line": exc.line}
+            if exc.file and exc.file != top:
+                failure["file"] = exc.file
+        # A limit error cannot be caught inside the interp it fired on, so it arrives here.
+        except tkinter.TclError as exc:
+            failure = {"error": str(exc), "line": None}
+        else:
+            failure = None
+        if failure is not None:
             return {
                 "ok": False,
                 "kind": (
-                    "resource_limit" if "limit exceeded" in message else "tcl_error"
+                    "resource_limit"
+                    if "limit exceeded" in failure["error"]
+                    else "tcl_error"
                 ),
-                "error": message,
-                "line": int(raw_line) if str(raw_line).isdigit() else None,
+                **failure,
                 "warnings": warnings,
             }
     finally:
@@ -463,7 +616,6 @@ def _evaluate(
             lambda: app.deletecommand("__rb_file_impl"),
             lambda: app.deletecommand("__rb_source_impl"),
             lambda: app.deletecommand("__rb_source_error_impl"),
-            lambda: app.call("unset", "-nocomplain", "::__rb_script"),
         ):
             try:
                 cleanup()
