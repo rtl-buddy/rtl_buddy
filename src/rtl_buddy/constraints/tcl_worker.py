@@ -62,17 +62,16 @@ proc file args {
 }
 """
 
-#: The child's `source` under ``script_path``: the parent reads the file and evaluates it in this interp, in this proc's caller's frame. A failure is raised with errorcode ``RB_SOURCE <file> <line>``, where the failing statement is, and is never skipped. ``RETURN`` is the interp's own `return`, renamed under ``query_names`` (`_RETURN_PROC`), so the lenient checks cannot skip a failed `source`.
+#: The child's `source` under ``script_path``: the parent reads the file and evaluates it in this interp, in this proc's caller's frame. What ends the file early (a `return -level 2`, a `break`, a failure) is re-raised here with its return options, so it reaches the caller as it does from Tcl's `source`. A failure is raised with errorcode ``RB_SOURCE <file> <line>``, where the failing statement is, and is never skipped. ``RETURN`` is the interp's own `return`, renamed under ``query_names`` (`_RETURN_PROC`), so the lenient checks cannot skip a failed `source`.
 _SOURCE_PROC = r"""
 proc source args {
     if {[catch {dict get [info frame -1] line} __rb_line]} {
         set __rb_line {}
     }
     set __rb_result [__rb_source $__rb_line {*}$args]
-    set __rb_error [__rb_source_error]
-    if {$__rb_error ne ""} {
-        RETURN -code error -errorcode [list RB_SOURCE {*}[lrange $__rb_error 1 2]] \
-            [lindex $__rb_error 0]
+    set __rb_outcome [__rb_source_outcome]
+    if {$__rb_outcome ne ""} {
+        RETURN -options [lindex $__rb_outcome 0] [lindex $__rb_outcome 1]
     }
     RETURN $__rb_result
 }
@@ -434,10 +433,12 @@ def _evaluate(
             start = end
         return None
 
-    def run_script(body: str, *, in_caller: bool) -> str:
+    def run_script(
+        body: str, *, in_caller: bool
+    ) -> tuple[tuple[tuple, str] | None, str]:
         """Evaluate one file's text in the child, in the caller's frame when ``in_caller``; under ``query_names``, skip each top-level statement that fails.
 
-        A resumed run is padded with the newlines it skips, so ``info frame`` lines stay the file's.
+        Returns ``(outcome, result)``. ``outcome`` is ``None`` when the file ran to its end or to a plain ``return``; for a sourced file it is otherwise ``(options, message)``, which its ``source`` re-raises, as Tcl's ``source`` passes a ``return -level 2`` or a ``break`` to its caller. A resumed run is padded with the newlines it skips, so ``info frame`` lines stay the file's.
         """
         lines = body.split("\n")
         first = 0
@@ -456,13 +457,22 @@ def _evaluate(
             )[:2]
             items = app.splitlist(raw_opts)
             opts = dict(zip(items[::2], items[1::2]))
-            if code == 2 and str(opts.get("-level")) == "1":
-                code = int(opts.get("-code", 0))
-            if code in (0, 2):
-                # A top-level `return` ends the file, as in Tcl's `source`.
-                return str(message)
             message = str(message)
-            if code == 3:
+            returned = (str(opts.get("-code")), str(opts.get("-level")))
+            if code == 0 or (code == 2 and returned == ("0", "1")):
+                return None, message
+            if in_caller and code != 1:
+                options = (
+                    tuple(str(w) for w in items)
+                    if code == 2
+                    else ("-code", str(code), "-level", "1")
+                )
+                return (options, message), ""
+            if code == 2:
+                if returned != ("1", "1"):
+                    return None, message
+                code = 1
+            elif code == 3:
                 message = 'invoked "break" outside of a loop'
             elif code == 4:
                 message = 'invoked "continue" outside of a loop'
@@ -488,26 +498,39 @@ def _evaluate(
                     continue
             raise _ScriptError(message, scripts[-1] if scripts else None, line)
 
-    # A Python exception in a callback reaches Tcl without its message, so `source` reports
-    # failures here, as `(message, file, line)`, and the child's `source` proc raises them
-    # (see `_SOURCE_PROC`).
-    source_errors: list[tuple[str, str, str]] = []
+    # A Python exception in a callback reaches Tcl without its message, so `source` hands
+    # what ended the file early here, as `(options, message)`, and the child's `source`
+    # proc re-raises it (see `_SOURCE_PROC`).
+    source_outcomes: list[tuple[tuple, str]] = []
 
-    def source_error() -> tuple[str, str, str] | str:
-        return source_errors.pop() if source_errors else ""
+    def source_outcome() -> tuple[tuple, str] | str:
+        return source_outcomes.pop() if source_outcomes else ""
+
+    def _failure(message: str, file: str, line: str) -> tuple[tuple, str]:
+        return ("-code", "1", "-errorcode", (_SOURCE_ERRORCODE, file, line)), message
 
     def source_command(line: str, *words: str) -> str:
         try:
-            return _source(line, *words)
+            outcome, result = _source(line, *words)
         except _ScriptError as exc:
-            source_errors.append(
-                (exc.message, exc.file or "", "" if exc.line is None else str(exc.line))
+            outcome, result = (
+                _failure(
+                    exc.message,
+                    exc.file or "",
+                    "" if exc.line is None else str(exc.line),
+                ),
+                "",
             )
         except Exception as exc:
-            source_errors.append((str(exc) or type(exc).__name__, scripts[-1], line))
-        return ""
+            outcome, result = (
+                _failure(str(exc) or type(exc).__name__, scripts[-1], line),
+                "",
+            )
+        if outcome is not None:
+            source_outcomes.append(outcome)
+        return result
 
-    def _source(line: str, *words: str) -> str:
+    def _source(line: str, *words: str) -> tuple[tuple[tuple, str] | None, str]:
         line_no = _line(line)
         # `source ?-encoding name? fileName`
         target = words[-1] if words else ""
@@ -537,7 +560,7 @@ def _evaluate(
                     "error": str(exc),
                 }
             )
-            return ""
+            return None, ""
         path = os.path.abspath(path)
         scripts.append(path)
         app.call(_CHILD, "eval", ["info", "script", path])
@@ -572,7 +595,7 @@ def _evaluate(
             for alias, impl in (
                 ("__rb_file", file_command),
                 ("__rb_source", source_command),
-                ("__rb_source_error", source_error),
+                ("__rb_source_outcome", source_outcome),
             ):
                 app.createcommand(alias + "_impl", impl)
                 app.call("interp", "alias", _CHILD, alias, "", alias + "_impl")
@@ -629,7 +652,7 @@ def _evaluate(
             lambda: app.deletecommand("__rb_check_impl"),
             lambda: app.deletecommand("__rb_file_impl"),
             lambda: app.deletecommand("__rb_source_impl"),
-            lambda: app.deletecommand("__rb_source_error_impl"),
+            lambda: app.deletecommand("__rb_source_outcome_impl"),
         ):
             try:
                 cleanup()

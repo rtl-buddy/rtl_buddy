@@ -1295,6 +1295,50 @@ def test_a_top_level_return_ends_only_its_own_file(tcl_backend, tmp_path):
     assert [c.words[-1] for c in cmds] == ["a", "c"]
 
 
+#: Fails the plain read, so a read with ``lenient_queries`` takes the lenient re-read.
+_QUERY_LOOP = "foreach p [get_ports {x y}] { set_load 1 $p }\n"
+
+
+@pytest.mark.parametrize("lenient", [False, True])
+def test_a_multi_level_return_in_a_sourced_file_returns_from_its_caller(
+    tcl_backend, tmp_path, lenient
+):
+    (tmp_path / "inc.sdc").write_text(
+        "create_clock -name a -period 1 a\n"
+        "return -level 2 7\n"
+        "create_clock -name b -period 2 b\n"
+    )
+    top = tmp_path / "top.sdc"
+    top.write_text(
+        (_QUERY_LOOP if lenient else "")
+        + "proc load {} { source inc.sdc; create_clock -name c -period 3 c; return 0 }\n"
+        "create_clock -name d -period [load] d\n"
+    )
+    cmds, used = _read_file(top, lenient_queries=lenient)
+    assert used == "tcl"
+    assert [(c.words[1], c.words[3]) for c in cmds] == [("a", "1"), ("d", "7")]
+
+
+@pytest.mark.parametrize("lenient", [False, True])
+def test_a_break_in_a_sourced_file_breaks_the_callers_loop(
+    tcl_backend, tmp_path, lenient
+):
+    (tmp_path / "inc.sdc").write_text(
+        "create_clock -name a -period 1 a\nbreak\ncreate_clock -name b -period 2 b\n"
+    )
+    top = tmp_path / "top.sdc"
+    top.write_text(
+        (_QUERY_LOOP if lenient else "") + "foreach f {inc.sdc inc.sdc} {\n"
+        "  source $f\n"
+        "  create_clock -name c -period 3 c\n"
+        "}\n"
+        "create_clock -name d -period 4 d\n"
+    )
+    cmds, used = _read_file(top, lenient_queries=lenient)
+    assert used == "tcl"
+    assert [c.words[1] for c in cmds] == ["a", "d"]
+
+
 def test_a_failed_read_names_the_statement_and_file_that_stopped_it(
     tcl_backend, tmp_path, caplog
 ):
