@@ -126,13 +126,14 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `fail_stage: export` | Stream-out failed, under `gds-mode: strict` in `rb pnr` or in any mode in `rb pnr-export`: KLayout, `klayout-tech`, an input file or the render. Fix it and run `rb pnr-export`. |
 | `fail_stage: blocked`, `synth`, `error` | A block this run uses failed, its upstream synthesis failed under `--synth`, or rb crashed (the exception is in the description). Fix the cause first. |
 | `[ERROR PDN-0179] Unable to repair all channels` | Macros too close for the power grid. Raise `placement.macro-halo` (about 19 µm minimum on sky130hd). |
-| `PDN-0008 ... halo overlaps row` | A macro grid's `-halo` in `pdn-config` reaches into a row. Reduce it to the value the message suggests. |
+| `PDN-0008 ... halo overlaps row` | A `pdn-config` macro grid's `-halo` reaches a standard-cell row the macro does not sit on. Cut the rows around each macro at least that far in the PDK's `tapcell-tcl`; see [Plan the power grid](#plan-the-power-grid). |
 | `PDN-0233` on a turned macro or a block's grid | The power grid has no via for that macro. See [Place macros](#place-macros) and [Harden a block](#harden-a-block). |
 | `N macros do not fit the W x H um floorplan core` | Lower `utilization`, change `aspect`, or lower `placement.macro-halo`. The message gives the smallest core that fits. |
 | `GRT-0116`, global-route overflow | Too congested. The result's `failed_global_route` names the checkpoint (`<run-id>/global_route`) that holds the failed route's database and a copy of `congestion.rpt`; open it with `rb pnr-export --checkpoint` or `read_db` in OpenROAD. Lower utilization or density, try `placement.routability-driven`, or [tune global routing](#tune-global-routing). |
 | Large `drc_count` | Try `routing-layer-adjustment`, a lower density, or `post-route-repair` with several rounds. |
 | `RSZ-0090` at a slow corner | A macro with one Liberty limits that corner. Map each corner to the macro's Liberty for it in `lib-paths`; see [Sign off at several corners](#sign-off-at-several-corners). |
 | Macro pins in `electrical.rpt`, or `pnr.macro_pin_limits_unmet` | Set `placement.macro-pin-limits`, add a stronger buffer to it, or lower the macro's `macro-cell-halo`. See [Tune placement](#tune-placement-clock-tree-and-repair). |
+| Output pins over the library's slew limit at signoff, yet no max-slew violators | Ports have no limit unless the SDC sets one, and `repair_design` does not repair them. See [Check and repair slew at output ports](#check-and-repair-slew-at-output-ports). |
 | `RSZ-0074` in a post-route repair round | Set `post-route-repair.reroute: full`. |
 | `CTS-0080 Sink not found` | Set `cts-sink-clustering: false`. On a block with macros, `cts-obstruction-aware: false` also avoids it. |
 | `GRT-0273 Disabled NDR`, large hold violations | Clock nets with non-default rules detour. Set `cts-apply-ndr: none`. |
@@ -219,6 +220,26 @@ A run's block overrides the platform's field by field, and `null` sets a key to 
 The result's `signoff` field gives each gate its values and a `verdict` of `pass`, `fail` or `not_gated`: `timing.setup` and `timing.hold` with `corners`, `wns_ps`, `worst_corner` and `unconstrained`, `drc.count`, and the three electrical violator counts. `wns_setup_ps` and `wns_hold_ps` stay the worst over every corner. A failed gate fails the run without `fail_stage`, so `xfail:` can excuse it, and the description names each gate, such as `signoff failed: timing (setup WNS -0.1200 ns at ss); drc (3 violation(s))`. When `fail-on-electrical: true` is set, the electrical failure keeps the description of a run without the block, `electrical violators in the routed design: ... (fail-on-electrical; see electrical.rpt)`, after the `signoff failed:` prefix. The routed outputs stay. A `--stop-after` or probe run reports the values its stage has and gates nothing.
 
 On a multi-corner platform the [post-route repair rounds](#repair-timing-after-routing) judge setup only at `setup-corners` and hold only at `hold-corners`. Without the block they judge every corner, and the result has no `signoff` field.
+
+## Check and repair slew at output ports
+
+A port carries no max-slew or max-capacitance limit unless the SDC sets one, so the electrical counts and the `electrical` gate pass a long net that ends at an output pin, however slow its pin. `repair_design` does not repair a port's slew even when the SDC sets a limit on it; it checks the net at its driver only. To make outputs part of the electrical check and have P&R fix them, do both:
+
+- In the SDC, set `set_max_transition` on the outputs, for example `set_max_transition 320 [all_outputs]` at the library's limit, and `set_load` for what the pins drive. The violator counts and `electrical.rpt` then include the output pins.
+- Buffer the outputs and hold the buffers at their pins:
+
+```yaml
+    buffer-ports:
+      inputs: false                # default true
+      skip-clock-outputs: true     # default false
+      hold-outputs-at-pins: true   # default false
+```
+
+Each output net then ends at a buffer input, which has a Liberty limit, so placement's `repair_design` resizes the driver or adds repeaters to meet it. Without `hold-outputs-at-pins`, global placement puts each output buffer anywhere between its driver and its pin, and the net from the buffer to the pin is again a net that ends at a port. With it, each buffer goes on the row site nearest its pin that no other held buffer uses, after pin placement, and stays there, fixed (`FIRM`), through global placement. It is freed right after, before `repair_tie_fanout` and the `after-global-placement` hooks, so `repair_design` repairs the driver net and legalization places the buffer. That repair works on placement parasitics, so a long driver net can still route over its limit at the buffer's input; `electrical.rpt` lists it as a max-slew violator on the buffer's input pin.
+
+`buffer_ports` also buffers an output that carries a clock: a forwarded clock on the clock network, or an output a generated clock is defined on. `skip-clock-outputs: true` leaves every such output unbuffered and names each in `pnr.log`.
+
+`buffer-ports: true`, and the default of a `harden: true` run, buffer every input and output as OpenROAD and ORFS do, without the two options. `inputs` and `outputs` map to `buffer_ports -inputs` and `-outputs`. See [YAML Formats](../reference/yaml.md#pnryaml).
 
 ## Set wire RC
 
@@ -472,6 +493,8 @@ The PDK's `pdn-config` declares the grid for every run. A run can replace it:
 
 By default each stripe layer connects to the next; `connect: [[met1, met4], ...]` lists the pairs instead. A ring must fit between core and die. Only one always-on power domain is supported. The PDK's global connections are applied again at the end of every stage, so cells added after `pdngen` get supply connections.
 
+A macro grid in the `pdn-config` with a `-halo` needs the standard-cell rows cut at least that far around each macro: `pdngen` fails with `PDN-0008` when a halo reaches a row the macro does not sit on. rb does not cut rows around macros, and its packer puts a macro's bottom edge on a row boundary. Cut them in the PDK's `tapcell-tcl`, which runs after macro placement and before the grid, for example with `cut_rows -halo_width_x 2 -halo_width_y 2` for a 2 µm halo, as ORFS's tap-cell step does. Shrinking the halo instead can leave the core straps ending next to the macro, where they block its pin escapes.
+
 ## Run Tcl hooks
 
 `hooks:` on a run sources your Tcl files at fixed points of the flow, for steps rb does not have. Each point takes a path or a list, relative to `pnr.yaml`:
@@ -691,7 +714,7 @@ For maintainers and hook authors. The generated `pnr.tcl` runs:
 1. `platform-tcl`, Liberty, LEF, a mode and scene per corner on a multi-corner platform, netlist, SDC, `max-fanout`, `layer-rc-tcl`, don't-use cells, `session` hooks. The SDC and `max-fanout` go into every mode.
 2. Floorplan, tracks, blockages and cut-outs, tie cells.
 3. Macro placement, tap cells, power grid, pin placement, port buffering.
-4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present), `repair_tie_fanout`, `repair_design`, legalization, the `placement.macro-pin-limits` step.
+4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and the output port buffers `hold-outputs-at-pins` fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, the `placement.macro-pin-limits` step.
 5. CTS, optional post-CTS setup repair, hold repair, legalization.
 6. Global route, optional global-route repair, detailed route, optional post-route repair stage.
 7. Fill, global connections, extraction with `rcx-rules`, final reports, outputs.

@@ -1,0 +1,3 @@
+## `repair_design` does not repair the slew at an output port
+
+OpenROAD's `repair_design` checks a net that ends at an output port only at its driver, so a long net to an output pin keeps its slew even when the SDC sets `set_max_transition` on the port. A port has no limit unless the SDC sets one, so without it the electrical counts do not list the pin either. Set the limit in the SDC and buffer the outputs with `buffer-ports: {outputs: true, hold-outputs-at-pins: true}`; see [Check and repair slew at output ports](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#check-and-repair-slew-at-output-ports).

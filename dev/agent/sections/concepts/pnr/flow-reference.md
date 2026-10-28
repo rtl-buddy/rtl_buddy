@@ -5,7 +5,7 @@ For maintainers and hook authors. The generated `pnr.tcl` runs:
 1. `platform-tcl`, Liberty, LEF, a mode and scene per corner on a multi-corner platform, netlist, SDC, `max-fanout`, `layer-rc-tcl`, don't-use cells, `session` hooks. The SDC and `max-fanout` go into every mode.
 2. Floorplan, tracks, blockages and cut-outs, tie cells.
 3. Macro placement, tap cells, power grid, pin placement, port buffering.
-4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present), `repair_tie_fanout`, `repair_design`, legalization, the `placement.macro-pin-limits` step.
+4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and the output port buffers `hold-outputs-at-pins` fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, the `placement.macro-pin-limits` step.
 5. CTS, optional post-CTS setup repair, hold repair, legalization.
 6. Global route, optional global-route repair, detailed route, optional post-route repair stage.
 7. Fill, global connections, extraction with `rcx-rules`, final reports, outputs.
