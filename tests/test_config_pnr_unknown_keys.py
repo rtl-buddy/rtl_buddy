@@ -146,7 +146,12 @@ RUN_SIZED = {
     "inputs": ["helper.tcl"],
     "harden": True,
     "abstract": {"bloat": "occupied", "feedthrough-layers": ["m4"], "gds": True},
-    "buffer-ports": True,
+    "buffer-ports": {
+        "inputs": True,
+        "outputs": True,
+        "skip-clock-outputs": True,
+        "hold-outputs-at-pins": True,
+    },
     "fail-on-electrical": True,
     "blocks": [
         {"name": "blk", "pnr": "blk_run", "pnr-path": "blk/pnr.yaml"},
@@ -207,6 +212,7 @@ RUN_DIE = {
         "core-cutouts": [[20, 20, 30, 30]],
     },
     "stages": True,
+    "buffer-ports": True,
     "global-route-hold-repair": True,
     "mode": "probe",
     "post-route-repair": {"repair-design": {"wire-rc": {"layer": "m5"}}},
@@ -385,6 +391,11 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "pnr run 'a': abstract",
             ("abstract",),
             "bloat, feedthrough-layers, gds",
+        ),
+        (
+            "pnr run 'a': buffer-ports",
+            ("buffer-ports",),
+            "inputs, outputs, skip-clock-outputs, hold-outputs-at-pins",
         ),
         (
             "pnr run 'a': placement",

@@ -33,6 +33,7 @@ from ..config.pnr import (
     PnrBlockage,
     PnrConfig,
     PnrFloorplan,
+    PortBuffers,
     with_planner_files,
 )
 from ..config.pnr_global_route import GlobalRoute
@@ -105,6 +106,8 @@ _HOOK_COMMANDS_FILE = "hook_commands.tcl"
 _ECO_REPAIR_FILE = "eco_repair.tcl"
 # Runs a post-route `repair_design` at `repair-design.wire-rc`; see `_repair_steps_tcl`.
 _WIRE_RC_FILE = "wire_rc.tcl"
+# `buffer_ports -outputs` with `skip-clock-outputs` or `hold-outputs-at-pins`; see `_buffer_ports_tcl`.
+_PORT_BUFFERS_FILE = "port_buffers.tcl"
 
 # Non-log files the flow writes under `$OUT_DIR`; `test_pnr.py` checks this covers every one.
 _FLOW_OUTPUT_NAMES = (
@@ -406,15 +409,59 @@ def _with_hook_tracer(substitutions: dict) -> dict:
     }
 
 
-def _buffer_ports_tcl(enabled: bool, buffer_cell: str | None) -> str:
+def _buffer_ports_tcl(ports: PortBuffers | None, buffer_cell: str | None) -> str:
     """Return the port-buffering step, or `""` when the run leaves ports unbuffered.
 
-    As ORFS `global_place.tcl` does by default: `buffer_ports` after IO placement and before global placement, which places the new buffers, and `repair_design` then sizes them. A port's internal loads then hang off a buffer, so the port sees one buffer input and a hardened block's Liberty pin capacitance stops depending on its fanout. OpenROAD skips clock, constant and special nets. Without the platform's `port-buffer` it picks its own buffer, which on sky130hd is the delay cell `clkdlybuf4s50_1`.
+    As ORFS `global_place.tcl` does by default: `buffer_ports` after IO placement and before global placement, which places the new buffers, and `repair_design` then sizes them. A port's internal loads then hang off a buffer, so the port sees one buffer input and a hardened block's Liberty pin capacitance stops depending on its fanout. OpenROAD skips clock inputs and constant and special nets. Without the platform's `port-buffer` it picks its own buffer, which on sky130hd is the delay cell `clkdlybuf4s50_1`.
+
+    `skip-clock-outputs` and `hold-outputs-at-pins` buffer the outputs through `port_buffers.tcl`, after the inputs, as one `buffer_ports -inputs -outputs` does.
     """
-    if not enabled:
+    if ports is None:
         return ""
     cell = f" -buffer_cell {buffer_cell}" if buffer_cell else ""
-    return f'\nputs ">>> Port buffers"\nbuffer_ports -inputs -outputs{cell}\n'
+    if not (ports.skip_clock_outputs or ports.hold_outputs_at_pins):
+        flags = "".join(
+            flag
+            for flag, on in ((" -inputs", ports.inputs), (" -outputs", ports.outputs))
+            if on
+        )
+        return f'\nputs ">>> Port buffers"\nbuffer_ports{flags}{cell}\n'
+    procs = files(_TEMPLATE_PACKAGE).joinpath(_PORT_BUFFERS_FILE).read_text()
+    inputs = f"buffer_ports -inputs{cell}\n" if ports.inputs else ""
+    return (
+        f'\nputs ">>> Port buffers"\n{procs}{inputs}'
+        f"rb::port_buffers::outputs {int(ports.skip_clock_outputs)} "
+        f"{int(ports.hold_outputs_at_pins)}{cell}\n"
+    )
+
+
+#: Frees the output port buffers `hold-outputs-at-pins` fixed at their pins: each FIRM standard cell that alone drives an output port.
+_FREE_PORT_BUFFERS_TCL = """\
+puts ">>> Output port buffers free to move"
+set rb_freed 0
+foreach rb_bterm [[ord::get_db_block] getBTerms] {
+  set rb_net [$rb_bterm getNet]
+  if {[$rb_bterm getIoType] ne "OUTPUT" || $rb_net eq "NULL"
+      || [$rb_net getITermCount] != 1} {
+    continue
+  }
+  set rb_iterm [lindex [$rb_net getITerms] 0]
+  set rb_inst [$rb_iterm getInst]
+  if {[$rb_iterm isOutputSignal] && [$rb_inst getPlacementStatus] eq "FIRM"
+      && ![[$rb_inst getMaster] isBlock]} {
+    $rb_inst setPlacementStatus PLACED
+    incr rb_freed
+  }
+}
+puts ">>>   $rb_freed output port buffer(s) freed"
+"""
+
+
+def _free_port_buffers_tcl(ports: PortBuffers | None) -> str:
+    """Return the step right after `global_placement` that frees the output port buffers `hold-outputs-at-pins` fixed at their pins, so `repair_design` repeats each driver net up to its buffer and legalization places the buffer; `""` without it."""
+    if ports is None or not ports.hold_outputs_at_pins:
+        return ""
+    return _FREE_PORT_BUFFERS_TCL
 
 
 def _macro_pin_limits_tcl(platform, dpl_options: str = "") -> str:
@@ -3061,7 +3108,10 @@ class OpenRoadPnr:
             "cell_count_tag": _CELL_COUNT_TAG,
             "electrical_tag": _ELECTRICAL_TAG,
             "buffer_ports_block": _buffer_ports_tcl(
-                self.pnr_cfg.get_buffer_ports(), platform.get_port_buffer()
+                self.pnr_cfg.get_port_buffers(), platform.get_port_buffer()
+            ),
+            "free_port_buffers_block": _free_port_buffers_tcl(
+                self.pnr_cfg.get_port_buffers()
             ),
             "cts_clustering_option": (
                 "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
