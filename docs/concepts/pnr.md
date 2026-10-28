@@ -326,6 +326,8 @@ Each block runs `repair_design` when `repair-design` is set (`{}` for OpenROAD's
 
 **`post-route-repair`** adds the stage `post_route_repair` after detailed route. It needs the PDK's `rcx-rules`. It extracts and times the detailed route (round 0), then runs up to `rounds` (default 1) repair rounds, each in fresh OpenROAD sessions: repair on the extracted parasitics, route again, extract and time. `reroute: eco` (default) keeps the detailed route and reroutes only the changed nets; `full` routes the whole design again, costing about a global and a detailed route per round. Round k repairs with the margins plus (k − 1) × `margin-step`. `rounds` above 1 needs a margin.
 
+Each round, the electrical round included, starts by running `remove_fillers`, which removes every instance of a `CORE_SPACER` master that is not `LOCKED`. A spacer a hook placed `FIRM` or `FIXED` to reserve sites is gone after the first round; place it `LOCKED` to keep it.
+
 Two `repair-design` keys apply to `post-route-repair` only. Both are off by default:
 
 ```yaml

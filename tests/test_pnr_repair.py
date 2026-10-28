@@ -876,9 +876,9 @@ def test_rounds_repair_until_timing_is_met(tmp_path, monkeypatch, stages):
     assert "global_route -congestion_iterations" not in r1
     assert "\nestimate_parasitics -global_routing" not in r1
     order = [
+        "\nremove_fillers\n",
         "\nestimate_parasitics -placement\n",
         "\nread_spef ",
-        "\nremove_fillers\n",
         "\nglobal_route -start_incremental\n",
         "\nrb::eco::repair 1 {\n",
         "\nrepair_timing -setup",
@@ -892,6 +892,9 @@ def test_rounds_repair_until_timing_is_met(tmp_path, monkeypatch, stages):
     for text in order:
         at = r1.index(text, at)
     assert r1.count("global_route -start_incremental") == 1
+    # So no filler a round removes leaves invalid parasitics behind.
+    assert len(re.findall(r"^estimate_parasitics ", r1, re.MULTILINE)) == 1
+    assert len(re.findall(r"^remove_fillers$", r1, re.MULTILINE)) == 1
     # The repairs saw an unrouted design; the detailed route the original answer.
     r1_log = (run_dir / "06_post_route_repair.r1.repair.log").read_text()
     assert "stub: repair_timing routed 0" in r1_log

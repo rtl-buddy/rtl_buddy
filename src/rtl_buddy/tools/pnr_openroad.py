@@ -3416,9 +3416,9 @@ class OpenRoadPnr:
     def _post_route_repair_script(self, round_: int, run_dir: str) -> str:
         """Round `round_`'s repair session, bound to `run_dir`: repair round `round_ - 1`'s database on its SPEF, legalize inside an incremental global route, connect the supply pins of the cells the repair added, run the `before-detailed-route` hooks and connect again, route in detail and write the stage's checkpoint.
 
-        The rounds work on the unfilled database; `finish` fills after the last. A repair in the session that routed fails detailed routing (DRT-0218), so each round is a fresh session that reads the routed database.
+        The rounds work on the unfilled database; `finish` fills after the last. Each round starts with `remove_fillers`, which removes every CORE_SPACER instance that is not LOCKED, spacers a hook placed included. A repair in the session that routed fails detailed routing (DRT-0218), so each round is a fresh session that reads the routed database.
 
-        With `reroute: eco` the session keeps the routed database's wires. It estimates placement parasitics and reads the SPEF over them, opens an incremental global route and runs the repairs in `rb::eco::repair` (`eco_repair.tcl`), which makes `design_is_routed` answer 0 for them alone: `repair_timing` then keeps the placement source instead of switching to detailed-routing parasitics, times the nets it does not change on the SPEF and the nets it changes on Steiner trees, and opens no incremental route of its own, so the session's one sees each netlist change once. Legalizing closes that route, which reroutes only the changed nets, and the detailed route keeps every other net's wires. On detailed-routing parasitics the repairs would build buffer trees from the global routes a fresh session rebuilds from the guides, which can miss pins (RSZ-0074), and a second incremental route open around them delivers each change twice (GRT-0229 on a later rip-up).
+        With `reroute: eco` the session keeps the routed database's wires. It removes the fillers first, since each instance `remove_fillers` destroys disconnects its pins and leaves their nets' parasitics invalid (EST-0104 in the first repair), then estimates placement parasitics and reads the SPEF over them, opens an incremental global route and runs the repairs in `rb::eco::repair` (`eco_repair.tcl`), which makes `design_is_routed` answer 0 for them alone: `repair_timing` then keeps the placement source instead of switching to detailed-routing parasitics, times the nets it does not change on the SPEF and the nets it changes on Steiner trees, and opens no incremental route of its own, so the session's one sees each netlist change once. Legalizing closes that route, which reroutes only the changed nets, and the detailed route keeps every other net's wires. On detailed-routing parasitics the repairs would build buffer trees from the global routes a fresh session rebuilds from the guides, which can miss pins (RSZ-0074), and a second incremental route open around them delivers each change twice (GRT-0229 on a later rip-up).
 
         With `reroute: full` it removes the detailed route and routes globally first, then reads the SPEF over the global-route estimate; the repairs run before `global_route -start_incremental`, in ORFS order, since `repair_timing` on global-route parasitics opens its own incremental route. Its detailed route routes every net again.
 
@@ -3467,9 +3467,9 @@ class OpenRoadPnr:
             )
             parts += [
                 files(_TEMPLATE_PACKAGE).joinpath(_ECO_REPAIR_FILE).read_text(),
+                "remove_fillers\n",
                 "estimate_parasitics -placement\n",
                 spef,
-                "remove_fillers\n",
                 _start_incremental_cmd(gr),
                 f"rb::eco::repair {round_} {{\n{steps}}}\n",
                 "detailed_placement{{ dpl_options }}\n",
