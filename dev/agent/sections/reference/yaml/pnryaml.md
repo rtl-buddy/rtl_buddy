@@ -33,7 +33,7 @@ runs:
 | `gds-mode` | `preview` | `strict` fails the run when a requested export is incomplete. `--gds-mode` overrides. See [Stream out GDS and PNG](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#stream-out-gds-and-png) |
 | `gds-allow-empty` | — | Cell names or case-sensitive globs that have no layout on purpose |
 | `pin-constraints` | — | Tcl sourced just before pin placement |
-| `hooks` | — | Map of hook point to a Tcl path or list. See [Run Tcl hooks](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-tcl-hooks) |
+| `hooks` | — | Map of hook point to a Tcl path or list. Points, in flow order: `session`, `after-floorplan`, `macro-placement`, `after-pdn`, `after-pins`, `after-global-placement`, `after-repair-design`, `before-cts`, `before-repair-clock-nets`, `after-cts`, `after-cts-repair`, `after-global-route`, `after-global-route-repair`, `before-detailed-route`, `after-extraction`, `before-reports`, `after-reports`, and `stage-end` at the end of every stage. See [Run Tcl hooks](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-tcl-hooks) |
 | `inputs` | — | Files the SDC or hooks `source`, relative to `pnr.yaml`. Fingerprinted for `--resume` and hardened-block staleness. See [Run Tcl hooks](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-tcl-hooks) |
 | `pdn-config` | PDK's | Tcl that replaces the PDK's `pdn-config` |
 | `pdn` | — | Core grid in YAML; see below |
