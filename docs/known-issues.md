@@ -245,6 +245,10 @@ With the `default` mapped-run script, `&dch -f` choices and `&nf` area recovery 
 
 OpenROAD's default legalizer treats a fixed macro turned by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) as covering its unrotated width and height from its lower-left corner (OpenROAD#11735). Cells in that footprint but outside the macro are moved out, some far. By default `rb pnr` blocks the footprint during global placement, so the area stays empty. `placement.rotated-macro-footprint: diamond-legalizer` uses the diamond legalizer, which sees the real box, instead; `none` does neither. The workaround acts only when a macro entry turns a macro or a hook before global placement could.
 
+## `repair_design` does not repair the slew at an output port
+
+OpenROAD's `repair_design` checks a net that ends at an output port only at its driver, so a long net to an output pin keeps its slew even when the SDC sets `set_max_transition` on the port. A port has no limit unless the SDC sets one, so without it the electrical counts do not list the pin either. Set the limit in the SDC and buffer the outputs with `buffer-ports: {outputs: true, hold-outputs-at-pins: true}`; see [Check and repair slew at output ports](concepts/pnr.md#check-and-repair-slew-at-output-ports).
+
 ## A `pin-constraints` file must not constrain a port that has an exact pin
 
 rb leaves exact pins out of the `floorplan.pins` side and group rules but does not read the `pin-constraints` file. A `set_io_pin_constraint -region` there that holds an exact pin outside the region fails `place_pins` with `PPL-0107`, reported on another pin. When every signal port has an exact pin, `place_pins` is skipped and the file's constraints have no effect. See [Place IO pins](concepts/pnr.md#place-io-pins).

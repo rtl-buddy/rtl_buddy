@@ -28,6 +28,7 @@ from ..config.pnr import (
     BlockageLifetime,
     MacroPlacement,
     PnrAbstract,
+    PortBuffers,
 )
 from .artifact_paths import project_relative, project_root_or_none
 
@@ -554,7 +555,12 @@ def abstract_config(pnr_cfg, platform) -> dict:
         ),
         # Emitted only when on: abstracts hardened before `buffer-ports` existed have
         # unbuffered pins, so they go stale, and an explicit `false` keeps their digest.
-        **({"buffer_ports": True} if pnr_cfg.get_buffer_ports() else {}),
+        # Every port with the defaults is `true`, so a mapping that writes them keeps it.
+        **(
+            {"buffer_ports": True if ports == PortBuffers() else asdict(ports)}
+            if (ports := pnr_cfg.get_port_buffers())
+            else {}
+        ),
         **(
             {"port_buffer": platform.get_port_buffer()}
             if pnr_cfg.get_buffer_ports() and platform.get_port_buffer()
