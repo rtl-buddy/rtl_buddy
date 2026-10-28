@@ -13,7 +13,7 @@
 
 With ``script_path``, ``[info script]`` returns it, the child gets a path-only ``file`` command, and ``source`` reads the named file (relative to the sourcing file's directory, then the working directory) and evaluates it as Tcl's ``source`` does: in the same interp, in the caller's frame (the global frame for a top-level ``source``), with ``[info script]`` naming it while it runs. Commands carry ``"file"``, and an unreadable include is a ``source_unreadable`` warning.
 
-With ``query_names``, the object queries (``get_ports`` ...) and the name accessors (``get_full_name`` ...) return their name arguments as a Tcl list instead of their source form, so a loop over a query's result runs; ``get_property``/``get_attribute`` of a clock's ``period`` returns the ``-period`` of a clock the file created by that name. ``error``, ``throw`` and ``return -code error`` return instead of raising, so a check the stubs cannot answer (``[get_property $p direction] ne "input"``) does not stop the read; each skipped ``error`` is a ``check_skipped`` warning. A top-level statement of a file (the read text or a sourced file) that still fails is skipped and the file carries on after it; each is a ``statement_skipped`` warning with its ``line``, ``message`` and ``text``. A ``source`` loop, a statement that never closes, or a resource limit still fails the read.
+With ``query_names``, the object queries (``get_ports`` ...) and the name accessors (``get_full_name`` ...) return their name arguments as a Tcl list instead of their source form, so a loop over a query's result runs; ``get_property``/``get_attribute`` of the ``period`` of a name ``get_clocks`` returned last returns the ``-period`` of the clock the file created by that name. ``error``, ``throw`` and ``return -code error`` return instead of raising, so a check the stubs cannot answer (``[get_property $p direction] ne "input"``) does not stop the read; each skipped ``error`` is a ``check_skipped`` warning. A top-level statement of a file (the read text or a sourced file) that still fails is skipped and the file carries on after it; each is a ``statement_skipped`` warning with its ``line``, ``message`` and ``text``. A ``source`` loop, a statement that never closes, or a resource limit still fails the read.
 
     {"ok": false, "kind": "tcl_error"|"resource_limit"|"unavailable",
      "error": "...", "line": 12, "file": "/abs/inc.sdc", "warnings": [...]}
@@ -155,6 +155,8 @@ _NAME_COMMANDS = frozenset({"get_full_name", "get_name", "get_object_name"})
 _QUERY_VALUE_FLAGS = frozenset({"-filter", "-of_objects", "-hsc", "-regexp_filter"})
 #: Property accessors that answer a created clock's ``period`` under ``query_names``.
 _PROPERTY_COMMANDS = frozenset({"get_property", "get_attribute"})
+#: The query whose result names clocks; a property is answered only for a name it returned last.
+_CLOCK_QUERY = "get_clocks"
 #: ``create_clock`` flags that take a value.
 _CLOCK_VALUE_FLAGS = frozenset({"-name", "-period", "-waveform", "-comment"})
 #: Deepest ``source`` nesting followed before the read fails (a file sourcing itself).
@@ -225,8 +227,10 @@ def _clock_definition(words: tuple[str, ...]) -> tuple[str, str] | None:
     return (name, period) if name and period is not None else None
 
 
-def _clock_period(words: tuple[str, ...], periods: dict[str, str]) -> str | None:
-    """The period a ``get_property <clock> period`` (either argument order) asks for, when the file created that clock."""
+def _clock_period(
+    words: tuple[str, ...], periods: dict[str, str], queried_by: dict[str, str]
+) -> str | None:
+    """The period a ``get_property <clock> period`` (either argument order) asks for, when the file created that clock and the object is a name ``get_clocks`` returned last (not ``get_ports`` of a port with the clock's name)."""
     args: list[str] = []
     skip = False
     for word in words:
@@ -239,7 +243,11 @@ def _clock_period(words: tuple[str, ...], periods: dict[str, str]) -> str | None
     if len(args) != 2:
         return None
     for obj, prop in (args, args[::-1]):
-        if prop.lower() == "period" and obj in periods:
+        if (
+            prop.lower() == "period"
+            and obj in periods
+            and queried_by.get(obj) == _CLOCK_QUERY
+        ):
             return periods[obj]
     return None
 
@@ -333,8 +341,10 @@ def _evaluate(
         [os.path.abspath(script_path)] if script_path is not None else []
     )
 
-    # Under `query_names`, the `-period` of each clock the file created, by clock name.
+    # Under `query_names`, the `-period` of each clock the file created, by clock name, and
+    # the object query that last returned each name.
     clock_periods: dict[str, str] = {}
+    queried_by: dict[str, str] = {}
 
     def _line(line: str) -> int | None:
         try:
@@ -368,13 +378,16 @@ def _evaluate(
         _append(name, rest, line_no)
         if query_names:
             if name in _QUERY_COMMANDS or name in _NAME_COMMANDS:
-                return _tcl_list(_query_names(words[1:]))
+                names = _query_names(words[1:])
+                if name in _QUERY_COMMANDS:
+                    queried_by.update(dict.fromkeys(names, name))
+                return _tcl_list(names)
             if name == "create_clock":
                 clock = _clock_definition(words[1:])
                 if clock is not None:
                     clock_periods[clock[0]] = clock[1]
             elif name in _PROPERTY_COMMANDS:
-                period = _clock_period(words[1:], clock_periods)
+                period = _clock_period(words[1:], clock_periods, queried_by)
                 if period is not None:
                     return period
         # Return the command's source form so nested `[get_pins [get_cells u_a]/C]` matches the tokenizer.

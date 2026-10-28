@@ -1385,6 +1385,38 @@ def test_lenient_queries_answer_a_created_clocks_period(tcl_backend, query):
     assert [c.words[-2] for c in cmds] == ["4", "8"]
 
 
+@pytest.mark.parametrize(
+    "query, answered",
+    [
+        ("get_property [get_clocks clk] period", True),
+        ("get_property [get_ports clk] period", False),
+        ("get_attribute [get_cells clk] period", False),
+        ("get_property PERIOD [get_ports clk]", False),
+    ],
+)
+def test_a_period_is_answered_only_for_an_object_get_clocks_returned(
+    tcl_backend, caplog, query, answered
+):
+    # The clock and its source port share the name `clk`.
+    text = (
+        "create_clock -name clk -period 4 [get_ports clk]\n"
+        f"create_clock -name gen -period [expr {{2 * [{query}]}}] [get_ports g]\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        result = read_constraints(
+            text, interest=CLOCK, source="q.sdc", lenient_queries=True
+        )
+    assert result.backend == "tcl"
+    if answered:
+        assert [c.words[3] for c in result.commands] == ["4", "8"]
+        assert not caplog.records
+    else:
+        assert [c.words[1] for c in result.commands] == ["clk"]
+        [rec] = _events(caplog, "constraints.tcl_statement_skipped")
+        assert rec.rtl_fields["line"] == 2
+        assert [(u.name, u.line) for u in result.unread] == [("create_clock", 2)]
+
+
 def test_a_period_of_a_clock_the_file_did_not_create_is_not_invented(
     tcl_backend, caplog
 ):
