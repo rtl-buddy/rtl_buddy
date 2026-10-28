@@ -178,7 +178,7 @@ Each default `rb pnr` applies is now the OpenROAD command's own default or the s
 | `post-cts-setup-repair` | `false` | `true`: setup, then hold, as ORFS repairs both after CTS | `post-cts-setup-repair: false` |
 | `global-route.congestion-iterations` | `20` | `30`, as ORFS | `global-route: {congestion-iterations: 20}` |
 
-A PDK without both `pin-layers` fails every `rb pnr` run on it at setup (`pnr.pin_layers_missing`); one used only by `rb synth` or `rb power` needs nothing. A `pnr.yaml` run without `floorplan.utilization` or `die-area` fails to load. The packer's `placement.macro-halo` default stays 20 µm. See [Configure the physical platform](concepts/pnr.md#configure-the-physical-platform).
+A PDK without both `pin-layers` fails every `rb pnr` run on it at setup (`pnr.pin_layers_missing`); one used only by `rb synth` or `rb power` needs nothing. A `pnr.yaml` run without `floorplan.utilization` or `die-area` fails to load. Setup repair after CTS needs wire RC, so on a PDK without `layer-rc-tcl` whose technology LEF has no layer RC, such as Nangate45, OpenROAD stops there with `RSZ-0089`: set the PDK's `layer-rc-tcl` (see [Set wire RC](concepts/pnr.md#set-wire-rc)) or `post-cts-setup-repair: false`. The packer's `placement.macro-halo` default stays 20 µm. See [Configure the physical platform](concepts/pnr.md#configure-the-physical-platform).
 
 The hardened-block config digest records these defaults, so every abstract hardened with v7 is stale. Harden the blocks again, or pass `--accept-stale` to use them as they are. See [Harden a block](concepts/pnr.md#harden-a-block).
 

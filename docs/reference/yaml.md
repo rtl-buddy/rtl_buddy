@@ -197,7 +197,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `cts-sink-clustering` | platform | `-sink_clustering_enable` for CTS. Default `true` |
 | `cts-apply-ndr` | platform | `none`, `root_only`, `half` or `full`. Unset keeps OpenROAD's `half` |
 | `port-buffer` | platform, run | Cell `buffer_ports` inserts. Unset lets OpenROAD choose |
-| `post-cts-setup-repair` | platform, run | `true` (default) runs `repair_timing -setup` after CTS, before the hold repair, as ORFS repairs both; `false` repairs hold only |
+| `post-cts-setup-repair` | platform, run | `true` (default) runs `repair_timing -setup` after CTS, before the hold repair, as ORFS repairs both; `false` repairs hold only. Setup repair needs wire RC: with none, OpenROAD stops with `RSZ-0089`. See [Set wire RC](../concepts/pnr.md#set-wire-rc) |
 | `global-route-hold-repair` | platform, run | `true` is `global-route-repair: {hold-margin: 0}`; not with `global-route-repair` at the same level. On a run, `false` drops the hold repair from the platform's block, and turns the block off when nothing is left. Default `false` |
 | `global-route-repair` | platform, run | Repair after global route. See below |
 | `post-route-repair` | platform, run | Repair rounds after detailed route. See below |
