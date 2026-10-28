@@ -15,6 +15,7 @@ Pinned behaviour:
   final, and reports the congestion grid as unavailable.
 """
 
+import functools
 import json
 import re
 import os
@@ -192,21 +193,27 @@ proc write_timing_model {args} {
 source [lindex $argv 0]
 """
 
-# Embedded-Tcl fallback when there is no `tclsh`: the same harness in the `tkinter`
-# interpreter, in a child process.
+# Embedded-Tcl fallback when `tclsh` is missing or too old: the same harness in the
+# `tkinter` interpreter, in a child process.
 _EMBEDDED_DRIVER = """
-import sys, tkinter
+import os, sys, tkinter
 interp = tkinter.Tcl()
-# tkinter's interpreter has no `exit`; the flow ends with one.
-interp.eval('proc exit {{code 0}} { error "RB_EXIT $code" }')
+
+def _exit(code=0):
+    # tkinter's interpreter has no `exit`. As tclsh's, it flushes every channel and ends
+    # the process at once, so no trace sees the command that called it return.
+    interp.eval("foreach rb_ch [file channels] { catch {flush $rb_ch} }")
+    os._exit(int(code))
+
+interp.createcommand("exit", _exit)
 interp.eval('set argv [list {%s}]' % sys.argv[2])
 try:
     interp.eval(open(sys.argv[1]).read())
 except tkinter.TclError as e:
-    if str(e).startswith("RB_EXIT "):
-        sys.exit(int(str(e).split()[1]))
     sys.stderr.write(str(e) + "\\n")
-    sys.exit(1)
+    sys.stderr.flush()
+    _exit(1)
+_exit(0)
 """
 
 
@@ -214,19 +221,45 @@ except tkinter.TclError as e:
 _TCLSH = shutil.which("tclsh")
 _REAL_RUN = subprocess.run
 
+# OpenROAD embeds Tcl 8.6, and the flow uses 8.6 commands (`lmap` in `hook_commands.tcl`).
+_TCL_MIN = (8, 6)
+
+
+def _tcl_version(cmd: list[str], script: str) -> tuple[int, ...] | None:
+    """The Tcl version `cmd` reports when it runs `script`, or None when it cannot."""
+    try:
+        done = _REAL_RUN(cmd, input=script, capture_output=True, text=True)
+    except OSError:
+        return None
+    match = re.fullmatch(r"(\d+)\.(\d+)", done.stdout.strip())
+    if done.returncode != 0 or match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+@functools.cache
+def _tcl_interpreter() -> tuple[list[str] | None, str]:
+    """The command that runs the stub harness, and why there is none: `tclsh` when it is Tcl 8.6 or newer, else the interpreter `tkinter` embeds when that is."""
+    found = []
+    if _TCLSH:
+        version = _tcl_version([_TCLSH], "puts [info tclversion]\n")
+        if version is not None and version >= _TCL_MIN:
+            return [_TCLSH], ""
+        found.append(f"tclsh {'.'.join(map(str, version or ())) or 'unusable'}")
+    probe = "import sys, tkinter; print(tkinter.Tcl().eval(sys.stdin.read()))"
+    version = _tcl_version([sys.executable, "-c", probe], "info tclversion")
+    if version is not None and version >= _TCL_MIN:
+        return [sys.executable, "-c", _EMBEDDED_DRIVER], ""
+    found.append(f"tkinter Tcl {'.'.join(map(str, version or ())) or 'unusable'}")
+    need = ".".join(map(str, _TCL_MIN))
+    return None, f"the P&R flow needs Tcl {need} or newer; found {', '.join(found)}"
+
 
 def _tcl_command(harness: Path, script: str) -> list[str]:
-    tclsh = _TCLSH
-    if tclsh:
-        return [tclsh, str(harness), script]
-    probe = _REAL_RUN(
-        [sys.executable, "-c", "import tkinter; tkinter.Tcl()"],
-        capture_output=True,
-        check=False,
-    )
-    if probe.returncode != 0:  # pragma: no cover - depends on the machine
-        pytest.skip("no Tcl interpreter (tclsh or tkinter) available")
-    return [sys.executable, "-c", _EMBEDDED_DRIVER, str(harness), script]
+    command, why = _tcl_interpreter()
+    if command is None:  # pragma: no cover - depends on the machine
+        pytest.skip(why)
+    return [*command, str(harness), script]
 
 
 def _pdk(tmp_path, **changes):
