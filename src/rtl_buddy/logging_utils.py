@@ -2464,6 +2464,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'P&R "{fields.get("pnr")}": post-route-repair needs rcx-rules on '
                 f"PDK '{fields.get('pdk')}'; OpenROAD was not started"
             )
+        case "pnr.after_extraction_without_rcx":
+            return (
+                f'P&R "{fields.get("pnr")}": hooks.after-extraction needs rcx-rules '
+                f"on PDK '{fields.get('pdk')}'; OpenROAD was not started"
+            )
         case "pnr.checkpoint_manifest_failed":
             return (
                 f'P&R "{fields.get("pnr")}": could not complete the checkpoint '

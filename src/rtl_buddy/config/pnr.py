@@ -813,7 +813,7 @@ _STAGE_RESOURCES_SPEC = KeySpec(
 )
 
 
-#: Flow points `hooks:` can name, in flow order.
+#: Flow points `hooks:` can name, in flow order; `session` and `stage-end` run once per session and per stage.
 HOOK_POINTS = (
     "session",
     "after-floorplan",
@@ -822,10 +822,17 @@ HOOK_POINTS = (
     "after-pins",
     "after-global-placement",
     "after-repair-design",
+    "before-cts",
+    "before-repair-clock-nets",
     "after-cts",
+    "after-cts-repair",
     "after-global-route",
+    "after-global-route-repair",
     "before-detailed-route",
+    "after-extraction",
     "before-reports",
+    "after-reports",
+    "stage-end",
 )
 
 
