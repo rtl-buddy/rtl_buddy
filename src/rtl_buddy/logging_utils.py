@@ -2054,6 +2054,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"[{fields.get('index')}] not found: {fields.get('path')}"
             )
         # Hardened-block abstracts.
+        case "pnr.cts_obstruction_aware_unsupported":
+            return (
+                f'P&R "{fields.get("pnr")}": cts-obstruction-aware: false needs '
+                "clock_tree_synthesis -no_obstruction_aware, which OpenROAD "
+                f"{fields.get('version') or fields.get('exe')} does not take; "
+                "unset the key or use a newer OpenROAD"
+            )
         case "pnr.harden_multi_corner":
             return (
                 f'P&R "{fields.get("pnr")}": harden: needs a single-corner '
@@ -2462,6 +2469,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f'P&R "{fields.get("pnr")}": post-route-repair needs rcx-rules on '
                 f"PDK '{fields.get('pdk')}'; OpenROAD was not started"
+            )
+        case "pnr.after_extraction_without_rcx":
+            return (
+                f'P&R "{fields.get("pnr")}": hooks.after-extraction needs rcx-rules '
+                f"on PDK '{fields.get('pdk')}'; OpenROAD was not started"
             )
         case "pnr.checkpoint_manifest_failed":
             return (

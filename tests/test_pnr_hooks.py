@@ -70,11 +70,16 @@ def _cfg_file(**kw):
 
 
 def _hook_files(tmp_path, points=HOOK_POINTS):
-    """One hook file per point, each printing `MARK <point>`; returns point -> path."""
+    """One hook file per point, each printing `MARK <point>`, a `stage-end` one also its stage and the run's mode; returns point -> path."""
     paths = {}
     for point in points:
         path = tmp_path / "hooks" / f"{point}.tcl"
-        _write(path, f'puts "MARK {point}"\n')
+        mark = (
+            "MARK stage-end $rb_stage $rb_mode"
+            if point == "stage-end"
+            else f"MARK {point}"
+        )
+        _write(path, f'puts "{mark}"\n')
         paths[point] = str(path)
     return paths
 
@@ -85,6 +90,30 @@ def _q(path):
 
 def _announce(point, path):
     return f'\nputs ">>> Hook {point}: {path}"\nrb::hook::run {point} "{path}"\n'
+
+
+def _stage_end_announce(stage, path):
+    return f'\nputs ">>> Hook stage-end ({stage}): {path}"\nrb::hook::stage_end {stage} "{path}"\n'
+
+
+#: The stages of a one-session run without post-route repair, each ended by the `stage-end` hooks.
+_ONE_SESSION_STAGES = (
+    "floorplan",
+    "place",
+    "cts",
+    "global_route",
+    "detailed_route",
+    "finish",
+)
+
+
+def _announced(point, stage=None):
+    """The log line prefix that announces a hook file of `point`; a `stage-end` one names `stage`."""
+    return (
+        f">>> Hook stage-end ({stage}):"
+        if point == "stage-end"
+        else f">>> Hook {point}:"
+    )
 
 
 # Configuration
@@ -205,6 +234,7 @@ _FLOW_ORDER = [
     "place_pins -hor_layers",
     ">>> Hook after-pins:",
     ">>> Port buffers",
+    ">>> Hook stage-end (floorplan):",
     ">>> Global placement",
     "\nglobal_placement -density",
     ">>> Hook after-global-placement:",
@@ -213,22 +243,41 @@ _FLOW_ORDER = [
     "\nrepair_design\n",
     ">>> Hook after-repair-design:",
     ">>> Detail placement (legalize)",
+    ">>> Hook stage-end (place):",
+    ">>> Clock tree synthesis",
+    "set_propagated_clock [all_clocks]",
+    ">>> Hook before-cts:",
     "clock_tree_synthesis \\",
     "-buf_list $CTS_BUF",
+    ">>> Hook before-repair-clock-nets:",
     ">>> Hook after-cts:",
     ">>> Detail placement (post-CTS)",
     "repair_timing -hold",
+    ">>> Detail placement (legalize repair cells)",
+    "check_placement -verbose",
+    ">>> Hook after-cts-repair:",
+    ">>> Hook stage-end (cts):",
     "\nglobal_route -congestion_iterations",
     ">>> Hook after-global-route:",
     ">>> Post-global-route hold repair",
+    ">>> Hook after-global-route-repair:",
+    ">>> Hook stage-end (global_route):",
     ">>> Hook before-detailed-route:",
     ">>> Detail route",
     "detailed_route \\",
+    ">>> Hook stage-end (detailed_route):",
     ">>> Fill insertion",
     "filler_placement $FILL_CELLS",
     ">>> Parasitic extraction (OpenRCX)",
+    "write_spef $OUT_DIR/${DESIGN}.routed.spef",
+    ">>> Hook after-extraction:",
     ">>> Hook before-reports:",
     ">>> Final reports",
+    "read_spef $OUT_DIR/${DESIGN}.routed.spef",
+    "electrical.rpt",
+    ">>> Hook after-reports:",
+    ">>> Hook stage-end (finish):",
+    ">>> Write outputs",
 ]
 
 
@@ -241,11 +290,20 @@ def test_every_point_renders_at_its_flow_position(tmp_path):
     position = 0
     for anchor in _FLOW_ORDER:
         position = text.index(anchor, position)
-    assert [a for a in _FLOW_ORDER if a.startswith(">>> Hook")] == [
-        f">>> Hook {point}:" for point in HOOK_POINTS
+    # `HOOK_POINTS` is in flow order, with `stage-end`, which ends every stage, last.
+    points = [
+        a.removeprefix(">>> Hook ").removesuffix(":")
+        for a in _FLOW_ORDER
+        if a.startswith(">>> Hook ") and "stage-end" not in a
     ]
+    assert [*points, "stage-end"] == list(HOOK_POINTS)
     for point in HOOK_POINTS:
+        if point == "stage-end":
+            continue
         assert text.count(f'puts ">>> Hook {point}: ') == 1
+    for stage in _ONE_SESSION_STAGES:
+        assert text.count(f'puts ">>> Hook stage-end ({stage}): ') == 1
+    assert text.count('puts ">>> Hook stage-end (') == len(_ONE_SESSION_STAGES)
 
 
 def test_a_run_without_hooks_renders_the_flow_unchanged(tmp_path):
@@ -265,15 +323,32 @@ def test_a_run_without_hooks_renders_the_flow_unchanged(tmp_path):
 
     assert "rb::hook" not in unset and "Hook" not in unset
     stripped = hooked
-    procs = "\n" + files("rtl_buddy.pnr").joinpath("hooks.tcl").read_text()
+    pnr = files("rtl_buddy.pnr")
+    procs = (
+        "\n"
+        + pnr.joinpath("hooks.tcl").read_text()
+        + "\n"
+        + pnr.joinpath("stage_end_hook.tcl").read_text()
+        + "set rb_mode closure\n"
+    )
     assert hooked.count(procs) == 1
     stripped = stripped.replace(procs, "")
+    reports_end = '\nputs ">>> End of final reports"'
+    assert hooked.count(reports_end) == 1
+    stripped = stripped.replace(reports_end, "")
     for point, path in paths.items():
         if point == "macro-placement":
             continue
-        block = _announce(point, path)
-        assert hooked.count(block) == 1
-        stripped = stripped.replace(block, "")
+        if point == "stage-end":
+            blocks = [_stage_end_announce(s, path) for s in _ONE_SESSION_STAGES]
+        elif point == "after-extraction":
+            spef = "$OUT_DIR/${DESIGN}.routed.spef"
+            blocks = [f"\nset rb_spef {spef}" + _announce(point, path)]
+        else:
+            blocks = [_announce(point, path)]
+        for block in blocks:
+            assert hooked.count(block) == 1
+            stripped = stripped.replace(block, "")
     macro_lines = (
         "  set rb_movable_macros $macros\n"
         f'  puts ">>> Hook macro-placement: {paths["macro-placement"]}"\n'
@@ -606,14 +681,17 @@ proc rb_bbox {cmd args} { return 0 }
 """
 
 
-def _hooked_backend(tmp_path, monkeypatch, hooks, *, checkpoints=True, macros=False):
-    """A stub-OpenROAD backend whose run has `hooks`; `macros` puts one macro in the netlist."""
+def _hooked_backend(
+    tmp_path, monkeypatch, hooks, *, checkpoints=True, macros=False, **options
+):
+    """A stub-OpenROAD backend whose run has `hooks`; `macros` puts one macro in the netlist. `options` are `_backend` keywords."""
     from rtl_buddy.config.pnr import CHECKPOINT_STAGES
 
     backend, artefacts = _backend(
         tmp_path,
         monkeypatch,
         checkpoints=CHECKPOINT_STAGES if checkpoints else None,
+        **options,
     )
     backend.pnr_cfg.hooks = hooks
     if macros:
@@ -629,6 +707,39 @@ def _log_lines(artefacts):
     return (artefacts / "pnr.log").read_text().splitlines()
 
 
+#: Where each hook file runs in a one-session run: a point, or `stage-end` and the stage it ends.
+_RUN_ORDER = [
+    ("session", None),
+    ("after-floorplan", None),
+    ("macro-placement", None),
+    ("after-pdn", None),
+    ("after-pins", None),
+    ("stage-end", "floorplan"),
+    ("after-global-placement", None),
+    ("after-repair-design", None),
+    ("stage-end", "place"),
+    ("before-cts", None),
+    ("before-repair-clock-nets", None),
+    ("after-cts", None),
+    ("after-cts-repair", None),
+    ("stage-end", "cts"),
+    ("after-global-route", None),
+    ("after-global-route-repair", None),
+    ("stage-end", "global_route"),
+    ("before-detailed-route", None),
+    ("stage-end", "detailed_route"),
+    ("after-extraction", None),
+    ("before-reports", None),
+    ("after-reports", None),
+    ("stage-end", "finish"),
+]
+
+
+def _rcx_rules(tmp_path) -> dict:
+    """The PDK fields of a stub run that extracts, which `after-extraction` needs."""
+    return {"rcx_rules": str(_write(tmp_path / "pdk" / "rcx.rules", "rules\n"))}
+
+
 def test_every_hook_runs_in_flow_order_in_the_real_script(tmp_path, monkeypatch):
     paths = _hook_files(tmp_path)
     backend, artefacts = _hooked_backend(
@@ -636,6 +747,7 @@ def test_every_hook_runs_in_flow_order_in_the_real_script(tmp_path, monkeypatch)
         monkeypatch,
         {point: (path,) for point, path in paths.items()},
         macros=True,
+        pdk_fields=_rcx_rules(tmp_path),
     )
 
     res = backend.run()
@@ -643,13 +755,16 @@ def test_every_hook_runs_in_flow_order_in_the_real_script(tmp_path, monkeypatch)
     assert isinstance(res, PnrPassResults), res.results
     log = _log_lines(artefacts)
     announced = [line for line in log if line.startswith(">>> Hook ")]
-    assert announced == [f">>> Hook {p}: {paths[p]}" for p in HOOK_POINTS]
+    assert announced == [f"{_announced(p, s)} {paths[p]}" for p, s in _RUN_ORDER]
     marks = [line for line in log if line.startswith("MARK ")]
-    assert marks == [f"MARK {p}" for p in HOOK_POINTS]
+    assert marks == [
+        f"MARK stage-end {s} closure" if p == "stage-end" else f"MARK {p}"
+        for p, s in _RUN_ORDER
+    ]
     # Each marker follows its announcement and nothing of another hook is between them.
-    for point in HOOK_POINTS:
-        at = log.index(f">>> Hook {point}: {paths[point]}")
-        assert log[at + 1] == f"MARK {point}"
+    for (point, stage), mark in zip(_RUN_ORDER, marks):
+        at = log.index(f"{_announced(point, stage)} {paths[point]}")
+        assert log[at + 1] == mark
     # The flow's own stage lines surround them in the documented order.
     stages = [line for line in log if line.startswith(">>> ")]
     order = [
@@ -845,6 +960,38 @@ def test_a_report_a_hook_prints_does_not_become_the_result(tmp_path, monkeypatch
     assert res.results["area_um2"] == 100.0
     assert res.results["wns_setup_ps"] > 0 and res.results["wns_hold_ps"] > 0
     assert res.results["tns_ps"] == 0.0 and res.results["tns_hold_ps"] == 0.0
+
+
+@pytest.mark.parametrize("point", ["after-reports", "stage-end"])
+def test_a_report_a_hook_prints_after_the_final_reports_does_not_become_the_result(
+    tmp_path, monkeypatch, point
+):
+    final = _write(tmp_path / "final.tcl", "set rb_final 1\n")
+    late = _write(
+        tmp_path / "late_report.tcl",
+        'unset -nocomplain rb_final\nputs ">>> Final reports"\n'
+        "report_worst_slack -max\nreport_worst_slack -min\nreport_tns\n"
+        "report_tns -min\nreport_design_area\n",
+    )
+    backend, artefacts = _hooked_backend(
+        tmp_path,
+        monkeypatch,
+        {"before-reports": (str(final),), point: (str(late),)},
+    )
+    harness = tmp_path / "harness.tcl"
+    harness.write_text(
+        harness.read_text().replace(
+            "source [lindex $argv 0]", _REPORT_STUBS + "source [lindex $argv 0]"
+        )
+    )
+
+    res = backend.run()
+
+    assert isinstance(res, PnrPassResults), res.results
+    assert res.results["area_um2"] == 100.0
+    assert res.results["wns_setup_ps"] > 0 and res.results["wns_hold_ps"] > 0
+    assert res.results["tns_ps"] == 0.0 and res.results["tns_hold_ps"] == 0.0
+    assert "Design area 7 um^2 50% utilization." in _log_lines(artefacts)
 
 
 def test_hooks_run_without_checkpoints(tmp_path, monkeypatch):

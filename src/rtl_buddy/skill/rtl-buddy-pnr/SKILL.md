@@ -62,6 +62,7 @@ Frequent cases:
 - `PDN-*` errors: macro halo, macro grid or a turned macro; `N macros do not fit`: lower `utilization`.
 - Global-route overflow or high `drc_count`: lower density or utilization, `placement.routability-driven`, `routing-layer-adjustment`, `global-route:` options. A failed global route leaves its database as the checkpoint its `failed_global_route` field names; inspect it with `rb pnr-export --checkpoint <that value>`.
 - Macro pins in `electrical.rpt`, such as SRAM inputs with a tight `max_transition`: `placement.macro-pin-limits`; `macro_pin_unmet_count` counts the pins it could not fix.
+- Clock tree: a run sets `cts-sink-clustering` (`false`, or `{size, max-diameter}` in µm), `cts-root-buffer`, `cts-obstruction-aware` and `cts-repair-clock-nets` (`{max-wire-length}` in µm) without a platform of its own. `CTS-0080`: `cts-sink-clustering: false`, or `cts-obstruction-aware: false` on a block with macros; that one fails setup on an OpenROAD without `-no_obstruction_aware`.
 - `RB-DONT-USE-VIOLATION`: the netlist uses an excluded cell; fix synthesis, not P&R.
 - Change one knob per rerun and compare the same fields.
 

@@ -24,6 +24,7 @@ from ..config.pdk import MacroPinLimitsFile
 from ..config.pdk import RotatedMacroFootprint
 from ..config.pnr import (
     CHECKPOINT_STAGES,
+    PNR_STAGES,
     POST_ROUTE_REPAIR_STAGE,
     ROTATED_ORIENTATIONS,
     BlockageType,
@@ -35,6 +36,7 @@ from ..config.pnr import (
     PnrFloorplan,
     with_planner_files,
 )
+from ..config.pnr_cts import CtsRepairClockNets, CtsSinkClustering
 from ..config.pnr_global_route import GlobalRoute
 from ..config.pnr_signoff import Signoff, effective_gates
 from ..config.pnr_repair import (
@@ -101,6 +103,8 @@ _BLOCK_POWER_FILE = "block_power.tcl"
 _HOOKS_FILE = "hooks.tcl"
 # Wraps `rb::hook::run` in a session a later session follows, to record the commands a hook changes.
 _HOOK_COMMANDS_FILE = "hook_commands.tcl"
+# Runs a `stage-end` hook file with its stage; see `_hook_procs_block`.
+_STAGE_END_HOOK_FILE = "stage_end_hook.tcl"
 # Runs an `eco` post-route repair round's repairs on Steiner trees; see `_post_route_repair_script`.
 _ECO_REPAIR_FILE = "eco_repair.tcl"
 # Runs a post-route `repair_design` at `repair-design.wire-rc`; see `_repair_steps_tcl`.
@@ -360,6 +364,40 @@ def _run_hook_block(point: str, hooks: dict) -> str:
     return f"\n{_run_hook_lines(point, paths)}" if paths else ""
 
 
+def _stage_end_block(stage: str, hooks: dict) -> str:
+    """Return the `stage-end` hook lines that end `stage`, or `""` when the run has none.
+
+    The block carries its own leading newline so a run without them renders the template byte-identically.
+    """
+    paths = hooks.get("stage-end")
+    if not paths:
+        return ""
+    return "\n" + "".join(
+        f"puts {pnr_checkpoints._tcl_quote(f'>>> Hook stage-end ({stage}): {path}')}\n"
+        f"rb::hook::stage_end {stage} {pnr_checkpoints._tcl_quote(path)}\n"
+        for path in paths
+    )
+
+
+def _before_cts_block(hooks: dict, *, checkpoints: bool) -> str:
+    """Return the `before-cts` hook lines, or `""` when the run has none.
+
+    With `checkpoints` (a one-session run that writes them), the `place` stage ends before the hooks; it otherwise ends on entering `clock_tree_synthesis`, and its checkpoint would hold what they changed.
+    """
+    block = _run_hook_block("before-cts", hooks)
+    if block and checkpoints:
+        return "\nrb::ckpt::checkpoint_for clock_tree_synthesis enter" + block
+    return block
+
+
+def _after_extraction_block(spef: str, hooks: dict) -> str:
+    """Return the `after-extraction` hook lines for the SPEF the Tcl word `spef` names, with that path in `$rb_spef`, or `""` when the run has none."""
+    paths = hooks.get("after-extraction")
+    if not paths:
+        return ""
+    return f"\nset rb_spef {spef}\n{_run_hook_lines('after-extraction', paths)}"
+
+
 def _macro_hook_block(fp: PnrFloorplan, paths) -> str:
     """Return the macro branch's `macro-placement` hook lines, which replace rb's placement.
 
@@ -369,13 +407,28 @@ def _macro_hook_block(fp: PnrFloorplan, paths) -> str:
     return movable + _run_hook_lines("macro-placement", paths, "  ")
 
 
+#: Printed after the final reports when `after-reports` or `stage-end` hooks follow them, so their output is not read as the result.
+_FINAL_REPORTS_END = ">>> End of final reports"
+
+
 def _final_reports(log_text: str) -> str:
-    """Return `pnr.log` from its last `>>> Final reports` line on, or all of it without one.
+    """Return `pnr.log` from its last `>>> Final reports` line on, up to the first `>>> End of final reports` line, or all of it without them.
 
     A report a hook or an earlier step prints never reads as the result.
     """
-    starts = [m.start() for m in re.finditer(r"^>>> Final reports$", log_text, re.M)]
-    return log_text[starts[-1] :] if starts else log_text
+    end = re.search(rf"^{_FINAL_REPORTS_END}$", log_text, re.M)
+    head = log_text[: end.start()] if end else log_text
+    starts = [m.start() for m in re.finditer(r"^>>> Final reports$", head, re.M)]
+    return head[starts[-1] :] if starts else head
+
+
+def _after_reports_block(hooks: dict) -> str:
+    """Return the `after-reports` hook lines, after the line that ends the final reports when hooks follow them, or `""` when none do."""
+    if not hooks.get("after-reports") and not hooks.get("stage-end"):
+        return ""
+    return f"\nputs {pnr_checkpoints._tcl_quote(_FINAL_REPORTS_END)}" + _run_hook_block(
+        "after-reports", hooks
+    )
 
 
 def _hook_role(point: str) -> str:
@@ -395,11 +448,18 @@ def _supply_ports_block() -> str:
     )
 
 
-def _hook_procs_block(hooks: dict) -> str:
-    """Return the Tcl that defines `rb::hook::run`, or `""` when the run has no hooks."""
+def _hook_procs_block(hooks: dict, mode: PnrMode) -> str:
+    """Return the Tcl that defines `rb::hook::run`, or `""` when the run has no hooks. With `stage-end` hooks it also defines `rb::hook::stage_end` and sets `$rb_mode` to the run's `mode`."""
     if not hooks:
         return ""
-    return f"\n{files(_TEMPLATE_PACKAGE).joinpath(_HOOKS_FILE).read_text()}"
+    text = files(_TEMPLATE_PACKAGE).joinpath(_HOOKS_FILE).read_text()
+    if "stage-end" in hooks:
+        text += (
+            "\n"
+            + files(_TEMPLATE_PACKAGE).joinpath(_STAGE_END_HOOK_FILE).read_text()
+            + f"set rb_mode {mode.value}\n"
+        )
+    return f"\n{text}"
 
 
 def _with_hook_tracer(substitutions: dict) -> dict:
@@ -697,15 +757,36 @@ def _cts_clock_nets_option(platform) -> str:
     return f" -clk_nets {{{' '.join(nets)}}}" if nets else ""
 
 
+def _cts_clustering_option(platform) -> str:
+    """Return the sink-clustering options of the CTS invocation, without a leading space, or `""` when `cts-sink-clustering` is off."""
+    return CtsSinkClustering(
+        platform.get_cts_sink_clustering(),
+        platform.get_cts_sink_clustering_size(),
+        platform.get_cts_sink_clustering_max_diameter(),
+    ).options()
+
+
+def _cts_obstruction_option(platform, has_no_obstruction_aware: bool) -> str:
+    """Return the obstruction-awareness option of the CTS invocation, or `""` for the tool's default.
+
+    `has_no_obstruction_aware` says the OpenROAD's CTS is obstruction-aware by default and takes `-no_obstruction_aware`. One that is not has it off by default, and `-obstruction_aware` turns it on.
+    """
+    aware = platform.get_cts_obstruction_aware()
+    if aware is False:
+        return " -no_obstruction_aware"
+    if aware is True and not has_no_obstruction_aware:
+        return " -obstruction_aware"
+    return ""
+
+
 def _cts_repair_clock_nets_tcl(platform) -> str:
     """Return `repair_clock_nets` on placement parasitics, as ORFS runs it right after CTS, or `""` when `cts-repair-clock-nets` is off."""
     if not platform.get_cts_repair_clock_nets():
         return ""
-    return (
-        'puts ">>> Repair clock nets"\n'
-        "estimate_parasitics -placement\n"
-        "repair_clock_nets\n"
-    )
+    command = CtsRepairClockNets(
+        True, platform.get_cts_repair_max_wire_length()
+    ).command()
+    return f'puts ">>> Repair clock nets"\nestimate_parasitics -placement\n{command}\n'
 
 
 def _keep_sizing_vt_tcl(platform) -> str:
@@ -1361,6 +1442,7 @@ _HOOKS_BEFORE_GLOBAL_PLACEMENT = (
     "macro-placement",
     "after-pdn",
     "after-pins",
+    "stage-end",
 )
 
 
@@ -1527,6 +1609,16 @@ def _session_events(run_dir: str | None, since: int | None = None) -> list[dict]
         return events[since:]
     begins = [i for i, e in enumerate(events) if e.get("event") == "stage_begin"]
     return events[begins[-1] :] if begins else events
+
+
+def _stage_end_hook_failed(run_dir: str, since: int) -> bool:
+    """Whether a `stage-end` hook failed in the session whose progress events start at index `since` of `run_dir`'s."""
+    return any(
+        e.get("event") == "hook_end"
+        and e.get("point") == "stage-end"
+        and e.get("status") == "error"
+        for e in _session_events(run_dir, since)
+    )
 
 
 def _incomplete_desc(
@@ -1987,7 +2079,7 @@ def run_post_route_repair(
 
     Rounds count those violators only on a run that gates on electrical violators (`gate_electrical` in the plan) or sets `electrical-repair`; a gated run's stop reason also names the kept round's violators. With `electrical-repair` (`electrical` in the plan) one more round runs after the others when the best round has such violators: rb links the best round's checkpoint and SPEF as `POST_ROUTE_ELECTRICAL_SOURCE`, and the round's `repair_design` runs on them. It is timed and compared as any round; `electrical_round` in the done event says whether it was kept, not kept, skipped or failed, and why.
 
-    A failed session of round k from 1 is set aside: rb warns, notes it after the session's part of the log, whose `[ERROR` lines then do not fail the run (`_error_lines`), and the stage keeps the best round. Round 0's extraction failing fails the stage, as does a failed stage report: a `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint the stage kept.
+    A failed session of round k from 1 is set aside: rb warns, notes it after the session's part of the log, whose `[ERROR` lines then do not fail the run (`_error_lines`), and the stage keeps the best round. A repair session whose `stage-end` hook failed fails the stage instead. Round 0's extraction failing fails the stage, as does a failed stage report: a `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint the stage kept.
     """
     plan = json.loads(Path(run_dir, POST_ROUTE_PLAN).read_text())
     stage = _checkpoint_name(POST_ROUTE_REPAIR_STAGE)
@@ -2116,11 +2208,18 @@ def run_post_route_repair(
         pnr_checkpoints.record_event(run_dir, "post_route_round_failed", **fields)
         return "session_failed", f"round {round_}'s {kind} session failed: {failure}"
 
+    # A failed `stage-end` hook fails the stage instead of setting its round aside.
+    hook_failed: list[PostRouteOutcome] = []
+
     def _repair(round_: int, script: str, label: str):
-        """Run round `round_`'s repair session; return its checkpoint files, or None after setting it aside, and the stop a set-aside round gives."""
-        _code, _stderr, _problem, failure, section = _run(
+        """Run round `round_`'s repair session; return its checkpoint files, or None after setting it aside, and the stop a set-aside round gives. A session whose `stage-end` hook failed returns None twice and leaves the stage's outcome in `hook_failed`."""
+        since = len(pnr_checkpoints.read_progress(run_dir))
+        code, stderr, problem, failure, section = _run(
             script, label, f"{_ROUND_DONE_MARKER}{round_} repair"
         )
+        if failure is not None and _stage_end_hook_failed(run_dir, since):
+            hook_failed.append(_outcome(code, stderr, problem))
+            return None, None
         if failure is None:
             files[round_] = _round_files(run_dir, round_)
             if files[round_] is None:
@@ -2189,6 +2288,8 @@ def run_post_route_repair(
             break
     else:
         stop = "last_round", f"all {len(rounds)} round(s) ran"
+    if hook_failed:
+        return hook_failed[0]
     electrical_round = None
     if electrical is not None:
         e = electrical["round"]
@@ -2213,6 +2314,8 @@ def run_post_route_repair(
             written, failed = _repair(
                 e, electrical["repair"], f"round {e} electrical repair"
             )
+            if hook_failed:
+                return hook_failed[0]
             if written is None:
                 status, why = "failed", f"{had}; {failed[1]}"
             else:
@@ -2608,6 +2711,8 @@ class OpenRoadPnr:
         self._split = False
         # Whether a multi-corner platform gets an SDC mode per corner; `run` asks OpenROAD.
         self._sta_modes = True
+        # Whether CTS is obstruction-aware by default and takes `-no_obstruction_aware`; `run` asks OpenROAD when `cts-obstruction-aware` is set.
+        self._cts_has_no_obstruction_aware = True
         # The corners whose SDC modes each checkpoint also writes alone; empty without modes.
         self._mode_corners: tuple[str, ...] = ()
         self.pnr_cfg = pnr_cfg
@@ -2848,6 +2953,8 @@ class OpenRoadPnr:
         else:
             cts_buf = cts_buffers[0] if cts_buffers else ""
             cts_root_buf = "$CTS_BUF"
+        if isinstance(root_buffer := platform.get_cts_root_buffer(), str):
+            cts_root_buf = root_buffer
 
         dont_use_cells = platform.get_dont_use_cells()
         dont_use_block = (
@@ -3034,7 +3141,7 @@ class OpenRoadPnr:
                 "Tap and endcap cells (tapcell-tcl)", platform.get_tapcell_tcl()
             ),
             "threads_block": threads_block,
-            "hook_procs_block": _hook_procs_block(hooks),
+            "hook_procs_block": _hook_procs_block(hooks, self._mode),
             "hook_session_block": _run_hook_block("session", hooks),
             "hook_after_floorplan_block": _run_hook_block("after-floorplan", hooks),
             "hook_after_pdn_block": _run_hook_block("after-pdn", hooks),
@@ -3045,14 +3152,36 @@ class OpenRoadPnr:
             "hook_after_repair_design_block": _run_hook_block(
                 "after-repair-design", hooks
             ),
+            "hook_before_cts_block": _before_cts_block(
+                hooks, checkpoints=self._arms_checkpoints() and not self._staged
+            ),
+            "hook_before_repair_clock_nets_block": _run_hook_block(
+                "before-repair-clock-nets", hooks
+            ),
             "hook_after_cts_block": _run_hook_block("after-cts", hooks),
+            "hook_after_cts_repair_block": _run_hook_block("after-cts-repair", hooks),
             "hook_after_global_route_block": _run_hook_block(
                 "after-global-route", hooks
+            ),
+            "hook_after_global_route_repair_block": _run_hook_block(
+                "after-global-route-repair", hooks
             ),
             "hook_before_detailed_route_block": _run_hook_block(
                 "before-detailed-route", hooks
             ),
+            "hook_after_extraction_block": (
+                _after_extraction_block(
+                    f"$OUT_DIR/${{DESIGN}}{ROUTED_SPEF_SUFFIX}", hooks
+                )
+                if rcx_rules
+                else ""
+            ),
             "hook_before_reports_block": _run_hook_block("before-reports", hooks),
+            "hook_after_reports_block": _after_reports_block(hooks),
+            **{
+                f"hook_stage_end_{stage}_block": _stage_end_block(stage, hooks)
+                for stage in PNR_STAGES
+            },
             "rcx_block": rcx_block,
             "supply_ports_block": _supply_ports_block(),
             "final_parasitics": final_parasitics,
@@ -3090,13 +3219,14 @@ class OpenRoadPnr:
             "buffer_ports_block": _buffer_ports_tcl(
                 self.pnr_cfg.get_buffer_ports(), platform.get_port_buffer()
             ),
-            "cts_clustering_option": (
-                "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
-            ),
+            "cts_clustering_option": _cts_clustering_option(platform),
             "cts_ndr_option": _cts_apply_ndr_option(platform),
             "cts_clock_nets_option": _cts_clock_nets_option(platform),
             "cts_insertion_delay_option": (
                 "" if platform.get_cts_latency_balancing() else " -no_insertion_delay"
+            ),
+            "cts_obstruction_option": _cts_obstruction_option(
+                platform, self._cts_has_no_obstruction_aware
             ),
             "cts_repair_clock_nets": _cts_repair_clock_nets_tcl(platform),
             "max_fanout_block": max_fanout_block,
@@ -3125,7 +3255,7 @@ class OpenRoadPnr:
         )
 
     def _unbroken_checkpoint_block(self) -> str:
-        """A one-session run's checkpoint block, bound to its checkpoint run directory, or "" when it writes no checkpoints. A run that continues in sessions after detailed route stops there, with the state the next session reads."""
+        """A one-session run's checkpoint block, bound to its checkpoint run directory, or "" when it writes no checkpoints. A run that continues in sessions after detailed route stops there, with the state the next session reads. With `stage-end` hooks the flow ends the detailed route itself, after them (see `_unbroken_marker`)."""
         if not self._arms_checkpoints():
             return ""
         return pnr_checkpoints.render_tcl_block(
@@ -3137,6 +3267,9 @@ class OpenRoadPnr:
             corners=self._timing_corners,
             scenes=bool(self._corners),
             modes=self._mode_corners,
+            flow_ended=(
+                ("detailed_route",) if "stage-end" in self.pnr_cfg.get_hooks() else ()
+            ),
         )
 
     def _render(self, text: str, substitutions: dict) -> str:
@@ -3150,13 +3283,15 @@ class OpenRoadPnr:
         return text
 
     def _unbroken_marker(self, marker: str) -> str:
-        """A one-session run's text for a template marker: nothing, except that with checkpoints armed the global-route stage ends after any global-route repair, before the `before-detailed-route` hooks, and `place` is timed before the clocks are propagated, as a staged `place` session and its report time it (its checkpoint is written on entering clock-tree synthesis)."""
+        """A one-session run's text for a template marker: nothing, except that with checkpoints armed the global-route stage ends after any global-route repair, before the `before-detailed-route` hooks, and `place` is timed before the clocks are propagated, as a staged `place` session and its report time it (its checkpoint is written on entering clock-tree synthesis). With `stage-end` hooks the detailed route ends after its `stage-end` hooks rather than on leaving `detailed_route`."""
         if not self._arms_checkpoints():
             return ""
         if marker == "cts":
             return "rb::ckpt::stage_timing place stage_end\n"
         if marker == "detailed_route":
             return "rb::ckpt::stage_end global_route\n"
+        if marker == "finish" and "stage-end" in self.pnr_cfg.get_hooks():
+            return "rb::ckpt::stage_end detailed_route\n"
         return ""
 
     def _run_stages(self) -> tuple[str, ...]:
@@ -3270,12 +3405,14 @@ class OpenRoadPnr:
         )
 
     def _extract_tcl(self, spef: str) -> str:
-        """OpenRCX extraction into `spef` in the run directory, read back once per corner: in-session extraction does not annotate timing, and one SPEF read shared by several corners keeps the first corner's reduced parasitics for all."""
+        """OpenRCX extraction into `spef` in the run directory, then the `after-extraction` hooks, then the SPEF read back once per corner: in-session extraction does not annotate timing, and one SPEF read shared by several corners keeps the first corner's reduced parasitics for all."""
         path = f"[file join $RB_RUN_DIR {spef}]"
         return (
             "define_process_corner -ext_model_index 0 X\n"
             f"extract_parasitics -ext_model_file {self._rcx_rules}\n"
-            f"write_spef {path}\n" + self._read_spef_tcl(path)
+            f"write_spef {path}\n"
+            + _after_extraction_block(path, self.pnr_cfg.get_hooks())
+            + self._read_spef_tcl(path)
         )
 
     def _read_spef_tcl(self, path: str) -> str:
@@ -3355,7 +3492,7 @@ class OpenRoadPnr:
         )
 
     def _post_route_repair_script(self, round_: int, run_dir: str) -> str:
-        """Round `round_`'s repair session, bound to `run_dir`: repair round `round_ - 1`'s database on its SPEF, legalize inside an incremental global route, connect the supply pins of the cells the repair added, run the `before-detailed-route` hooks and connect again, route in detail and write the stage's checkpoint.
+        """Round `round_`'s repair session, bound to `run_dir`: repair round `round_ - 1`'s database on its SPEF, legalize inside an incremental global route, connect the supply pins of the cells the repair added, run the `before-detailed-route` hooks and connect again, route in detail, run the `stage-end` hooks and write the stage's checkpoint.
 
         The rounds work on the unfilled database; `finish` fills after the last. A repair in the session that routed fails detailed routing (DRT-0218), so each round is a fresh session that reads the routed database.
 
@@ -3427,6 +3564,7 @@ class OpenRoadPnr:
             # So the round's DRC count is its own route's.
             "file delete -force $OUT_DIR/route.drc.rpt\n",
             _DETAILED_ROUTE_CMD,
+            "{{ hook_stage_end_post_route_repair_block }}",
             f"\nrb::ckpt::stage_end {POST_ROUTE_REPAIR_STAGE}\n",
             f'puts "{_ROUND_DONE_MARKER}{round_} repair"\n',
             "exit 0\n",
@@ -3985,6 +4123,27 @@ class OpenRoadPnr:
         except (OSError, subprocess.SubprocessError):
             return False
         return f"RB_HAS_CMD:{command}:yes" in (r.stdout or "")
+
+    def _has_command_option(self, command: str, option: str) -> bool:
+        """Return whether OpenROAD's `help <command>` lists `option`, such as `-no_obstruction_aware`; False if it cannot be determined."""
+        os.makedirs(self.artefact_dir, exist_ok=True)
+        try:
+            r = subprocess.run(
+                [self.openroad_executable, "-no_init", "-exit"],
+                input=f"help {command}\nexit\n",
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+                cwd=self.artefact_dir,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        out = r.stdout or ""
+        return (
+            command in out
+            and re.search(rf"(?<![\w-]){re.escape(option)}\b", out) is not None
+        )
 
     def _probe_sta_modes(self) -> bool | str:
         """Return whether this OpenROAD's OpenSTA can give each corner an SDC mode of its own (see `openroad_corners.MODES_PROBE_TCL`), or, when it gave no answer, what went wrong."""
@@ -6242,6 +6401,33 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
+        # `-no_obstruction_aware` exists on the OpenROAD builds whose CTS is obstruction-aware by default.
+        if isinstance(platform.get_cts_obstruction_aware(), bool):
+            self._cts_has_no_obstruction_aware = self._has_command_option(
+                "clock_tree_synthesis", "-no_obstruction_aware"
+            )
+            if (
+                platform.get_cts_obstruction_aware() is False
+                and not self._cts_has_no_obstruction_aware
+            ):
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr.cts_obstruction_aware_unsupported",
+                    pnr=self.pnr_cfg.get_name(),
+                    exe=self.openroad_executable,
+                    version=version,
+                )
+                return PnrFailResults(
+                    name=self.name + "/results",
+                    desc=(
+                        "cts-obstruction-aware: false needs a clock_tree_synthesis "
+                        "with -no_obstruction_aware; OpenROAD "
+                        f"{version or self.openroad_executable} has none"
+                    ),
+                    fail_stage="setup",
+                )
+
         # An abstract carries one corner's Liberty model, which a parent would read as the whole block.
         if self.pnr_cfg.get_harden() and platform.is_multi_corner():
             log_event(
@@ -6319,6 +6505,29 @@ class OpenRoadPnr:
                     f"post-route-repair needs rcx-rules on PDK "
                     f"'{platform.get_pdk_name()}': each round times the route on "
                     "extracted parasitics, and the PDK sets no rcx-rules"
+                ),
+                fail_stage="setup",
+            )
+
+        # The finish session writes a SPEF only with `rcx-rules`; a post-route repair without them failed above.
+        if (
+            "after-extraction" in self.pnr_cfg.get_hooks()
+            and "finish" in self._run_stages()
+            and not rcx_rules
+        ):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.after_extraction_without_rcx",
+                pnr=self.pnr_cfg.get_name(),
+                pdk=platform.get_pdk_name(),
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    f"hooks.after-extraction needs rcx-rules on PDK "
+                    f"'{platform.get_pdk_name()}': the hooks run on the SPEF that "
+                    "extraction writes, and the PDK sets no rcx-rules"
                 ),
                 fail_stage="setup",
             )

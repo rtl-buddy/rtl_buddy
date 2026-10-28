@@ -246,10 +246,11 @@ def render_tcl_block(
     corners: tuple[str, ...] = (),
     scenes: bool = False,
     modes: tuple[str, ...] = (),
+    flow_ended: tuple[str, ...] = (),
 ) -> str:
     """Return the Tcl block the flow template splices in when checkpoints are on, for a one-session run.
 
-    `order` is the run's stages; `state` names the flow globals each checkpoint saves for a later session. `corners` are the platform's corners, which every stage end is timed on; `scenes` is set for a multi-corner platform, whose corners are STA scenes. `modes` are the corners whose SDC modes each checkpoint also writes alone, `NN_<stage>.<corner>.sdc`. Every stage boundary is armed, so each stage's resources are recorded; only `stages`, and the `stop_after` stage, write a checkpoint. The `stop_after` stage is ended by the flow's explicit stop, not by its anchor, so its checkpoint is strict and no later stage starts. The block carries its own leading newline so a run without checkpoints renders the template byte-identically.
+    `order` is the run's stages; `state` names the flow globals each checkpoint saves for a later session. `corners` are the platform's corners, which every stage end is timed on; `scenes` is set for a multi-corner platform, whose corners are STA scenes. `modes` are the corners whose SDC modes each checkpoint also writes alone, `NN_<stage>.<corner>.sdc`. Every stage boundary is armed, so each stage's resources are recorded; only `stages`, and the `stop_after` stage, write a checkpoint. The `stop_after` stage is ended by the flow's explicit stop, not by its anchor, so its checkpoint is strict and no later stage starts. The stages in `flow_ended` have no anchor either: the flow calls `rb::ckpt::stage_end` for them. The block carries its own leading newline so a run without checkpoints renders the template byte-identically.
     """
     wanted = [
         s for s in order if s in CHECKPOINT_STAGES and (s in stages or s == stop_after)
@@ -257,7 +258,7 @@ def render_tcl_block(
     anchors = {
         stage: a
         for stage, a in STAGE_ANCHORS.items()
-        if a is not None and stage != stop_after
+        if a is not None and stage != stop_after and stage not in flow_ended
     }
     config = _arm_config(
         anchors=anchors,
