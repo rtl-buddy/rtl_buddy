@@ -1647,28 +1647,188 @@ def test_a_tie_keeps_the_earlier_round(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "hold, kept",
+    "setup, hold, kept, decided_by",
     [
-        # Hold met before and breaks: setup's gain does not count.
-        ("0.01 -0.005", 0),
         # Hold still met with less slack: setup's gain counts.
-        ("0.05 0.001", 1),
+        ("-0.2 -0.1", "0.05 0.001", 1, "timing"),
+        # Hold met before and breaks by less than setup's worst violation shrinks.
+        ("-0.2 -0.1", "0.01 -0.005", 1, "worst_violation"),
+        # Hold breaks by more than setup missed.
+        ("-0.02 -0.01", "0.01 -0.05", 0, "worst_violation"),
     ],
 )
-def test_a_round_that_breaks_hold_to_gain_setup_is_not_better(
-    tmp_path, monkeypatch, hold, kept
+def test_a_round_that_breaks_hold_to_gain_setup_is_kept_on_the_worst_violation(
+    tmp_path, monkeypatch, setup, hold, kept, decided_by
 ):
     backend, artefacts = _repair_backend(
         tmp_path,
         monkeypatch,
         post_route={"setup-margin": 0.1, "hold-margin": 0.0, "rounds": 1},
-        env={"RB_STUB_SETUP": "-0.2 -0.1", "RB_STUB_HOLD": hold},
+        env={"RB_STUB_SETUP": setup, "RB_STUB_HOLD": hold},
     )
 
     res = backend.run()
 
     assert res.results["result"] == "PASS", res.results
     assert res.results["post_route_repair"]["kept_round"] == kept
+    (run_dir,) = _runs(artefacts)
+    assert [r["decided_by"] for r in _rounds(run_dir)] == [None, decided_by]
+
+
+def _round(setup=None, hold=None, drcs=0, slew=None):
+    timing = _timing(setup, hold)
+    if slew is not None:
+        timing |= {
+            "max_slew_violation_count": slew,
+            "max_capacitance_violation_count": 0,
+        }
+    return {"timing": timing, "drcs": drcs}
+
+
+@pytest.mark.parametrize(
+    "new, best, outcome",
+    [
+        # Each is better on one side: the smaller worst violation wins.
+        (_round(-3.0, 3.0), _round(10.0, -32.0), (True, "worst_violation")),
+        (_round(-32.0, 3.0), _round(10.0, -3.0), (False, "worst_violation")),
+        # Equal worst violations: the best stays.
+        (_round(-5.0, 3.0), _round(10.0, -5.0), (False, "tie")),
+        # Not with more DRC violations, but with fewer.
+        (_round(-3.0, 3.0, 1), _round(10.0, -32.0), (False, "drc_violations")),
+        (_round(-3.0, 3.0, 1), _round(10.0, -32.0, 2), (True, "worst_violation")),
+        # Better timing, worse timing, and a tie.
+        (_round(-3.0, 3.0), _round(-5.0, 1.0), (True, "timing")),
+        (_round(-5.0, -1.0), _round(-3.0, 1.0), (False, "timing")),
+        (_round(-5.0, 1.0), _round(-5.0, 2.0), (False, "tie")),
+        # A clean route beats one with violations, and fewer at timing as good win.
+        (_round(-50.0, -50.0), _round(1.0, 1.0, 1), (True, "drc_violations")),
+        (_round(-5.0, 1.0, 1), _round(-5.0, 1.0, 2), (True, "drc_violations")),
+        # A tie on both goes to fewer electrical violators.
+        (
+            _round(-5.0, 1.0, slew=1),
+            _round(-5.0, 1.0, slew=2),
+            (True, "electrical_violators"),
+        ),
+    ],
+)
+def test_rounds_compare_on_drcs_then_timing_then_the_worst_violation(
+    new, best, outcome
+):
+    assert pnr_openroad._compare_rounds(new, best, _SETUP["both"]) == outcome
+
+
+@pytest.mark.parametrize("stages", [False, True])
+def test_a_round_that_trades_a_large_hold_miss_for_a_small_setup_miss_is_kept(
+    tmp_path, monkeypatch, stages
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_BOTH, "rounds": 1},
+        stages=stages,
+        env={"RB_STUB_SETUP": "0.01 -0.003", "RB_STUB_HOLD": "-0.032 0.003"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["post_route_repair"] == {
+        "kept_round": 1,
+        "repaired_rounds": 1,
+        "rounds": 1,
+        "stop": "last_round",
+        "reason": "all 1 round(s) ran; round 1 times better on hold and worse on "
+        "setup than round 0, and its worst violation, setup WNS -0.0030 ns, is "
+        "smaller than round 0's, hold WNS -0.0320 ns",
+        "passed_over_round": None,
+    }
+    (run_dir,) = _runs(artefacts)
+    rounds = _rounds(run_dir)
+    assert [r["best_round"] for r in rounds] == [0, 1]
+    assert [r["decided_by"] for r in rounds] == [None, "worst_violation"]
+    assert (run_dir / "06_post_route_repair.odb").samefile(
+        run_dir / "06_post_route_repair.r1.odb"
+    )
+
+
+@pytest.mark.parametrize("stages", [False, True])
+def test_the_round_after_one_kept_on_the_worst_violation_starts_from_it(
+    tmp_path, monkeypatch, stages
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_BOTH, "rounds": 2},
+        stages=stages,
+        env={
+            "RB_STUB_SETUP": "0.01 -0.003 0.002",
+            "RB_STUB_HOLD": "-0.032 0.003 0.001",
+        },
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    post_route = res.results["post_route_repair"]
+    assert (post_route["kept_round"], post_route["stop"]) == (2, "timing_met")
+    (run_dir,) = _runs(artefacts)
+    rounds = _rounds(run_dir)
+    assert [r["best_round"] for r in rounds] == [0, 1, 2]
+    assert [r["decided_by"] for r in rounds] == [None, "worst_violation", "timing"]
+    r2 = (run_dir / "06_post_route_repair.r2.repair.tcl").read_text()
+    assert "read_db [file join $RB_RUN_DIR 06_post_route_repair.r1.odb]" in r2
+    assert re.search(r"^read_spef .*\.r1\.spef\]$", r2, re.MULTILINE)
+    log = (artefacts / "pnr.log").read_text()
+    assert ">>> rb: begin 06_post_route_repair round 2 repair\n" in log
+    assert (run_dir / "06_post_route_repair.odb").samefile(
+        run_dir / "06_post_route_repair.r2.odb"
+    )
+
+
+@pytest.mark.parametrize(
+    "hold, worst, decided_by",
+    [
+        # Round 2 trades setup back for hold with a larger worst violation.
+        ("-0.004", "hold WNS -0.0040 ns, is larger than", "worst_violation"),
+        # With an equal one, the best stays.
+        ("-0.003", "hold WNS -0.0030 ns, is equal to", "tie"),
+    ],
+)
+def test_a_round_that_trades_back_for_no_smaller_violation_stops_the_rounds(
+    tmp_path, monkeypatch, hold, worst, decided_by
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_BOTH, "rounds": 3},
+        env={
+            "RB_STUB_SETUP": "0.01 -0.003 0.002",
+            "RB_STUB_HOLD": f"-0.032 0.003 {hold}",
+        },
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    assert res.results["post_route_repair"] == {
+        "kept_round": 1,
+        "repaired_rounds": 2,
+        "rounds": 3,
+        "stop": "no_improvement",
+        "reason": "round 2 did not improve timing: round 2 times better on setup "
+        f"and worse on hold than round 1, and its worst violation, {worst} round "
+        "1's, setup WNS -0.0030 ns; round 1 times better on hold and worse on setup "
+        "than round 0, and its worst violation, setup WNS -0.0030 ns, is smaller "
+        "than round 0's, hold WNS -0.0320 ns",
+        "passed_over_round": None,
+    }
+    (run_dir,) = _runs(artefacts)
+    assert [r["decided_by"] for r in _rounds(run_dir)] == [
+        None,
+        "worst_violation",
+        decided_by,
+    ]
+    assert not (run_dir / "06_post_route_repair.r3.repair.log").exists()
 
 
 def test_hold_the_block_does_not_repair_does_not_judge_a_round(tmp_path, monkeypatch):
@@ -1737,6 +1897,10 @@ def test_round_messages_name_the_round_its_timing_and_the_best_round():
         'P&R "blk" post-route repair round 1/3 (repaired with setup margin 0.1 ns): '
         "setup WNS -0.1900 ns TNS -1.5000 ns, hold WNS 0.0120 ns TNS 0.0000 ns, "
         "0 DRC violation(s); best round 0"
+    )
+    traded = {**measured, "best_round": 1, "decided_by": "worst_violation"}
+    assert _human_message("pnr.post_route_round", traded).endswith(
+        "0 DRC violation(s); best round 1, decided on the worst violation"
     )
     drc = {"pnr": "blk", "round": 0, "rounds": 3, "drc_count": 4, "best_round": 0}
     assert _human_message("pnr.post_route_round", drc) == (
@@ -1899,6 +2063,14 @@ def test_a_block_that_repairs_no_side_passes_over_no_round():
     assert pnr_openroad._passed_over({0: clean, 1: better}, 0, ["setup"]) == 1
 
 
+def test_a_round_with_violations_and_a_smaller_worst_violation_is_passed_over():
+    clean = {"timing": _timing(10.0, -32.0), "drcs": 0}
+    traded = {"timing": _timing(-3.0, 3.0), "drcs": 1}
+    worse = {"timing": _timing(-40.0, 3.0), "drcs": 1}
+    assert pnr_openroad._passed_over({0: clean, 1: traded}, 0, _SETUP["both"]) == 1
+    assert pnr_openroad._passed_over({0: clean, 1: worse}, 0, _SETUP["both"]) is None
+
+
 def test_a_repair_design_only_round_with_violations_is_not_called_better(
     tmp_path, monkeypatch
 ):
@@ -1951,9 +2123,9 @@ def test_multi_corner_rounds_time_each_corner_on_its_own_spef_read(
         post_route={"setup-margin": 0, "hold-margin": 0, "rounds": 3},
         corners=["ss", "ff"],
         env={
-            "RB_STUB_SETUP": "-0.3 0.1",
+            "RB_STUB_SETUP": "-0.01 0.1",
             "RB_STUB_HOLD": "0.05 -0.02",
-            "RB_STUB_SETUP_ss": "-0.3 0.1",
+            "RB_STUB_SETUP_ss": "-0.01 0.1",
             "RB_STUB_SETUP_ff": "0.4 0.5",
             "RB_STUB_HOLD_ss": "0.2 0.2",
             "RB_STUB_HOLD_ff": "0.05 -0.02",
@@ -1965,10 +2137,11 @@ def test_multi_corner_rounds_time_each_corner_on_its_own_spef_read(
     assert res.results["result"] == "PASS", res.results
     (run_dir,) = _runs(artefacts)
     rounds = _rounds(run_dir)
-    assert rounds[0]["corners"]["ss"]["wns_setup_ps"] == -300.0
-    # Round 1 meets setup on every corner, but breaks hold at ff, which met.
+    assert rounds[0]["corners"]["ss"]["wns_setup_ps"] == -10.0
+    # Round 1 meets setup on every corner, but breaks hold at ff, which met, by more.
     assert rounds[1]["corners"]["ff"]["wns_hold_ps"] == -20.0
     assert [r["best_round"] for r in rounds] == [0, 0]
+    assert rounds[1]["decided_by"] == "worst_violation"
     assert _done(run_dir)["stop"] == "no_improvement"
     for script in ("r0.extract", "r1.repair"):
         text = (run_dir / f"06_post_route_repair.{script}.tcl").read_text()
