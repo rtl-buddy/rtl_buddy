@@ -163,8 +163,11 @@ RUN_SIZED = {
     "routing-layers": {"signal": "m2-m4", "clock": "m3-m4"},
     "routing-layer-adjustment": 0.2,
     "cts-buffer": "b2",
+    "cts-root-buffer": "b3",
+    "cts-sink-clustering": {"enable": True, "size": 20, "max-diameter": 25},
+    "cts-obstruction-aware": False,
     "cts-latency-balancing": False,
-    "cts-repair-clock-nets": True,
+    "cts-repair-clock-nets": {"max-wire-length": 1000},
     "post-cts-setup-repair": False,
     "port-buffer": "buf2",
     "tapcell-tcl": "tap_run.tcl",
@@ -245,9 +248,11 @@ PLATFORM_ONE_CORNER = {
     "pdk": "pdk1",
     "corner": "typ",
     "cts-buffer": ["b1", "b2"],
-    "cts-sink-clustering": False,
+    "cts-root-buffer": "b2",
+    "cts-sink-clustering": {"enable": True, "size": 20, "max-diameter": 25},
+    "cts-obstruction-aware": False,
     "cts-latency-balancing": False,
-    "cts-repair-clock-nets": True,
+    "cts-repair-clock-nets": {"max-wire-length": 1000},
     "post-cts-setup-repair": True,
     "global-route-repair": GLOBAL_ROUTE_REPAIR_ALL,
     "post-route-repair": POST_ROUTE_REPAIR_ALL,
@@ -348,7 +353,8 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "abstract, buffer-ports, fail-on-electrical, blocks, placement, "
             "global-route-repair, post-route-repair, routing-layers, "
             "routing-layer-adjustment, cts-buffer, cts-latency-balancing, "
-            "cts-repair-clock-nets, post-cts-setup-repair, global-route-hold-repair, "
+            "cts-repair-clock-nets, cts-sink-clustering, cts-root-buffer, "
+            "cts-obstruction-aware, post-cts-setup-repair, global-route-hold-repair, "
             "port-buffer, tapcell-tcl, cts-dont-use-cells, keep-sizing-vt, "
             "cts-clock-nets, global-route, mode, signoff, reglvl, tool_overrides, "
             "threads, resources, detailed-route-verbose, xfail, xfail_strict, "
@@ -411,6 +417,16 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
         ),
         ("pnr run 'a': blocks[1]", ("blocks", 1), "name, pnr, pnr-path"),
         ("pnr run 'a': routing-layers", ("routing-layers",), "signal, clock"),
+        (
+            "pnr run 'a': cts-sink-clustering",
+            ("cts-sink-clustering",),
+            "enable, size, max-diameter",
+        ),
+        (
+            "pnr run 'a': cts-repair-clock-nets",
+            ("cts-repair-clock-nets",),
+            "max-wire-length",
+        ),
         (
             "pnr run 'a': global-route",
             ("global-route",),
@@ -719,6 +735,7 @@ cfg-pnr-platforms:
             (),
             "cfg-pnr-platforms 'pl1'",
             "name, pdk, corner, corners, cts-buffer, cts-sink-clustering, "
+            "cts-root-buffer, cts-obstruction-aware, "
             "cts-latency-balancing, cts-repair-clock-nets, "
             "post-cts-setup-repair, global-route-hold-repair, global-route-repair, "
             "post-route-repair, routing-layer-adjustment, cts-apply-ndr, "
@@ -738,6 +755,18 @@ cfg-pnr-platforms:
             ("signoff",),
             "cfg-pnr-platforms 'pl1': signoff",
             "setup-corners, hold-corners, fail-on",
+        ),
+        (
+            "platform",
+            ("cts-sink-clustering",),
+            "cfg-pnr-platforms 'pl1': cts-sink-clustering",
+            "enable, size, max-diameter",
+        ),
+        (
+            "platform",
+            ("cts-repair-clock-nets",),
+            "cfg-pnr-platforms 'pl1': cts-repair-clock-nets",
+            "max-wire-length",
         ),
         (
             "platform",

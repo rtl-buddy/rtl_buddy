@@ -324,6 +324,7 @@ def test_a_bad_platform_tapcell_tcl_names_the_platform(tmp_path):
 _NEW_PLACEHOLDERS = (
     "{{ cts_clock_nets_option }}",
     "{{ cts_insertion_delay_option }}",
+    "{{ cts_obstruction_option }}",
     "{{ cts_repair_clock_nets }}",
 )
 

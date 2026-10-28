@@ -114,7 +114,7 @@ puts ">>> IO pin placement"
 {{ place_pins_block }}
 {{ hook_after_pins_block }}{{ buffer_ports_block }}
 rb::global_connect
-{{ @place }}puts ">>> Global placement"
+{{ hook_stage_end_floorplan_block }}{{ @place }}puts ">>> Global placement"
 {{ gp_blockages_create }}global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}{{ routability_options }}{{ timing_driven_option }}
 {{ free_port_buffers_block }}{{ gp_blockages_destroy }}{{ hook_after_global_placement_block }}{{ tie_fanout_block }}
 puts ">>> Resize"
@@ -124,13 +124,13 @@ repair_design
 puts ">>> Detail placement (legalize)"
 detailed_placement{{ dpl_options }}
 {{ macro_pin_limits_block }}rb::global_connect
-
+{{ hook_stage_end_place_block }}
 {{ @cts }}puts ">>> Clock tree synthesis"
-{{ @clocks }}{{ propagated_clocks }}{{ @/clocks }}{{ cts_dont_use_block }}clock_tree_synthesis \
+{{ @clocks }}{{ propagated_clocks }}{{ @/clocks }}{{ hook_before_cts_block }}{{ cts_dont_use_block }}clock_tree_synthesis \
     -root_buf {{ cts_root_buf }} \
     -buf_list $CTS_BUF \
-    {{ cts_clustering_option }}{{ cts_ndr_option }}{{ cts_clock_nets_option }}{{ cts_insertion_delay_option }}
-{{ cts_repair_clock_nets }}{{ cts_dont_use_restore_block }}{{ hook_after_cts_block }}
+    {{ cts_clustering_option }}{{ cts_ndr_option }}{{ cts_clock_nets_option }}{{ cts_insertion_delay_option }}{{ cts_obstruction_option }}
+{{ hook_before_repair_clock_nets_block }}{{ cts_repair_clock_nets }}{{ cts_dont_use_restore_block }}{{ hook_after_cts_block }}
 puts ">>> Detail placement (post-CTS)"
 detailed_placement{{ dpl_options }}
 {{ post_cts_repair }}
@@ -140,8 +140,8 @@ puts ">>> Detail placement (legalize repair cells)"
 detailed_placement{{ dpl_options }}
 # -verbose names each failing instance.
 check_placement -verbose
-rb::global_connect
-
+{{ hook_after_cts_repair_block }}rb::global_connect
+{{ hook_stage_end_cts_block }}
 {{ @global_route }}# -verbose logs the per-layer usage table (GRT-0096) of every global route.
 puts ">>> Global route"
 # A global_route that fails in this stage writes the database before the run
@@ -167,10 +167,10 @@ proc rb::keep_failed_global_route {cmd_string code result op} {
 }
 trace add execution global_route leave rb::keep_failed_global_route
 {{ @layers }}set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS
-{{ layer_adjustment }}{{ @/layers }}{{ global_route_cmd }}{{ hook_after_global_route_block }}{{ global_route_repair }}rb::global_connect
+{{ layer_adjustment }}{{ @/layers }}{{ global_route_cmd }}{{ hook_after_global_route_block }}{{ global_route_repair }}{{ hook_after_global_route_repair_block }}rb::global_connect
 trace remove execution global_route leave rb::keep_failed_global_route
 file delete -force [file join $OUT_DIR global_route_failed]
-{{ @detailed_route }}{{ grid_origin_guides }}{{ hook_before_detailed_route_block }}
+{{ hook_stage_end_global_route_block }}{{ @detailed_route }}{{ grid_origin_guides }}{{ hook_before_detailed_route_block }}
 # Again for cells a before-detailed-route hook added.
 rb::global_connect
 puts ">>> Detail route"
@@ -179,11 +179,11 @@ detailed_route \
     -output_maze $OUT_DIR/route.maze.log \
     -verbose {{ detailed_route_verbose }}
 rb::global_connect
-{{ @finish }}{{ dont_use_check_block }}
+{{ hook_stage_end_detailed_route_block }}{{ @finish }}{{ dont_use_check_block }}
 puts ">>> Fill insertion"
 filler_placement $FILL_CELLS
 rb::global_connect
-{{ rcx_block }}{{ hook_before_reports_block }}{{ supply_ports_block }}
+{{ rcx_block }}{{ hook_after_extraction_block }}{{ hook_before_reports_block }}{{ supply_ports_block }}
 puts ">>> Final reports"
 {{ final_parasitics }}
 report_design_area
@@ -225,10 +225,10 @@ foreach rb_check {slew capacitance fanout} {
 if {[catch {
   report_check_types -max_slew -max_capacitance -max_fanout -violators > $OUT_DIR/electrical.rpt
 } rb_err]} { puts "rb: electrical.rpt unavailable: $rb_err" }
-
+{{ hook_after_reports_block }}
 # Again for cells a before-reports hook added.
 rb::global_connect
-puts ">>> Write outputs"
+{{ hook_stage_end_finish_block }}puts ">>> Write outputs"
 write_def     $OUT_DIR/${DESIGN}.def
 write_verilog $OUT_DIR/${DESIGN}.routed.v
 # The powered netlist for LVS: supply ports and every instance supply pin.
