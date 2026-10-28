@@ -1181,6 +1181,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v7/agent/sections/concepts/pnr/gate-signoff.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#check-and-repair-slew-at-output-ports",
+          "slug": "check-and-repair-slew-at-output-ports",
+          "title": "Check and repair slew at output ports",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v7/agent/sections/concepts/pnr/check-and-repair-slew-at-output-ports.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#set-wire-rc",
           "slug": "set-wire-rc",
           "title": "Set wire RC",
@@ -2679,6 +2685,12 @@
           "slug": "openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint",
           "title": "OpenROAD's legalizer blocks a rotated macro's unrotated footprint",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v7/agent/sections/known-issues/openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v7/known-issues/#repairdesign-does-not-repair-the-slew-at-an-output-port",
+          "slug": "repairdesign-does-not-repair-the-slew-at-an-output-port",
+          "title": "`repair_design` does not repair the slew at an output port",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v7/agent/sections/known-issues/repairdesign-does-not-repair-the-slew-at-an-output-port.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v7/known-issues/#a-pin-constraints-file-must-not-constrain-a-port-that-has-an-exact-pin",

@@ -114,7 +114,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `fail_stage: setup` | Configuration or input problem found before OpenROAD started: a missing file (`pdn-config`, `rcx-rules`, a hook, a planner file), a bad planner-file entry, `post-route-repair` without `rcx-rules`, blockages on OpenROAD older than 26Q1, a per-corner `constraints:` that does not fit the platform, or an OpenROAD that does not answer the [SDC mode check](#sign-off-at-several-corners). The description names it. |
+| `fail_stage: setup` | Configuration or input problem found before OpenROAD started: a missing file (`pdn-config`, `rcx-rules`, a hook, a planner file), a bad planner-file entry, `post-route-repair` without `rcx-rules`, blockages on OpenROAD older than 26Q1, `cts-obstruction-aware: false` on an OpenROAD whose CTS has no `-no_obstruction_aware`, a per-corner `constraints:` that does not fit the platform, or an OpenROAD that does not answer the [SDC mode check](#sign-off-at-several-corners). The description names it. |
 | `fail_stage: incomplete`, `the flow did not finish` | A Tcl file the flow sources (PDK Tcl, `pdn-config`, `pin-constraints`, a hook) called `exit` or `return -level 2`, ending OpenROAD with code 0. The description names the last step reached; remove the exit from the file that step sources. |
 | `fail_stage: routed_check` | A located macro or exact pin moved between floorplan and the routed DEF, usually because a `pin-constraints` file or hook moved it. |
 | `fail_stage: pins_complete` | `pins-complete: true` found a port with no pin entry, or with conflicting entries. Add or remove entries. |
@@ -126,15 +126,16 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `fail_stage: export` | Stream-out failed, under `gds-mode: strict` in `rb pnr` or in any mode in `rb pnr-export`: KLayout, `klayout-tech`, an input file or the render. Fix it and run `rb pnr-export`. |
 | `fail_stage: blocked`, `synth`, `error` | A block this run uses failed, its upstream synthesis failed under `--synth`, or rb crashed (the exception is in the description). Fix the cause first. |
 | `[ERROR PDN-0179] Unable to repair all channels` | Macros too close for the power grid. Raise `placement.macro-halo` (about 19 µm minimum on sky130hd). |
-| `PDN-0008 ... halo overlaps row` | A macro grid's `-halo` in `pdn-config` reaches into a row. Reduce it to the value the message suggests. |
+| `PDN-0008 ... halo overlaps row` | A `pdn-config` macro grid's `-halo` reaches a standard-cell row the macro does not sit on. Cut the rows around each macro at least that far in the PDK's `tapcell-tcl`; see [Plan the power grid](#plan-the-power-grid). |
 | `PDN-0233` on a turned macro or a block's grid | The power grid has no via for that macro. See [Place macros](#place-macros) and [Harden a block](#harden-a-block). |
 | `N macros do not fit the W x H um floorplan core` | Lower `utilization`, change `aspect`, or lower `placement.macro-halo`. The message gives the smallest core that fits. |
 | `GRT-0116`, global-route overflow | Too congested. The result's `failed_global_route` names the checkpoint (`<run-id>/global_route`) that holds the failed route's database and a copy of `congestion.rpt`; open it with `rb pnr-export --checkpoint` or `read_db` in OpenROAD. Lower utilization or density, try `placement.routability-driven`, or [tune global routing](#tune-global-routing). |
 | Large `drc_count` | Try `routing-layer-adjustment`, a lower density, or `post-route-repair` with several rounds. |
 | `RSZ-0090` at a slow corner | A macro with one Liberty limits that corner. Map each corner to the macro's Liberty for it in `lib-paths`; see [Sign off at several corners](#sign-off-at-several-corners). |
 | Macro pins in `electrical.rpt`, or `pnr.macro_pin_limits_unmet` | Set `placement.macro-pin-limits`, add a stronger buffer to it, or lower the macro's `macro-cell-halo`. See [Tune placement](#tune-placement-clock-tree-and-repair). |
+| Output pins over the library's slew limit at signoff, yet no max-slew violators | Ports have no limit unless the SDC sets one, and `repair_design` does not repair them. See [Check and repair slew at output ports](#check-and-repair-slew-at-output-ports). |
 | `RSZ-0074` in a post-route repair round | Set `post-route-repair.reroute: full`. |
-| `CTS-0080 Sink not found` | Set `cts-sink-clustering: false`. |
+| `CTS-0080 Sink not found` | Set `cts-sink-clustering: false`. On a block with macros, `cts-obstruction-aware: false` also avoids it. |
 | `GRT-0273 Disabled NDR`, large hold violations | Clock nets with non-default rules detour. Set `cts-apply-ndr: none`. |
 | `DPL-0011` | A macro placed off the row grid (`macro-snap: false`). Put its bottom edge on a row. |
 | `IFP-0039` at `make_tracks` (ASAP7) | Set the PDK's `tracks-tcl`. |
@@ -220,6 +221,26 @@ The result's `signoff` field gives each gate its values and a `verdict` of `pass
 
 On a multi-corner platform the [post-route repair rounds](#repair-timing-after-routing) judge setup only at `setup-corners` and hold only at `hold-corners`. Without the block they judge every corner, and the result has no `signoff` field.
 
+## Check and repair slew at output ports
+
+A port carries no max-slew or max-capacitance limit unless the SDC sets one, so the electrical counts and the `electrical` gate pass a long net that ends at an output pin, however slow its pin. `repair_design` does not repair a port's slew even when the SDC sets a limit on it; it checks the net at its driver only. To make outputs part of the electrical check and have P&R fix them, do both:
+
+- In the SDC, set `set_max_transition` on the outputs, for example `set_max_transition 320 [all_outputs]` at the library's limit, and `set_load` for what the pins drive. The violator counts and `electrical.rpt` then include the output pins.
+- Buffer the outputs and hold the buffers at their pins:
+
+```yaml
+    buffer-ports:
+      inputs: false                # default true
+      skip-clock-outputs: true     # default false
+      hold-outputs-at-pins: true   # default false
+```
+
+Each output net then ends at a buffer input, which has a Liberty limit, so placement's `repair_design` resizes the driver or adds repeaters to meet it. Without `hold-outputs-at-pins`, global placement puts each output buffer anywhere between its driver and its pin, and the net from the buffer to the pin is again a net that ends at a port. With it, each buffer goes on the row site nearest its pin that no other held buffer uses, after pin placement, and stays there, fixed (`FIRM`), through global placement. It is freed right after, before `repair_tie_fanout` and the `after-global-placement` hooks, so `repair_design` repairs the driver net and legalization places the buffer. That repair works on placement parasitics, so a long driver net can still route over its limit at the buffer's input; `electrical.rpt` lists it as a max-slew violator on the buffer's input pin.
+
+`buffer_ports` also buffers an output that carries a clock: a forwarded clock on the clock network, or an output a generated clock is defined on. `skip-clock-outputs: true` leaves every such output unbuffered and names each in `pnr.log`.
+
+`buffer-ports: true`, and the default of a `harden: true` run, buffer every input and output as OpenROAD and ORFS do, without the two options. `inputs` and `outputs` map to `buffer_ports -inputs` and `-outputs`. See [YAML Formats](../reference/yaml.md#pnryaml).
+
 ## Set wire RC
 
 Set the PDK's `layer-rc-tcl`. Without it, placement, clock-tree synthesis and hold repair see the technology LEF's layer RC, which is zero on most open PDKs, and the routed design can fail hold that repair never saw. rb warns `pnr.no_wire_rc` and qualifies the `PASS` when the PDK sets no `layer-rc-tcl` or `pnr.log` has `EST-0018` (zero wire capacitance) or `CTS-0104` (zero clock wire RC).
@@ -254,9 +275,11 @@ Process-dependent knobs live on the PDK, can be overridden on the platform, and 
 | Timing misses after routing | [`global-route-repair` or `post-route-repair`](#repair-timing-after-routing) |
 | Many fanout buffers on a library without a fanout limit (sky130hd) | `max-fanout: 100000` stops buffering for fanout alone; `repair_design` otherwise uses 50. |
 | Cells too tight | `placement.padding` (sites, default 1) |
-| Clock tree | `cts-buffer` (a list's first entry is the root buffer), `cts-sink-clustering`, `cts-apply-ndr`; `cts-clock-nets` builds trees for the named clocks only |
+| Clock tree | `cts-buffer` (a list's first entry is the root buffer unless `cts-root-buffer` names it), `cts-sink-clustering`, `cts-obstruction-aware`, `cts-apply-ndr`; `cts-clock-nets` builds trees for the named clocks only |
+| A strong root buffer with small branch buffers | `cts-root-buffer` names the root; `cts-buffer` lists the branch buffers only |
+| Clock pins far from the nearest leaf buffer, as when many clock-gate cells sit in a small area, with slew violations on them | `cts-sink-clustering` with `size` and `max-diameter` (µm) |
 | Setup misses from flops on a clock branch that CTS padded to match the deepest one (`CTS-0033` and `CTS-0036` in the log), as when a clock drives a buffer as well as flops | `cts-latency-balancing: false` |
-| Long clock wires after CTS | `cts-repair-clock-nets: true` |
+| Long clock wires after CTS | `cts-repair-clock-nets: true`, or `{max-wire-length: <µm>}` to cap the wire length |
 | A block must leave the top layers to its parent | `routing-layers` on the run |
 | A block needs other tap spacing or endcaps than the PDK's | `tapcell-tcl` on the platform or the run |
 | Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm, default 1.0) |
@@ -265,7 +288,19 @@ Process-dependent knobs live on the PDK, can be overridden on the platform, and 
 
 A platform that ends up with `routability-use-grt` but not `routability-driven` fails to load.
 
-On a library with several threshold-voltage flavours, such as ASAP7 RVT and LVT with both flavours' Liberty in each corner and both cell LEFs in `macro-lef`, resizing moves cells between flavours freely. `keep-sizing-vt: true` keeps each cell's flavour when `repair_design` or `repair_timing` resizes it, so a cell changes flavour only through timing repair's threshold-voltage swap. `cts-dont-use-cells` keeps cells out of the clock tree only: CTS and `repair_clock_nets` skip them, and post-CTS repair may still place them on data paths. After `repair_clock_nets` the flow frees only the cells the list made dont-use; a matching cell that Liberty `dont_use`, `dont-use-cells` or an earlier hook excluded stays excluded. Neither CTS nor `repair_clock_nets` checks the `cts-buffer` cells against either list. The list governs the cells CTS picks itself: dummy-load inverters, and delay buffers it infers. Name the buffer flavour in `cts-buffer`. To keep a flavour out of every step, list it in `dont-use-cells`.
+On a library with several threshold-voltage flavours, such as ASAP7 RVT and LVT with both flavours' Liberty in each corner and both cell LEFs in `macro-lef`, resizing moves cells between flavours freely. `keep-sizing-vt: true` keeps each cell's flavour when `repair_design` or `repair_timing` resizes it, so a cell changes flavour only through timing repair's threshold-voltage swap. `cts-dont-use-cells` keeps cells out of the clock tree only: CTS and `repair_clock_nets` skip them, and post-CTS repair may still place them on data paths. After `repair_clock_nets` the flow frees only the cells the list made dont-use; a matching cell that Liberty `dont_use`, `dont-use-cells` or an earlier hook excluded stays excluded. Neither CTS nor `repair_clock_nets` checks the `cts-buffer` or `cts-root-buffer` cells against either list. The list governs the cells CTS picks itself: dummy-load inverters, and delay buffers it infers. Name the buffer flavour in `cts-buffer` and `cts-root-buffer`. To keep a flavour out of every step, list it in `dont-use-cells`.
+
+Each CTS control sits on the platform and on the run, and a run's value replaces the platform's whole:
+
+```yaml
+    cts-buffer: [sky130_fd_sc_hd__clkbuf_4]
+    cts-root-buffer: sky130_fd_sc_hd__clkbuf_16
+    cts-sink-clustering: {size: 20, max-diameter: 25}
+    cts-obstruction-aware: false
+    cts-repair-clock-nets: {max-wire-length: 1000}
+```
+
+This calls `clock_tree_synthesis -root_buf sky130_fd_sc_hd__clkbuf_16 -buf_list sky130_fd_sc_hd__clkbuf_4 -sink_clustering_enable -sink_clustering_size 20 -sink_clustering_max_diameter 25 -no_obstruction_aware`, then `repair_clock_nets -max_wire_length 1000`. `cts-obstruction-aware: false` needs an OpenROAD whose `clock_tree_synthesis` takes `-no_obstruction_aware`, which rb checks at setup; see the [YAML reference](../reference/yaml.md#synthesis-and-physical-design-tools).
 
 `repair_design` sizes repeaters for the library's target slew, so a macro pin whose own limit is far below it stays in `electrical.rpt`. `placement.macro-pin-limits` buffers such pins at the end of the place stage, after `repair_design`, the `after-repair-design` hook and legalization:
 
@@ -326,6 +361,8 @@ Each block runs `repair_design` when `repair-design` is set (`{}` for OpenROAD's
 
 **`post-route-repair`** adds the stage `post_route_repair` after detailed route. It needs the PDK's `rcx-rules`. It extracts and times the detailed route (round 0), then runs up to `rounds` (default 1) repair rounds, each in fresh OpenROAD sessions: repair on the extracted parasitics, route again, extract and time. `reroute: eco` (default) keeps the detailed route and reroutes only the changed nets; `full` routes the whole design again, costing about a global and a detailed route per round. Round k repairs with the margins plus (k − 1) × `margin-step`. `rounds` above 1 needs a margin.
 
+Each round, the electrical round included, starts by running `remove_fillers`, which removes every instance of a `CORE_SPACER` master that is not `LOCKED`. A spacer a hook placed `FIRM` or `FIXED` to reserve sites is gone after the first round; place it `LOCKED` to keep it.
+
 Two `repair-design` keys apply to `post-route-repair` only. Both are off by default:
 
 ```yaml
@@ -344,10 +381,11 @@ The stage keeps the best round, never worse than the detailed route:
 
 - A clean route always beats one with DRCs.
 - Otherwise a round wins when no repaired side's worst slack (setup if `setup-margin` is set, hold if `hold-margin` is set; 0 when met) is lower and one is higher, without more DRCs; or when it ties on timing with fewer DRCs.
+- When a round is better than the best on one repaired side and worse on the other, without more DRCs, it wins when its worst violation, the lowest worst slack over the repaired sides, is smaller. On equal worst violations the best stays. So a round that clears a large hold miss and leaves a small setup miss becomes the best, and the next round starts from it.
 - With [`signoff:`](#gate-signoff) on a multi-corner platform, each side's worst slack here, and in the stop conditions below, is taken over its signoff corners only. Each `pnr.post_route_round` event adds that judged slack as `signoff_timing`, and `pnr.post_route_repair_done` names the corners in `judged_corners`.
 - When the rounds count electrical violators (with `electrical-repair` set or an electrical gate), a round that ties the best on every repaired side's worst slack and on DRCs wins when it has fewer max-slew plus max-capacitance violators. The stop reason names that tie-break. On a run that gates on electrical violators (`fail-on-electrical: true`, or `electrical` in `signoff.fail-on`), the stop reason also names the kept round's violators.
 
-Rounds stop (`post_route_repair.stop`) when the best round is clean and meets timing (`timing_met`), a clean round does not improve (`no_improvement`), timing is not reported (`timing_not_reported`), a session fails (`session_failed`) or `rounds` run out (`last_round`). `timing_met` and `no_improvement` need a clean route, so rounds with DRCs keep going. The first clean round that does not become the best ends the stage, so no later round starts from it and raising `rounds` does not change that. A failure extracting round 0 fails the run; a failed session of a later round does not: rb warns `pnr.post_route_round_failed`, keeps the best round and qualifies the `PASS`. `finish` continues from the kept round, whose DRC report becomes `route.drc.rpt`. `pnr.post_route_round` logs each round's slack and DRCs.
+Rounds stop (`post_route_repair.stop`) when the best round is clean and meets timing (`timing_met`), a clean round does not improve (`no_improvement`), timing is not reported (`timing_not_reported`), a session fails (`session_failed`) or `rounds` run out (`last_round`). `timing_met` and `no_improvement` need a clean route, so rounds with DRCs keep going. The first clean round that does not become the best ends the stage, so no later round starts from it and raising `rounds` does not change that. A failure extracting round 0 fails the run; a failed session of a later round does not: rb warns `pnr.post_route_round_failed`, keeps the best round and qualifies the `PASS`. `finish` continues from the kept round, whose DRC report becomes `route.drc.rpt`. `pnr.post_route_round` logs each round's slack and DRCs, and names the comparison with the best round that decided whether it became the best in `decided_by`: `drc_violations`, `timing`, `worst_violation`, `electrical_violators`, or `tie` when the best stays. When the worst violation made the kept round the best, or a clean round that trades sides with the best stopped the rounds, the stop reason gives both rounds' worst violations.
 
 ### Repair electrical violators after routing
 
@@ -360,7 +398,7 @@ post-route-repair:
   electrical-repair: {slew-margin: 10, cap-margin: 10}   # percent; {} for OpenROAD's defaults
 ```
 
-- When the best round has max-slew or max-capacitance violators, the electrical round runs `repair_design` alone at these margins on that round's database and SPEF, at `repair-design.wire-rc` when that is set. It then legalizes, reroutes per `reroute`, extracts and times like any round, and becomes the kept round only if it [beats the best](#repair-timing-after-routing): better timing, fewer DRCs, or a tie on both with fewer electrical violators.
+- When the best round has max-slew or max-capacitance violators, the electrical round runs `repair_design` alone at these margins on that round's database and SPEF, at `repair-design.wire-rc` when that is set. It then legalizes, reroutes per `reroute`, extracts and times like any round, and becomes the kept round only if it [beats the best](#repair-timing-after-routing): better timing, fewer DRCs, a smaller worst violation when it trades sides, or a tie on timing and DRCs with fewer electrical violators.
 - When the best round has no such violators, the round is skipped and `pnr.log` says so.
 - Its number is `rounds` + 1. `post_route_repair.electrical_round` gives the round it repaired (`source_round`), its `status` (`kept`, `not_kept`, `skipped` or `failed`) and `reason`. A failed session is set aside like a round's.
 
@@ -455,6 +493,8 @@ The PDK's `pdn-config` declares the grid for every run. A run can replace it:
 
 By default each stripe layer connects to the next; `connect: [[met1, met4], ...]` lists the pairs instead. A ring must fit between core and die. Only one always-on power domain is supported. The PDK's global connections are applied again at the end of every stage, so cells added after `pdngen` get supply connections.
 
+A macro grid in the `pdn-config` with a `-halo` needs the standard-cell rows cut at least that far around each macro: `pdngen` fails with `PDN-0008` when a halo reaches a row the macro does not sit on. rb does not cut rows around macros, and its packer puts a macro's bottom edge on a row boundary. Cut them in the PDK's `tapcell-tcl`, which runs after macro placement and before the grid, for example with `cut_rows -halo_width_x 2 -halo_width_y 2` for a 2 µm halo, as ORFS's tap-cell step does. Shrinking the halo instead can leave the core straps ending next to the macro, where they block its pin escapes.
+
 ## Run Tcl hooks
 
 `hooks:` on a run sources your Tcl files at fixed points of the flow, for steps rb does not have. Each point takes a path or a list, relative to `pnr.yaml`:
@@ -474,12 +514,25 @@ By default each stripe layer connects to the next; `connect: [[met1, met4], ...]
 | `after-pins` | After pin placement, before port buffering. A hook that buffers ports needs `buffer-ports: false`. |
 | `after-global-placement` | After `global_placement` |
 | `after-repair-design` | After `repair_design`, before legalization and the `placement.macro-pin-limits` step |
-| `after-cts` | After CTS, before setup and hold repair |
+| `before-cts` | After legalization and the `placement.macro-pin-limits` step, immediately before `clock_tree_synthesis`. The `cts-dont-use-cells` are not yet excluded. |
+| `before-repair-clock-nets` | Right after `clock_tree_synthesis`, before `cts-repair-clock-nets` runs `repair_clock_nets`. The `cts-dont-use-cells` are still excluded. |
+| `after-cts` | After CTS and any `repair_clock_nets`, before setup and hold repair |
+| `after-cts-repair` | After post-CTS setup and hold repair and their legalization |
 | `after-global-route` | After `global_route`, before global-route repair |
+| `after-global-route-repair` | After global-route repair, in the `global_route` stage, so also in a probe |
 | `before-detailed-route` | Before each detailed route, including each post-route repair round's |
+| `after-extraction` | In every session that writes a SPEF (each post-route repair round's extraction and the final one), after `write_spef` and before rb reads it. `$rb_spef` is its path. Needs `rcx-rules`. |
 | `before-reports` | After fill and extraction, before the final reports |
+| `after-reports` | After the final reports, on their parasitics, before rb writes the routed outputs |
+| `stage-end` | At the end of every stage, before its checkpoint, with `$rb_stage` naming the stage and `$rb_mode` the run's `mode` (`closure` or `probe`). In post-route repair, at the end of each repair round, including the electrical round; when round 0 stops the rounds, the stage keeps the detailed route and runs none. |
 
-Hooks run at Tcl global scope in `artefacts/<run>/`, with `$OUT_DIR` and `$DESIGN` set. A Tcl error, `exit` or stray `return` in a hook fails the run naming the point and file. Results come from the final reports, so a report a hook prints earlier does not change them. Hook files are inputs of checkpoints and hardened abstracts. On a multi-corner platform an SDC command in a hook constrains the primary corner only; see [Sign off at several corners](#sign-off-at-several-corners).
+Hooks run at Tcl global scope in `artefacts/<run>/`, with `$OUT_DIR` and `$DESIGN` set. A Tcl error, `exit` or stray `return` in a hook fails the run naming the point and file; a `stage-end` hook's error also names the stage, and fails the run in a post-route repair round too, where other failures only set the round aside. Results come from the final reports, so a report a hook prints before or after them does not change them. Hook files are inputs of checkpoints and hardened abstracts. On a multi-corner platform an SDC command in a hook constrains the primary corner only; see [Sign off at several corners](#sign-off-at-several-corners).
+
+Each point belongs to the stage it runs in, `before-cts` to `cts`: a staged run runs it in that stage's session where a one-session run runs it, and `--resume` from that stage runs it again.
+
+Every later `read_spef` of a SPEF reads what the `after-extraction` hooks left: the next post-route repair round's, the final reports' and `rb power`'s. A multi-corner platform writes one SPEF and reads it once per corner, so one edit covers every corner.
+
+rb writes into `$OUT_DIR` and replaces a file of the same name a hook wrote there: `timing.rpt` and `electrical.rpt` in the final reports, then, after the `after-reports` hooks, `<top>.def`, `<top>.routed.v`, `<top>.routed.pwr.v`, `<top>.routed.sdc`, `<top>.<corner>.routed.sdc` and `<top>.routed.odb`, and with `harden: true` the `abstract/` views. The other names are in [Inspect artefacts](#inspect-artefacts). Every run first deletes the files ending in `.def`, `.routed.v`, `.routed.pwr.v`, `.routed.sdc`, `.routed.odb`, `.routed.spef`, `.gds` or `.png`, so give a hook's own files other names.
 
 rb does not read the Tcl for `source` targets. List the files the SDC or a hook sources under `inputs:`, relative to `pnr.yaml`. Each is fingerprinted by path and content with the hook files, so editing one or listing another in its place refuses a `--resume` and makes a hardened block's abstract stale. `rb pnr` fails before any run starts when a run it would run lists a missing file:
 
@@ -661,11 +714,13 @@ For maintainers and hook authors. The generated `pnr.tcl` runs:
 1. `platform-tcl`, Liberty, LEF, a mode and scene per corner on a multi-corner platform, netlist, SDC, `max-fanout`, `layer-rc-tcl`, don't-use cells, `session` hooks. The SDC and `max-fanout` go into every mode.
 2. Floorplan, tracks, blockages and cut-outs, tie cells.
 3. Macro placement, tap cells, power grid, pin placement, port buffering.
-4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present), `repair_tie_fanout`, `repair_design`, legalization, the `placement.macro-pin-limits` step.
+4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and the output port buffers `hold-outputs-at-pins` fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, the `placement.macro-pin-limits` step.
 5. CTS, optional post-CTS setup repair, hold repair, legalization.
 6. Global route, optional global-route repair, detailed route, optional post-route repair stage.
 7. Fill, global connections, extraction with `rcx-rules`, final reports, outputs.
 8. After OpenROAD: the routed-floorplan check, then stream-out and abstract.
+
+The `stage-end` hooks run at the end of each stage, after its last global connection; the stage's checkpoint is written after them.
 
 A `probe` skips the setup and hold repair and stops after global route. Each session must print its end marker (`>>> DONE`, `>>> End of stage <NN>_<stage>`, `>>> STOPPED after <stage>`, or the post-route round markers), or the run fails `incomplete`. This check comes before any check of the design.
 

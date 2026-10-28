@@ -4,7 +4,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `fail_stage: setup` | Configuration or input problem found before OpenROAD started: a missing file (`pdn-config`, `rcx-rules`, a hook, a planner file), a bad planner-file entry, `post-route-repair` without `rcx-rules`, blockages on OpenROAD older than 26Q1, a per-corner `constraints:` that does not fit the platform, or an OpenROAD that does not answer the [SDC mode check](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#sign-off-at-several-corners). The description names it. |
+| `fail_stage: setup` | Configuration or input problem found before OpenROAD started: a missing file (`pdn-config`, `rcx-rules`, a hook, a planner file), a bad planner-file entry, `post-route-repair` without `rcx-rules`, blockages on OpenROAD older than 26Q1, `cts-obstruction-aware: false` on an OpenROAD whose CTS has no `-no_obstruction_aware`, a per-corner `constraints:` that does not fit the platform, or an OpenROAD that does not answer the [SDC mode check](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#sign-off-at-several-corners). The description names it. |
 | `fail_stage: incomplete`, `the flow did not finish` | A Tcl file the flow sources (PDK Tcl, `pdn-config`, `pin-constraints`, a hook) called `exit` or `return -level 2`, ending OpenROAD with code 0. The description names the last step reached; remove the exit from the file that step sources. |
 | `fail_stage: routed_check` | A located macro or exact pin moved between floorplan and the routed DEF, usually because a `pin-constraints` file or hook moved it. |
 | `fail_stage: pins_complete` | `pins-complete: true` found a port with no pin entry, or with conflicting entries. Add or remove entries. |
@@ -16,15 +16,16 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `fail_stage: export` | Stream-out failed, under `gds-mode: strict` in `rb pnr` or in any mode in `rb pnr-export`: KLayout, `klayout-tech`, an input file or the render. Fix it and run `rb pnr-export`. |
 | `fail_stage: blocked`, `synth`, `error` | A block this run uses failed, its upstream synthesis failed under `--synth`, or rb crashed (the exception is in the description). Fix the cause first. |
 | `[ERROR PDN-0179] Unable to repair all channels` | Macros too close for the power grid. Raise `placement.macro-halo` (about 19 µm minimum on sky130hd). |
-| `PDN-0008 ... halo overlaps row` | A macro grid's `-halo` in `pdn-config` reaches into a row. Reduce it to the value the message suggests. |
+| `PDN-0008 ... halo overlaps row` | A `pdn-config` macro grid's `-halo` reaches a standard-cell row the macro does not sit on. Cut the rows around each macro at least that far in the PDK's `tapcell-tcl`; see [Plan the power grid](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#plan-the-power-grid). |
 | `PDN-0233` on a turned macro or a block's grid | The power grid has no via for that macro. See [Place macros](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#place-macros) and [Harden a block](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#harden-a-block). |
 | `N macros do not fit the W x H um floorplan core` | Lower `utilization`, change `aspect`, or lower `placement.macro-halo`. The message gives the smallest core that fits. |
 | `GRT-0116`, global-route overflow | Too congested. The result's `failed_global_route` names the checkpoint (`<run-id>/global_route`) that holds the failed route's database and a copy of `congestion.rpt`; open it with `rb pnr-export --checkpoint` or `read_db` in OpenROAD. Lower utilization or density, try `placement.routability-driven`, or [tune global routing](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#tune-global-routing). |
 | Large `drc_count` | Try `routing-layer-adjustment`, a lower density, or `post-route-repair` with several rounds. |
 | `RSZ-0090` at a slow corner | A macro with one Liberty limits that corner. Map each corner to the macro's Liberty for it in `lib-paths`; see [Sign off at several corners](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#sign-off-at-several-corners). |
 | Macro pins in `electrical.rpt`, or `pnr.macro_pin_limits_unmet` | Set `placement.macro-pin-limits`, add a stronger buffer to it, or lower the macro's `macro-cell-halo`. See [Tune placement](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#tune-placement-clock-tree-and-repair). |
+| Output pins over the library's slew limit at signoff, yet no max-slew violators | Ports have no limit unless the SDC sets one, and `repair_design` does not repair them. See [Check and repair slew at output ports](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#check-and-repair-slew-at-output-ports). |
 | `RSZ-0074` in a post-route repair round | Set `post-route-repair.reroute: full`. |
-| `CTS-0080 Sink not found` | Set `cts-sink-clustering: false`. |
+| `CTS-0080 Sink not found` | Set `cts-sink-clustering: false`. On a block with macros, `cts-obstruction-aware: false` also avoids it. |
 | `GRT-0273 Disabled NDR`, large hold violations | Clock nets with non-default rules detour. Set `cts-apply-ndr: none`. |
 | `DPL-0011` | A macro placed off the row grid (`macro-snap: false`). Put its bottom edge on a row. |
 | `IFP-0039` at `make_tracks` (ASAP7) | Set the PDK's `tracks-tcl`. |

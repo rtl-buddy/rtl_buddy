@@ -12,6 +12,7 @@ Unless stated otherwise:
 - `reglvl` defaults to 0. It is an integer, or a per-tool or per-builder map with a `default` fallback. A run is selected when its level is at most the CLI regression level.
 - `xfail: true` is non-strict; `xfail_strict: true` makes an unexpected pass fail. Neither excuses a failure that happened instead of a verdict, such as a setup or compile failure, a sim timeout, or a lost dispatch job. `xfail_match: "<regex>"` names the expected failure, so a run that fails for another reason stays `FAIL`. See [Expected failures](../concepts/expected-failures.md).
 - Unknown references and invalid required combinations fail during configuration loading.
+- A missing required key fails during configuration loading. The `load_failed` error names the file, the entry by its `name` (or index), and every required key it leaves out, for example `runs 'top': missing required key 'desc'`.
 - A key written twice in one mapping fails during configuration loading, naming the file, the key and both line numbers. Plain YAML keeps only the last value. A key set after a `<<:` merge overrides the merged value and is not a duplicate.
 
 ## root_config.yaml
@@ -189,12 +190,14 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `tracks-tcl` | PDK | `make_tracks` script, replacing the bare `make_tracks` |
 | `tapcell-tcl` | PDK, platform, run | Tap and endcap insertion, after macro placement |
 | `routing-layers.signal`, `routing-layers.clock` | platform, run | Layer ranges for `set_routing_layers -signal` / `-clock` |
-| `cts-buffer` | platform, run | One cell or a list; a list's first entry is the root buffer |
+| `cts-buffer` | platform, run | One cell or a list, passed as `-buf_list`. Without `cts-root-buffer`, the first entry is also the root buffer (`-root_buf`) |
+| `cts-root-buffer` | platform, run | One cell, passed as `-root_buf`; `cts-buffer` is then the branch list alone. Not checked against `cts-dont-use-cells` or `dont-use-cells` before the run; a `dont-use-cells` match that CTS places fails the routed-design check. Unset makes the first `cts-buffer` the root |
 | `cts-clock-nets` | run | One net or a list: `clock_tree_synthesis -clk_nets`, building trees for those clock nets only. Unset lets CTS find every clock |
 | `cts-latency-balancing` | platform, run | `false` adds `-no_insertion_delay`: CTS does not pad shallow branches of a clock net with delay buffers to match its deepest. Default `true` |
-| `cts-repair-clock-nets` | platform, run | `true` runs `repair_clock_nets` right after CTS, before the `after-cts` hooks. Default `false` |
+| `cts-repair-clock-nets` | platform, run | `true` runs `repair_clock_nets` right after CTS and the `before-repair-clock-nets` hooks, before the `after-cts` hooks. A mapping `{max-wire-length: <µm>}`, a positive number, runs it with `-max_wire_length`. A run's value replaces the platform's whole. Default `false` |
 | `cts-dont-use-cells` | platform, run | Cell names or globs, one per entry, excluded for CTS and `repair_clock_nets` only: `set_dont_use` just before `clock_tree_synthesis`, then, before the `after-cts` hooks, `unset_dont_use` on the matching cells that were not dont-use before it. Cells that Liberty `dont_use`, `dont-use-cells` or an earlier hook excluded stay excluded. The routed-design check does not read it. A run's list replaces the platform's; `[]` clears it. Empty by default |
-| `cts-sink-clustering` | platform | `-sink_clustering_enable` for CTS. Default `true` |
+| `cts-sink-clustering` | platform, run | `true` passes `-sink_clustering_enable` to CTS; `false` passes no clustering option. A mapping takes `enable` (default `true`), `size` (a positive integer, `-sink_clustering_size`) and `max-diameter` (a positive number of µm, `-sink_clustering_max_diameter`); with `enable` true it adds `-sink_clustering_enable` and the sizes given, and CTS picks those left out. A run's value replaces the platform's whole, sizes included. Default `true` |
+| `cts-obstruction-aware` | platform, run | `false` adds `-no_obstruction_aware`, so CTS does not steer its buffers around macro blockages. Unset (default) leaves OpenROAD's behavior: obstruction-aware on every build whose `clock_tree_synthesis` takes `-no_obstruction_aware` (builds since 20 January 2025, so 25Q2 and newer), off before that. `true` adds no flag on such a build and `-obstruction_aware` on an older one. rb asks OpenROAD at setup, and `false` on a build without `-no_obstruction_aware` fails setup naming the key and the version |
 | `cts-apply-ndr` | platform | `none`, `root_only`, `half` or `full`. Unset keeps OpenROAD's `half` |
 | `port-buffer` | platform, run | Cell `buffer_ports` inserts. Unset lets OpenROAD choose |
 | `post-cts-setup-repair` | platform, run | `true` runs `repair_timing -setup` after CTS. Default `false` |
@@ -878,12 +881,12 @@ runs:
 | `gds-mode` | `preview` | `strict` fails the run when a requested export is incomplete. `--gds-mode` overrides. See [Stream out GDS and PNG](../concepts/pnr.md#stream-out-gds-and-png) |
 | `gds-allow-empty` | — | Cell names or case-sensitive globs that have no layout on purpose |
 | `pin-constraints` | — | Tcl sourced just before pin placement |
-| `hooks` | — | Map of hook point to a Tcl path or list. See [Run Tcl hooks](../concepts/pnr.md#run-tcl-hooks) |
+| `hooks` | — | Map of hook point to a Tcl path or list. Points, in flow order: `session`, `after-floorplan`, `macro-placement`, `after-pdn`, `after-pins`, `after-global-placement`, `after-repair-design`, `before-cts`, `before-repair-clock-nets`, `after-cts`, `after-cts-repair`, `after-global-route`, `after-global-route-repair`, `before-detailed-route`, `after-extraction`, `before-reports`, `after-reports`, and `stage-end` at the end of every stage. See [Run Tcl hooks](../concepts/pnr.md#run-tcl-hooks) |
 | `inputs` | — | Files the SDC or hooks `source`, relative to `pnr.yaml`. Fingerprinted for `--resume` and hardened-block staleness. See [Run Tcl hooks](../concepts/pnr.md#run-tcl-hooks) |
 | `pdn-config` | PDK's | Tcl that replaces the PDK's `pdn-config` |
 | `pdn` | — | Core grid in YAML; see below |
 | `placement` | Platform's | Any `placement.*` key, overriding the platform for this run |
-| `routing-layers`, `routing-layer-adjustment`, `cts-buffer`, `cts-clock-nets`, `cts-latency-balancing`, `cts-repair-clock-nets`, `cts-dont-use-cells`, `post-cts-setup-repair`, `global-route-hold-repair`, `port-buffer`, `keep-sizing-vt`, `tapcell-tcl` | Platform's | Override the platform's value for this run. See [P&R keys](#synthesis-and-physical-design-tools) |
+| `routing-layers`, `routing-layer-adjustment`, `cts-buffer`, `cts-root-buffer`, `cts-clock-nets`, `cts-latency-balancing`, `cts-repair-clock-nets`, `cts-sink-clustering`, `cts-obstruction-aware`, `cts-dont-use-cells`, `post-cts-setup-repair`, `global-route-hold-repair`, `port-buffer`, `keep-sizing-vt`, `tapcell-tcl` | Platform's | Override the platform's value for this run. See [P&R keys](#synthesis-and-physical-design-tools) |
 | `global-route` | Platform's | Overrides the platform's block field by field. See [P&R keys](#synthesis-and-physical-design-tools) |
 | `global-route-repair`, `post-route-repair` | Platform's | Overrides the platform's block field by field; `null` turns it off. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing) |
 | `mode` | `closure` | `probe` skips timing repair and stops after global route. Not with `harden: true`. See [Probe a floorplan](../concepts/pnr.md#probe-a-floorplan) |
@@ -896,7 +899,7 @@ runs:
 | `resources` | — | `cpus`, `mem`, quoted `time`, and `stages: {<stage>: {...}}`, for `--dispatch slurm` only. See [Dispatch the stages to Slurm](../concepts/pnr.md#dispatch-the-stages-to-slurm) |
 | `harden` | `false` | Publish the routed block as an abstract. Needs a single-corner platform. See [Harden a block](../concepts/pnr.md#harden-a-block) |
 | `abstract` | — | Needs `harden`. `bloat`: `occupied` (default) or a number; `feedthrough-layers`: layers written with real shapes; `gds: false`: publish no GDS and skip the forced stream-out; a parent's `strict` stream-out then fails at setup and a `preview` one lacks the block |
-| `buffer-ports` | Value of `harden` | `true` buffers every input and output port after pin placement |
+| `buffer-ports` | Value of `harden` | `true` buffers every input and output port after pin placement, `false` none. A mapping chooses: `inputs` and `outputs` (default `true`) add `buffer_ports -inputs` and `-outputs`, and at least one must be on; `skip-clock-outputs: true` leaves each output that carries a clock (on the clock network, or a generated clock's source) unbuffered; `hold-outputs-at-pins: true` fixes each output buffer on the free row site nearest its pin through global placement. Both default `false` and need `outputs`. See [Check and repair slew at output ports](../concepts/pnr.md#check-and-repair-slew-at-output-ports) |
 | `blocks` | — | Hardened blocks: `name` (module), `pnr` (a `harden: true` run), `pnr-path` (default this file). Needs a single-corner platform. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
 | `floorplan.utilization` | 0.55 | Fraction of the core area the cells fill |
 | `floorplan.aspect` | 1.0 | Die aspect ratio |
