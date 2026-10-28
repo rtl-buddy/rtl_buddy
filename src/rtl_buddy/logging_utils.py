@@ -1886,6 +1886,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     f"{consequence}"
                 )
             return f'no create_clock found in SDC "{fields.get("sdc")}"; {consequence}'
+        case "synth.sdc_clock_unread" if fields.get("error") is not None:
+            return (
+                f'create_clock in SDC "{fields.get("sdc")}" line {fields.get("line")} '
+                "is in a statement the Tcl reader skipped at an error "
+                f"({fields.get('error')}), so a clock it had not created by then "
+                "is skipped for the abc timing constraint"
+            )
         case "synth.sdc_clock_unread":
             return (
                 f'create_clock in SDC "{fields.get("sdc")}" line {fields.get("line")} '
@@ -1928,6 +1935,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'constraint file "{fields.get("source")}" line {fields.get("line")}: '
                 f"check skipped (error {fields.get('message')!r}); the reader "
                 "cannot answer design queries, so the check is assumed to pass"
+            )
+        case "constraints.tcl_statement_skipped":
+            return (
+                f'constraint file "{fields.get("source")}" line {fields.get("line")}: '
+                "Tcl could not evaluate the statement that starts here "
+                f"({fields.get('message')}); the reader skipped it and read on, "
+                "so any command it had not run when it failed is missing"
             )
         case "constraints.tcl_checks_skipped":
             return (

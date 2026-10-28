@@ -556,13 +556,16 @@ def sdc_clock_periods(
     ``time_unit_ps`` returns in picoseconds. ABC ``-D`` takes one timing window, so
     multi-clock designs use the minimum, which over-constrains slower domains. Periods
     are read via the constraint reader, so ``\\``-continued commands and ``{10.0}``
-    work, ``source`` is followed relative to the sourcing file, and a file the interp
-    refuses is retried with object queries answering as name lists and the file's own
-    error checks skipped, so a proc or loop over ``[get_ports ...]`` is evaluated
-    (#788). A period that is not a number (``$p`` under the tokenizer backend,
-    or ``[get_property ...]``) is skipped with ``synth.sdc_period_unevaluated``, and
-    a ``create_clock`` the tokenizer found inside a loop, ``proc`` or ``if`` body with
-    ``synth.sdc_clock_unread``; both count as unresolved.
+    work, ``source`` is followed relative to the sourcing file in the caller's scope,
+    and a file the interp refuses is retried with object queries answering as name
+    lists, a created clock's ``period`` property answered, the file's own error checks
+    skipped and any other failing statement skipped, so a proc or loop over
+    ``[get_ports ...]`` is evaluated (#788). A period that is not a number (``$p``
+    under the tokenizer backend, or ``[get_property ...]`` of a clock the SDC did not
+    create) is skipped with ``synth.sdc_period_unevaluated``, and a ``create_clock``
+    the tokenizer found inside a loop, ``proc`` or ``if`` body, or that is in a
+    statement the Tcl reader skipped, with ``synth.sdc_clock_unread``; both count as
+    unresolved.
     """
     try:
         with open(sdc_path) as f:
@@ -588,6 +591,7 @@ def sdc_clock_periods(
             sdc=unread.file or sdc_path,
             line=unread.line,
             enclosing=unread.enclosing,
+            error=unread.error,
         )
     periods: list[float] = []
     for cmd in result.commands:

@@ -8,7 +8,7 @@ import pytest
 from rtl_buddy.config.model import ModelConfig
 from rtl_buddy.config.synth import SynthConfig, SynthToolConfig, SynthToolConfigFile
 from rtl_buddy.tools.synth_openroad import OpenRoadSynth
-from rtl_buddy.tools.synth_yosys import YosysSynth
+from rtl_buddy.tools.synth_yosys import YosysSynth, sdc_clock_periods
 
 from test_split_liberty import _Root, _ns_lib
 
@@ -257,3 +257,104 @@ def test_no_sdc_passes_no_period_and_does_not_warn(tmp_path, backend, caplog):
         synth, script = _synth(tmp_path, backend, None)
     assert " -D " not in _abc_line(script)
     assert not _events(caplog, "synth.sdc_no_clock")
+
+
+def test_a_sourced_sdc_reads_the_sourcing_sdcs_periods(
+    tmp_path, monkeypatch, tcl_backend
+):
+    # The #956 example, read as `rb synth` reads it.
+    (tmp_path / "top.sdc").write_text("array set per { clk 10.0 }\nsource inc.sdc\n")
+    (tmp_path / "inc.sdc").write_text(
+        "create_clock -name clk -period $per(clk) [get_ports clk]\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    assert sdc_clock_periods("top.sdc", lambda: 1000.0, "s") == (10000, 0)
+
+
+#: A platform SDC that sets per-clock periods and sources the shared SDC that creates the clocks.
+_SPLIT_TOP = (
+    "set per(clk_a) 2000\nset per(clk_b) 4000\n"
+    "source [file join [file dirname [file normalize [info script]]] clocks.sdc]\n"
+)
+_SPLIT_CLOCKS = (
+    "foreach c {clk_a clk_b} {\n"
+    "  create_clock -name $c -period $per($c) [get_ports $c]\n"
+    "}\n"
+)
+#: The #946 example.
+_PERIOD_HELPER_SDC = (
+    "proc helper {clk} {\n"
+    "  set p [get_property [get_clocks $clk] period]\n"
+    "  return [expr {$p - 100}]\n"
+    "}\n"
+    "set period 2000\n"
+    "foreach c {a b} {\n"
+    "  create_clock -name ${c}_clk -period $period [get_ports ${c}_clk]\n"
+    "}\n"
+    "helper a_clk\n"
+)
+
+
+@pytest.mark.parametrize("form", ["split", "period-helper"])
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_split_or_helper_sdc_gives_abc_its_period(
+    tmp_path, backend, form, caplog, tcl_backend
+):
+    sdc = tmp_path / "top.sdc"
+    if form == "split":
+        (tmp_path / "clocks.sdc").write_text(_SPLIT_CLOCKS)
+        sdc.write_text(_SPLIT_TOP)
+    else:
+        sdc.write_text(_PERIOD_HELPER_SDC)
+    with caplog.at_level(logging.WARNING):
+        _synth_obj, script = _synth(
+            tmp_path, backend, sdc, abc_script="strash; &get -n; &nf {D}; &put"
+        )
+    assert " -D 2000000 -script " in _abc_line(script)
+    assert [r.rtl_event for r in caplog.records if r.levelno >= logging.WARNING] == [
+        "synth.sdc_multi_clock"
+    ]
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_clock_in_a_skipped_statement_is_named_and_unresolved(
+    tmp_path, backend, caplog, tcl_backend
+):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text(
+        "set_load 1 [get_ports a]\n"
+        "create_clock -name gen -period [expr {2 * [get_property [get_clocks nope] period]}] g\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        _synth_obj, script = _synth(
+            tmp_path, backend, sdc, abc_script="strash; &get -n; &nf {D}; &put"
+        )
+    assert " -D " not in _abc_line(script)
+    [skipped] = _events(caplog, "constraints.tcl_statement_skipped")
+    assert skipped.rtl_fields["line"] == 2
+    [clock] = _events(caplog, "synth.sdc_clock_unread")
+    assert clock.rtl_fields["line"] == 2
+    assert clock.rtl_fields["error"] == skipped.rtl_fields["message"]
+    assert "statement the Tcl reader skipped" in clock.getMessage()
+    assert "tokenizer" not in clock.getMessage()
+    [rec] = _events(caplog, "synth.sdc_no_clock")
+    assert rec.rtl_fields["unresolved"] == 1
+    assert "could not resolve" in rec.getMessage()
+    assert not _events(caplog, "constraints.tcl_error")
+
+
+def test_a_clock_created_before_its_loop_failed_is_not_unresolved(
+    tmp_path, caplog, tcl_backend
+):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text(
+        "foreach c {clk} {\n"
+        "  create_clock -name $c -period 2 [get_ports $c]\n"
+        "  set_load [expr {[get_property [get_ports $c] cap] * 2}] $c\n"
+        "}\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        assert sdc_clock_periods(str(sdc), lambda: 1000.0, "s") == (2000, 0)
+    assert [r.rtl_event for r in caplog.records if r.levelno >= logging.WARNING] == [
+        "constraints.tcl_statement_skipped"
+    ]
