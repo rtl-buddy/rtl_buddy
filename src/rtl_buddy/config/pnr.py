@@ -1234,6 +1234,70 @@ def _load_abstract(
 
 
 @serde
+class PnrPortBuffersFile:
+    """`buffer-ports:` written as a mapping. Typed loosely so `_load_buffer_ports` names a bad value."""
+
+    inputs: Any = None
+    outputs: Any = None
+    skip_clock_outputs: Any = field(rename="skip-clock-outputs", default=None)
+    hold_outputs_at_pins: Any = field(rename="hold-outputs-at-pins", default=None)
+
+
+@dataclass(frozen=True)
+class PortBuffers:
+    """The ports a run buffers before global placement (`buffer-ports:`), and what happens to the output buffers.
+
+    `skip_clock_outputs` leaves every output port that carries a clock unbuffered; `hold_outputs_at_pins` fixes each output port buffer at its pin until global placement ends.
+    """
+
+    inputs: bool = True
+    outputs: bool = True
+    skip_clock_outputs: bool = False
+    hold_outputs_at_pins: bool = False
+
+
+def _load_buffer_ports(run: str, value: Any) -> bool | PortBuffers | None:
+    """Validate a run's `buffer-ports:`: `true`, `false`, a mapping, or unset (`None`, which follows `harden`)."""
+    if value is None or isinstance(value, bool):
+        return value
+    where = f"pnr run '{run}': buffer-ports"
+    if not isinstance(value, dict):
+        raise FatalRtlBuddyError(
+            f"{where} must be true, false or a mapping of inputs, outputs, "
+            f"skip-clock-outputs and hold-outputs-at-pins, got {value!r}"
+        )
+    entry = config_from_data(PnrPortBuffersFile, value)
+    flags = {}
+    for key, name in (
+        ("inputs", "inputs"),
+        ("outputs", "outputs"),
+        ("skip-clock-outputs", "skip_clock_outputs"),
+        ("hold-outputs-at-pins", "hold_outputs_at_pins"),
+    ):
+        flag = getattr(entry, name)
+        if flag is None:
+            continue
+        if not isinstance(flag, bool):
+            raise FatalRtlBuddyError(
+                f"{where}.{key} must be true or false, got {flag!r}"
+            )
+        flags[name] = flag
+    ports = PortBuffers(**flags)
+    if not ports.inputs and not ports.outputs:
+        raise FatalRtlBuddyError(
+            f"{where} buffers no port with inputs and outputs both false; "
+            "write buffer-ports: false"
+        )
+    for key, on in (
+        ("skip-clock-outputs", ports.skip_clock_outputs),
+        ("hold-outputs-at-pins", ports.hold_outputs_at_pins),
+    ):
+        if on and not ports.outputs:
+            raise FatalRtlBuddyError(f"{where}.{key} needs outputs: true")
+    return ports
+
+
+@serde
 class PnrConfigFile:
     name: str
     desc: str
@@ -1269,8 +1333,8 @@ class PnrConfigFile:
     harden: bool = False
     # Obstruction style of a hardened run's abstract LEF; unset keeps `-bloat_occupied_layers`.
     abstract: PnrAbstractFile | None = None
-    # `buffer_ports -inputs -outputs` before global placement; unset follows `harden`.
-    buffer_ports: bool | None = field(rename="buffer-ports", default=None)
+    # `buffer_ports` before global placement: a boolean or a mapping; unset follows `harden`. Typed loosely so `initialise` names a bad value.
+    buffer_ports: Any = field(rename="buffer-ports", default=None)
     # Fail a routed run that has max-slew, max-capacitance or max-fanout violators.
     fail_on_electrical: bool = field(rename="fail-on-electrical", default=False)
     # Hardened blocks instanced as hard macros, each a `harden: true` run's abstract.
@@ -1569,9 +1633,7 @@ class PnrConfigFile:
             inputs=inputs,
             harden=bool(self.harden),
             abstract=_load_abstract(self.name, self.abstract, bool(self.harden)),
-            buffer_ports=(
-                bool(self.buffer_ports) if self.buffer_ports is not None else None
-            ),
+            buffer_ports=_load_buffer_ports(self.name, self.buffer_ports),
             fail_on_electrical=bool(self.fail_on_electrical),
             blocks=blocks,
             _reglvl=self.reglvl,
@@ -1605,6 +1667,7 @@ PNR_RUN_SPEC = KeySpec(
             },
         ),
         "abstract": KeySpec(PnrAbstractFile),
+        "buffer-ports": KeySpec(PnrPortBuffersFile),
         "placement": PLACEMENT_SPEC,
         "global-route-repair": GLOBAL_ROUTE_REPAIR_SPEC,
         "post-route-repair": POST_ROUTE_REPAIR_SPEC,
@@ -1654,8 +1717,8 @@ class PnrConfig:
     inputs: tuple[str, ...] = ()
     harden: bool = False
     abstract: PnrAbstract = dc_field(default_factory=PnrAbstract)
-    # As written in pnr.yaml; `None` follows `harden`. Read it through `get_buffer_ports`.
-    buffer_ports: bool | None = None
+    # As written in pnr.yaml; `None` follows `harden`. Read it through `get_port_buffers`.
+    buffer_ports: bool | PortBuffers | None = None
     fail_on_electrical: bool = False
     blocks: list[BlockRef] = dc_field(default_factory=list)
     # The run's validated `placement:` block, applied over the platform's; None when unset.
@@ -1819,12 +1882,19 @@ class PnrConfig:
         """The abstract LEF obstruction style of a hardened run and whether its abstract has a GDS (`abstract:`)."""
         return self.abstract
 
-    def get_buffer_ports(self) -> bool:
-        """Whether the flow buffers the block's ports: the `buffer-ports:` value, else on exactly when the run hardens.
+    def get_port_buffers(self) -> PortBuffers | None:
+        """The ports the flow buffers, or `None` when it buffers none: the `buffer-ports:` mapping, every port for `true`, and when unset every port exactly when the run hardens.
 
         A hardened block's pins are what its parent drives and is driven by, so they get buffers by default.
         """
-        return self.harden if self.buffer_ports is None else self.buffer_ports
+        value = self.harden if self.buffer_ports is None else self.buffer_ports
+        if isinstance(value, PortBuffers):
+            return value
+        return PortBuffers() if value else None
+
+    def get_buffer_ports(self) -> bool:
+        """Whether the flow buffers any of the block's ports; see `get_port_buffers`."""
+        return self.get_port_buffers() is not None
 
     def get_fail_on_electrical(self) -> bool:
         """Whether max-slew, max-capacitance or max-fanout violators fail the run."""

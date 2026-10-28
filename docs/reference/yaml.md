@@ -899,7 +899,7 @@ runs:
 | `resources` | — | `cpus`, `mem`, quoted `time`, and `stages: {<stage>: {...}}`, for `--dispatch slurm` only. See [Dispatch the stages to Slurm](../concepts/pnr.md#dispatch-the-stages-to-slurm) |
 | `harden` | `false` | Publish the routed block as an abstract. Needs a single-corner platform. See [Harden a block](../concepts/pnr.md#harden-a-block) |
 | `abstract` | — | Needs `harden`. `bloat`: `occupied` (default) or a number; `feedthrough-layers`: layers written with real shapes; `gds: false`: publish no GDS and skip the forced stream-out; a parent's `strict` stream-out then fails at setup and a `preview` one lacks the block |
-| `buffer-ports` | Value of `harden` | `true` buffers every input and output port after pin placement |
+| `buffer-ports` | Value of `harden` | `true` buffers every input and output port after pin placement, `false` none. A mapping chooses: `inputs` and `outputs` (default `true`) add `buffer_ports -inputs` and `-outputs`, and at least one must be on; `skip-clock-outputs: true` leaves each output that carries a clock (on the clock network, or a generated clock's source) unbuffered; `hold-outputs-at-pins: true` fixes each output buffer on the free row site nearest its pin through global placement. Both default `false` and need `outputs`. See [Check and repair slew at output ports](../concepts/pnr.md#check-and-repair-slew-at-output-ports) |
 | `blocks` | — | Hardened blocks: `name` (module), `pnr` (a `harden: true` run), `pnr-path` (default this file). Needs a single-corner platform. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
 | `floorplan.utilization` | 0.55 | Fraction of the core area the cells fill |
 | `floorplan.aspect` | 1.0 | Die aspect ratio |
