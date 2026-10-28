@@ -24,7 +24,7 @@ Each run writes `artefacts/<test>/coverage.json` (`run-NNNN/coverage.json` for `
 | Line | One point per statement, so a line with two statements has two points. `column` numbers the statements on a line from 0. |
 | Branch | One point per arm, on the arm's line, named by the arm (`if`, `else`, a case item). |
 | Toggle | One point per bit, named `sig[i]`. A bit is hit only when it rose and fell. xezim counts each direction separately, so its own toggle percentage is higher. Toggles have no source line: they are filed under the module's file at line 0. |
-| Cover | One point per `cover` statement, named by its label (`label: cover property ...`), else `cover@<line>`. These give the `F:` figure. Covergroups are not imported. |
+| Cover | One point per `cover` statement, named by its label (`label: cover property ...`): from the `name` field xezim writes since 0.11.3 (git 8082de3c), else read back from the source line; an unlabelled point is `cover@<line>`. These give the `F:` figure. Covergroups are not imported. |
 | Expression | Not collected. Shows as `UNSP`. |
 
 LCOV export, and the HTML built from it, has line and branch data only. A line's count is its highest statement count, and each branch construct is one block on the construct's line. Coverview gets no toggle or expression datasets.
