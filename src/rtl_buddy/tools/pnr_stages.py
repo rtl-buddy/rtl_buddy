@@ -239,7 +239,7 @@ def first_difference(old: str, new: str) -> str:
     return "no line differs as compared now, so another rtl_buddy version recorded it"
 
 
-#: The stage that reads each run hook point.
+#: The first stage that reads each run hook point; `after-extraction` is read first where `rcx-rules` is (see `input_read_before`).
 HOOK_STAGE = {
     "after-floorplan": "floorplan",
     "macro-placement": "floorplan",
@@ -247,10 +247,16 @@ HOOK_STAGE = {
     "after-pins": "floorplan",
     "after-global-placement": "place",
     "after-repair-design": "place",
+    "before-cts": "cts",
+    "before-repair-clock-nets": "cts",
     "after-cts": "cts",
+    "after-cts-repair": "cts",
     "after-global-route": "global_route",
+    "after-global-route-repair": "global_route",
     "before-detailed-route": "detailed_route",
     "before-reports": "finish",
+    "after-reports": "finish",
+    "stage-end": "floorplan",
 }
 
 #: Manifest input roles that only the floorplan session reads.
@@ -277,11 +283,11 @@ def input_read_before(
 ) -> bool:
     """Whether a session before `stage` of a run of `stages` reads the manifest input `role`.
 
-    Every session reads the Liberty, LEF, `platform-tcl`, `layer-rc-tcl` and `session` hooks, and so does any role not named here. `rcx_rules` is read first by the run's post-route repair, else by its finish.
+    Every session reads the Liberty, LEF, `platform-tcl`, `layer-rc-tcl` and `session` hooks, and so does any role not named here. `rcx_rules` and the `after-extraction` hooks are read first by the run's post-route repair, else by its finish.
     """
     if role == "script":
         return False
-    if role == "rcx_rules":
+    if role in ("rcx_rules", "hook_after_extraction"):
         first = next((s for s in _RCX_RULES_READERS if s in stages), "finish")
     elif role in _FLOORPLAN_INPUTS:
         first = "floorplan"

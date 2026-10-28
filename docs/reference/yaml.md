@@ -192,7 +192,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `cts-buffer` | platform, run | One cell or a list; a list's first entry is the root buffer |
 | `cts-clock-nets` | run | One net or a list: `clock_tree_synthesis -clk_nets`, building trees for those clock nets only. Unset lets CTS find every clock |
 | `cts-latency-balancing` | platform, run | `false` adds `-no_insertion_delay`: CTS does not pad shallow branches of a clock net with delay buffers to match its deepest. Default `true` |
-| `cts-repair-clock-nets` | platform, run | `true` runs `repair_clock_nets` right after CTS, before the `after-cts` hooks. Default `false` |
+| `cts-repair-clock-nets` | platform, run | `true` runs `repair_clock_nets` right after CTS and the `before-repair-clock-nets` hooks, before the `after-cts` hooks. Default `false` |
 | `cts-dont-use-cells` | platform, run | Cell names or globs, one per entry, excluded for CTS and `repair_clock_nets` only: `set_dont_use` just before `clock_tree_synthesis`, then, before the `after-cts` hooks, `unset_dont_use` on the matching cells that were not dont-use before it. Cells that Liberty `dont_use`, `dont-use-cells` or an earlier hook excluded stay excluded. The routed-design check does not read it. A run's list replaces the platform's; `[]` clears it. Empty by default |
 | `cts-sink-clustering` | platform | `-sink_clustering_enable` for CTS. Default `true` |
 | `cts-apply-ndr` | platform | `none`, `root_only`, `half` or `full`. Unset keeps OpenROAD's `half` |
@@ -878,7 +878,7 @@ runs:
 | `gds-mode` | `preview` | `strict` fails the run when a requested export is incomplete. `--gds-mode` overrides. See [Stream out GDS and PNG](../concepts/pnr.md#stream-out-gds-and-png) |
 | `gds-allow-empty` | — | Cell names or case-sensitive globs that have no layout on purpose |
 | `pin-constraints` | — | Tcl sourced just before pin placement |
-| `hooks` | — | Map of hook point to a Tcl path or list. See [Run Tcl hooks](../concepts/pnr.md#run-tcl-hooks) |
+| `hooks` | — | Map of hook point to a Tcl path or list. Points, in flow order: `session`, `after-floorplan`, `macro-placement`, `after-pdn`, `after-pins`, `after-global-placement`, `after-repair-design`, `before-cts`, `before-repair-clock-nets`, `after-cts`, `after-cts-repair`, `after-global-route`, `after-global-route-repair`, `before-detailed-route`, `after-extraction`, `before-reports`, `after-reports`, and `stage-end` at the end of every stage. See [Run Tcl hooks](../concepts/pnr.md#run-tcl-hooks) |
 | `inputs` | — | Files the SDC or hooks `source`, relative to `pnr.yaml`. Fingerprinted for `--resume` and hardened-block staleness. See [Run Tcl hooks](../concepts/pnr.md#run-tcl-hooks) |
 | `pdn-config` | PDK's | Tcl that replaces the PDK's `pdn-config` |
 | `pdn` | — | Core grid in YAML; see below |
