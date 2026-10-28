@@ -229,19 +229,34 @@ _ROWS = "{{0 10 100 12 2 R0} {0 12 100 14 2 MX}}"
 
 
 @pytest.mark.parametrize(
-    ("x", "y", "width", "site"),
+    ("taken", "x", "y", "width", "site"),
     [
-        (51, 13, 4, "50 12 MX"),
-        (-30, 0, 4, "0 10 R0"),
-        (99, 10, 4, "96 10 R0"),
-        (40, 10, 200, ""),
+        ("", 51, 13, 4, "50 12 MX"),
+        ("", -30, 0, 4, "0 10 R0"),
+        ("", 99, 10, 4, "96 10 R0"),
+        ("", 40, 10, 200, ""),
+        ("10 {{50 54}} 12 {{50 54}}", 49, 10, 4, "46 10 R0"),
+        ("10 {{48 52}} 12 {{48 52}}", 49, 10, 4, "52 10 R0"),
+        ("10 {{46 52} {52 56}} 12 {{46 52} {52 56}}", 50, 10, 4, "56 10 R0"),
+        ("10 {{94 100}} 12 {{94 100}}", 99, 10, 4, "90 10 R0"),
+        ("10 {{0 100}}", 50, 10, 4, "50 12 MX"),
     ],
-    ids=["inside", "clamped-low", "clamped-high", "too-wide"],
+    ids=[
+        "inside",
+        "clamped-low",
+        "clamped-high",
+        "too-wide",
+        "taken-free-to-the-left",
+        "taken-free-to-the-right",
+        "taken-past-two-spans",
+        "taken-at-the-row-end",
+        "row-full",
+    ],
 )
-def test_nearest_site_snaps_into_the_nearest_row(x, y, width, site):
+def test_nearest_site_snaps_into_the_nearest_free_site(taken, x, y, width, site):
     out = _tcl_eval(
         _procs()
-        + f"\nset result [rb::port_buffers::nearest_site {_ROWS} {x} {y} {width}]\n"
+        + f"\nset result [rb::port_buffers::nearest_site {_ROWS} {{{taken}}} {x} {y} {width}]\n"
     )
     assert out == site
 
@@ -260,7 +275,11 @@ _STUBS = (
     + r"""
 namespace eval ord {}
 namespace eval sta {}
+namespace eval odb {}
 proc ord::get_db_block {} { return blk }
+proc odb::dbBoolProperty_create {obj name value} {
+    lappend ::calls [list $obj mark $name $value]
+}
 set ::insts {u_drv}
 set ::net_of {y n_y ck n_ck}
 set ::dont_touch {n_ck_user 1}
@@ -374,6 +393,21 @@ def test_held_buffers_go_to_the_row_site_nearest_their_pin_and_are_firm():
         "out_y setOrient R0",
         "out_y setLocation 96 10",
         "out_y setPlacementStatus FIRM",
+        "out_y mark rb_held_port_buffer 1",
+    ]
+
+
+def test_held_buffers_at_one_pin_take_neighbouring_sites():
+    # Both outputs share the pin stand-in, so the second buffer goes left of the first.
+    assert _outputs(0, 1)[1:] == [
+        "out_y setOrient R0",
+        "out_y setLocation 96 10",
+        "out_y setPlacementStatus FIRM",
+        "out_y mark rb_held_port_buffer 1",
+        "out_ck setOrient R0",
+        "out_ck setLocation 92 10",
+        "out_ck setPlacementStatus FIRM",
+        "out_ck mark rb_held_port_buffer 1",
     ]
 
 
@@ -388,37 +422,53 @@ def test_a_net_dont_touch_before_stays_so():
     assert out.splitlines() == ["buffer_ports -outputs"]
 
 
-#: Stand-ins for the freeing step: outputs `a` (a FIRM buffer, alone on its net),
-#: `b` (a PLACED buffer), `c` (a FIRM macro) and `d` (a FIRM cell sharing its net).
+#: Stand-ins for the freeing step: outputs `a` (a held buffer, marked and FIRM),
+#: `b` (a FIRM driver the hold step did not place), `c` (a marked buffer a hook
+#: set PLACED) and `d` (a marked buffer sharing its net with an unmarked load),
+#: and input `in` (a marked FIRM cell).
 _FREE_STUBS = (
     _QUIET
     + r"""
 namespace eval ord {}
+namespace eval odb {}
 proc ord::get_db_block {} { return blk }
 proc blk {method} { return {bt_a bt_b bt_c bt_d bt_in} }
 set ::calls {}
-foreach {port status block count io} {
-    a FIRM 0 1 OUTPUT  b PLACED 0 1 OUTPUT  c FIRM 1 1 OUTPUT  d FIRM 0 2 OUTPUT
-    in FIRM 0 1 INPUT
+proc odb::dbBoolProperty_find {obj name} {
+    if {$name eq "rb_held_port_buffer" && $obj in {i_a i_c i_d i_in}} {
+        return "mark_$obj"
+    }
+    return NULL
+}
+proc odb::dbProperty_destroy {prop} { lappend ::calls [list $prop destroyed] }
+foreach {port status io} {
+    a FIRM OUTPUT  b FIRM OUTPUT  c PLACED OUTPUT  d FIRM OUTPUT  in FIRM INPUT
 } {
     proc bt_$port {method} "return \[dict get {getNet n_$port getIoType $io} \$method\]"
-    proc n_$port {method} "return \[dict get {getITermCount $count getITerms {it_$port}} \$method\]"
-    proc it_$port {method} "return \[dict get {getInst i_$port isOutputSignal 1} \$method\]"
+    set iterms [expr {$port eq "d" ? "it_d it_load" : "it_$port"}]
+    proc n_$port {method} "return \[dict get {getITerms {$iterms}} \$method\]"
+    proc it_$port {method} "return \[dict get {getInst i_$port} \$method\]"
     proc i_$port {method args} "
         switch \$method {
             getPlacementStatus { return $status }
-            getMaster { return m_$port }
             default { lappend ::calls \[list i_$port \$method {*}\$args\] }
         }
     "
-    proc m_$port {method} "return $block"
 }
+proc it_load {method} { return i_load }
+proc i_load {method args} { return FIRM }
 """
 )
 
 
-def test_the_free_step_frees_only_firm_cells_that_alone_drive_an_output():
+def test_the_free_step_frees_only_the_buffers_the_hold_step_marked():
     out = _tcl_eval(
         _FREE_STUBS + _FREE_PORT_BUFFERS_TCL + 'set result [join $::calls "\\n"]\n'
     )
-    assert out.splitlines() == ["i_a setPlacementStatus PLACED"]
+    assert out.splitlines() == [
+        "mark_i_a destroyed",
+        "i_a setPlacementStatus PLACED",
+        "mark_i_c destroyed",
+        "mark_i_d destroyed",
+        "i_d setPlacementStatus PLACED",
+    ]

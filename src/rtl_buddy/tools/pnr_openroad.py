@@ -435,22 +435,26 @@ def _buffer_ports_tcl(ports: PortBuffers | None, buffer_cell: str | None) -> str
     )
 
 
-#: Frees the output port buffers `hold-outputs-at-pins` fixed at their pins: each FIRM standard cell that alone drives an output port.
+#: Frees the output port buffers `hold-outputs-at-pins` fixed at their pins: each driver of an output port's net that `port_buffers.tcl` marked `rb_held_port_buffer`.
 _FREE_PORT_BUFFERS_TCL = """\
 puts ">>> Output port buffers free to move"
 set rb_freed 0
 foreach rb_bterm [[ord::get_db_block] getBTerms] {
   set rb_net [$rb_bterm getNet]
-  if {[$rb_bterm getIoType] ne "OUTPUT" || $rb_net eq "NULL"
-      || [$rb_net getITermCount] != 1} {
+  if {[$rb_bterm getIoType] ne "OUTPUT" || $rb_net eq "NULL"} {
     continue
   }
-  set rb_iterm [lindex [$rb_net getITerms] 0]
-  set rb_inst [$rb_iterm getInst]
-  if {[$rb_iterm isOutputSignal] && [$rb_inst getPlacementStatus] eq "FIRM"
-      && ![[$rb_inst getMaster] isBlock]} {
-    $rb_inst setPlacementStatus PLACED
-    incr rb_freed
+  foreach rb_iterm [$rb_net getITerms] {
+    set rb_inst [$rb_iterm getInst]
+    set rb_mark [odb::dbBoolProperty_find $rb_inst rb_held_port_buffer]
+    if {$rb_mark eq "NULL"} {
+      continue
+    }
+    odb::dbProperty_destroy $rb_mark
+    if {[$rb_inst getPlacementStatus] eq "FIRM"} {
+      $rb_inst setPlacementStatus PLACED
+      incr rb_freed
+    }
   }
 }
 puts ">>>   $rb_freed output port buffer(s) freed"

@@ -8,31 +8,61 @@
 
 namespace eval rb::port_buffers {}
 
-# The row site {x y orient} nearest `x y` whose row holds a cell `width` wide,
-# from `rows`, each {xMin yMin xMax yMax site_pitch orient}, or an empty list
-# when no row is wide enough. Distance is Manhattan, lower-left to lower-left.
-proc rb::port_buffers::nearest_site {rows x y width} {
+# The row site {x y orient} nearest `x y` whose row holds a cell `width` wide
+# clear of `taken`, from `rows`, each {xMin yMin xMax yMax site_pitch orient},
+# or an empty list when no row has room. `taken` maps a row's yMin to the
+# {x0 x1} spans already used in it. Distance is Manhattan, lower-left to
+# lower-left.
+proc rb::port_buffers::nearest_site {rows taken x y width} {
     set best {}
     set best_distance ""
     foreach row $rows {
         lassign $row x0 y0 x1 y1 pitch orient
-        if {$x1 - $x0 < $width} {
+        set last [expr {($x1 - $x0 - $width) / $pitch}]
+        if {$last < 0} {
             continue
         }
-        set sx [expr {min(max($x, $x0), $x1 - $width)}]
-        set sx [expr {$x0 + (($sx - $x0) / $pitch) * $pitch}]
-        set distance [expr {abs($sx - $x) + abs($y0 - $y)}]
-        if {$best_distance eq "" || $distance < $best_distance} {
-            set best [list $sx $y0 $orient]
-            set best_distance $distance
+        set spans {}
+        if {[dict exists $taken $y0]} {
+            set spans [dict get $taken $y0]
+        }
+        # The nearest site, then those just clear of each used span.
+        set ks [list [expr {(min(max($x, $x0), $x1 - $width) - $x0) / $pitch}]]
+        foreach span $spans {
+            lassign $span s0 s1
+            lappend ks [expr {($s0 - $width - $x0) / $pitch}] \
+                [expr {-(($x0 - $s1) / $pitch)}]
+        }
+        foreach k $ks {
+            if {$k < 0 || $k > $last} {
+                continue
+            }
+            set sx [expr {$x0 + $k * $pitch}]
+            set distance [expr {abs($sx - $x) + abs($y0 - $y)}]
+            if {$best_distance ne "" && $distance >= $best_distance} {
+                continue
+            }
+            set clear 1
+            foreach span $spans {
+                lassign $span s0 s1
+                if {$sx < $s1 && $s0 < $sx + $width} {
+                    set clear 0
+                    break
+                }
+            }
+            if {$clear} {
+                set best [list $sx $y0 $orient]
+                set best_distance $distance
+            }
         }
     }
     return $best
 }
 
 # Moves each output port buffer `buffer_ports` added, an instance not in the
-# dict `before`, to the row site nearest its pin and makes it FIRM, so global
-# placement leaves it there. The place stage frees it after global placement.
+# dict `before`, to the free row site nearest its pin and makes it FIRM, so
+# global placement leaves it there. The bool property `rb_held_port_buffer`
+# marks it for the place stage, which frees it after global placement.
 proc rb::port_buffers::hold {block before} {
     set rows {}
     foreach row [$block getRows] {
@@ -40,6 +70,7 @@ proc rb::port_buffers::hold {block before} {
         lappend rows [list [$box xMin] [$box yMin] [$box xMax] [$box yMax] \
             [$row getSpacing] [$row getOrient]]
     }
+    set taken [dict create]
     set held 0
     foreach bterm [$block getBTerms] {
         set net [$bterm getNet]
@@ -55,7 +86,7 @@ proc rb::port_buffers::hold {block before} {
             set pin [$bterm getBBox]
             set x [expr {([$pin xMin] + [$pin xMax] - [$master getWidth]) / 2}]
             set y [expr {([$pin yMin] + [$pin yMax] - [$master getHeight]) / 2}]
-            set site [nearest_site $rows $x $y [$master getWidth]]
+            set site [nearest_site $rows $taken $x $y [$master getWidth]]
             if {[llength $site] != 3} {
                 puts ">>>   [$bterm getName]: no row holds [$master getName]; buffer left to global placement"
                 continue
@@ -64,6 +95,8 @@ proc rb::port_buffers::hold {block before} {
             $inst setOrient $orient
             $inst setLocation $sx $sy
             $inst setPlacementStatus FIRM
+            odb::dbBoolProperty_create $inst rb_held_port_buffer 1
+            dict lappend taken $sy [list $sx [expr {$sx + [$master getWidth]}]]
             incr held
         }
     }
