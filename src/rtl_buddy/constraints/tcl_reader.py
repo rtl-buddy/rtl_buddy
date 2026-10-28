@@ -96,9 +96,9 @@ class TclCommand:
 
 @dataclass(frozen=True)
 class UnreadCommand:
-    """A command of interest the reader found but did not evaluate, so it is absent from the result, or present only for what ran before an error.
+    """A command of interest the reader found but did not evaluate, so it is absent from the result.
 
-    Under ``tokenizer``: inside another command's ``{...}`` or ``[...]`` word (a ``foreach``, ``if`` or ``proc`` body, a command substitution). Under ``tcl``: inside a top-level statement the lenient re-read skipped after a Tcl error (``error``).
+    Under ``tokenizer``: inside another command's ``{...}`` or ``[...]`` word (a ``foreach``, ``if`` or ``proc`` body, a command substitution). Under ``tcl``: inside a top-level command the lenient re-read skipped after a Tcl error (``error``), at a place no command of that name ran from before the error.
     """
 
     name: str
@@ -463,10 +463,14 @@ def _read_with_tcl(
             message=message,
         )
         if interest is not None:
+            # A command that ran before the error, such as a loop's create_clock, was read.
+            ran = {tuple(r) for r in warning.get("ran") or () if isinstance(r, list)}
             unread.extend(
-                _statement_unread(
+                u
+                for u in _statement_unread(
                     str(warning.get("text") or ""), line, interest, file, message
                 )
+                if (u.name, u.line) not in ran
             )
 
     commands: list[TclCommand] = []

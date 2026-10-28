@@ -13,7 +13,7 @@
 
 With ``script_path``, ``[info script]`` returns it, the child gets a path-only ``file`` command, and ``source`` reads the named file (relative to the sourcing file's directory, then the working directory) and evaluates it as Tcl's ``source`` does: in the same interp, in the caller's frame (the global frame for a top-level ``source``), with ``[info script]`` naming it while it runs. Commands carry ``"file"``, and an unreadable include is a ``source_unreadable`` warning.
 
-With ``query_names``, the object queries (``get_ports`` ...) and the name accessors (``get_full_name`` ...) return their name arguments as a Tcl list instead of their source form, so a loop over a query's result runs; ``get_property``/``get_attribute`` of the ``period`` of a name ``get_clocks`` returned last returns the ``-period`` of the clock the file created by that name. ``error``, ``throw`` and ``return -code error`` return instead of raising, so a check the stubs cannot answer (``[get_property $p direction] ne "input"``) does not stop the read; each skipped ``error`` is a ``check_skipped`` warning. A top-level command of a file (the read text or a sourced file; commands split at newlines and ``;`` as Tcl splits them) that still fails is skipped and the file carries on after it; each is a ``statement_skipped`` warning with its ``line``, ``message`` and ``text``. A ``source`` loop, a command that never closes, or a resource limit still fails the read.
+With ``query_names``, the object queries (``get_ports`` ...) and the name accessors (``get_full_name`` ...) return their name arguments as a Tcl list instead of their source form, so a loop over a query's result runs; ``get_property``/``get_attribute`` of the ``period`` of a name ``get_clocks`` returned last returns the ``-period`` of the clock the file created by that name. ``error``, ``throw`` and ``return -code error`` return instead of raising, so a check the stubs cannot answer (``[get_property $p direction] ne "input"``) does not stop the read; each skipped ``error`` is a ``check_skipped`` warning. A top-level command of a file (the read text or a sourced file; commands split at newlines and ``;`` as Tcl splits them) that still fails is skipped and the file carries on after it; each is a ``statement_skipped`` warning with its ``line``, ``message``, ``text`` and the ``[name, line]`` of each command of interest in this file it ran before failing (``ran``). A ``source`` loop, a command that never closes, or a resource limit still fails the read.
 
     {"ok": false, "kind": "tcl_error"|"resource_limit"|"unavailable",
      "error": "...", "line": 12, "file": "/abs/inc.sdc", "warnings": [...]}
@@ -488,6 +488,7 @@ def _evaluate(
             script = ["catch", "\n" * first + text, "::__rb_msg", "::__rb_opts"]
             if in_caller:
                 script = ["uplevel", "1", script]
+            mark = len(commands)
             code = int(app.call(_CHILD, "eval", script))
             if code == 0 and index < len(units) - 1:
                 continue
@@ -530,14 +531,20 @@ def _evaluate(
                 site = errorcode[1:3] + ["", ""]
                 raise _ScriptError(message, site[0] or None, _line(site[1]))
             if query_names and not unclosed:
+                file = scripts[-1] if scripts else None
                 warning = {
                     "kind": "statement_skipped",
                     "line": first + 1,
                     "message": message,
                     "text": text,
+                    "ran": [
+                        [c["name"], c["line"]]
+                        for c in commands[mark:]
+                        if c.get("file") == file
+                    ],
                 }
-                if scripts:
-                    warning["file"] = scripts[-1]
+                if file:
+                    warning["file"] = file
                 warnings.append(warning)
                 continue
             raise _ScriptError(message, scripts[-1] if scripts else None, line)

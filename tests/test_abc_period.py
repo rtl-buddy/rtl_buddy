@@ -341,3 +341,20 @@ def test_a_clock_in_a_skipped_statement_is_named_and_unresolved(
     assert rec.rtl_fields["unresolved"] == 1
     assert "could not resolve" in rec.getMessage()
     assert not _events(caplog, "constraints.tcl_error")
+
+
+def test_a_clock_created_before_its_loop_failed_is_not_unresolved(
+    tmp_path, caplog, tcl_backend
+):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text(
+        "foreach c {clk} {\n"
+        "  create_clock -name $c -period 2 [get_ports $c]\n"
+        "  set_load [expr {[get_property [get_ports $c] cap] * 2}] $c\n"
+        "}\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        assert sdc_clock_periods(str(sdc), lambda: 1000.0, "s") == (2000, 0)
+    assert [r.rtl_event for r in caplog.records if r.levelno >= logging.WARNING] == [
+        "constraints.tcl_statement_skipped"
+    ]

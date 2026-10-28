@@ -1610,11 +1610,35 @@ def test_a_skipped_statement_is_named_by_its_file_and_line(
     assert "operand" in rec.rtl_fields["message"]
 
 
-def test_a_loop_that_fails_keeps_its_clocks_and_names_the_rest(tcl_backend):
+@pytest.mark.parametrize("names", ["a", "x a", "a b"])
+def test_a_loop_that_fails_after_creating_its_clock_reports_none_unread(
+    tcl_backend, caplog, names
+):
+    # The pass over `a` fails after its create_clock ran; with "a b" the loop stops there.
+    text = (
+        f"foreach c {{{names}}} {{\n"
+        "  create_clock -name $c -period 2 [get_ports $c]\n"
+        '  if {$c eq "a"} { set_load [expr {[get_property [get_ports $c] cap] * 2}] $c }\n'
+        "}\n"
+        "create_clock -name z -period 5 [get_ports z]\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        result = read_constraints(
+            text, interest=CLOCK, source="l.sdc", lenient_queries=True
+        )
+    assert result.backend == "tcl"
+    created = [n for n in names.split() if n != "b"]
+    assert [c.words[1] for c in result.commands] == [*created, "z"]
+    assert result.unread == []
+    [rec] = _events(caplog, "constraints.tcl_statement_skipped")
+    assert rec.rtl_fields["line"] == 1
+
+
+def test_a_loop_that_fails_before_its_clock_names_it_unread(tcl_backend):
     text = (
         "foreach c {a b} {\n"
+        "  set_load [expr {[get_property [get_ports $c] cap] * 2}] $c\n"
         "  create_clock -name $c -period 2 [get_ports $c]\n"
-        "  set_load [expr {[get_property [get_ports $c] capacitance] * 2}] $c\n"
         "}\n"
         "create_clock -name z -period 5 [get_ports z]\n"
     )
@@ -1622,12 +1646,12 @@ def test_a_loop_that_fails_keeps_its_clocks_and_names_the_rest(tcl_backend):
         text, interest=CLOCK, source="l.sdc", lenient_queries=True
     )
     assert result.backend == "tcl"
-    assert [c.words[1] for c in result.commands] == ["a", "z"]
+    assert [c.words[1] for c in result.commands] == ["z"]
     [unread] = result.unread
     assert (unread.name, unread.enclosing, unread.line, unread.file) == (
         "create_clock",
         "foreach",
-        2,
+        3,
         "l.sdc",
     )
     assert unread.error
