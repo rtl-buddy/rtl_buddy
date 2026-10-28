@@ -18,6 +18,7 @@ from test_pnr_run_overrides import (
 from rtl_buddy.config.pnr import CHECKPOINT_STAGES
 from rtl_buddy.config.pnr_platform import PnrRunOverrides
 from rtl_buddy.errors import FatalRtlBuddyError
+from rtl_buddy import logging_utils
 from rtl_buddy.tools import pnr_abstract
 from rtl_buddy.tools.pnr_openroad import OpenRoadPnr, _cts_obstruction_option
 
@@ -249,6 +250,14 @@ _BAD_VALUES = [
     (
         {"cts-sink-clustering": {"max-diameter": float("inf")}},
         "cts-sink-clustering.max-diameter must be a positive number of microns",
+    ),
+    (
+        {"cts-sink-clustering": {"max-diameter": 10**1000}},
+        "cts-sink-clustering.max-diameter must be a positive number of microns",
+    ),
+    (
+        {"cts-repair-clock-nets": {"max-wire-length": 10**1000}},
+        "cts-repair-clock-nets.max-wire-length must be a positive number of microns",
     ),
     ({"cts-repair-clock-nets": 5}, "cts-repair-clock-nets must be true, false or a"),
     (
@@ -671,6 +680,7 @@ def test_the_option_probe_reads_openroad_s_help(tmp_path, monkeypatch, output, f
 
     def _fake_run(cmd, **kwargs):
         seen["cmd"], seen["input"] = list(cmd), kwargs["input"]
+        seen["cwd"] = kwargs.get("cwd")
         return subprocess.CompletedProcess(cmd, 0, output, "")
 
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
@@ -681,6 +691,20 @@ def test_the_option_probe_reads_openroad_s_help(tmp_path, monkeypatch, output, f
     )
     assert seen["cmd"][-2:] == ["-no_init", "-exit"]
     assert seen["input"] == "help clock_tree_synthesis\nexit\n"
+    assert seen["cwd"] == backend.artefact_dir
+
+
+def test_an_openroad_without_the_flag_logs_why_the_run_stopped():
+    message = logging_utils._human_message(
+        "pnr.cts_obstruction_aware_unsupported",
+        {"pnr": "blk", "exe": "/opt/openroad", "version": "25Q1"},
+    )
+
+    assert message == (
+        'P&R "blk": cts-obstruction-aware: false needs clock_tree_synthesis '
+        "-no_obstruction_aware, which OpenROAD 25Q1 does not take; unset the key "
+        "or use a newer OpenROAD"
+    )
 
 
 # -- configuration digest ----------------------------------------------------------

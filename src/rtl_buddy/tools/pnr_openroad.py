@@ -3988,6 +3988,7 @@ class OpenRoadPnr:
 
     def _has_command_option(self, command: str, option: str) -> bool:
         """Return whether OpenROAD's `help <command>` lists `option`, such as `-no_obstruction_aware`; False if it cannot be determined."""
+        os.makedirs(self.artefact_dir, exist_ok=True)
         try:
             r = subprocess.run(
                 [self.openroad_executable, "-no_init", "-exit"],
@@ -3996,6 +3997,7 @@ class OpenRoadPnr:
                 text=True,
                 timeout=15,
                 check=False,
+                cwd=self.artefact_dir,
             )
         except (OSError, subprocess.SubprocessError):
             return False

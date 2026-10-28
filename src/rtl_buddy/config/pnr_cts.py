@@ -88,7 +88,11 @@ def _number(value) -> float | None:
     """`value` as a positive finite float, or `None` when it is not one."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value) if math.isfinite(value) and value > 0 else None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) and number > 0 else None
 
 
 def read_cts_sink_clustering(where: str, value) -> CtsSinkClustering | None:
