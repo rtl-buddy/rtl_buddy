@@ -129,7 +129,7 @@ detailed_placement{{ dpl_options }}
 {{ @clocks }}{{ propagated_clocks }}{{ @/clocks }}{{ cts_dont_use_block }}clock_tree_synthesis \
     -root_buf {{ cts_root_buf }} \
     -buf_list $CTS_BUF \
-    {{ cts_clustering_option }}{{ cts_ndr_option }}{{ cts_clock_nets_option }}{{ cts_insertion_delay_option }}
+    {{ cts_clustering_option }}{{ cts_ndr_option }}{{ cts_clock_nets_option }}{{ cts_insertion_delay_option }}{{ cts_obstruction_option }}
 {{ cts_repair_clock_nets }}{{ cts_dont_use_restore_block }}{{ hook_after_cts_block }}
 puts ">>> Detail placement (post-CTS)"
 detailed_placement{{ dpl_options }}
