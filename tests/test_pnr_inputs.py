@@ -30,7 +30,7 @@ from test_pnr_checkpoints import _backend, _pnr_cfg, _runs
 from test_pnr_hooks import _stale_changes
 from test_pnr_plan import _driver, _run, _suite
 
-from rtl_buddy.config.pnr import PnrConfigFile, PnrSuiteConfig
+from rtl_buddy.config.pnr import PnrConfigFile, PnrFloorplanFile, PnrSuiteConfig
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.tools import pnr_abstract, pnr_stages
 from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
@@ -38,7 +38,13 @@ from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
 def _cfg_file(**kw):
     return PnrConfigFile(
-        name="r", desc="r", synth="s", synth_path="synth.yaml", platform="p", **kw
+        floorplan=PnrFloorplanFile(utilization=0.55),
+        name="r",
+        desc="r",
+        synth="s",
+        synth_path="synth.yaml",
+        platform="p",
+        **kw,
     )
 
 
@@ -65,6 +71,7 @@ def test_inputs_load_from_yaml_relative_to_the_file_in_order(tmp_path):
             desc: d
             synth: s
             synth-path: synth.yaml
+            floorplan: {utilization: 0.55}
             platform: p
             inputs: [scripts/closure.tcl, window.tcl]
         """)

@@ -155,7 +155,7 @@ cfg-pnr-platforms:
 | Block | Fields and behavior |
 |---|---|
 | `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `abc-script`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, `unresolved-interfaces`, `clock-gating-min-flops`, `clock-gating-max-flops`, and `abc-persistent`. OpenROAD also accepts `strategy` |
-| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical` (default `metal3` / `metal2`), `placement.*`, `dont-use-cells`, `pdn-config`, `rcx-rules`, `tracks-tcl`, `layer-rc-tcl`, `tapcell-tcl`, and `platform-tcl`. `corners` maps a corner name to its standard-cell Liberty: one path, or a list for cells split across files. `macro-lef` and `cell-gds` each take one path or a list, read in order. Each path resolves on its own from `root_config.yaml` |
+| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical` (both required by `rb pnr`: `place_pins` has no default layers), `placement.*`, `dont-use-cells`, `pdn-config`, `rcx-rules`, `tracks-tcl`, `layer-rc-tcl`, `tapcell-tcl`, and `platform-tcl`. `corners` maps a corner name to its standard-cell Liberty: one path, or a list for cells split across files. `macro-lef` and `cell-gds` each take one path or a list, read in order. Each path resolves on its own from `root_config.yaml` |
 | `cfg-synth-platforms` | `name`, `pdk`; optional `corner` (the first declared corner by default), `dont-use-cells`, `abc-driving-cell` (the Liberty cell ABC assumes drives every primary input), `abc-output-load` (femtofarads on every primary output) and `clock-gating-cell` (`'<cell> <enable>:<clock>:<gated clock>'`, the ICG `clockgate` uses instead of choosing one from the Liberty). The two `abc-*` keys are written to `abc.constr` and passed as `abc -constr` on mapped runs; see [Synthesis](../concepts/synthesis.md#give-abc-a-driving-cell-and-output-load) and [clock gating](../concepts/synthesis.md#gate-enable-flops-with-clock-gating-cells) |
 | `cfg-pnr-platforms` | `name`, `pdk`; optional `corner` or `corners` (a list, first is primary, excludes `corner`), `routing-layers.signal` / `.clock`, `placement.*`, `dont-use-cells`, and the P&R keys below. See [Place-and-Route](../concepts/pnr.md#configure-the-physical-platform) |
 | `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `yosys.abc-script`, `yosys.clock-gating-min-flops`, `yosys.clock-gating-max-flops`, `openroad.run`, `openroad.pre-sta-tcl`, and `openroad.repair` settings. `openroad.repair` (default `false`) runs `repair_design` (`-pre_placement` when no instance is placed) and `repair_timing -setup` before the synthesis STA reports. The built-in default is `standard`. Precedence is per-run override, then effort, then tool config |
@@ -171,9 +171,9 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | Key | Where | Behavior |
 |---|---|---|
 | `placement.density` | PDK, platform | Global-placement target density, above 0 and at most 1. Default `0.7` |
-| `placement.padding` | PDK, platform | Cell padding in sites on each side. Default `1` |
-| `placement.macro-halo` | PDK, platform | Channel in µm the packer keeps between macros and from the core edge. Default `20.0`; below about 19 fails `PDN-0179` on sky130hd |
-| `placement.macro-cell-halo` | PDK, platform | Standard-cell keep-out in µm around each macro. Default `1.0`; `0` disables |
+| `placement.padding` | PDK, platform | Cell padding in sites on each side. Default `0`, as `global_placement` and ORFS |
+| `placement.macro-halo` | PDK, platform | Channel in µm the packer keeps between macros and from the core edge. Default `20.0`; below about 19 fails `PDN-0179` on sky130hd. RTL-MP gets it as its halo only when set; unset leaves RTL-MP's own channels |
+| `placement.macro-cell-halo` | PDK, platform | Standard-cell keep-out in µm around each macro: a hard placement blockage that leaves the rows whole. Default `0`, no blockage |
 | `placement.tie-separation` | PDK, platform | Distance in µm between each constant-driven load and its own tie cell. Default `0` |
 | `placement.reference-hpwl` | PDK, platform | Positive number passed as `global_placement -reference_hpwl`. Unset keeps the placer's own |
 | `placement.routability-driven` | PDK, platform | `true` adds `-routability_driven`. Default `false` |
@@ -187,7 +187,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `layer-rc-tcl` | PDK | `set_layer_rc` / `set_wire_rc` script, sourced after `read_sdc` by `rb pnr`, a `netlist-source: pnr` power run and a synthesis effort with `openroad.repair`. Unset warns `pnr.no_wire_rc` |
 | `platform-tcl` | PDK | Sourced before the Liberty reads of `rb pnr` and `rb power` |
 | `tracks-tcl` | PDK | `make_tracks` script, replacing the bare `make_tracks` |
-| `tapcell-tcl` | PDK, platform, run | Tap and endcap insertion, after macro placement |
+| `tapcell-tcl` | PDK, platform, run | Tap and endcap insertion, after macro placement. Unset runs `cut_rows`, which cuts the rows 2 µm around each placed macro, as ORFS does |
 | `routing-layers.signal`, `routing-layers.clock` | platform, run | Layer ranges for `set_routing_layers -signal` / `-clock` |
 | `cts-buffer` | platform, run | One cell or a list; a list's first entry is the root buffer |
 | `cts-clock-nets` | run | One net or a list: `clock_tree_synthesis -clk_nets`, building trees for those clock nets only. Unset lets CTS find every clock |
@@ -197,7 +197,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `cts-sink-clustering` | platform | `-sink_clustering_enable` for CTS. Default `true` |
 | `cts-apply-ndr` | platform | `none`, `root_only`, `half` or `full`. Unset keeps OpenROAD's `half` |
 | `port-buffer` | platform, run | Cell `buffer_ports` inserts. Unset lets OpenROAD choose |
-| `post-cts-setup-repair` | platform, run | `true` runs `repair_timing -setup` after CTS. Default `false` |
+| `post-cts-setup-repair` | platform, run | `true` (default) runs `repair_timing -setup` after CTS, before the hold repair, as ORFS repairs both; `false` repairs hold only |
 | `global-route-hold-repair` | platform, run | `true` is `global-route-repair: {hold-margin: 0}`; not with `global-route-repair` at the same level. On a run, `false` drops the hold repair from the platform's block, and turns the block off when nothing is left. Default `false` |
 | `global-route-repair` | platform, run | Repair after global route. See below |
 | `post-route-repair` | platform, run | Repair rounds after detailed route. See below |
@@ -235,7 +235,7 @@ A run's block overrides the platform's field by field; `null` sets a key to its 
 
 | Key | Behavior |
 |---|---|
-| `congestion-iterations` | Positive integer: `-congestion_iterations` of every full global route. Default `20` |
+| `congestion-iterations` | Positive integer: `-congestion_iterations` of every full global route. Default `30`, as ORFS |
 | `congestion-report-iter-step` | Non-negative integer: `-congestion_report_iter_step` of every full global route. An overflowing route writes `congestion-<i>.rpt` beside `congestion.rpt` every that many iterations |
 | `grid-origin` | `[x, y]` in DBU: `-grid_origin` of every `global_route` call, incremental ones included. Before each detailed route the flow writes and reads back the guides, which rebuilds the GCell grid at the origin; in the main flow it does so at the start of the `detailed_route` stage, after the `global_route` checkpoint. `[0, 0]` is set too: it adds the option and the round trip |
 | `layer-adjustment` | Map of routing layer to 0–1: `set_global_routing_layer_adjustment <layer>` after the all-layers `routing-layer-adjustment` |
@@ -826,7 +826,7 @@ syntheses:
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `abc_script`, `strategy`, `frontend`, `plugin_path`, `single_unit`, `best_effort_hierarchy`, `static_functions`, `conflicting_drivers`, `unresolved_interfaces`, `clock_gating_min_flops` |
 | `effort` | Default `standard` | `cfg-synth-efforts` entry. CLI `--effort` wins |
-| `threads` | Default unset (1) | OpenROAD worker threads for the `tool: openroad` timing stage, as in `pnr.yaml`. No effect on Yosys. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
+| `threads` | OpenROAD's | OpenROAD worker threads for the `tool: openroad` timing stage, as in `pnr.yaml`. No effect on Yosys. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 | `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
@@ -889,7 +889,7 @@ runs:
 | `mode` | `closure` | `probe` skips timing repair and stops after global route. Not with `harden: true`. See [Probe a floorplan](../concepts/pnr.md#probe-a-floorplan) |
 | `signoff` | Platform's | Overrides the platform's block field by field; `null` turns it off. See [Gate signoff](../concepts/pnr.md#gate-signoff) |
 | `fail-on-electrical` | `false` | `true` fails a routed run with any max-slew, max-capacitance or max-fanout violator, and post-route repair counts each round's max-slew and max-capacitance violators, so a round that ties on timing and DRCs wins with fewer. It adds `electrical` to `signoff.fail-on` |
-| `threads` | 1 | Positive integer, or `auto` for the CPUs of the current allocation. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
+| `threads` | OpenROAD's | Positive integer, or `auto` for the CPUs of the current allocation. Unset passes none, and OpenROAD picks its own. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `detailed-route-verbose` | 1 | `detailed_route -verbose` level; 0 silences the iteration log |
 | `checkpoints` | `false` | `true`, a stage, or a list of `floorplan`, `place`, `cts`, `global_route`, `detailed_route`, `post_route_repair`. `[]` writes only the progress log. See [Keep stage checkpoints](../concepts/pnr.md#keep-stage-checkpoints) |
 | `stages` | `false` | `true` runs each stage in its own session. A `checkpoints` list may then leave out only `post_route_repair`. See [Run stages as separate sessions](../concepts/pnr.md#run-stages-as-separate-sessions) |
@@ -898,9 +898,9 @@ runs:
 | `abstract` | — | Needs `harden`. `bloat`: `occupied` (default) or a number; `feedthrough-layers`: layers written with real shapes; `gds: false`: publish no GDS and skip the forced stream-out; a parent's `strict` stream-out then fails at setup and a `preview` one lacks the block |
 | `buffer-ports` | Value of `harden` | `true` buffers every input and output port after pin placement |
 | `blocks` | — | Hardened blocks: `name` (module), `pnr` (a `harden: true` run), `pnr-path` (default this file). Needs a single-corner platform. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
-| `floorplan.utilization` | 0.55 | Fraction of the core area the cells fill |
+| `floorplan.utilization` | Required without `die-area` | Fraction of the core area the cells fill. `initialize_floorplan` has no default |
 | `floorplan.aspect` | 1.0 | Die aspect ratio |
-| `floorplan.core-margin` | 2.0 | Core-to-die margin in µm |
+| `floorplan.core-margin` | 1.0 | Core-to-die margin in µm, as ORFS |
 | `floorplan.die-area`, `floorplan.core-area` | — | `[x0, y0, x1, y1]` in µm, set together, core inside die. Exclude the three keys above |
 | `floorplan.core-cutouts` | — | Rectangles removed from the core |
 | `floorplan.blockages` | — | Placement blockages; see below |
@@ -980,7 +980,7 @@ runs:
 | `constraints` | Required for synth source | SDC path. For P&R source it defaults to the routed SDC, the primary corner's on a multi-corner platform |
 | `platform` | Required | `cfg-pnr-platforms` entry |
 | `lib-paths` | Optional | Extra macro Liberty files relative to `power.yaml`, appended after what the referenced run declares. An entry can map each platform corner to its Liberty, as in `pnr.yaml`, here or inherited from the P&R run. A map must name every corner of the platform; corners the platform lacks are ignored, and on a single-corner platform the entry is that corner's file. A file listed both as a plain entry and in a map fails setup |
-| `threads` | Default unset (1) | OpenROAD worker threads, as in `pnr.yaml`. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
+| `threads` | OpenROAD's | OpenROAD worker threads, as in `pnr.yaml`. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `activity.saif` / `.vcd` | Mutually exclusive | Activity trace path |
 | `activity.scope` | Only with a trace | OpenROAD trace scope; invalid without SAIF or VCD |
 | `activity.default-toggle-rate` | Default 0.1 | Synthetic toggle rate for dynamic mode without a trace |

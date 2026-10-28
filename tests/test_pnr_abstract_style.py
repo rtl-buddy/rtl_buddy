@@ -55,7 +55,8 @@ def _suite(tmp_path, extra=""):
     path.write_text(
         "rtl-buddy-filetype: pnr_config\nruns:\n"
         "  - name: blk\n    desc: block\n    synth: s\n"
-        "    synth-path: synth.yaml\n    platform: p\n" + extra
+        "    synth-path: synth.yaml\n    floorplan: {utilization: 0.55}\n"
+        "    platform: p\n" + extra
     )
     return PnrSuiteConfig(str(path)).get_runs("blk")[0]
 

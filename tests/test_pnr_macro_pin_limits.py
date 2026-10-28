@@ -194,11 +194,11 @@ def test_the_step_runs_on_the_legalised_post_repair_placement_before_cts(tmp_pat
     # Buffers weakest first, the two margins, the global-placement padding, the tag
     # and the flow's legalizer options.
     assert block.endswith(
-        "rb::macro_pins::repair {BUF_X1 BUF_X4 BUF_X8} 0.1 0.1 1 "
+        "rb::macro_pins::repair {BUF_X1 BUF_X4 BUF_X8} 0.1 0.1 0 "
         "RB-MACRO-PIN-LIMITS: [list]\n"
     )
     assert _block(tmp_path, _on(tmp_path, capacitance_margin=0.5)).endswith(
-        "{BUF_X1 BUF_X4 BUF_X8} 0.05 0.5 1 RB-MACRO-PIN-LIMITS: [list]\n"
+        "{BUF_X1 BUF_X4 BUF_X8} 0.05 0.5 0 RB-MACRO-PIN-LIMITS: [list]\n"
     )
 
 

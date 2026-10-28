@@ -58,8 +58,14 @@ from rtl_buddy.tools.pnr_openroad import OpenRoadPnr, _run_hook_lines
 
 
 def _cfg_file(**kw):
+    kw.setdefault("floorplan", PnrFloorplanFile(utilization=0.55))
     return PnrConfigFile(
-        name="r", desc="r", synth="s", synth_path="synth.yaml", platform="p", **kw
+        name="r",
+        desc="r",
+        synth="s",
+        synth_path="synth.yaml",
+        platform="p",
+        **kw,
     )
 
 
@@ -113,6 +119,7 @@ def test_hooks_load_from_yaml_relative_to_the_file(tmp_path):
             desc: d
             synth: s
             synth-path: synth.yaml
+            floorplan: {utilization: 0.55}
             platform: p
             hooks:
               macro-placement: macros.tcl

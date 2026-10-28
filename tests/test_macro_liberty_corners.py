@@ -74,6 +74,7 @@ def _load_pnr(tmp_path, lib_paths: str):
             desc: d
             synth: s
             synth-path: synth.yaml
+            floorplan: {{utilization: 0.55}}
             platform: p
             constraints: top.sdc
             lib-paths: {lib_paths}

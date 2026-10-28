@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 from test_pnr_checkpoints import _HARNESS, _REAL_RUN, _backend, _runs, _tcl_command
 
-from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
+from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr import PnrConfig, PnrFloorplan, PnrSuiteConfig
 from rtl_buddy.config.pnr_platform import (
     PnrPlatformConfig,
@@ -31,6 +31,7 @@ _CORNERS = ["tt", "ss", "ff"]
 def _pdk(tmp_path, **changes):
     fields = {
         "name": "sky130hd",
+        "pin_layers": PdkPinLayersFile(horizontal="metal3", vertical="metal2"),
         "site": "unithd",
         "corners": {c: f"pdk/lib/{c}.lib" for c in _CORNERS},
         "tech_lef": "pdk/lef/tech.lef",
@@ -124,6 +125,7 @@ def _load(tmp_path, constraints: str) -> PnrConfig:
             desc: d
             synth: s
             synth-path: synth.yaml
+            floorplan: {{utilization: 0.55}}
             platform: p
             constraints: {constraints}
         """)

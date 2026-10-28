@@ -2690,6 +2690,7 @@ def _write_upstream_suites(
             tool: "openroad"
             synth: "demo_synth"
             synth-path: "synth.yaml"
+            floorplan: {{utilization: 0.55}}
             constraints: "constraints.sdc"
             platform: "nangate45_typ"
             lib-paths: {_list(pnr_lib)}
@@ -3507,6 +3508,7 @@ def _publish_block_abstract(tmp_path, *, module="blk_top"):
             desc: block
             synth: s
             synth-path: synth.yaml
+            floorplan: {utilization: 0.55}
             platform: p
             harden: true
         """)

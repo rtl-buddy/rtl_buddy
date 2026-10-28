@@ -29,7 +29,12 @@ from rtl_buddy.config.dispatch import (
     DispatchResourcesFile,
     JobResources,
 )
-from rtl_buddy.config.pnr import PNR_STAGES, PnrConfigFile, PnrResources
+from rtl_buddy.config.pnr import (
+    PNR_STAGES,
+    PnrConfigFile,
+    PnrFloorplanFile,
+    PnrResources,
+)
 from rtl_buddy.dispatch import slurm as slurm_module
 from rtl_buddy.dispatch.argv import pnr_stage_job_argv
 from rtl_buddy.dispatch.base import (
@@ -2486,6 +2491,7 @@ def test_the_dispatch_backend_reaches_the_named_run(tmp_path, monkeypatch):
 
 def _cfg_file(resources):
     return PnrConfigFile(
+        floorplan=PnrFloorplanFile(utilization=0.55),
         name="r",
         desc="r",
         synth="s",

@@ -262,7 +262,7 @@ class PnrPlatformConfigFile:
     # `repair_clock_nets` after CTS.
     cts_repair_clock_nets: bool = field(rename="cts-repair-clock-nets", default=False)
     # Runs `repair_timing -setup` before the post-CTS hold repair.
-    post_cts_setup_repair: bool = field(rename="post-cts-setup-repair", default=False)
+    post_cts_setup_repair: bool = field(rename="post-cts-setup-repair", default=True)
     # Repairs hold again after global route, on `estimate_parasitics -global_routing`, as ORFS does: shorthand for `global-route-repair: {hold-margin: 0}`.
     global_route_hold_repair: bool = field(
         rename="global-route-hold-repair", default=False
@@ -432,8 +432,9 @@ class PnrPlatformConfig:
         self._placement_padding = _pick(
             "padding", pdk.get_placement_padding(), DEFAULT_PLACEMENT_PADDING
         )
+        # Unset gives the packer its default and RTL-MP no channel, as ORFS passes none.
         self._placement_macro_halo = _pick(
-            "macro_halo", pdk.get_placement_macro_halo(), DEFAULT_PLACEMENT_MACRO_HALO
+            "macro_halo", pdk.get_placement_macro_halo(), None
         )
         self._placement_macro_cell_halo = _pick(
             "macro_cell_halo",
@@ -629,6 +630,12 @@ class PnrPlatformConfig:
 
     def get_placement_macro_halo(self) -> float:
         """Macro halo in microns, after platform/PDK/default."""
+        if self._placement_macro_halo is None:
+            return DEFAULT_PLACEMENT_MACRO_HALO
+        return self._placement_macro_halo
+
+    def get_placement_macro_halo_setting(self) -> float | None:
+        """Macro halo in microns from platform or PDK, or `None` when neither sets it."""
         return self._placement_macro_halo
 
     def get_placement_macro_cell_halo(self) -> float:

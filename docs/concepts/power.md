@@ -156,7 +156,7 @@ power-configs:
   - power/block_b/power.yaml
 ```
 
-OpenROAD runs on one thread unless the run sets `threads:` to a positive integer or `auto`. See [OpenROAD threads](pnr.md#openroad-threads).
+Unset, `threads:` leaves OpenROAD's own thread count; set it to a positive integer or `auto` to choose. See [OpenROAD threads](pnr.md#openroad-threads).
 
 ## Interpret results
 

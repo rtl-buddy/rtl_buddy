@@ -105,6 +105,7 @@ def test_the_yaml_spelling_loads(tmp_path):
                 synth-path: synth.yaml
                 platform: p
                 floorplan:
+                  utilization: 0.55
                   macros:
                     - {instance: u_sram, location: [30, 200], orientation: MX, halo: [3, 3]}
                     - {instance: "u_c*", orientation: R180}

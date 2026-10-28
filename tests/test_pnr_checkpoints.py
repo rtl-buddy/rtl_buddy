@@ -28,11 +28,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
+from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr import (
     CHECKPOINT_STAGES,
     PnrConfig,
     PnrConfigFile,
+    PnrFloorplanFile,
     PnrFloorplan,
     PnrSuiteConfig,
 )
@@ -232,6 +233,7 @@ def _tcl_command(harness: Path, script: str) -> list[str]:
 def _pdk(tmp_path, **changes):
     fields = {
         "name": "nangate45",
+        "pin_layers": PdkPinLayersFile(horizontal="metal3", vertical="metal2"),
         "site": "FreePDK45_38x28_10R_NP_162NW_34O",
         "corners": {"typ": "pdk/lib/typ.lib"},
         "tech_lef": "pdk/lef/tech.lef",
@@ -386,7 +388,13 @@ _ROUTED = ("demo_top.def", "demo_top.routed.odb", "demo_top.routed.sdc")
 
 def _cfg_file(**kw):
     return PnrConfigFile(
-        name="r", desc="r", synth="s", synth_path="synth.yaml", platform="p", **kw
+        floorplan=PnrFloorplanFile(utilization=0.55),
+        name="r",
+        desc="r",
+        synth="s",
+        synth_path="synth.yaml",
+        platform="p",
+        **kw,
     )
 
 
@@ -425,12 +433,14 @@ def test_checkpoints_key_loads_from_yaml(tmp_path):
             desc: d
             synth: s
             synth-path: synth.yaml
+            floorplan: {utilization: 0.55}
             platform: p
             checkpoints: true
           - name: one
             desc: d
             synth: s
             synth-path: synth.yaml
+            floorplan: {utilization: 0.55}
             platform: p
             checkpoints: global_route
         """)

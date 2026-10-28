@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
+from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.tools import openroad_corners
@@ -22,6 +22,7 @@ from test_power import _FakePlatform, _make_power_backend
 def _pdk(tmp_path, corners=None):
     return PdkConfig(
         PdkConfigFile(
+            pin_layers=PdkPinLayersFile(horizontal="metal3", vertical="metal2"),
             name="sky130hd",
             site="unithd",
             corners=corners

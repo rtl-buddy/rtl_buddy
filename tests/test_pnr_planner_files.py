@@ -46,6 +46,13 @@ def _write(path: Path, text: str) -> str:
     return str(path)
 
 
+def _sized(floorplan: dict) -> dict:
+    """`floorplan` with a utilization when it sets no size."""
+    if floorplan.keys() & {"utilization", "die_area", "core_area"}:
+        return floorplan
+    return {"utilization": 0.55, **floorplan}
+
+
 def _load(tmp_path, placement=None, **floorplan) -> PnrConfig:
     return PnrConfigFile(
         name="fp",
@@ -53,7 +60,7 @@ def _load(tmp_path, placement=None, **floorplan) -> PnrConfig:
         synth="demo",
         synth_path="synth.yaml",
         platform="p",
-        floorplan=PnrFloorplanFile(**floorplan),
+        floorplan=PnrFloorplanFile(**_sized(floorplan)),
         placement=placement,
     ).initialise(str(tmp_path))
 
@@ -116,6 +123,7 @@ def test_a_suite_with_a_missing_planner_file_still_loads(tmp_path):
             synth-path: synth.yaml
             platform: p
             floorplan:
+              utilization: 0.55
               macros-file: plan/missing.yaml
               pins-file: plan/missing.json
         """,
@@ -431,7 +439,7 @@ def test_unset_keys_add_nothing_around_global_placement(tmp_path):
         assert "RB_GP_BLOCKAGES" not in text
         assert "rb::rotated" not in text
         assert "RB_DPL_OPTIONS" not in text
-        assert "global_placement -density 0.7 -pad_left 1 -pad_right 1\n\n" in text
+        assert "global_placement -density 0.7 -pad_left 0 -pad_right 0\n\n" in text
         assert text.count("detailed_placement\n") == 3
 
 
@@ -629,6 +637,7 @@ def test_set_keys_enter_the_abstract_record(tmp_path):
         synth_path="synth.yaml",
         platform="p",
         floorplan=PnrFloorplanFile(
+            utilization=0.55,
             macros_file="plan/m.yaml",
             pins_file="plan/p.json",
             macro_snap=False,

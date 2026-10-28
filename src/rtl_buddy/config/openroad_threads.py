@@ -1,6 +1,6 @@
 """OpenROAD worker-thread count (`threads:`) for the pnr, power and synth flows.
 
-- Unset: OpenROAD's default of one thread; nothing is emitted.
+- Unset: nothing is emitted, and OpenROAD uses its own default: every hardware thread on 26Q4, one thread before.
 - A positive integer: emitted as `set_thread_count N` ahead of the first tool command. Anything else except ``auto`` fails config loading.
 - ``auto``: the CPU count of the current allocation, or one when there is none. Never the host core count.
 - A count above the detected allocation is clamped to it with a WARNING.
@@ -103,7 +103,7 @@ def detect_allocation(
 class ThreadPlan:
     """The thread count for one OpenROAD invocation.
 
-    ``count`` is what the script sets, or OpenROAD's default of one when ``emit`` is false.
+    ``count`` is what the script sets, or 1 when ``emit`` is false.
     """
 
     requested: int | str | None

@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from rtl_buddy.config.blocks import BlockRef
-from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
+from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr import PnrSuiteConfig
 from rtl_buddy.config.pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
 from rtl_buddy.config.synth import SynthSuiteConfig
@@ -42,6 +42,7 @@ def _block_platform(tmp_path):
     """
     pdk = PdkConfig(
         PdkConfigFile(
+            pin_layers=PdkPinLayersFile(horizontal="metal3", vertical="metal2"),
             name="p",
             site="core",
             corners={"typ": "pdk/typ.lib"},
@@ -78,6 +79,7 @@ def _block_suite(
             desc: block
             synth: s
             synth-path: synth.yaml
+            floorplan: {{utilization: 0.55}}
             platform: p
             harden: {"true" if harden else "false"}
         """)
@@ -136,7 +138,8 @@ def _top_suite(tmp_path, blocks_yaml):
         tmp_path / "top/pnr.yaml",
         "rtl-buddy-filetype: pnr_config\nruns:\n"
         "  - name: top_pnr\n    desc: top\n    synth: s\n"
-        "    synth-path: synth.yaml\n    platform: p\n" + blocks_yaml,
+        "    synth-path: synth.yaml\n    floorplan: {utilization: 0.55}\n"
+        "    platform: p\n" + blocks_yaml,
     )
     return path
 
@@ -261,6 +264,7 @@ def test_an_abstract_that_records_no_technology_is_refused(tmp_path):
 def _pdk(tmp_path):
     pdk = PdkConfig(
         PdkConfigFile(
+            pin_layers=PdkPinLayersFile(horizontal="metal3", vertical="metal2"),
             name="p",
             site="core",
             corners={"typ": "pdk/typ.lib"},
@@ -482,7 +486,9 @@ def test_a_touched_but_unchanged_input_is_not_stale(tmp_path, monkeypatch):
         ),
         (
             lambda t: (t / "blk/pnr.yaml").write_text(
-                (t / "blk/pnr.yaml").read_text() + "    floorplan: {utilization: 0.3}\n"
+                (t / "blk/pnr.yaml")
+                .read_text()
+                .replace("utilization: 0.55", "utilization: 0.3")
             ),
             "config changed (floorplan)",
         ),
