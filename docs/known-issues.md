@@ -10,9 +10,9 @@ Find limitations and workarounds by workflow, from CDC and simulation through di
 
 rtl-buddy-cdc 0.3.x treats `xpm_cdc_*` instances as dual-clock blackboxes. It reports `CDC-BBX` and drops their crossings from the report and domain map. Waivers hide the finding but do not recover the crossings. Upgrade with `uv tool install -U rtl-buddy-cdc`.
 
-## rtl-buddy-cdc cannot take a filelist `+incdir+`
+## Filelist `+incdir+` needs rtl-buddy-cdc 0.7 or later
 
-rtl-buddy-cdc has no include-path option, so `rb cdc` and the hub's domain-map build cannot pass it `+incdir+` entries. The run warns `cdc.filelist_incdirs_unsupported` and names the directories. A header that resolves only through one of them fails with `Cannot find include file`. Write the `` `include `` path relative to the including file, or use the `vivado` cdc tool.
+`rb cdc` and the hub's domain-map build pass each `+incdir+` to rtl-buddy-cdc as `--incdir`, but only when `rtl-buddy-cdc lint --help` lists that option (rtl-buddy-cdc#311, released after 0.6.0). An older analyzer gets no include directories, and the run warns `cdc.filelist_incdirs_unsupported`, naming the directories. A header that resolves only through one of them then fails with `Cannot find include file`. Upgrade with `uv tool install -U rtl-buddy-cdc`, write the `` `include `` path relative to the including file, or use the `vivado` cdc tool.
 
 ## Coverage totals are per elaboration by default
 

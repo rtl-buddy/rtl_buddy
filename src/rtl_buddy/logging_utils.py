@@ -2912,12 +2912,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             incdirs = fields.get("incdirs") or []
             return (
                 f'cdc "{fields.get("analysis")}": {fields.get("count")} '
-                "filelist +incdir+ entr(ies) cannot reach rtl-buddy-cdc, "
-                "which has no include-path option: "
+                f"filelist +incdir+ entr(ies) not passed: {fields.get('exe')!r} "
+                "lint --help does not list --incdir: "
                 + ", ".join(str(d) for d in incdirs)
                 + ". A header found only through them fails with "
-                "'Cannot find include file'; spell the `include relative to "
-                "the including file or use the vivado cdc tool"
+                "'Cannot find include file'; install an rtl-buddy-cdc release "
+                "with --incdir (rtl-buddy-cdc#311), spell the `include relative "
+                "to the including file, or use the vivado cdc tool"
             )
         case "cdc.vivado_waivers_unsupported":
             return (
