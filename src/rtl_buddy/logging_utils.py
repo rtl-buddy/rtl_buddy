@@ -282,6 +282,15 @@ def _format_duration(duration: Any) -> str | None:
 
 _BACKEND_NAMES = {"slurm": "Slurm"}
 
+# How a `pnr.post_route_round` event's `decided_by` reads.
+_POST_ROUTE_DECIDED = {
+    "drc_violations": "DRC violations",
+    "timing": "timing",
+    "worst_violation": "the worst violation",
+    "electrical_violators": "electrical violators",
+    "tie": "a tie, which keeps the best",
+}
+
 
 def _format_elapsed(seconds: Any) -> str:
     """Compact wall-clock duration: ``45s`` / ``12m34s`` / ``1h02m03s``."""
@@ -2436,6 +2445,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 + f" ({repair}): {timing}, "
                 f"{fields.get('drc_count')} DRC violation(s){electrical}; "
                 f"best round {fields.get('best_round')}"
+                + (
+                    f", decided on {_POST_ROUTE_DECIDED.get(decided, decided)}"
+                    if (decided := fields.get("decided_by"))
+                    else ""
+                )
             )
         case "pnr.post_route_round_failed":
             return (
