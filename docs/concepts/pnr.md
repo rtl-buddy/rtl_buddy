@@ -484,7 +484,7 @@ By default each stripe layer connects to the next; `connect: [[met1, met4], ...]
 | `after-extraction` | In every session that writes a SPEF (each post-route repair round's extraction and the final one), after `write_spef` and before rb reads it. `$rb_spef` is its path. Needs `rcx-rules`. |
 | `before-reports` | After fill and extraction, before the final reports |
 | `after-reports` | After the final reports, on their parasitics, before rb writes the routed outputs |
-| `stage-end` | At the end of every stage, before its checkpoint, with `$rb_stage` naming the stage and `$rb_mode` the run's `mode` (`closure` or `probe`). In post-route repair, at the end of each repair round. |
+| `stage-end` | At the end of every stage, before its checkpoint, with `$rb_stage` naming the stage and `$rb_mode` the run's `mode` (`closure` or `probe`). In post-route repair, at the end of each repair round, including the electrical round; when round 0 stops the rounds, the stage keeps the detailed route and runs none. |
 
 Hooks run at Tcl global scope in `artefacts/<run>/`, with `$OUT_DIR` and `$DESIGN` set. A Tcl error, `exit` or stray `return` in a hook fails the run naming the point and file; a `stage-end` hook's error also names the stage, and fails the run in a post-route repair round too, where other failures only set the round aside. Results come from the final reports, so a report a hook prints earlier does not change them. Hook files are inputs of checkpoints and hardened abstracts. On a multi-corner platform an SDC command in a hook constrains the primary corner only; see [Sign off at several corners](#sign-off-at-several-corners).
 
