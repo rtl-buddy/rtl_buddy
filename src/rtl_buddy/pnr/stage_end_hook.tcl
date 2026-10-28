@@ -1,7 +1,7 @@
-# The `stage-end` hook point: substituted after `hooks.tcl` only when pnr.yaml
-# sets it. `rb::hook::stage_end` runs one file at the end of `stage` with the
-# stage in `$rb_stage`; the flow sets `$rb_mode` before it. A failure names the
-# stage.
+# The `stage-end` hook point, substituted after `hooks.tcl` only when pnr.yaml
+# sets it. `rb::hook::stage_end` runs one file at the end of `stage`, with the
+# stage in `$rb_stage`; the flow sets `$rb_mode` after this file. The stage
+# leads a failure's message.
 
 proc rb::hook::stage_end {stage path} {
     set ::rb_stage $stage
