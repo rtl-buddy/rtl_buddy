@@ -36,6 +36,7 @@ from ..config.pnr import (
     PnrFloorplan,
     with_planner_files,
 )
+from ..config.pnr_cts import CtsRepairClockNets, CtsSinkClustering
 from ..config.pnr_global_route import GlobalRoute
 from ..config.pnr_signoff import Signoff, effective_gates
 from ..config.pnr_repair import (
@@ -750,15 +751,36 @@ def _cts_clock_nets_option(platform) -> str:
     return f" -clk_nets {{{' '.join(nets)}}}" if nets else ""
 
 
+def _cts_clustering_option(platform) -> str:
+    """Return the sink-clustering options of the CTS invocation, without a leading space, or `""` when `cts-sink-clustering` is off."""
+    return CtsSinkClustering(
+        platform.get_cts_sink_clustering(),
+        platform.get_cts_sink_clustering_size(),
+        platform.get_cts_sink_clustering_max_diameter(),
+    ).options()
+
+
+def _cts_obstruction_option(platform, has_no_obstruction_aware: bool) -> str:
+    """Return the obstruction-awareness option of the CTS invocation, or `""` for the tool's default.
+
+    `has_no_obstruction_aware` says the OpenROAD's CTS is obstruction-aware by default and takes `-no_obstruction_aware`. One that is not has it off by default, and `-obstruction_aware` turns it on.
+    """
+    aware = platform.get_cts_obstruction_aware()
+    if aware is False:
+        return " -no_obstruction_aware"
+    if aware is True and not has_no_obstruction_aware:
+        return " -obstruction_aware"
+    return ""
+
+
 def _cts_repair_clock_nets_tcl(platform) -> str:
     """Return `repair_clock_nets` on placement parasitics, as ORFS runs it right after CTS, or `""` when `cts-repair-clock-nets` is off."""
     if not platform.get_cts_repair_clock_nets():
         return ""
-    return (
-        'puts ">>> Repair clock nets"\n'
-        "estimate_parasitics -placement\n"
-        "repair_clock_nets\n"
-    )
+    command = CtsRepairClockNets(
+        True, platform.get_cts_repair_max_wire_length()
+    ).command()
+    return f'puts ">>> Repair clock nets"\nestimate_parasitics -placement\n{command}\n'
 
 
 def _keep_sizing_vt_tcl(platform) -> str:
@@ -2668,6 +2690,8 @@ class OpenRoadPnr:
         self._split = False
         # Whether a multi-corner platform gets an SDC mode per corner; `run` asks OpenROAD.
         self._sta_modes = True
+        # Whether CTS is obstruction-aware by default and takes `-no_obstruction_aware`; `run` asks OpenROAD when `cts-obstruction-aware` is set.
+        self._cts_has_no_obstruction_aware = True
         # The corners whose SDC modes each checkpoint also writes alone; empty without modes.
         self._mode_corners: tuple[str, ...] = ()
         self.pnr_cfg = pnr_cfg
@@ -2908,6 +2932,8 @@ class OpenRoadPnr:
         else:
             cts_buf = cts_buffers[0] if cts_buffers else ""
             cts_root_buf = "$CTS_BUF"
+        if isinstance(root_buffer := platform.get_cts_root_buffer(), str):
+            cts_root_buf = root_buffer
 
         dont_use_cells = platform.get_dont_use_cells()
         dont_use_block = (
@@ -3166,13 +3192,14 @@ class OpenRoadPnr:
             "buffer_ports_block": _buffer_ports_tcl(
                 self.pnr_cfg.get_buffer_ports(), platform.get_port_buffer()
             ),
-            "cts_clustering_option": (
-                "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
-            ),
+            "cts_clustering_option": _cts_clustering_option(platform),
             "cts_ndr_option": _cts_apply_ndr_option(platform),
             "cts_clock_nets_option": _cts_clock_nets_option(platform),
             "cts_insertion_delay_option": (
                 "" if platform.get_cts_latency_balancing() else " -no_insertion_delay"
+            ),
+            "cts_obstruction_option": _cts_obstruction_option(
+                platform, self._cts_has_no_obstruction_aware
             ),
             "cts_repair_clock_nets": _cts_repair_clock_nets_tcl(platform),
             "max_fanout_block": max_fanout_block,
@@ -4069,6 +4096,27 @@ class OpenRoadPnr:
         except (OSError, subprocess.SubprocessError):
             return False
         return f"RB_HAS_CMD:{command}:yes" in (r.stdout or "")
+
+    def _has_command_option(self, command: str, option: str) -> bool:
+        """Return whether OpenROAD's `help <command>` lists `option`, such as `-no_obstruction_aware`; False if it cannot be determined."""
+        os.makedirs(self.artefact_dir, exist_ok=True)
+        try:
+            r = subprocess.run(
+                [self.openroad_executable, "-no_init", "-exit"],
+                input=f"help {command}\nexit\n",
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+                cwd=self.artefact_dir,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        out = r.stdout or ""
+        return (
+            command in out
+            and re.search(rf"(?<![\w-]){re.escape(option)}\b", out) is not None
+        )
 
     def _probe_sta_modes(self) -> bool | str:
         """Return whether this OpenROAD's OpenSTA can give each corner an SDC mode of its own (see `openroad_corners.MODES_PROBE_TCL`), or, when it gave no answer, what went wrong."""
@@ -6308,6 +6356,33 @@ class OpenRoadPnr:
                 ),
                 fail_stage="setup",
             )
+
+        # `-no_obstruction_aware` exists on the OpenROAD builds whose CTS is obstruction-aware by default.
+        if isinstance(platform.get_cts_obstruction_aware(), bool):
+            self._cts_has_no_obstruction_aware = self._has_command_option(
+                "clock_tree_synthesis", "-no_obstruction_aware"
+            )
+            if (
+                platform.get_cts_obstruction_aware() is False
+                and not self._cts_has_no_obstruction_aware
+            ):
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr.cts_obstruction_aware_unsupported",
+                    pnr=self.pnr_cfg.get_name(),
+                    exe=self.openroad_executable,
+                    version=version,
+                )
+                return PnrFailResults(
+                    name=self.name + "/results",
+                    desc=(
+                        "cts-obstruction-aware: false needs a clock_tree_synthesis "
+                        "with -no_obstruction_aware; OpenROAD "
+                        f"{version or self.openroad_executable} has none"
+                    ),
+                    fail_stage="setup",
+                )
 
         # An abstract carries one corner's Liberty model, which a parent would read as the whole block.
         if self.pnr_cfg.get_harden() and platform.is_multi_corner():

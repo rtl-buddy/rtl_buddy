@@ -22,6 +22,14 @@ from .pdk import (
     merge_dont_use_cells,
     validate_placement,
 )
+from .pnr_cts import (
+    CTS_REPAIR_CLOCK_NETS_SPEC,
+    CTS_SINK_CLUSTERING_SPEC,
+    CtsRepairClockNets,
+    CtsSinkClustering,
+    read_cts_repair_clock_nets,
+    read_cts_sink_clustering,
+)
 from .pnr_global_route import (
     GLOBAL_ROUTE_SPEC,
     GlobalRoute,
@@ -114,6 +122,24 @@ def _validate_cts_buffer(value, where: str) -> list[str]:
     return cells
 
 
+def _validate_cts_root_buffer(value, where: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value.split()) != 1:
+        raise FatalRtlBuddyError(
+            f"{where}: cts-root-buffer must be one buffer cell name, got {value!r}"
+        )
+    return value
+
+
+def _validate_cts_obstruction_aware(value, where: str) -> bool | None:
+    if value is None or isinstance(value, bool):
+        return value
+    raise FatalRtlBuddyError(
+        f"{where}: cts-obstruction-aware must be true or false, got {value!r}"
+    )
+
+
 #: Characters a `cts-clock-nets` entry cannot hold: it is written inside a braced Tcl list.
 _TCL_LIST_BREAKERS = frozenset("{}\\")
 
@@ -178,8 +204,15 @@ class PnrRunOverrides:
     signal_layers: str | None = None
     clock_layers: str | None = None
     cts_buffers: tuple[str, ...] | None = None
+    cts_root_buffer: str | None = None
     cts_clock_nets: tuple[str, ...] = ()
+    # `cts_sink_clustering` and `cts_repair_clock_nets` replace the platform's value whole: their options apply only when the key is set.
+    cts_sink_clustering: bool | None = None
+    cts_sink_clustering_size: int | None = None
+    cts_sink_clustering_max_diameter: float | None = None
     cts_repair_clock_nets: bool | None = None
+    cts_repair_max_wire_length: float | None = None
+    cts_obstruction_aware: bool | None = None
     cts_latency_balancing: bool | None = None
     post_cts_setup_repair: bool | None = None
     routing_layer_adjustment: float | None = None
@@ -201,7 +234,7 @@ def read_run_overrides(
     routing_layers: "PnrRoutingLayersFile | None",
     cts_buffer,
     cts_clock_nets,
-    cts_repair_clock_nets: bool | None,
+    cts_repair_clock_nets,
     cts_latency_balancing: bool | None,
     post_cts_setup_repair: bool | None,
     routing_layer_adjustment,
@@ -209,12 +242,17 @@ def read_run_overrides(
     tapcell_tcl,
     config_dir: str,
     cts_dont_use_cells=None,
+    cts_sink_clustering=None,
+    cts_root_buffer=None,
+    cts_obstruction_aware=None,
     keep_sizing_vt: bool | None = None,
     signoff=UNSET,
     global_route: PnrGlobalRouteFile | None = None,
 ) -> PnrRunOverrides:
     """Validate a run's overrides of its platform's knobs; `where` names the run."""
     layers = routing_layers or PnrRoutingLayersFile()
+    clustering = read_cts_sink_clustering(where, cts_sink_clustering)
+    repair = read_cts_repair_clock_nets(where, cts_repair_clock_nets)
     return PnrRunOverrides(
         signal_layers=layers.signal or None,
         clock_layers=layers.clock or None,
@@ -223,12 +261,22 @@ def read_run_overrides(
             if cts_buffer is not None
             else None
         ),
+        cts_root_buffer=_validate_cts_root_buffer(cts_root_buffer, where),
         cts_clock_nets=(
             _validate_cts_clock_nets(cts_clock_nets, where)
             if cts_clock_nets is not None
             else ()
         ),
-        cts_repair_clock_nets=cts_repair_clock_nets,
+        cts_sink_clustering=clustering.enable if clustering else None,
+        cts_sink_clustering_size=clustering.size if clustering else None,
+        cts_sink_clustering_max_diameter=(
+            clustering.max_diameter if clustering else None
+        ),
+        cts_repair_clock_nets=repair.enable if repair else None,
+        cts_repair_max_wire_length=repair.max_wire_length if repair else None,
+        cts_obstruction_aware=_validate_cts_obstruction_aware(
+            cts_obstruction_aware, where
+        ),
         cts_latency_balancing=cts_latency_balancing,
         post_cts_setup_repair=post_cts_setup_repair,
         routing_layer_adjustment=_validate_layer_adjustment(
@@ -256,11 +304,16 @@ class PnrPlatformConfigFile:
     sta_corners: str | list[str] | None = field(rename="corners", default=None)
     # With a list, CTS gets every entry as its buffer list and the first as the root buffer.
     cts_buffer: str | list[str] = field(rename="cts-buffer", default="")
-    cts_sink_clustering: bool = field(rename="cts-sink-clustering", default=True)
+    # Enable `-sink_clustering_enable`: `true`, `false` or a mapping of `enable`, `size` and `max-diameter`. Typed loosely so the reader names a bad value.
+    cts_sink_clustering: Any = field(rename="cts-sink-clustering", default=True)
+    # `clock_tree_synthesis -root_buf`; `None` makes the first `cts-buffer` the root.
+    cts_root_buffer: str | list | None = field(rename="cts-root-buffer", default=None)
+    # `false` adds `clock_tree_synthesis -no_obstruction_aware`; `None` leaves the tool's default.
+    cts_obstruction_aware: Any = field(rename="cts-obstruction-aware", default=None)
     # `false` adds `clock_tree_synthesis -no_insertion_delay`.
     cts_latency_balancing: bool = field(rename="cts-latency-balancing", default=True)
-    # `repair_clock_nets` after CTS.
-    cts_repair_clock_nets: bool = field(rename="cts-repair-clock-nets", default=False)
+    # `repair_clock_nets` after CTS: `true`, `false` or a mapping of `max-wire-length`. Typed loosely so the reader names a bad value.
+    cts_repair_clock_nets: Any = field(rename="cts-repair-clock-nets", default=False)
     # Runs `repair_timing -setup` before the post-CTS hold repair.
     post_cts_setup_repair: bool = field(rename="post-cts-setup-repair", default=False)
     # Repairs hold again after global route, on `estimate_parasitics -global_routing`, as ORFS does: shorthand for `global-route-repair: {hold-margin: 0}`.
@@ -309,6 +362,8 @@ PNR_PLATFORM_SPEC = KeySpec(
         "post-route-repair": POST_ROUTE_REPAIR_SPEC,
         "global-route": GLOBAL_ROUTE_SPEC,
         "signoff": SIGNOFF_SPEC,
+        "cts-sink-clustering": CTS_SINK_CLUSTERING_SPEC,
+        "cts-repair-clock-nets": CTS_REPAIR_CLOCK_NETS_SPEC,
     },
 )
 
@@ -327,9 +382,30 @@ class PnrPlatformConfig:
             [self._signoff_layer], self._sta_corners, self._name
         )
         self._cts_buffers = _as_cell_list(cfg.cts_buffer)
-        self._cts_sink_clustering = cfg.cts_sink_clustering
+        clustering = (
+            read_cts_sink_clustering(
+                f"pnr platform '{self._name}'", cfg.cts_sink_clustering
+            )
+            or CtsSinkClustering()
+        )
+        self._cts_sink_clustering = clustering.enable
+        self._cts_sink_clustering_size = clustering.size
+        self._cts_sink_clustering_max_diameter = clustering.max_diameter
+        self._cts_root_buffer = _validate_cts_root_buffer(
+            cfg.cts_root_buffer, f"pnr platform '{self._name}'"
+        )
+        self._cts_obstruction_aware = _validate_cts_obstruction_aware(
+            cfg.cts_obstruction_aware, f"pnr platform '{self._name}'"
+        )
         self._cts_latency_balancing = cfg.cts_latency_balancing
-        self._cts_repair_clock_nets = cfg.cts_repair_clock_nets
+        repair = (
+            read_cts_repair_clock_nets(
+                f"pnr platform '{self._name}'", cfg.cts_repair_clock_nets
+            )
+            or CtsRepairClockNets()
+        )
+        self._cts_repair_clock_nets = repair.enable
+        self._cts_repair_max_wire_length = repair.max_wire_length
         self._cts_clock_nets: tuple[str, ...] = ()
         self._tapcell_tcl = _validate_tcl_path(
             "tapcell-tcl", cfg.tapcell_tcl, f"pnr platform '{self._name}'", config_dir
@@ -496,8 +572,9 @@ class PnrPlatformConfig:
             ("_signal_layers", o.signal_layers),
             ("_clock_layers", o.clock_layers),
             ("_cts_buffers", list(o.cts_buffers) if o.cts_buffers else None),
+            ("_cts_root_buffer", o.cts_root_buffer),
             ("_cts_clock_nets", o.cts_clock_nets or None),
-            ("_cts_repair_clock_nets", o.cts_repair_clock_nets),
+            ("_cts_obstruction_aware", o.cts_obstruction_aware),
             ("_cts_latency_balancing", o.cts_latency_balancing),
             ("_post_cts_setup_repair", o.post_cts_setup_repair),
             ("_routing_layer_adjustment", o.routing_layer_adjustment),
@@ -508,6 +585,16 @@ class PnrPlatformConfig:
         ):
             if value is not None:
                 setattr(resolved, attr, value)
+        # A run's value replaces the platform's whole, so unset options do not carry over.
+        if o.cts_sink_clustering is not None:
+            resolved._cts_sink_clustering = o.cts_sink_clustering
+            resolved._cts_sink_clustering_size = o.cts_sink_clustering_size
+            resolved._cts_sink_clustering_max_diameter = (
+                o.cts_sink_clustering_max_diameter
+            )
+        if o.cts_repair_clock_nets is not None:
+            resolved._cts_repair_clock_nets = o.cts_repair_clock_nets
+            resolved._cts_repair_max_wire_length = o.cts_repair_max_wire_length
         resolved._global_route = o.global_route.over(self._global_route)
         return resolved
 
@@ -619,6 +706,14 @@ class PnrPlatformConfig:
         """Every configured clock buffer, in config order."""
         return list(self._cts_buffers)
 
+    def get_cts_root_buffer(self) -> str | None:
+        """The `cts-root-buffer` cell, or `None` when the first `cts-buffer` is the root."""
+        return self._cts_root_buffer
+
+    def get_cts_obstruction_aware(self) -> bool | None:
+        """Whether CTS is obstruction-aware, or `None` for the tool's default."""
+        return self._cts_obstruction_aware
+
     def get_placement_density(self) -> float:
         """Global-placement target density, after platform/PDK/default."""
         return self._placement_density
@@ -676,7 +771,16 @@ class PnrPlatformConfig:
         return self._keep_sizing_vt
 
     def get_cts_sink_clustering(self) -> bool:
+        """Whether CTS clusters sinks (`-sink_clustering_enable`)."""
         return self._cts_sink_clustering
+
+    def get_cts_sink_clustering_size(self) -> int | None:
+        """The `-sink_clustering_size` value, or `None` for CTS's own."""
+        return self._cts_sink_clustering_size
+
+    def get_cts_sink_clustering_max_diameter(self) -> float | None:
+        """The `-sink_clustering_max_diameter` value in microns, or `None` for CTS's own."""
+        return self._cts_sink_clustering_max_diameter
 
     def get_cts_latency_balancing(self) -> bool:
         """Whether CTS balances latency between clock branches; `False` adds `-no_insertion_delay`."""
@@ -685,6 +789,10 @@ class PnrPlatformConfig:
     def get_cts_repair_clock_nets(self) -> bool:
         """Whether `repair_clock_nets` runs after CTS."""
         return self._cts_repair_clock_nets
+
+    def get_cts_repair_max_wire_length(self) -> float | None:
+        """The `repair_clock_nets -max_wire_length` value in microns, or `None` for no option."""
+        return self._cts_repair_max_wire_length
 
     def get_cts_clock_nets(self) -> tuple[str, ...]:
         """The clock nets CTS is restricted to (`-clk_nets`), or `()` for every clock."""

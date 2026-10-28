@@ -114,7 +114,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `fail_stage: setup` | Configuration or input problem found before OpenROAD started: a missing file (`pdn-config`, `rcx-rules`, a hook, a planner file), a bad planner-file entry, `post-route-repair` without `rcx-rules`, blockages on OpenROAD older than 26Q1, a per-corner `constraints:` that does not fit the platform, or an OpenROAD that does not answer the [SDC mode check](#sign-off-at-several-corners). The description names it. |
+| `fail_stage: setup` | Configuration or input problem found before OpenROAD started: a missing file (`pdn-config`, `rcx-rules`, a hook, a planner file), a bad planner-file entry, `post-route-repair` without `rcx-rules`, blockages on OpenROAD older than 26Q1, `cts-obstruction-aware: false` on an OpenROAD whose CTS has no `-no_obstruction_aware`, a per-corner `constraints:` that does not fit the platform, or an OpenROAD that does not answer the [SDC mode check](#sign-off-at-several-corners). The description names it. |
 | `fail_stage: incomplete`, `the flow did not finish` | A Tcl file the flow sources (PDK Tcl, `pdn-config`, `pin-constraints`, a hook) called `exit` or `return -level 2`, ending OpenROAD with code 0. The description names the last step reached; remove the exit from the file that step sources. |
 | `fail_stage: routed_check` | A located macro or exact pin moved between floorplan and the routed DEF, usually because a `pin-constraints` file or hook moved it. |
 | `fail_stage: pins_complete` | `pins-complete: true` found a port with no pin entry, or with conflicting entries. Add or remove entries. |
@@ -134,7 +134,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `RSZ-0090` at a slow corner | A macro with one Liberty limits that corner. Map each corner to the macro's Liberty for it in `lib-paths`; see [Sign off at several corners](#sign-off-at-several-corners). |
 | Macro pins in `electrical.rpt`, or `pnr.macro_pin_limits_unmet` | Set `placement.macro-pin-limits`, add a stronger buffer to it, or lower the macro's `macro-cell-halo`. See [Tune placement](#tune-placement-clock-tree-and-repair). |
 | `RSZ-0074` in a post-route repair round | Set `post-route-repair.reroute: full`. |
-| `CTS-0080 Sink not found` | Set `cts-sink-clustering: false`. |
+| `CTS-0080 Sink not found` | Set `cts-sink-clustering: false`. On a block with macros, `cts-obstruction-aware: false` also avoids it. |
 | `GRT-0273 Disabled NDR`, large hold violations | Clock nets with non-default rules detour. Set `cts-apply-ndr: none`. |
 | `DPL-0011` | A macro placed off the row grid (`macro-snap: false`). Put its bottom edge on a row. |
 | `IFP-0039` at `make_tracks` (ASAP7) | Set the PDK's `tracks-tcl`. |
@@ -254,9 +254,11 @@ Process-dependent knobs live on the PDK, can be overridden on the platform, and 
 | Timing misses after routing | [`global-route-repair` or `post-route-repair`](#repair-timing-after-routing) |
 | Many fanout buffers on a library without a fanout limit (sky130hd) | `max-fanout: 100000` stops buffering for fanout alone; `repair_design` otherwise uses 50. |
 | Cells too tight | `placement.padding` (sites, default 1) |
-| Clock tree | `cts-buffer` (a list's first entry is the root buffer), `cts-sink-clustering`, `cts-apply-ndr`; `cts-clock-nets` builds trees for the named clocks only |
+| Clock tree | `cts-buffer` (a list's first entry is the root buffer unless `cts-root-buffer` names it), `cts-sink-clustering`, `cts-obstruction-aware`, `cts-apply-ndr`; `cts-clock-nets` builds trees for the named clocks only |
+| A strong root buffer with small branch buffers | `cts-root-buffer` names the root; `cts-buffer` lists the branch buffers only |
+| Clock pins far from the nearest leaf buffer, as when many clock-gate cells sit in a small area, with slew violations on them | `cts-sink-clustering` with `size` and `max-diameter` (µm) |
 | Setup misses from flops on a clock branch that CTS padded to match the deepest one (`CTS-0033` and `CTS-0036` in the log), as when a clock drives a buffer as well as flops | `cts-latency-balancing: false` |
-| Long clock wires after CTS | `cts-repair-clock-nets: true` |
+| Long clock wires after CTS | `cts-repair-clock-nets: true`, or `{max-wire-length: <µm>}` to cap the wire length |
 | A block must leave the top layers to its parent | `routing-layers` on the run |
 | A block needs other tap spacing or endcaps than the PDK's | `tapcell-tcl` on the platform or the run |
 | Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm, default 1.0) |
@@ -265,7 +267,19 @@ Process-dependent knobs live on the PDK, can be overridden on the platform, and 
 
 A platform that ends up with `routability-use-grt` but not `routability-driven` fails to load.
 
-On a library with several threshold-voltage flavours, such as ASAP7 RVT and LVT with both flavours' Liberty in each corner and both cell LEFs in `macro-lef`, resizing moves cells between flavours freely. `keep-sizing-vt: true` keeps each cell's flavour when `repair_design` or `repair_timing` resizes it, so a cell changes flavour only through timing repair's threshold-voltage swap. `cts-dont-use-cells` keeps cells out of the clock tree only: CTS and `repair_clock_nets` skip them, and post-CTS repair may still place them on data paths. After `repair_clock_nets` the flow frees only the cells the list made dont-use; a matching cell that Liberty `dont_use`, `dont-use-cells` or an earlier hook excluded stays excluded. Neither CTS nor `repair_clock_nets` checks the `cts-buffer` cells against either list. The list governs the cells CTS picks itself: dummy-load inverters, and delay buffers it infers. Name the buffer flavour in `cts-buffer`. To keep a flavour out of every step, list it in `dont-use-cells`.
+On a library with several threshold-voltage flavours, such as ASAP7 RVT and LVT with both flavours' Liberty in each corner and both cell LEFs in `macro-lef`, resizing moves cells between flavours freely. `keep-sizing-vt: true` keeps each cell's flavour when `repair_design` or `repair_timing` resizes it, so a cell changes flavour only through timing repair's threshold-voltage swap. `cts-dont-use-cells` keeps cells out of the clock tree only: CTS and `repair_clock_nets` skip them, and post-CTS repair may still place them on data paths. After `repair_clock_nets` the flow frees only the cells the list made dont-use; a matching cell that Liberty `dont_use`, `dont-use-cells` or an earlier hook excluded stays excluded. Neither CTS nor `repair_clock_nets` checks the `cts-buffer` or `cts-root-buffer` cells against either list. The list governs the cells CTS picks itself: dummy-load inverters, and delay buffers it infers. Name the buffer flavour in `cts-buffer` and `cts-root-buffer`. To keep a flavour out of every step, list it in `dont-use-cells`.
+
+Each CTS control sits on the platform and on the run, and a run's value replaces the platform's whole:
+
+```yaml
+    cts-buffer: [sky130_fd_sc_hd__clkbuf_4]
+    cts-root-buffer: sky130_fd_sc_hd__clkbuf_16
+    cts-sink-clustering: {size: 20, max-diameter: 25}
+    cts-obstruction-aware: false
+    cts-repair-clock-nets: {max-wire-length: 1000}
+```
+
+This calls `clock_tree_synthesis -root_buf sky130_fd_sc_hd__clkbuf_16 -buf_list sky130_fd_sc_hd__clkbuf_4 -sink_clustering_enable -sink_clustering_size 20 -sink_clustering_max_diameter 25 -no_obstruction_aware`, then `repair_clock_nets -max_wire_length 1000`. `cts-obstruction-aware: false` needs an OpenROAD whose `clock_tree_synthesis` takes `-no_obstruction_aware`, which rb checks at setup; see the [YAML reference](../reference/yaml.md#synthesis-and-physical-design-tools).
 
 `repair_design` sizes repeaters for the library's target slew, so a macro pin whose own limit is far below it stays in `electrical.rpt`. `placement.macro-pin-limits` buffers such pins at the end of the place stage, after `repair_design`, the `after-repair-design` hook and legalization:
 
