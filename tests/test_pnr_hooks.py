@@ -326,6 +326,9 @@ def test_a_run_without_hooks_renders_the_flow_unchanged(tmp_path):
     )
     assert hooked.count(procs) == 1
     stripped = stripped.replace(procs, "")
+    reports_end = '\nputs ">>> End of final reports"'
+    assert hooked.count(reports_end) == 1
+    stripped = stripped.replace(reports_end, "")
     for point, path in paths.items():
         if point == "macro-placement":
             continue
@@ -950,6 +953,38 @@ def test_a_report_a_hook_prints_does_not_become_the_result(tmp_path, monkeypatch
     assert res.results["area_um2"] == 100.0
     assert res.results["wns_setup_ps"] > 0 and res.results["wns_hold_ps"] > 0
     assert res.results["tns_ps"] == 0.0 and res.results["tns_hold_ps"] == 0.0
+
+
+@pytest.mark.parametrize("point", ["after-reports", "stage-end"])
+def test_a_report_a_hook_prints_after_the_final_reports_does_not_become_the_result(
+    tmp_path, monkeypatch, point
+):
+    final = _write(tmp_path / "final.tcl", "set rb_final 1\n")
+    late = _write(
+        tmp_path / "late_report.tcl",
+        'unset -nocomplain rb_final\nputs ">>> Final reports"\n'
+        "report_worst_slack -max\nreport_worst_slack -min\nreport_tns\n"
+        "report_tns -min\nreport_design_area\n",
+    )
+    backend, artefacts = _hooked_backend(
+        tmp_path,
+        monkeypatch,
+        {"before-reports": (str(final),), point: (str(late),)},
+    )
+    harness = tmp_path / "harness.tcl"
+    harness.write_text(
+        harness.read_text().replace(
+            "source [lindex $argv 0]", _REPORT_STUBS + "source [lindex $argv 0]"
+        )
+    )
+
+    res = backend.run()
+
+    assert isinstance(res, PnrPassResults), res.results
+    assert res.results["area_um2"] == 100.0
+    assert res.results["wns_setup_ps"] > 0 and res.results["wns_hold_ps"] > 0
+    assert res.results["tns_ps"] == 0.0 and res.results["tns_hold_ps"] == 0.0
+    assert "Design area 7 um^2 50% utilization." in _log_lines(artefacts)
 
 
 def test_hooks_run_without_checkpoints(tmp_path, monkeypatch):

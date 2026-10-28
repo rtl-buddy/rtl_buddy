@@ -134,13 +134,18 @@ _NEW_BLOCK_RE = re.compile(
 )
 
 
+#: Ends the final reports when `after-reports` or `stage-end` hooks follow them.
+_REPORTS_END = '\nputs ">>> End of final reports"'
+
+
 def _without_new_blocks(text: str) -> str:
     procs = (
         "\n"
         + files("rtl_buddy.pnr").joinpath("stage_end_hook.tcl").read_text()
         + "set rb_mode closure\n"
     )
-    return _NEW_BLOCK_RE.sub("", text.replace(procs, ""))
+    text = text.replace(procs, "").replace(_REPORTS_END, "")
+    return _NEW_BLOCK_RE.sub("", text)
 
 
 @pytest.mark.parametrize("stages", [True, False], ids=["staged", "one-session"])

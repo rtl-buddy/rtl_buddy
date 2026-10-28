@@ -399,13 +399,28 @@ def _macro_hook_block(fp: PnrFloorplan, paths) -> str:
     return movable + _run_hook_lines("macro-placement", paths, "  ")
 
 
+#: Printed after the final reports when `after-reports` or `stage-end` hooks follow them, so their output is not read as the result.
+_FINAL_REPORTS_END = ">>> End of final reports"
+
+
 def _final_reports(log_text: str) -> str:
-    """Return `pnr.log` from its last `>>> Final reports` line on, or all of it without one.
+    """Return `pnr.log` from its last `>>> Final reports` line on, up to the first `>>> End of final reports` line, or all of it without them.
 
     A report a hook or an earlier step prints never reads as the result.
     """
-    starts = [m.start() for m in re.finditer(r"^>>> Final reports$", log_text, re.M)]
-    return log_text[starts[-1] :] if starts else log_text
+    end = re.search(rf"^{_FINAL_REPORTS_END}$", log_text, re.M)
+    head = log_text[: end.start()] if end else log_text
+    starts = [m.start() for m in re.finditer(r"^>>> Final reports$", head, re.M)]
+    return head[starts[-1] :] if starts else head
+
+
+def _after_reports_block(hooks: dict) -> str:
+    """Return the `after-reports` hook lines, after the line that ends the final reports when hooks follow them, or `""` when none do."""
+    if not hooks.get("after-reports") and not hooks.get("stage-end"):
+        return ""
+    return f"\nputs {pnr_checkpoints._tcl_quote(_FINAL_REPORTS_END)}" + _run_hook_block(
+        "after-reports", hooks
+    )
 
 
 def _hook_role(point: str) -> str:
@@ -3109,7 +3124,7 @@ class OpenRoadPnr:
                 else ""
             ),
             "hook_before_reports_block": _run_hook_block("before-reports", hooks),
-            "hook_after_reports_block": _run_hook_block("after-reports", hooks),
+            "hook_after_reports_block": _after_reports_block(hooks),
             **{
                 f"hook_stage_end_{stage}_block": _stage_end_block(stage, hooks)
                 for stage in PNR_STAGES
