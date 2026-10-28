@@ -441,7 +441,8 @@ def _evaluate(
                     "list $::__rb_msg $::__rb_opts [unset ::__rb_msg ::__rb_opts]",
                 )
             )[:2]
-            opts = dict(zip(*[iter(app.splitlist(raw_opts))] * 2))
+            items = app.splitlist(raw_opts)
+            opts = dict(zip(items[::2], items[1::2]))
             if code == 2 and str(opts.get("-level")) == "1":
                 code = int(opts.get("-code", 0))
             if code in (0, 2):
