@@ -136,7 +136,7 @@ Structured commands print this top-level shape:
 
 `meta.cwd` is the invocation directory and `meta.git` describes the project root, so they differ when `rb` runs from outside the checkout.
 
-Parse the whole stdout with `json.loads()`. `command`, `exit_code`, `meta`, and the command-specific `payload` are stable. Optional fields may be added under `meta` or `payload`; an incompatible change needs a major version.
+Parse the whole stdout with `json.loads()`. `command`, `exit_code`, `meta`, and the command-specific `payload` are stable. A command stopped by a fatal error exits 2 with only `payload.error`, so check `exit_code` before reading `payload.results`. Optional fields may be added under `meta` or `payload`; an incompatible change needs a major version.
 
 Payload conventions:
 

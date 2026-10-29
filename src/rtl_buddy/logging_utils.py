@@ -1269,6 +1269,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"Submitted array job {fields.get('job_id')} "
                 f"[{fields.get('array')}] for {fields.get('jobs')} test(s){piece}"
             )
+        case "dispatch.submit_deferred":
+            # WARNING: the head is sleeping, not hung, and says until when it will try.
+            return (
+                f"sbatch refused {fields.get('what')} ({fields.get('jobs')} job(s)): "
+                f"{fields.get('error')}; retry {fields.get('attempt')} in "
+                f"{fields.get('delay_sec')}s, giving up "
+                f"{fields.get('deadline_sec')}s after the first attempt"
+            )
         case "dispatch.max_array_size_unknown":
             return (
                 "dispatch: could not read the cluster's array limits "

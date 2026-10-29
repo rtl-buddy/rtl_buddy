@@ -715,6 +715,55 @@ def test_dispatch_cancels_already_submitted_on_midway_submit_failure(
     assert backend.cancelled is True
 
 
+def test_a_refused_array_submit_is_the_reported_cause(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """A submission that stays refused ends the run with its own message, not 0 tests."""
+    import sys
+
+    refusal = (
+        "sbatch array submit failed (2 jobs, rc=1) (still refused after 8 retries "
+        "over 1650s): sbatch: error: Batch job submission failed: "
+        "MaxJobCount limit reached"
+    )
+
+    class _FullQueue(_FakeBackend):
+        def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
+            raise FatalRtlBuddyError(refusal)
+
+    backend = _FullQueue()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rb",
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ],
+    )
+    assert RtlBuddy(name="test_regression_dispatch").run() == 2
+    out = capsys.readouterr().out
+    envelope = json.loads(
+        [line for line in out.splitlines() if line.startswith("{")][-1]
+    )
+    assert envelope["command"] == "regression"
+    assert envelope["exit_code"] == 2
+    assert envelope["payload"] == {"error": refusal}
+    assert backend.cancelled is True
+
+
 def test_build_compile_failure_surfaces_as_compile_fail(
     minimal_project: Path,
     monkeypatch: pytest.MonkeyPatch,
