@@ -27,7 +27,12 @@ from test_pnr_checkpoints import (
     _runs,
 )
 
-from rtl_buddy.config.pnr import CHECKPOINT_STAGES, PNR_STAGES, PnrConfigFile
+from rtl_buddy.config.pnr import (
+    CHECKPOINT_STAGES,
+    PNR_STAGES,
+    PnrConfigFile,
+    PnrFloorplanFile,
+)
 from rtl_buddy.config.pnr_global_route import GlobalRoute, PnrGlobalRouteFile
 from rtl_buddy.config.pnr_platform import PnrRunOverrides
 from rtl_buddy.errors import FatalRtlBuddyError
@@ -1410,6 +1415,7 @@ def test_stage_options_that_cannot_combine(options, expected):
 
 def test_stages_config_writes_every_checkpoint(tmp_path):
     cfg = PnrConfigFile(
+        floorplan=PnrFloorplanFile(utilization=0.55),
         name="r",
         desc="r",
         synth="s",
@@ -1424,6 +1430,7 @@ def test_stages_config_writes_every_checkpoint(tmp_path):
 def test_stages_config_refuses_a_partial_checkpoint_list(tmp_path):
     with pytest.raises(FatalRtlBuddyError, match="stages: true"):
         PnrConfigFile(
+            floorplan=PnrFloorplanFile(utilization=0.55),
             name="r",
             desc="r",
             synth="s",

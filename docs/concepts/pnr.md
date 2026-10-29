@@ -126,7 +126,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `fail_stage: export` | Stream-out failed, under `gds-mode: strict` in `rb pnr` or in any mode in `rb pnr-export`: KLayout, `klayout-tech`, an input file or the render. Fix it and run `rb pnr-export`. |
 | `fail_stage: blocked`, `synth`, `error` | A block this run uses failed, its upstream synthesis failed under `--synth`, or rb crashed (the exception is in the description). Fix the cause first. |
 | `[ERROR PDN-0179] Unable to repair all channels` | Macros too close for the power grid. Raise `placement.macro-halo` (about 19 µm minimum on sky130hd). |
-| `PDN-0008 ... halo overlaps row` | A `pdn-config` macro grid's `-halo` reaches a standard-cell row the macro does not sit on. Cut the rows around each macro at least that far in the PDK's `tapcell-tcl`; see [Plan the power grid](#plan-the-power-grid). |
+| `PDN-0008 ... halo overlaps row` | A `pdn-config` macro grid's `-halo` reaches a standard-cell row the macro does not sit on. Cut the rows around each macro at least that far; see [Plan the power grid](#plan-the-power-grid). |
 | `PDN-0233` on a turned macro or a block's grid | The power grid has no via for that macro. See [Place macros](#place-macros) and [Harden a block](#harden-a-block). |
 | `N macros do not fit the W x H um floorplan core` | Lower `utilization`, change `aspect`, or lower `placement.macro-halo`. The message gives the smallest core that fits. |
 | `GRT-0116`, global-route overflow | Too congested. The result's `failed_global_route` names the checkpoint (`<run-id>/global_route`) that holds the failed route's database and a copy of `congestion.rpt`; open it with `rb pnr-export --checkpoint` or `read_db` in OpenROAD. Lower utilization or density, try `placement.routability-driven`, or [tune global routing](#tune-global-routing). |
@@ -155,14 +155,14 @@ A PDK entry in `cfg-pdks` supplies the files and cell names; a `cfg-pnr-platform
 
 | PDK key | Use |
 | --- | --- |
-| `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers` | Tie cells, filler masters, horizontal and vertical pin layers |
+| `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers` | Tie cells, filler masters, horizontal and vertical pin layers. `pin-layers` is required: `place_pins` has no default layers |
 | `cell-gds`, `klayout-tech`, `klayout-props` | Stream-out layout and KLayout technology and colours |
 | `pdn-config` | Tcl that declares the power grid (no `pdngen` call). Unset means no grid. |
 | `rcx-rules` | OpenRCX rules. Enables extraction, `<top>.routed.spef` and post-route repair. Its `LayerCount` must match the LEF. |
 | `layer-rc-tcl` | `set_layer_rc` / `set_wire_rc` lines. Sourced after `read_sdc`. See [Set wire RC](#set-wire-rc). |
 | `platform-tcl` | Sourced before the first Liberty read, such as `suppress_message` lines |
 | `tracks-tcl` | Replaces the bare `make_tracks` after floorplan initialisation |
-| `tapcell-tcl` | Inserts tap and endcap cells, after macro placement and before the power grid |
+| `tapcell-tcl` | Inserts tap and endcap cells, after macro placement and before the power grid. Unset runs `cut_rows`, which cuts the rows 2 µm around each placed macro |
 | `dont-use-cells` | Cells no step may choose. Also read by synthesis. |
 | `placement.*` | Placement defaults, overridable per platform and per run |
 
@@ -243,7 +243,7 @@ Each output net then ends at a buffer input, which has a Liberty limit, so place
 
 ## Set wire RC
 
-Set the PDK's `layer-rc-tcl`. Without it, placement, clock-tree synthesis and hold repair see the technology LEF's layer RC, which is zero on most open PDKs, and the routed design can fail hold that repair never saw. rb warns `pnr.no_wire_rc` and qualifies the `PASS` when the PDK sets no `layer-rc-tcl` or `pnr.log` has `EST-0018` (zero wire capacitance) or `CTS-0104` (zero clock wire RC).
+Set the PDK's `layer-rc-tcl`. Without it, placement, clock-tree synthesis and hold repair see the technology LEF's layer RC, which is zero on most open PDKs, and the routed design can fail hold that repair never saw. Setup repair after CTS (`post-cts-setup-repair`, on by default) cannot run on zero wire RC: OpenROAD stops with `RSZ-0089`. rb warns `pnr.no_wire_rc` and qualifies the `PASS` when the PDK sets no `layer-rc-tcl` or `pnr.log` has `EST-0018` (zero wire capacitance) or `CTS-0104` (zero clock wire RC).
 
 For sky130hd, copy the `set_layer_rc` lines of OpenROAD's `test/sky130hd/sky130hd.rc` and pick the wire layers:
 
@@ -258,31 +258,30 @@ To catch hold problems from wire length before detailed routing, also set `globa
 
 ## PDK setup notes
 
-- **Nangate45.** All defaults are tuned for it. It has no `pdn-config`, so runs have no power grid. For extraction use ORFS `flow/platforms/nangate45/rcx_patterns.rules`.
+- **Nangate45.** Set `pin-layers`, for example `metal3` / `metal2`. It has no `pdn-config`, so runs have no power grid. For extraction use ORFS `flow/platforms/nangate45/rcx_patterns.rules`.
 - **sky130hd.** The template's `sky130hd` entry is a worked example: `pin-layers` `met3` / `met2`, `met*` routing layers, a `pdn-config`, `placement.density: 0.60`, a `dont-use-cells` list for the probe and `lpflow` cells, a `cts-buffer` list, and ORFS `sky130hs/rcx_patterns.rules`. Set `port-buffer` for hardened blocks.
 - **ASAP7.** Set the four Tcl keys to ORFS's `liberty_suppressions.tcl`, `setRC.tcl`, `openRoad/make_tracks.tcl` and a copy of `openRoad/tapcell.tcl` with `TAP_CELL_NAME` and `MACRO_ROWS_HALO_X` / `_Y` filled in. List each corner's split Liberty files under that corner. List each threshold flavour's cell LEF (`asap7sc7p5t_28_R_1x_*.lef`, `..._L_...`) in `macro-lef`, which takes a list read in order, and macro LEFs in `lef-paths`. Give `fill-cells` each flavour's fillers too, or fill insertion fails with `DPL-0050`. In a Tcl hook, `$MACRO_LEF` names only the first LEF of the list. ORFS uses `routing-layer-adjustment: 0.25`.
 
 ## Tune placement, clock tree and repair
 
-Process-dependent knobs live on the PDK, can be overridden on the platform, and most also on a run, so runs of one block on one platform can differ without a platform per variant. Which level takes each key is in the [YAML reference](../reference/yaml.md#synthesis-and-physical-design-tools). Defaults suit Nangate45. Start from the problem:
+Process-dependent knobs live on the PDK, can be overridden on the platform, and most also on a run, so runs of one block on one platform can differ without a platform per variant. Which level takes each key is in the [YAML reference](../reference/yaml.md#synthesis-and-physical-design-tools). A default is OpenROAD's own or the setting ORFS uses, unless it belongs to an rb step without a counterpart, such as the macro packer, or works around a [known issue](../known-issues.md). Start from the problem:
 
 | Problem | Knob |
 | --- | --- |
 | Global route overflows | Lower `placement.density` (default 0.7) or `floorplan.utilization`; `placement.routability-driven: true` (add `routability-use-grt: true` for a slower, closer estimate); a fixed `placement.reference-hpwl` such as `446000000` spreads a large design further. |
 | DRCs left in congested areas | `routing-layer-adjustment` (0 to 1) withholds that fraction of each signal layer from the global router; `global-route.layer-adjustment` sets it per layer. See [Tune global routing](#tune-global-routing). |
 | Setup misses on long nets | `placement.timing-driven: true`. On OpenROAD 26Q4 it also buffers and resizes during placement, which grows area. Needs wire RC. |
-| Setup misses after CTS | `post-cts-setup-repair: true` |
 | Timing misses after routing | [`global-route-repair` or `post-route-repair`](#repair-timing-after-routing) |
 | Many fanout buffers on a library without a fanout limit (sky130hd) | `max-fanout: 100000` stops buffering for fanout alone; `repair_design` otherwise uses 50. |
-| Cells too tight | `placement.padding` (sites, default 1) |
-| Clock tree | `cts-buffer` (a list's first entry is the root buffer unless `cts-root-buffer` names it), `cts-sink-clustering`, `cts-obstruction-aware`, `cts-apply-ndr`; `cts-clock-nets` builds trees for the named clocks only |
+| Cells too tight | `placement.padding` (sites, default 0) |
+| Clock tree | `cts-buffer` (CTS picks the root buffer from it unless `cts-root-buffer` names one), `cts-sink-clustering`, `cts-obstruction-aware`, `cts-apply-ndr`; `cts-clock-nets` builds trees for the named clocks only |
 | A strong root buffer with small branch buffers | `cts-root-buffer` names the root; `cts-buffer` lists the branch buffers only |
 | Clock pins far from the nearest leaf buffer, as when many clock-gate cells sit in a small area, with slew violations on them | `cts-sink-clustering` with `size` and `max-diameter` (µm) |
 | Setup misses from flops on a clock branch that CTS padded to match the deepest one (`CTS-0033` and `CTS-0036` in the log), as when a clock drives a buffer as well as flops | `cts-latency-balancing: false` |
 | Long clock wires after CTS | `cts-repair-clock-nets: true`, or `{max-wire-length: <µm>}` to cap the wire length |
 | A block must leave the top layers to its parent | `routing-layers` on the run |
 | A block needs other tap spacing or endcaps than the PDK's | `tapcell-tcl` on the platform or the run |
-| Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm, default 1.0) |
+| Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm, default 0), or a `tapcell-tcl` that cuts the rows around macros |
 | Tie cells too close to their loads | `placement.tie-separation` (µm, default 0) |
 | Macro pins over a tight Liberty limit, such as OpenRAM SKY130 SRAM inputs (0.04 ns) | `placement.macro-pin-limits`, below |
 
@@ -329,7 +328,7 @@ global-route:
 
 | Problem | Key |
 | --- | --- |
-| Overflow that more rip-up and reroute would clear | `congestion-iterations` (default 20), with `congestion-report-iter-step` to see how it falls |
+| Overflow that more rip-up and reroute would clear | `congestion-iterations` (default 30), with `congestion-report-iter-step` to see how it falls |
 | Long wires low on the stack, or one layer congested | `layer-adjustment` per layer, applied after `routing-layer-adjustment` |
 | Boundary pins centred on a GCell edge fail detailed route (ASAP7 pins on a fine lattice) | `grid-origin`. OpenROAD drops the origin on every call, so rb passes it to each one, including the incremental routes of global-route and post-route repair. OpenROAD 26Q4 offsets only the guides, not the GCell grid, so rb rebuilds the grid from the guides before each detailed route. It does so after the `global_route` checkpoint, so a staged or resumed detailed route starts from the router's own route and rebuilds the grid as a one-session run does |
 | Critical nets routed on resistive layers | `critical-nets-percentage`, `resistance-aware` |
@@ -410,7 +409,7 @@ With `electrical-repair` set or an electrical gate, each `pnr.post_route_round` 
 
 ## Shape the floorplan
 
-By default the die is sized from the netlist's cell area by `floorplan.utilization`, `aspect` and `core-margin`. To fix it exactly, set `die-area` and `core-area` together (`[x0, y0, x1, y1]` in µm); they exclude the other three. `core-cutouts` carves rectangles out of the core for an L- or T-shaped core: they block cells, rows, taps and macros, not routing, and the die stays rectangular. With utilization sizing, lower `utilization` to leave room for cut-outs.
+The die is sized from the netlist's cell area by `floorplan.utilization`, which has no default, `aspect` (default 1.0) and `core-margin` (default 1.0 µm). To fix it exactly, set `die-area` and `core-area` together (`[x0, y0, x1, y1]` in µm); they exclude the other three. `core-cutouts` carves rectangles out of the core for an L- or T-shaped core: they block cells, rows, taps and macros, not routing, and the die stays rectangular. With utilization sizing, lower `utilization` to leave room for cut-outs.
 
 `floorplan.blockages` keep standard cells out of rectangles (die µm):
 
@@ -430,7 +429,7 @@ By default the die is sized from the netlist's cell area by `floorplan.utilizati
 
 ## Place macros
 
-A netlist with hard macros (SRAMs, hardened blocks) gets them placed before the power grid. By default rb's packer puts them in rows from the core's lower-left corner, tallest first, `placement.macro-halo` (default 20 µm) apart and from the core edge, on the site grid. `floorplan.macro-anchor` starts from another corner, keeping the opposite edges free for pins. `floorplan.macro-placement: rtl-mp` uses OpenROAD's RTL-MP instead, which places by connectivity and may mirror macros; it keeps out of every blockage type and cannot take a `macro-anchor`.
+A netlist with hard macros (SRAMs, hardened blocks) gets them placed before the power grid. By default rb's packer puts them in rows from the core's lower-left corner, tallest first, `placement.macro-halo` (default 20 µm) apart and from the core edge, on the site grid. `floorplan.macro-anchor` starts from another corner, keeping the opposite edges free for pins. `floorplan.macro-placement: rtl-mp` uses OpenROAD's RTL-MP instead, which places by connectivity and may mirror macros; it keeps out of every blockage type and cannot take a `macro-anchor`. RTL-MP gets `placement.macro-halo` as its halo only when it is set; unset, it keeps its own channels, as ORFS runs it.
 
 `floorplan.macros` fixes, orients or haloes individual macros:
 
@@ -493,7 +492,7 @@ The PDK's `pdn-config` declares the grid for every run. A run can replace it:
 
 By default each stripe layer connects to the next; `connect: [[met1, met4], ...]` lists the pairs instead. A ring must fit between core and die. Only one always-on power domain is supported. The PDK's global connections are applied again at the end of every stage, so cells added after `pdngen` get supply connections.
 
-A macro grid in the `pdn-config` with a `-halo` needs the standard-cell rows cut at least that far around each macro: `pdngen` fails with `PDN-0008` when a halo reaches a row the macro does not sit on. rb does not cut rows around macros, and its packer puts a macro's bottom edge on a row boundary. Cut them in the PDK's `tapcell-tcl`, which runs after macro placement and before the grid, for example with `cut_rows -halo_width_x 2 -halo_width_y 2` for a 2 µm halo, as ORFS's tap-cell step does. Shrinking the halo instead can leave the core straps ending next to the macro, where they block its pin escapes.
+A macro grid in the `pdn-config` with a `-halo` needs the standard-cell rows cut at least that far around each macro: `pdngen` fails with `PDN-0008` when a halo reaches a row the macro does not sit on. The tap-cell step cuts them, after macro placement and before the grid. Without a `tapcell-tcl` it runs `cut_rows`, which cuts 2 µm around each placed macro, as ORFS does, enough for ORFS's 2 µm macro-grid halos. For a wider halo, cut the rows in the PDK's `tapcell-tcl`, for example `cut_rows -halo_width_x 5 -halo_width_y 5` before `tapcell`. Shrinking the halo instead can leave the core straps ending next to the macro, where they block its pin escapes.
 
 ## Run Tcl hooks
 
@@ -544,7 +543,7 @@ When a run splits into several OpenROAD sessions (`stages: true`, `--resume`, `-
 
 ## OpenROAD threads
 
-OpenROAD uses one thread unless the run sets `threads:` to a count or `auto`. `auto` takes the CPUs of the Slurm allocation or affinity mask the run is in, 1 outside one, never the host's core count. A count above the allocation is clamped with `openroad.threads_capped`. Run `rb pnr` inside an allocation (`srun -c 8 rb pnr ...`) to give it CPUs, or use [`--dispatch slurm`](#dispatch-the-stages-to-slurm). Results can differ slightly between thread counts. `rb power` and `rb synth`'s OpenROAD stage read `threads:` the same way.
+Unset, `threads:` passes nothing and OpenROAD uses its own default: every hardware thread of the host on 26Q4, one thread on older versions. Set `threads:` to a count or `auto` to choose. `auto` takes the CPUs of the Slurm allocation or affinity mask the run is in, 1 outside one, never the host's core count. A count above the allocation is clamped with `openroad.threads_capped`. Run `rb pnr` inside an allocation (`srun -c 8 rb pnr ...`) to give it CPUs, or use [`--dispatch slurm`](#dispatch-the-stages-to-slurm). Results can differ slightly between thread counts. `rb power` and `rb synth`'s OpenROAD stage read `threads:` the same way.
 
 ## Keep stage checkpoints
 

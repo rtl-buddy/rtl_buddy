@@ -306,7 +306,7 @@ class PnrPlatformConfigFile:
     cts_buffer: str | list[str] = field(rename="cts-buffer", default="")
     # Enable `-sink_clustering_enable`: `true`, `false` or a mapping of `enable`, `size` and `max-diameter`. Typed loosely so the reader names a bad value.
     cts_sink_clustering: Any = field(rename="cts-sink-clustering", default=True)
-    # `clock_tree_synthesis -root_buf`; `None` makes the first `cts-buffer` the root.
+    # `clock_tree_synthesis -root_buf`; `None` lets CTS pick the root from the buffer list.
     cts_root_buffer: str | list | None = field(rename="cts-root-buffer", default=None)
     # `false` adds `clock_tree_synthesis -no_obstruction_aware`; `None` leaves the tool's default.
     cts_obstruction_aware: Any = field(rename="cts-obstruction-aware", default=None)
@@ -315,7 +315,7 @@ class PnrPlatformConfigFile:
     # `repair_clock_nets` after CTS: `true`, `false` or a mapping of `max-wire-length`. Typed loosely so the reader names a bad value.
     cts_repair_clock_nets: Any = field(rename="cts-repair-clock-nets", default=False)
     # Runs `repair_timing -setup` before the post-CTS hold repair.
-    post_cts_setup_repair: bool = field(rename="post-cts-setup-repair", default=False)
+    post_cts_setup_repair: bool = field(rename="post-cts-setup-repair", default=True)
     # Repairs hold again after global route, on `estimate_parasitics -global_routing`, as ORFS does: shorthand for `global-route-repair: {hold-margin: 0}`.
     global_route_hold_repair: bool = field(
         rename="global-route-hold-repair", default=False
@@ -508,8 +508,9 @@ class PnrPlatformConfig:
         self._placement_padding = _pick(
             "padding", pdk.get_placement_padding(), DEFAULT_PLACEMENT_PADDING
         )
+        # Unset gives the packer its default and RTL-MP no channel, as ORFS passes none.
         self._placement_macro_halo = _pick(
-            "macro_halo", pdk.get_placement_macro_halo(), DEFAULT_PLACEMENT_MACRO_HALO
+            "macro_halo", pdk.get_placement_macro_halo(), None
         )
         self._placement_macro_cell_halo = _pick(
             "macro_cell_halo",
@@ -707,7 +708,7 @@ class PnrPlatformConfig:
         return list(self._cts_buffers)
 
     def get_cts_root_buffer(self) -> str | None:
-        """The `cts-root-buffer` cell, or `None` when the first `cts-buffer` is the root."""
+        """The `cts-root-buffer` cell, or `None` when CTS picks the root from the buffer list."""
         return self._cts_root_buffer
 
     def get_cts_obstruction_aware(self) -> bool | None:
@@ -724,6 +725,12 @@ class PnrPlatformConfig:
 
     def get_placement_macro_halo(self) -> float:
         """Macro halo in microns, after platform/PDK/default."""
+        if self._placement_macro_halo is None:
+            return DEFAULT_PLACEMENT_MACRO_HALO
+        return self._placement_macro_halo
+
+    def get_placement_macro_halo_setting(self) -> float | None:
+        """Macro halo in microns from platform or PDK, or `None` when neither sets it."""
         return self._placement_macro_halo
 
     def get_placement_macro_cell_halo(self) -> float:

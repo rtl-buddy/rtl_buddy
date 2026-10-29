@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
+from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr import (
     BlockageType,
     MacroAnchor,
@@ -27,6 +27,13 @@ from rtl_buddy.config.pnr_platform import PnrPlatformConfig, PnrPlatformConfigFi
 from rtl_buddy.errors import FatalRtlBuddyError
 
 
+def _sized(floorplan: dict) -> dict:
+    """`floorplan` with a utilization when it sets no size."""
+    if floorplan.keys() & {"utilization", "die_area", "core_area"}:
+        return floorplan
+    return {"utilization": 0.55, **floorplan}
+
+
 def _load(tmp_path, **floorplan) -> PnrConfig:
     return PnrConfigFile(
         name="fp",
@@ -34,7 +41,7 @@ def _load(tmp_path, **floorplan) -> PnrConfig:
         synth="demo",
         synth_path="synth.yaml",
         platform="p",
-        floorplan=PnrFloorplanFile(**floorplan),
+        floorplan=PnrFloorplanFile(**_sized(floorplan)),
     ).initialise(str(tmp_path))
 
 
@@ -155,6 +162,7 @@ def test_a_bad_blockage_in_yaml_fails_the_suite_load(tmp_path):
                 synth-path: synth.yaml
                 platform: p
                 floorplan:
+                  utilization: 0.55
                   blockages:
                     - rect: [50, 0, 10, 90]
             """
@@ -169,6 +177,7 @@ def _render(tmp_path, floorplan: PnrFloorplan | None = None, **overrides) -> str
 
     pdk = PdkConfig(
         PdkConfigFile(
+            pin_layers=PdkPinLayersFile(horizontal="metal3", vertical="metal2"),
             name="nangate45",
             site="FreePDK45_38x28_10R_NP_162NW_34O",
             corners={"typ": "pdk/lib/typ.lib"},

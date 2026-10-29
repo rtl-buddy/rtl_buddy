@@ -426,7 +426,8 @@ def abstract_config(pnr_cfg, platform) -> dict:
         "placement": {
             "density": platform.get_placement_density(),
             "padding": platform.get_placement_padding(),
-            "macro_halo": platform.get_placement_macro_halo(),
+            # As configured: RTL-MP places differently with it unset than with the packer's default.
+            "macro_halo": platform.get_placement_macro_halo_setting(),
             # Emitted only when non-default so existing digests do not change.
             **(
                 {"macro_cell_halo": platform.get_placement_macro_cell_halo()}
@@ -502,9 +503,10 @@ def abstract_config(pnr_cfg, platform) -> dict:
         },
         "cts_buffers": list(platform.get_cts_buffers()),
         "dont_use_cells": list(platform.get_dont_use_cells()),
+        # Emitted only when off, its non-default.
         **(
-            {"post_cts_setup_repair": True}
-            if platform.get_post_cts_setup_repair() is True
+            {"post_cts_setup_repair": False}
+            if platform.get_post_cts_setup_repair() is False
             else {}
         ),
         **_repair_digest(platform),

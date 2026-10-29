@@ -26,8 +26,13 @@ from test_pnr_checkpoints import (
     _runs,
 )
 
-from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
-from rtl_buddy.config.pnr import CHECKPOINT_STAGES, PNR_STAGES, PnrConfigFile
+from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
+from rtl_buddy.config.pnr import (
+    CHECKPOINT_STAGES,
+    PNR_STAGES,
+    PnrConfigFile,
+    PnrFloorplanFile,
+)
 from rtl_buddy.config.pnr_global_route import GlobalRoute
 from rtl_buddy.config.pnr_platform import (
     PnrPlatformConfig,
@@ -286,7 +291,13 @@ def test_post_route_margins_step_each_round_after_the_first():
 def test_mode_defaults_to_closure_and_rejects_others(tmp_path):
     def _run(**kw):
         return PnrConfigFile(
-            name="r", desc="r", synth="s", synth_path="synth.yaml", platform="p", **kw
+            floorplan=PnrFloorplanFile(utilization=0.55),
+            name="r",
+            desc="r",
+            synth="s",
+            synth_path="synth.yaml",
+            platform="p",
+            **kw,
         ).initialise(str(tmp_path))
 
     assert _run().get_mode() is PnrMode.CLOSURE
@@ -309,6 +320,7 @@ def test_stages_accept_every_checkpoint_with_or_without_post_route_repair(
     tmp_path, checkpoints
 ):
     run = PnrConfigFile(
+        floorplan=PnrFloorplanFile(utilization=0.55),
         name="r",
         desc="r",
         synth="s",
@@ -323,6 +335,7 @@ def test_stages_accept_every_checkpoint_with_or_without_post_route_repair(
 def test_stages_refuse_a_partial_checkpoint_list(tmp_path):
     with pytest.raises(FatalRtlBuddyError, match="writes every stage checkpoint"):
         PnrConfigFile(
+            floorplan=PnrFloorplanFile(utilization=0.55),
             name="r",
             desc="r",
             synth="s",
@@ -710,6 +723,7 @@ def _rcx_pdk(tmp_path, corners=None) -> PdkConfig:
     base = _pdk(tmp_path)
     return PdkConfig(
         PdkConfigFile(
+            pin_layers=PdkPinLayersFile(horizontal="metal3", vertical="metal2"),
             name="nangate45",
             site=base.get_site(),
             corners=corners or {"typ": "pdk/lib/typ.lib"},

@@ -44,6 +44,7 @@ def _run(tmp_path, **keys):
         "desc": "d",
         "synth": "s",
         "synth-path": "synth.yaml",
+        "floorplan": {"utilization": 0.55},
         "platform": "pl",
         **keys,
     }
@@ -522,7 +523,7 @@ def _digest_cfg(tmp_path, overrides=PnrRunOverrides(), **kw):
         (PnrRunOverrides(cts_clock_nets=("clk",)), "cts_clock_nets", ["clk"]),
         (PnrRunOverrides(cts_latency_balancing=False), "cts_latency_balancing", False),
         (PnrRunOverrides(cts_repair_clock_nets=True), "cts_repair_clock_nets", True),
-        (PnrRunOverrides(post_cts_setup_repair=True), "post_cts_setup_repair", True),
+        (PnrRunOverrides(post_cts_setup_repair=False), "post_cts_setup_repair", False),
         (PnrRunOverrides(routing_layer_adjustment=0.2), "routing", None),
         (PnrRunOverrides(port_buffer="BUF_X4"), "port_buffer", "BUF_X4"),
         (PnrRunOverrides(tapcell_tcl="/elsewhere/tap.tcl"), "tcl_hooks", None),
@@ -548,7 +549,7 @@ def test_unset_overrides_and_platform_defaults_add_nothing_to_the_digest(tmp_pat
     explicit = PnrRunOverrides(
         cts_latency_balancing=True,
         cts_repair_clock_nets=False,
-        post_cts_setup_repair=False,
+        post_cts_setup_repair=True,
     )
     assert pnr_abstract.config_digest(
         pnr_abstract.abstract_config(_digest_cfg(tmp_path, explicit), platform)

@@ -17,7 +17,7 @@ from rtl_buddy.config.openroad_threads import (
     plan_threads,
     validate_threads,
 )
-from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
+from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr import PnrConfig, PnrFloorplan, PnrSuiteConfig
 from rtl_buddy.config.pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
 from rtl_buddy.errors import FatalRtlBuddyError
@@ -51,6 +51,7 @@ def _pnr_yaml(tmp_path, threads_line):
                 desc: demo
                 synth: demo_synth
                 synth-path: synth.yaml
+                floorplan: {{utilization: 0.55}}
                 constraints: c.sdc
                 platform: nangate45_typ
             {threads_line}
@@ -251,6 +252,7 @@ def test_parse_reported_threads_takes_the_last_report():
 def _platform(tmp_path):
     pdk = PdkConfig(
         PdkConfigFile(
+            pin_layers=PdkPinLayersFile(horizontal="metal3", vertical="metal2"),
             name="nangate45",
             site="FreePDK45_38x28_10R_NP_162NW_34O",
             corners={"typ": "pdk/lib/typ.lib"},

@@ -342,6 +342,13 @@ def _hook_block(title: str, path: str) -> str:
     return f'\nputs ">>> {title}"\n{tcl_source(path)}\n'
 
 
+def _tapcell_block(title: str, path: str) -> str:
+    """Return the tap-cell step: the `tapcell-tcl` hook, or without one `cut_rows` with its default halo around each placed macro, as ORFS runs it."""
+    if path:
+        return _hook_block(title, path)
+    return '\nputs ">>> Cut rows around macros"\ncut_rows\n'
+
+
 def _run_hook_lines(point: str, paths, indent: str = "") -> str:
     """Return one announce-and-source pair per hook file of `point`, each line ending in a newline."""
     return "".join(
@@ -547,11 +554,6 @@ def _macro_pin_limits_tcl(platform, dpl_options: str = "") -> str:
     )
 
 
-#: The flow's global route without `global-route:` options; a `reroute: full` global-route repair runs it again.
-_GLOBAL_ROUTE_CMD = (
-    "global_route -congestion_iterations 20 "
-    "-congestion_report_file $CONGESTION_RPT -verbose\n"
-)
 #: Closes an incremental global route around a repair without `global-route:` options; it logs the usage table again.
 _END_INCREMENTAL_CMD = (
     "global_route -end_incremental -congestion_report_file $CONGESTION_RPT -verbose\n"
@@ -564,6 +566,10 @@ def _global_route_cmd(gr: GlobalRoute) -> str:
         f"global_route{gr.full_options()} "
         "-congestion_report_file $CONGESTION_RPT -verbose\n"
     )
+
+
+#: The flow's global route without `global-route:` options; a `reroute: full` global-route repair runs it again.
+_GLOBAL_ROUTE_CMD = _global_route_cmd(GlobalRoute())
 
 
 def _start_incremental_cmd(gr: GlobalRoute) -> str:
@@ -685,7 +691,7 @@ def _repair_steps_tcl(
 
 
 def _post_cts_repair_tcl(platform, mode: PnrMode) -> str:
-    """Return the post-CTS timing repair on placement parasitics: setup when `post-cts-setup-repair` is set, then hold. A probe skips it.
+    """Return the post-CTS timing repair on placement parasitics: setup unless `post-cts-setup-repair` is false, then hold. A probe skips it.
 
     The block carries its own leading newline, as the template once held the text itself.
     """
@@ -756,11 +762,25 @@ def _global_route_repair_tcl(
     return head + steps + legalize
 
 
+def _routing_layers_tcl(platform) -> str:
+    """Return `set_routing_layers` with the layer ranges `routing-layers` sets, or `""` when it sets neither, which leaves the router the block's own range."""
+    options = "".join(
+        f" -{kind} ${var}"
+        for kind, var, layers in (
+            ("signal", "SIGNAL_LAYERS", platform.get_signal_layers()),
+            ("clock", "CLOCK_LAYERS", platform.get_clock_layers()),
+        )
+        if layers
+    )
+    return f"set_routing_layers{options}\n" if options else ""
+
+
 def _layer_adjustment_tcl(platform) -> str:
-    """Return the `set_global_routing_layer_adjustment` line over the signal layers, as ORFS does, then one per `global-route.layer-adjustment` entry, or `""` when neither is set."""
+    """Return the `set_global_routing_layer_adjustment` line over the signal layers, as ORFS does, or over every layer without them, then one per `global-route.layer-adjustment` entry, or `""` when neither is set."""
     adjustment = platform.get_routing_layer_adjustment()
+    over = "$SIGNAL_LAYERS" if platform.get_signal_layers() else "*"
     lines = (
-        f"set_global_routing_layer_adjustment $SIGNAL_LAYERS {adjustment:g}\n"
+        f"set_global_routing_layer_adjustment {over} {adjustment:g}\n"
         if adjustment is not None
         else ""
     )
@@ -1413,8 +1433,23 @@ _ORIENTED_FOOTPRINT = """\
     lappend footprints [list [$inst getName] [$bbox getDX] [$bbox getDY]]
 """
 
-# OpenROAD RTL-MP. The halo option spelling depends on the OpenROAD version, so both are emitted.
-_RTL_MP_PLACEMENT = """\
+_RTL_MP_REPORT = """\
+  foreach inst $macros {
+    lassign [$inst getLocation] x y
+    puts ">>>   placed [$inst getName] at ($x, $y) DBU [$inst getOrient] (rtl-mp)"
+  }
+"""
+# OpenROAD RTL-MP with its own channels, as ORFS runs it.
+_RTL_MP_PLACEMENT = (
+    """\
+  file mkdir $OUT_DIR/rtlmp
+  rtl_macro_placer -report_directory $OUT_DIR/rtlmp
+"""
+    + _RTL_MP_REPORT
+)
+# RTL-MP with `placement.macro-halo`. The halo option spelling depends on the OpenROAD version, so both are emitted.
+_RTL_MP_HALO_PLACEMENT = (
+    """\
   file mkdir $OUT_DIR/rtlmp
   if {[llength [info commands set_macro_base_halo]]} {
     set_macro_base_halo $MACRO_HALO $MACRO_HALO
@@ -1423,20 +1458,20 @@ _RTL_MP_PLACEMENT = """\
     rtl_macro_placer -halo_width $MACRO_HALO -halo_height $MACRO_HALO \\
         -report_directory $OUT_DIR/rtlmp
   }
-  foreach inst $macros {
-    lassign [$inst getLocation] x y
-    puts ">>>   placed [$inst getName] at ($x, $y) DBU [$inst getOrient] (rtl-mp)"
-  }
 """
+    + _RTL_MP_REPORT
+)
 
 
-def _macro_place_block(fp: PnrFloorplan, directives: str) -> str:
+def _macro_place_block(
+    fp: PnrFloorplan, directives: str, rtl_mp_halo: bool = False
+) -> str:
     """Return the macro-placement Tcl for the flow's macro branch.
 
-    With `floorplan.macros` the packer packs only `rb_movable_macros`, keeping out of the located ones (in `MACRO_KEEPOUTS`), and is skipped when every macro is located.
+    With `floorplan.macros` the packer packs only `rb_movable_macros`, keeping out of the located ones (in `MACRO_KEEPOUTS`), and is skipped when every macro is located. RTL-MP gets `MACRO_HALO` only with `rtl_mp_halo`.
     """
     if fp.macro_placement is MacroPlacement.RTL_MP:
-        return _RTL_MP_PLACEMENT
+        return _RTL_MP_HALO_PLACEMENT if rtl_mp_halo else _RTL_MP_PLACEMENT
     if not fp.macros:
         return _PACK_PLACEMENT.format(
             directives=directives, packed="$macros", footprint=_MASTER_FOOTPRINT
@@ -3063,14 +3098,16 @@ class OpenRoadPnr:
         self._mode_corners = tuple(corners) if modes else ()
 
         cts_buffers = platform.get_cts_buffers()
-        if len(cts_buffers) > 1:
-            cts_buf = "{" + " ".join(cts_buffers) + "}"
-            cts_root_buf = "[lindex $CTS_BUF 0]"
-        else:
-            cts_buf = cts_buffers[0] if cts_buffers else ""
-            cts_root_buf = "$CTS_BUF"
-        if isinstance(root_buffer := platform.get_cts_root_buffer(), str):
-            cts_root_buf = root_buffer
+        cts_buf = (
+            cts_buffers[0]
+            if len(cts_buffers) == 1
+            else "{" + " ".join(cts_buffers) + "}"
+        )
+        # Unset, CTS infers them: the root from the buffer list, the list from the libraries.
+        root_buffer = platform.get_cts_root_buffer()
+        cts_buffer_options = (
+            f"    -root_buf {root_buffer} \\\n" if isinstance(root_buffer, str) else ""
+        ) + ("    -buf_list $CTS_BUF \\\n" if cts_buffers else "")
 
         dont_use_cells = platform.get_dont_use_cells()
         dont_use_block = (
@@ -3203,7 +3240,9 @@ class OpenRoadPnr:
             # The template reads the first; `extra_libs_lefs` reads the rest, in order.
             "macro_lef": next(iter(pdk.get_macro_lef_paths()), ""),
             "site": pdk.get_site(),
-            "util_pct": f"{fp.utilization * 100:.2f}",
+            "util_pct": (
+                f"{fp.utilization * 100:.2f}" if fp.utilization is not None else "{}"
+            ),
             "aspect": f"{fp.aspect:.2f}",
             "core_margin": f"{fp.core_margin:.2f}",
             "tie_hi": pdk.get_tie_hi() or "{}",
@@ -3211,7 +3250,7 @@ class OpenRoadPnr:
             "tie_cells_block": tie_cells_block,
             "tie_fanout_block": tie_fanout_block,
             "cts_buf": cts_buf,
-            "cts_root_buf": cts_root_buf,
+            "cts_buffer_options": cts_buffer_options,
             "place_density": f"{platform.get_placement_density():g}",
             "place_padding": str(platform.get_placement_padding()),
             "reference_hpwl_option": _reference_hpwl_option(platform),
@@ -3226,7 +3265,11 @@ class OpenRoadPnr:
             "macro_place_block": (
                 _macro_hook_block(fp, hooks["macro-placement"])
                 if "macro-placement" in hooks
-                else _macro_place_block(fp, macro_pack_directives)
+                else _macro_place_block(
+                    fp,
+                    macro_pack_directives,
+                    platform.get_placement_macro_halo_setting() is not None,
+                )
             ),
             "no_macros_block": _no_macros_block(fp),
             "blockages_block": blockages_block,
@@ -3246,8 +3289,8 @@ class OpenRoadPnr:
                 "Layer RC (layer-rc-tcl)", pdk.get_layer_rc_tcl()
             ),
             "make_tracks": make_tracks,
-            # After macro placement and before the power grid, as ORFS `TAPCELL_TCL`, so endcaps see the placed macros.
-            "tapcell_block": _hook_block(
+            # After macro placement and before the power grid, as ORFS `TAPCELL_TCL` or its `cut_rows`, so endcaps see the placed macros.
+            "tapcell_block": _tapcell_block(
                 "Tap and endcap cells (tapcell-tcl)", platform.get_tapcell_tcl()
             ),
             "threads_block": threads_block,
@@ -3343,8 +3386,9 @@ class OpenRoadPnr:
             ),
             "cts_repair_clock_nets": _cts_repair_clock_nets_tcl(platform),
             "max_fanout_block": max_fanout_block,
-            "signal_layers": platform.get_signal_layers(),
-            "clock_layers": platform.get_clock_layers(),
+            "signal_layers": platform.get_signal_layers() or "{}",
+            "clock_layers": platform.get_clock_layers() or "{}",
+            "routing_layers": _routing_layers_tcl(platform),
             "pin_layer_horizontal": pdk.get_pin_layer_horizontal(),
             "pin_layer_vertical": pdk.get_pin_layer_vertical(),
             "fill_cells": fill_cells,
@@ -6376,6 +6420,23 @@ class OpenRoadPnr:
             )
             return PnrFailResults(
                 name=self.name + "/results", desc=str(e), fail_stage="setup"
+            )
+        pdk = platform.get_pdk()
+        if not (pdk.get_pin_layer_horizontal() and pdk.get_pin_layer_vertical()):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.pin_layers_missing",
+                pnr=self.pnr_cfg.get_name(),
+                pdk=pdk.get_name(),
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    f"PDK '{pdk.get_name()}' needs pin-layers.horizontal and "
+                    "pin-layers.vertical: place_pins has no default layers"
+                ),
+                fail_stage="setup",
             )
         if (
             platform.get_global_route().allow_congestion is True

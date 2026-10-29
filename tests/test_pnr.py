@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
+from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr import PnrConfig, PnrSuiteConfig
 from rtl_buddy.config.pnr_repair import GlobalRouteRepair
 from rtl_buddy.config.pnr_platform import (
@@ -34,6 +34,7 @@ _FLOW_DONE = ">>> DONE\n"
 def _make_pdk_cfg(tmp_path, **overrides):
     base = dict(
         name="nangate45",
+        pin_layers=PdkPinLayersFile(horizontal="metal3", vertical="metal2"),
         site="FreePDK45_38x28_10R_NP_162NW_34O",
         corners={"typ": "pdk/lib/typ.lib", "slow": "pdk/lib/slow.lib"},
         tech_lef="pdk/lef/tech.lef",
@@ -390,11 +391,13 @@ def _platform(pdk, **overrides):
 
 
 def test_pnr_platform_placement_falls_back_to_the_flow_defaults(tmp_path):
-    """With neither block set, placement uses the flow defaults."""
+    """With neither block set, placement uses `global_placement`'s defaults and the packer's halo."""
     cfg = _platform(_make_pdk_cfg(tmp_path))
     assert cfg.get_placement_density() == 0.7
-    assert cfg.get_placement_padding() == 1
+    assert cfg.get_placement_padding() == 0
     assert cfg.get_placement_macro_halo() == 20.0
+    assert cfg.get_placement_macro_halo_setting() is None
+    assert cfg.get_placement_macro_cell_halo() == 0.0
 
 
 def test_pnr_platform_placement_takes_the_pdk_values(tmp_path):
@@ -489,6 +492,7 @@ def test_pnr_suite_missing_synth_raises(tmp_path):
                 desc: "Demo run"
                 tool: "openroad"
                 synth-path: "../synth/synth.yaml"
+                floorplan: {utilization: 0.55}
                 constraints: "../synth/constraints.sdc"
                 platform: "nangate45_typ"
         """)
@@ -508,6 +512,7 @@ def test_pnr_suite_missing_platform_raises(tmp_path):
                 tool: "openroad"
                 synth: "demo_synth_nangate45"
                 synth-path: "../synth/synth.yaml"
+                floorplan: {utilization: 0.55}
                 constraints: "../synth/constraints.sdc"
         """)
     )
@@ -701,9 +706,10 @@ def _render_flow(tmp_path, platform, suite_dir=None, **overrides):
 
 
 def test_pin_constraints_resolve_against_suite(tmp_path):
-    from rtl_buddy.config.pnr import PnrConfigFile
+    from rtl_buddy.config.pnr import PnrConfigFile, PnrFloorplanFile
 
     cfg = PnrConfigFile(
+        floorplan=PnrFloorplanFile(utilization=0.55),
         name="pins",
         desc="pins",
         synth="demo",
@@ -744,11 +750,10 @@ def test_pnr_flow_is_unchanged_when_no_new_key_is_set(tmp_path):
         tmp_path, _platform(_make_pdk_cfg(tmp_path), cts_buffer="BUF_X4")
     )
 
-    assert "global_placement -density 0.7 -pad_left 1 -pad_right 1\n" in text
+    assert "global_placement -density 0.7 -pad_left 0 -pad_right 0\n" in text
     assert "set CTS_BUF         BUF_X4\n" in text
     assert (
         "clock_tree_synthesis \\\n"
-        "    -root_buf $CTS_BUF \\\n"
         "    -buf_list $CTS_BUF \\\n"
         "    -sink_clustering_enable\n"
     ) in text
@@ -833,18 +838,15 @@ def test_pnr_flow_sources_the_pdn_snippet_and_runs_pdngen(tmp_path):
 
 
 def test_pnr_flow_renders_a_cts_buffer_list(tmp_path):
-    """Every entry reaches `-buf_list`; the first is the root buffer."""
+    """Every entry reaches `-buf_list`, and CTS picks the root buffer from them."""
     platform = _platform(
         _make_pdk_cfg(tmp_path), cts_buffer=["BUF_X4", "BUF_X8", "BUF_X16"]
     )
     text = _render_flow(tmp_path, platform)
 
     assert "set CTS_BUF         {BUF_X4 BUF_X8 BUF_X16}\n" in text
-    assert (
-        "clock_tree_synthesis \\\n"
-        "    -root_buf [lindex $CTS_BUF 0] \\\n"
-        "    -buf_list $CTS_BUF \\\n"
-    ) in text
+    assert ("clock_tree_synthesis \\\n    -buf_list $CTS_BUF \\\n") in text
+    assert "-root_buf" not in text
 
 
 def test_pnr_flow_renders_a_one_entry_list_exactly_like_a_name(tmp_path):
@@ -895,6 +897,66 @@ def test_pnr_run_rejects_a_missing_pdn_config_before_launching_openroad(
     assert not launched
     assert not Path(backend._script_path()).exists()
     _one_event(events, "pnr.pdn_config_missing")
+
+
+@pytest.mark.parametrize(
+    "pin_layers",
+    [
+        PdkPinLayersFile(),
+        PdkPinLayersFile(horizontal="metal3"),
+        PdkPinLayersFile(vertical="metal2"),
+    ],
+)
+def test_pnr_run_without_both_pin_layers_fails_setup(tmp_path, monkeypatch, pin_layers):
+    """`place_pins` has no default layers, so a PDK without both fails before OpenROAD."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    launched = []
+    monkeypatch.setattr(
+        pnr_openroad.subprocess, "run", lambda *a, **kw: launched.append(a)
+    )
+    pdk = _make_pdk_cfg(tmp_path, pin_layers=pin_layers)
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = _platform(pdk, cts_buffer="BUF_X4")
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    events = _capture_pnr_events(monkeypatch)
+
+    res = backend.run()
+
+    assert isinstance(res, PnrFailResults)
+    assert res.results["fail_stage"] == "setup"
+    assert res.results["desc"] == (
+        "PDK 'nangate45' needs pin-layers.horizontal and pin-layers.vertical: "
+        "place_pins has no default layers"
+    )
+    assert not launched
+    _one_event(events, "pnr.pin_layers_missing")
+
+
+def test_pnr_flow_cuts_rows_around_macros_without_a_tapcell_tcl(tmp_path):
+    """As ORFS's tap-cell step: `cut_rows` with its default halo after macro placement,
+    before the power grid and pin placement; a `tapcell-tcl` replaces it.
+    """
+    text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
+    cut = text.index('\nputs ">>> Cut rows around macros"\ncut_rows\n')
+    assert text.index('puts ">>> Macro placement"') < cut
+    assert cut < text.index('puts ">>> IO pin placement"')
+    assert text.count("cut_rows") == 1
+
+    tap = tmp_path / "tap.tcl"
+    tap.write_text("tapcell\n")
+    hooked = _render_flow(
+        tmp_path, _platform(_make_pdk_cfg(tmp_path, tapcell_tcl=str(tap)))
+    )
+    assert "cut_rows" not in hooked
 
 
 def test_pnr_run_accepts_a_pdn_config_that_is_on_disk(tmp_path, monkeypatch):
@@ -1259,6 +1321,7 @@ def test_pnr_run_gds_paths_resolve_against_the_pnr_yaml(tmp_path):
                 desc: "Demo run"
                 synth: "demo_synth"
                 synth-path: "../synth/synth.yaml"
+                floorplan: {utilization: 0.55}
                 platform: "nangate45_typ"
                 lef-paths: ["../../pdk/sram/sram.lef"]
                 gds-paths: ["../../pdk/sram/sram.gds", "macros/an odd name.gds"]
@@ -2005,12 +2068,14 @@ _PNR_GDS_MODE_YAML = dedent("""\
         tool: "openroad"
         synth: "demo_synth"
         synth-path: "../synth/synth.yaml"
+        floorplan: {utilization: 0.55}
         platform: "nangate45_typ"
       - name: "gds_strict"
         desc: "signoff stream-out"
         tool: "openroad"
         synth: "demo_synth"
         synth-path: "../synth/synth.yaml"
+        floorplan: {utilization: 0.55}
         platform: "nangate45_typ"
         gds-mode: strict
         gds-allow-empty:
@@ -2242,6 +2307,7 @@ _PNR_XFAIL_YAML = dedent("""\
         tool: "openroad"
         synth: "demo_synth"
         synth-path: "../synth/synth.yaml"
+        floorplan: {utilization: 0.55}
         platform: "nangate45_typ"
         xfail: true
       - name: "pnr_xfail_strict"
@@ -2249,6 +2315,7 @@ _PNR_XFAIL_YAML = dedent("""\
         tool: "openroad"
         synth: "demo_synth"
         synth-path: "../synth/synth.yaml"
+        floorplan: {utilization: 0.55}
         platform: "nangate45_typ"
         xfail_strict: true
       - name: "pnr_normal"
@@ -2256,6 +2323,7 @@ _PNR_XFAIL_YAML = dedent("""\
         tool: "openroad"
         synth: "demo_synth"
         synth-path: "../synth/synth.yaml"
+        floorplan: {utilization: 0.55}
         platform: "nangate45_typ"
 """)
 
@@ -2321,8 +2389,8 @@ def test_pnr_template_legalizes_after_every_cell_inserting_repair():
         for line in template.splitlines()
         if line.strip() and not line.strip().startswith(("#", "puts "))
     ]
-    route_at = commands.index(
-        "set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS"
+    route_at = next(
+        i for i, c in enumerate(commands) if c.startswith("{{ routing_layers }}")
     )
     pre_route = commands[:route_at]
     inserters = [
@@ -3856,13 +3924,14 @@ def test_missing_rcx_rules_leaves_no_checkpoint_run_behind(tmp_path, monkeypatch
     )
 
 
-def test_the_macro_cell_halo_defaults_to_one_micron(tmp_path):
-    """The macro-cell halo defaults to one micron, a keep-out that keeps cell pins out of
-    met1 spacing of a bloated abstract obstruction.
+def test_the_macro_cell_halo_defaults_to_no_blockage(tmp_path):
+    """Neither OpenROAD nor ORFS blocks cells around a macro; without a `tapcell-tcl` the
+    rows `cut_rows` cuts keep them off its edges.
     """
     pdk = _make_pdk_cfg(tmp_path)
     assert pdk.get_placement_macro_cell_halo() is None
-    assert _platform(pdk).get_placement_macro_cell_halo() == 1.0
+    assert _platform(pdk).get_placement_macro_cell_halo() == 0.0
+    assert "set MACRO_CELL_HALO 0\n" in _render_flow(tmp_path, _platform(pdk))
 
 
 def test_the_platform_macro_cell_halo_overrides_the_pdk(tmp_path):
@@ -3888,19 +3957,22 @@ def test_pdk_rejects_an_unusable_macro_cell_halo(tmp_path, halo):
 
 
 def test_pnr_flow_blocks_cells_around_each_macro_after_placing_it(tmp_path):
-    """A hard blockage per macro, once its location is FIRM and before the PDN and any
-    standard-cell placement.
-
-    Never `cut_rows`, which breaks the followpins the PDN lays along the rows.
+    """A hard blockage per macro, once its location is FIRM and before the tap-cell
+    step, the PDN and any standard-cell placement. It leaves the rows whole.
     """
-    text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(macro_cell_halo=1.0))
+    text = _render_flow(tmp_path, _platform(pdk))
 
     assert "set MACRO_CELL_HALO 1\n" in text
     blockage = text.index("odb::dbBlockage_create $block")
     assert text.index("$inst setPlacementStatus FIRM") < blockage
+    assert blockage < text.index('puts ">>> Cut rows around macros"')
     assert blockage < text.index('puts ">>> IO pin placement"')
     assert blockage < text.index("global_placement -density")
-    assert "cut_rows" not in text.replace("`cut_rows`", "")
+    macro_branch = text[text.index('puts ">>> Macro placement"') : blockage]
+    assert "cut_rows" not in macro_branch
 
 
 def test_pnr_flow_renders_a_configured_macro_cell_halo(tmp_path):
@@ -3983,7 +4055,7 @@ def test_global_placement_keeps_the_placer_reference_hpwl_by_default(tmp_path):
     platform = _platform(pdk)
     assert platform.get_placement_reference_hpwl() is None
     text = _render_flow(tmp_path, platform)
-    assert "global_placement -density 0.7 -pad_left 1 -pad_right 1\n" in text
+    assert "global_placement -density 0.7 -pad_left 0 -pad_right 0\n" in text
     assert "-reference_hpwl" not in text
 
 
@@ -3996,7 +4068,7 @@ def test_global_placement_takes_the_reference_hpwl_platform_over_pdk(tmp_path):
     assert platform.get_placement_reference_hpwl() == 446000000.0
     text = _render_flow(tmp_path, platform)
     assert (
-        "global_placement -density 0.7 -pad_left 1 -pad_right 1 "
+        "global_placement -density 0.7 -pad_left 0 -pad_right 0 "
         "-reference_hpwl 446000000\n"
     ) in text
     assert text.count("-reference_hpwl") == 1
@@ -4040,7 +4112,7 @@ def test_global_placement_is_not_routability_driven_by_default(tmp_path):
     assert platform.get_placement_routability_driven() is False
     assert platform.get_placement_routability_use_grt() is False
     text = _render_flow(tmp_path, platform)
-    assert "global_placement -density 0.7 -pad_left 1 -pad_right 1\n" in text
+    assert "global_placement -density 0.7 -pad_left 0 -pad_right 0\n" in text
     assert "-routability" not in text
 
 
@@ -4055,7 +4127,7 @@ def test_global_placement_emits_both_routability_flags(tmp_path):
     )
     text = _render_flow(tmp_path, platform)
     assert (
-        "global_placement -density 0.7 -pad_left 1 -pad_right 1 "
+        "global_placement -density 0.7 -pad_left 0 -pad_right 0 "
         "-reference_hpwl 446000000 -routability_driven -routability_use_grt\n"
     ) in text
 
@@ -4066,7 +4138,7 @@ def test_global_placement_emits_routability_driven_alone(tmp_path):
     pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(routability_driven=True))
     text = _render_flow(tmp_path, _platform(pdk))
     assert (
-        "global_placement -density 0.7 -pad_left 1 -pad_right 1 -routability_driven\n"
+        "global_placement -density 0.7 -pad_left 0 -pad_right 0 -routability_driven\n"
     ) in text
     assert "-routability_use_grt" not in text
 
@@ -4156,7 +4228,7 @@ def test_global_placement_is_not_timing_driven_by_default(tmp_path):
     platform = _platform(pdk)
     assert platform.get_placement_timing_driven() is False
     text = _render_flow(tmp_path, platform)
-    assert "global_placement -density 0.7 -pad_left 1 -pad_right 1\n" in text
+    assert "global_placement -density 0.7 -pad_left 0 -pad_right 0\n" in text
     assert "timing_driven" not in text
 
 
@@ -4180,7 +4252,7 @@ def test_global_placement_emits_timing_driven(tmp_path):
     )
     text = _render_flow(tmp_path, platform)
     assert (
-        "global_placement -density 0.7 -pad_left 1 -pad_right 1 -timing_driven\n"
+        "global_placement -density 0.7 -pad_left 0 -pad_right 0 -timing_driven\n"
     ) in text
     assert text.count("-timing_driven") == 1
 
@@ -4195,7 +4267,7 @@ def test_timing_driven_follows_the_other_global_placement_options(tmp_path):
         ),
     )
     assert (
-        "global_placement -density 0.7 -pad_left 1 -pad_right 1 "
+        "global_placement -density 0.7 -pad_left 0 -pad_right 0 "
         "-reference_hpwl 446000000 -routability_driven -timing_driven\n"
     ) in _render_flow(tmp_path, platform)
 
@@ -4311,7 +4383,8 @@ def test_macro_anchor_with_rtl_mp_is_refused(tmp_path):
         PnrSuiteConfig(str(pnr_yaml))
 
 
-def test_rtl_mp_renders_rtl_macro_placer_with_the_halo_both_ways():
+def test_rtl_mp_without_a_macro_halo_keeps_its_own_channels():
+    """As ORFS runs it: no halo, no minimum channel."""
     from rtl_buddy.config.pnr import MacroPlacement, PnrFloorplan
     from rtl_buddy.tools.pnr_openroad import _macro_place_block
 
@@ -4322,6 +4395,59 @@ def test_rtl_mp_renders_rtl_macro_placer_with_the_halo_both_ways():
         macro_placement=MacroPlacement.RTL_MP,
     )
     block = _macro_place_block(fp, " \\\n      upper-right")
+
+    assert "rb::macro_pack::solve" not in block
+    assert "  rtl_macro_placer -report_directory $OUT_DIR/rtlmp\n" in block
+    assert "MACRO_HALO" not in block
+    assert "halo" not in block.replace("(rtl-mp)", "")
+
+
+def test_rtl_mp_gets_the_macro_halo_only_when_it_is_set(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pnr_cfg = PnrSuiteConfig(
+        str(_rtl_mp_yaml(tmp_path, "      macro-placement: rtl-mp\n"))
+    ).get_runs("demo_pnr")[0]
+    unset = _render_flow(
+        tmp_path, _platform(_make_pdk_cfg(tmp_path)), floorplan=pnr_cfg.get_floorplan()
+    )
+    halo = _render_flow(
+        tmp_path,
+        _platform(_make_pdk_cfg(tmp_path), placement=PlacementFile(macro_halo=20.0)),
+        floorplan=pnr_cfg.get_floorplan(),
+    )
+
+    assert "set_macro_base_halo" not in unset
+    assert "set_macro_base_halo $MACRO_HALO $MACRO_HALO\n" in halo
+
+
+def test_the_abstract_digest_takes_the_macro_halo_as_configured(tmp_path):
+    """RTL-MP places differently with the halo unset than at the packer's 20 um."""
+    from rtl_buddy.config.pdk import PlacementFile
+    from rtl_buddy.tools import pnr_abstract
+
+    pnr_cfg = _make_pnr_cfg(tmp_path)
+    unset = pnr_abstract.abstract_config(pnr_cfg, _platform(_make_pdk_cfg(tmp_path)))
+    twenty = pnr_abstract.abstract_config(
+        pnr_cfg,
+        _platform(_make_pdk_cfg(tmp_path), placement=PlacementFile(macro_halo=20.0)),
+    )
+
+    assert unset["placement"]["macro_halo"] is None
+    assert twenty["placement"]["macro_halo"] == 20.0
+
+
+def test_rtl_mp_renders_rtl_macro_placer_with_the_halo_both_ways():
+    from rtl_buddy.config.pnr import MacroPlacement, PnrFloorplan
+    from rtl_buddy.tools.pnr_openroad import _macro_place_block
+
+    fp = PnrFloorplan(
+        utilization=0.5,
+        aspect=1,
+        core_margin=2,
+        macro_placement=MacroPlacement.RTL_MP,
+    )
+    block = _macro_place_block(fp, " \\\n      upper-right", True)
 
     assert "rb::macro_pack::solve" not in block
     assert "upper-right" not in block
@@ -4419,8 +4545,9 @@ def _hook_blocks(tmp_path):
 
 
 def test_pnr_flow_without_tcl_hooks_is_unchanged(tmp_path):
-    """Unset hooks render `pnr.tcl` byte for byte as before: the bare `make_tracks` and
-    nothing else. Setting all four adds only their blocks.
+    """Unset hooks render the bare `make_tracks`, `cut_rows` in the tap-cell step and
+    nothing else. Setting all four adds only their blocks, `tapcell-tcl`'s in place of
+    `cut_rows`.
     """
     pdk = _make_pdk_cfg(tmp_path)
     unset = _render_flow(
@@ -4443,7 +4570,10 @@ def test_pnr_flow_without_tcl_hooks_is_unchanged(tmp_path):
         f'source "{tmp_path / _HOOK_FILES["tracks_tcl"]}"'
     )
     assert hooked.count(tracks) == 1
-    assert stripped.replace(tracks, "make_tracks") == unset
+    cut_rows = '\nputs ">>> Cut rows around macros"\ncut_rows\n'
+    assert unset.count(cut_rows) == 1
+    assert "cut_rows" not in hooked
+    assert stripped.replace(tracks, "make_tracks") == unset.replace(cut_rows, "")
 
 
 def test_pnr_flow_sources_each_tcl_hook_where_orfs_does(tmp_path):
@@ -4552,9 +4682,10 @@ def test_tcl_hooks_are_checkpoint_and_abstract_inputs(tmp_path):
     assert list(hooked_cfg["tcl_hooks"]) == ["tapcell-tcl"]
 
 
-def test_pnr_platform_leaves_the_flow_knobs_off_by_default(tmp_path):
+def test_pnr_platform_flow_knobs_default_to_the_tool_or_orfs(tmp_path):
     platform = _platform(_make_pdk_cfg(tmp_path))
-    assert platform.get_post_cts_setup_repair() is False
+    # ORFS repairs setup and hold after CTS.
+    assert platform.get_post_cts_setup_repair() is True
     assert platform.get_global_route_repair() is None
     assert platform.get_post_route_repair() is None
     assert platform.get_routing_layer_adjustment() is None
@@ -4639,15 +4770,17 @@ def test_pnr_platform_accepts_a_layer_adjustment_at_either_bound(tmp_path, value
     assert platform.get_routing_layer_adjustment() == value
 
 
-def test_pnr_flow_without_the_knobs_repairs_hold_only_and_keeps_the_router_default(
+def test_pnr_flow_without_the_knobs_repairs_as_orfs_does_and_keeps_the_router_default(
     tmp_path,
 ):
     text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
-    assert "repair_timing -setup" not in text
-    assert "estimate_parasitics -placement\nrepair_timing -hold\n" in text
-    assert "set_global_routing_layer_adjustment" not in text
     assert (
-        "-clock $CLOCK_LAYERS\nglobal_route -congestion_iterations 20 "
+        "estimate_parasitics -placement\nrepair_timing -setup\nrepair_timing -hold\n"
+    ) in text
+    assert "set_global_routing_layer_adjustment" not in text
+    assert "set_routing_layers" not in text
+    assert (
+        "\nglobal_route -congestion_iterations 30 "
         "-congestion_report_file $CONGESTION_RPT -verbose\n"
     ) in text
     assert text.count("repair_timing -hold") == 1
@@ -4659,7 +4792,7 @@ def test_pnr_flow_repairs_hold_again_on_global_route_parasitics(tmp_path):
     platform = _platform(_make_pdk_cfg(tmp_path), global_route_hold_repair=True)
     text = _render_flow(tmp_path, platform)
     assert (
-        "global_route -congestion_iterations 20 "
+        "global_route -congestion_iterations 30 "
         "-congestion_report_file $CONGESTION_RPT -verbose\n"
         'puts ">>> Post-global-route hold repair"\n'
         "estimate_parasitics -global_routing\n"
@@ -4671,7 +4804,17 @@ def test_pnr_flow_repairs_hold_again_on_global_route_parasitics(tmp_path):
         "check_placement -verbose\n"
     ) in text
     assert text.index("global_route -end_incremental") < text.index(">>> Detail route")
-    # The post-CTS hold repair still runs, on placement parasitics.
+    # The post-CTS repair still runs, on placement parasitics.
+    assert (
+        "estimate_parasitics -placement\nrepair_timing -setup\nrepair_timing -hold\n"
+        in text
+    )
+
+
+def test_pnr_flow_repairs_hold_only_after_cts_without_setup_repair(tmp_path):
+    platform = _platform(_make_pdk_cfg(tmp_path), post_cts_setup_repair=False)
+    text = _render_flow(tmp_path, platform)
+    assert "repair_timing -setup" not in text
     assert "estimate_parasitics -placement\nrepair_timing -hold\n" in text
 
 
@@ -4698,6 +4841,7 @@ def test_pnr_flow_without_ndr_or_fanout_keeps_the_tool_defaults(tmp_path):
 def test_pnr_flow_passes_the_cts_apply_ndr(tmp_path, clustering):
     platform = _platform(
         _make_pdk_cfg(tmp_path),
+        cts_buffer="BUF_X4",
         cts_apply_ndr="none",
         cts_sink_clustering=clustering,
     )
@@ -4766,6 +4910,10 @@ def test_flow_knobs_enter_the_abstract_config_only_when_set(tmp_path):
     pnr_cfg = _make_pnr_cfg(tmp_path)
     plain = pnr_abstract.abstract_config(pnr_cfg, _platform(_make_pdk_cfg(tmp_path)))
     assert "post_cts_setup_repair" not in plain
+    hold_only = pnr_abstract.abstract_config(
+        pnr_cfg, _platform(_make_pdk_cfg(tmp_path), post_cts_setup_repair=False)
+    )
+    assert hold_only["post_cts_setup_repair"] is False
     assert "global_route_hold_repair" not in plain
     assert "layer_adjustment" not in plain["routing"]
 
@@ -4778,7 +4926,7 @@ def test_flow_knobs_enter_the_abstract_config_only_when_set(tmp_path):
             routing_layer_adjustment=0.25,
         ),
     )
-    assert tuned["post_cts_setup_repair"] is True
+    assert "post_cts_setup_repair" not in tuned
     assert tuned["global_route_hold_repair"] is True
     assert tuned["routing"]["layer_adjustment"] == 0.25
 
@@ -4862,6 +5010,7 @@ def _pnr_yaml_with(tmp_path, line):
                 desc: demo
                 synth: demo_synth
                 synth-path: synth.yaml
+                floorplan: {{utilization: 0.55}}
                 constraints: c.sdc
                 platform: nangate45_typ
             {line}

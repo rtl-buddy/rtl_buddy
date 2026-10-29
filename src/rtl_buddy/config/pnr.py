@@ -218,15 +218,14 @@ class PnrMacro:
     exact: bool = False
 
 
-#: `floorplan` sizing defaults when neither `die-area` nor `core-area` is set.
-DEFAULT_UTILIZATION = 0.55
+#: `floorplan` sizing defaults when neither `die-area` nor `core-area` is set: `initialize_floorplan`'s aspect and ORFS's core margin. `utilization` has no default.
 DEFAULT_ASPECT = 1.0
-DEFAULT_CORE_MARGIN = 2.0
+DEFAULT_CORE_MARGIN = 1.0
 
 
 @serde
 class PnrFloorplanFile:
-    # Unset means the default below; set together with `die-area` is an error.
+    # Required without `die-area`; set together with `die-area` is an error.
     utilization: float | int | None = None
     aspect: float | int | None = None
     core_margin: float | int | None = field(rename="core-margin", default=None)
@@ -254,7 +253,8 @@ class PnrFloorplanFile:
 
 @dataclass
 class PnrFloorplan:
-    utilization: float
+    # None only with `die_area`.
+    utilization: float | None
     aspect: float
     core_margin: float
     macro_anchor: MacroAnchor = MacroAnchor.LOWER_LEFT
@@ -1151,8 +1151,13 @@ def _load_floorplan_shape(run: str, fp: PnrFloorplanFile) -> dict:
             raise FatalRtlBuddyError(f"{where}.{key} must be a number, got {value!r}")
         return float(value)
 
+    if die is None and fp.utilization is None:
+        raise FatalRtlBuddyError(
+            f"{where}: set utilization, or die-area and core-area; "
+            "initialize_floorplan has no default utilization"
+        )
     return {
-        "utilization": _or_default("utilization", fp.utilization, DEFAULT_UTILIZATION),
+        "utilization": _or_default("utilization", fp.utilization, None),
         "aspect": _or_default("aspect", fp.aspect, DEFAULT_ASPECT),
         "core_margin": _or_default("core-margin", fp.core_margin, DEFAULT_CORE_MARGIN),
         "die_area": die,

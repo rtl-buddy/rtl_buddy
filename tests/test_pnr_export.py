@@ -27,7 +27,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
+from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr import PnrConfig
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -62,6 +62,7 @@ def _make_stream_pdk(tmp_path, **overrides):
     """
     base = dict(
         name="nangate45",
+        pin_layers=PdkPinLayersFile(horizontal="metal3", vertical="metal2"),
         site="FreePDK45_38x28_10R_NP_162NW_34O",
         corners={"typ": "pdk/lib/typ.lib"},
         tech_lef="pdk/lef/tech.lef",
@@ -1081,6 +1082,7 @@ def export_project(tmp_path, monkeypatch):
             tool: "openroad"
             synth: "demo_synth"
             synth-path: "synth.yaml"
+            floorplan: {utilization: 0.55}
             constraints: "constraints.sdc"
             platform: "nangate45_typ"
             reglvl: 0
@@ -1089,6 +1091,7 @@ def export_project(tmp_path, monkeypatch):
             tool: "openroad"
             synth: "demo_synth"
             synth-path: "synth.yaml"
+            floorplan: {utilization: 0.55}
             constraints: "constraints.sdc"
             platform: "nangate45_typ"
             reglvl: 0

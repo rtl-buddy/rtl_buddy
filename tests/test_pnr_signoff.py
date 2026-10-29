@@ -37,6 +37,7 @@ def _run(tmp_path, signoff=..., **keys):
         "desc": "d",
         "synth": "s",
         "synth-path": "synth.yaml",
+        "floorplan": {"utilization": 0.55},
         "platform": "pl",
         **keys,
     }

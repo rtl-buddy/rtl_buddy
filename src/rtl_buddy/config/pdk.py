@@ -22,21 +22,23 @@ def _as_path_list(value: str | list[str]) -> list[str]:
 
 @serde
 class PdkPinLayersFile:
-    horizontal: str = "metal3"
-    vertical: str = "metal2"
+    # `place_pins` has no default layers, so `rb pnr` needs both.
+    horizontal: str | None = None
+    vertical: str | None = None
 
 
-#: Placement defaults used when neither the PDK nor the P&R platform sets a value.
+#: Placement defaults used when neither the PDK nor the P&R platform sets a value: `global_placement`'s own.
 DEFAULT_PLACEMENT_DENSITY = 0.7
-DEFAULT_PLACEMENT_PADDING = 1
+DEFAULT_PLACEMENT_PADDING = 0
 
-#: Minimum channel in microns between two macros and between a macro and each core edge.
+#: The packer's minimum channel in microns between two macros and between a macro and each core edge; RTL-MP gets one only when `macro-halo` is set.
 #: It must be wide enough for `pdngen` to repair the channel, or the run fails at PDN-0179; sky130hd needs about 19.2 um.
 DEFAULT_PLACEMENT_MACRO_HALO = 20.0
 
 #: Standard-cell keep-out in microns around each placed macro; 0 places no blockage.
-#: Without it, cells abut the macro and the detailed router reports Metal Spacing violations at the shared edge.
-DEFAULT_PLACEMENT_MACRO_CELL_HALO = 1.0
+#: Without a keep-out, cells abut the macro and the detailed router reports Metal Spacing violations at the shared edge;
+#: the rows `cut_rows` cuts around each macro when no `tapcell-tcl` is set are one.
+DEFAULT_PLACEMENT_MACRO_CELL_HALO = 0.0
 
 #: Distance in microns from each constant-driven load to the tie cell `repair_tie_fanout` gives it.
 DEFAULT_PLACEMENT_TIE_SEPARATION = 0.0
@@ -412,10 +414,10 @@ class PdkConfig:
     def get_fill_cells(self) -> list[str]:
         return list(self._fill_cells)
 
-    def get_pin_layer_horizontal(self) -> str:
+    def get_pin_layer_horizontal(self) -> str | None:
         return self._pin_layer_horizontal
 
-    def get_pin_layer_vertical(self) -> str:
+    def get_pin_layer_vertical(self) -> str | None:
         return self._pin_layer_vertical
 
     def get_placement_density(self) -> float | None:

@@ -17,7 +17,7 @@ from rtl_buddy.config.pnr_global_route import (
     PnrGlobalRouteFile,
     read_global_route,
 )
-from rtl_buddy.config.pnr_platform import PnrRunOverrides
+from rtl_buddy.config.pnr_platform import PnrRoutingLayersFile, PnrRunOverrides
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools import pnr_abstract, pnr_checkpoints
@@ -246,7 +246,7 @@ def test_every_full_route_takes_the_options_and_every_call_the_origin(tmp_path):
 def test_a_route_without_repair_rebuilds_the_grid_at_the_origin(tmp_path):
     text = _render(tmp_path, _gr_platform(tmp_path, {"grid_origin": [3, 3]}))
     stage = text[text.index('puts ">>> Global route"') : text.index(">>> Detail route")]
-    route = stage.index("global_route -congestion_iterations 20 -grid_origin {3 3} ")
+    route = stage.index("global_route -congestion_iterations 30 -grid_origin {3 3} ")
     assert stage.count(_GUIDES) == 1
     # In the detailed-route stage, before its hooks.
     assert (
@@ -297,7 +297,7 @@ def test_an_incremental_repair_carries_the_origin_and_rebuilds_the_grid(tmp_path
     assert stage.count(_END) == 1
     assert "-start_incremental\n" not in stage
     assert (
-        stage.count("global_route -congestion_iterations 20 -grid_origin {3 3} ") == 1
+        stage.count("global_route -congestion_iterations 30 -grid_origin {3 3} ") == 1
     )
     # The guides round trip follows the last incremental route, before detailed route.
     guides = stage.index(_GUIDES)
@@ -355,8 +355,47 @@ def test_per_layer_adjustments_follow_the_all_layers_one(tmp_path):
         "set_global_routing_layer_adjustment $SIGNAL_LAYERS 0.2\n"
         "set_global_routing_layer_adjustment metal2 0.9\n"
         "set_global_routing_layer_adjustment metal3 0.8\n"
-        "global_route -congestion_iterations 20 "
+        "global_route -congestion_iterations 30 "
     ) in text
+
+
+@pytest.mark.parametrize(
+    ("layers", "call"),
+    [
+        (
+            PnrRoutingLayersFile(signal="metal2-metal6", clock="metal4"),
+            "set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS\n",
+        ),
+        (
+            PnrRoutingLayersFile(signal="metal2-metal6"),
+            "set_routing_layers -signal $SIGNAL_LAYERS\n",
+        ),
+        (
+            PnrRoutingLayersFile(clock="metal4"),
+            "set_routing_layers -clock $CLOCK_LAYERS\n",
+        ),
+        (PnrRoutingLayersFile(), ""),
+    ],
+)
+def test_routing_layers_pass_only_the_ranges_that_are_set(tmp_path, layers, call):
+    text = _render(tmp_path, _platform(_pdk(tmp_path), routing_layers=layers))
+
+    assert text.count("set_routing_layers") == (1 if call else 0)
+    assert call + "global_route " in text
+    assert f"set SIGNAL_LAYERS   {layers.signal or '{}'}\n" in text
+    assert f"set CLOCK_LAYERS    {layers.clock or '{}'}\n" in text
+
+
+def test_the_all_layers_adjustment_covers_every_layer_without_signal_layers(tmp_path):
+    platform = _platform(
+        _pdk(tmp_path),
+        routing_layers=PnrRoutingLayersFile(),
+        routing_layer_adjustment=0.2,
+    )
+
+    assert "set_global_routing_layer_adjustment * 0.2\nglobal_route " in _render(
+        tmp_path, platform
+    )
 
 
 def test_per_layer_adjustments_apply_without_the_all_layers_one(tmp_path):
@@ -399,9 +438,9 @@ def _digest_cfg(tmp_path, overrides=PnrRunOverrides()):
     return replace(_pnr_cfg(tmp_path, None), harden=True, overrides=overrides)
 
 
-def test_unset_options_add_nothing_to_the_digest(tmp_path):
+def test_unset_options_digest_only_the_effective_congestion_iterations(tmp_path):
     config = pnr_abstract.abstract_config(_digest_cfg(tmp_path), _gr_platform(tmp_path))
-    assert "global_route" not in config["routing"]
+    assert config["routing"]["global_route"] == {"congestion-iterations": 30}
     empty = pnr_abstract.abstract_config(
         _digest_cfg(tmp_path), _gr_platform(tmp_path, {})
     )
@@ -412,16 +451,22 @@ def test_unset_options_add_nothing_to_the_digest(tmp_path):
     ("gr", "expected"),
     [
         (GlobalRoute(congestion_iterations=100), {"congestion-iterations": 100}),
-        (GlobalRoute(grid_origin=(3, 3)), {"grid-origin": [3, 3]}),
+        (
+            GlobalRoute(grid_origin=(3, 3)),
+            {"congestion-iterations": 30, "grid-origin": [3, 3]},
+        ),
         (
             GlobalRoute(layer_adjustment=(("metal2", 0.9),)),
-            {"layer-adjustment": {"metal2": 0.9}},
+            {"congestion-iterations": 30, "layer-adjustment": {"metal2": 0.9}},
         ),
-        (GlobalRoute(resistance_aware=True), {"resistance-aware": True}),
+        (
+            GlobalRoute(resistance_aware=True),
+            {"congestion-iterations": 30, "resistance-aware": True},
+        ),
         (GlobalRoute(congestion_iterations=5), {"congestion-iterations": 5}),
         (
             GlobalRoute(critical_nets_percentage=30.0),
-            {"critical-nets-percentage": 30.0},
+            {"congestion-iterations": 30, "critical-nets-percentage": 30.0},
         ),
     ],
 )
@@ -441,9 +486,9 @@ def test_a_set_option_joins_the_digest(tmp_path, gr, expected):
         GlobalRoute(congestion_report_iter_step=10),
         GlobalRoute(resistance_aware=False),
         GlobalRoute(allow_congestion=False),
-        GlobalRoute(congestion_iterations=20),
+        GlobalRoute(congestion_iterations=30),
         GlobalRoute(
-            congestion_iterations=20,
+            congestion_iterations=30,
             congestion_report_iter_step=5,
             resistance_aware=False,
             allow_congestion=False,
@@ -457,7 +502,7 @@ def test_reporting_and_default_values_leave_the_digest_alone(tmp_path, gr):
     over = pnr_abstract.abstract_config(
         _digest_cfg(tmp_path, PnrRunOverrides(global_route=gr)), platform
     )
-    assert "global_route" not in over["routing"]
+    assert over["routing"]["global_route"] == {"congestion-iterations": 30}
     assert pnr_abstract.config_digest(over) == pnr_abstract.config_digest(plain)
 
 
