@@ -274,8 +274,8 @@ def test_global_placement_follows_the_sdc_and_the_wire_rc(
     else:
         text = (artefacts / "pnr.tcl").read_text()
         sdc = text.index("read_sdc $SDC_FILE")
-    rc = text.index("source ", sdc)
-    assert "pdk/rc.tcl" in text[rc : rc + 200]
+    rc = text.index("pdk/rc.tcl", sdc)
+    assert text[text.rindex("\n", 0, rc) + 1 :].startswith("source ")
     placement = re.search(r"^global_placement -density .*$", text, re.M)
     assert sdc < rc < placement.start()
     assert placement.group().endswith(" -timing_driven")

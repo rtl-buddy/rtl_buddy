@@ -1176,11 +1176,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     f"built by {fields.get('was')}, now {fields.get('now')}"
                 ),
                 "toolchain-unrecorded": "no record of the Verilator that built it",
+                "make-incomplete": "an earlier make there did not finish",
+                "make-failed": "its make failed",
             }.get(fields.get("reason"), fields.get("reason"))
+            starts = "next " if fields.get("reason") == "make-failed" else ""
             return (
                 f"{target or 'compile'}: dropped {fields.get('removed')} stale "
                 f"object/dependency files from {fields.get('build_path')} "
-                f"({why}); the C++ build starts clean"
+                f"({why}); the {starts}C++ build starts clean"
             )
         case "compile.build_toolchain_changed":
             return (
@@ -1268,6 +1271,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f"Submitted array job {fields.get('job_id')} "
                 f"[{fields.get('array')}] for {fields.get('jobs')} test(s){piece}"
+            )
+        case "dispatch.submit_deferred":
+            # WARNING: the head is sleeping, not hung, and says until when it will try.
+            return (
+                f"sbatch refused {fields.get('what')} ({fields.get('jobs')} job(s)): "
+                f"{fields.get('error')}; retry {fields.get('attempt')} in "
+                f"{fields.get('delay_sec')}s, giving up "
+                f"{fields.get('deadline_sec')}s after the first attempt"
             )
         case "dispatch.max_array_size_unknown":
             return (
@@ -2755,7 +2766,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         # -- config / setup errors (logged at ERROR, immediately followed by FatalRtlBuddyError) --
         case "root_config.not_found":
-            return f"root_config.yaml not found (searched {fields.get('max_levels')} levels from {fields.get('cwd')})"
+            return (
+                f"root_config.yaml not found (searched {fields.get('cwd')} and "
+                f"{fields.get('levels')} parent directories up to "
+                f"{fields.get('searched_to')})"
+            )
         case "root_config.load_failed":
             return f'failed to load root config "{fields.get("path")}": {fields.get("error")}'
         case "root_config.reg_cfg_block_unreadable":

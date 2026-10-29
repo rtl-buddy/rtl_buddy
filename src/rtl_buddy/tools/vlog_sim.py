@@ -303,6 +303,22 @@ BUILD_TOOLCHAIN_MARKER_NAME = "rb-toolchain.json"
 # Everything else in a build dir is rewritten by the next compile or owned by rtl_buddy.
 _STALE_BUILD_OUTPUT_GLOBS = ("*.d", "*.o", "*.a")
 
+# Present in a Verilator build dir from the start of a compile that may run make until
+# it succeeds. Verilator's makefiles do not set `.DELETE_ON_ERROR`, so a failed or killed
+# make can leave a truncated target newer than its sources, which the next make keeps.
+BUILD_MAKE_MARKER_NAME = "rb-make-incomplete"
+
+# The targets such a make writes, besides the linked executable: objects, archives,
+# `-MMD` dependency files, precompiled headers, the `__ALL.cpp` amalgamation and the
+# archive's object list.
+_UNFINISHED_MAKE_OUTPUT_GLOBS = (
+    *_STALE_BUILD_OUTPUT_GLOBS,
+    "*.gch",
+    "*.pch",
+    "*__ALL.cpp",
+    "*.verilator_deplist.tmp",
+)
+
 
 def _toolchain_marker_identity(toolchain) -> dict:
     """The part of a toolchain fingerprint that decides the make is stale.
@@ -330,22 +346,88 @@ def _describe_marker_toolchain(identity):
     )
 
 
+def _unlink_build_output(path) -> int:
+    """Delete one regular file; 1 if it went. Never raises."""
+    try:
+        if path.is_file():
+            path.unlink()
+            return 1
+    except OSError:
+        pass
+    return 0
+
+
 def _scrub_stale_build_outputs(build_dir) -> int:
     """Delete the make outputs a new toolchain must not inherit; return how many.
 
-    Top level only. Never raises; a file that will not go is left for make.
+    Top level only. Keeps the verilation's own ``*__ver.d``, which no make writes and
+    a make-only compile cannot regenerate. Never raises; a file that will not go is
+    left for make.
     """
     removed = 0
     root = Path(build_dir)
     for pattern in _STALE_BUILD_OUTPUT_GLOBS:
         for path in root.glob(pattern):
-            try:
-                if path.is_file():
-                    path.unlink()
-                    removed += 1
-            except OSError:
-                pass
+            if not path.name.endswith("__ver.d"):
+                removed += _unlink_build_output(path)
     return removed
+
+
+def _scrub_unfinished_make_outputs(build_dir, executable) -> int:
+    """Delete every target an unfinished make may have left; return how many.
+
+    Walks the whole build dir, since a `--hierarchical` build makes each sub-model in
+    a subdirectory of its own, and deletes the linked ``executable`` (a path, or
+    ``None`` when the command line does not name it). Keeps ``*__ver.d`` as
+    :func:`_scrub_stale_build_outputs` does. Never raises.
+    """
+    removed = 0
+    for dirpath, _dirnames, filenames in os.walk(build_dir):
+        for name in filenames:
+            if name.endswith("__ver.d"):
+                continue
+            if any(
+                fnmatch.fnmatch(name, glob) for glob in _UNFINISHED_MAKE_OUTPUT_GLOBS
+            ):
+                removed += _unlink_build_output(Path(dirpath) / name)
+    if executable is not None:
+        removed += _unlink_build_output(Path(executable))
+    return removed
+
+
+# Verilator options naming the linked executable: `-o` itself, else the `--prefix` it
+# defaults to, else the `V<top>` that prefix defaults to.
+_VERILATOR_EXE_OPTIONS = ("-o", "--o")
+_VERILATOR_PREFIX_OPTIONS = ("--prefix", "-prefix")
+
+
+def _verilator_executable(build_dir, argv):
+    """The executable a Verilator ``argv`` links into ``build_dir``, or ``None`` when
+    the line names neither an output, a prefix nor a top module.
+
+    The last occurrence of each option wins, as in Verilator. A relative ``-o`` is
+    relative to the build dir, where make runs.
+    """
+    named = {}
+    top_aliases = TOP_MODULE_FLAGS["verilator"].aliases
+    for token, value in zip(argv, argv[1:]):
+        if value.startswith("-"):
+            continue
+        if token in _VERILATOR_EXE_OPTIONS:
+            named["exe"] = value
+        elif token in _VERILATOR_PREFIX_OPTIONS:
+            named["prefix"] = value
+        elif token in top_aliases:
+            named["top"] = value
+    if "exe" in named:
+        name = named["exe"]
+    elif "prefix" in named:
+        name = named["prefix"]
+    elif "top" in named:
+        name = f"V{named['top']}"
+    else:
+        return None
+    return Path(build_dir) / name
 
 
 def _log_stale_stamp_toolchain(stored_inputs, current_inputs, *, test_name=None):
@@ -4359,6 +4441,68 @@ class VlogSim:
                 # full C++ build and is never wrong.
                 pass
 
+    def _begin_make(self, plan, run_cmd, *, verilate_only):
+        """Before a Verilator compile that may run make: drop what an unfinished make
+        left, then mark this one unfinished until it succeeds.
+
+        Returns the state :meth:`_end_make` needs, or ``None`` when no make runs into
+        a Verilator build dir.
+        """
+        if not plan.is_verilator or verilate_only:
+            return None
+        mdir = Path(plan.compile_work_dir) / plan.build_dir
+        marker = mdir / BUILD_MAKE_MARKER_NAME
+        executable = _verilator_executable(mdir, run_cmd)
+        if marker.exists():
+            removed = _scrub_unfinished_make_outputs(mdir, executable)
+            if removed:
+                # Console: the C++ build that follows is a full one and this says why.
+                log_console_event(
+                    logger,
+                    logging.INFO,
+                    "compile.build_dir_scrubbed",
+                    test=self.test_name,
+                    build_path=str(mdir),
+                    removed=removed,
+                    reason="make-incomplete",
+                )
+        try:
+            mdir.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+        except OSError:
+            # Best-effort: a failed make is still scrubbed in _end_make; only a killed
+            # one goes unnoticed.
+            pass
+        evidence = None if self._skip_verilate else self._verilation_evidence(plan)
+        return mdir, marker, evidence, executable
+
+    def _end_make(self, plan, state, *, ok):
+        """Clear the marker after a successful compile; after a failed one whose make
+        may have run, drop its outputs now and keep the marker.
+
+        A front end that failed (its ``*__verFiles.dat`` unchanged) ran no make, so its
+        build dir keeps its objects.
+        """
+        mdir, marker, evidence, executable = state
+        front_end_failed = (
+            not ok and bool(evidence) and self._verilation_evidence(plan) == evidence
+        )
+        if ok or front_end_failed:
+            with contextlib.suppress(OSError):
+                marker.unlink(missing_ok=True)
+            return
+        removed = _scrub_unfinished_make_outputs(mdir, executable)
+        if removed:
+            log_event(
+                logger,
+                logging.INFO,
+                "compile.build_dir_scrubbed",
+                test=self.test_name,
+                build_path=str(mdir),
+                removed=removed,
+                reason="make-failed",
+            )
+
     def _rebuild_forced(self, build_dir, *, shared=True):
         """Does ``--rebuild`` override the stamp on ``build_dir`` right now?
 
@@ -5154,6 +5298,7 @@ class VlogSim:
             if plan.records_verilation and not self._skip_verilate
             else None
         )
+        make_state = self._begin_make(plan, run_cmd, verilate_only=verilate_only)
         log_event(
             logger,
             logging.INFO,
@@ -5199,6 +5344,8 @@ class VlogSim:
         # applies. Consumers read the path off the events below, not a name of their
         # own.
         transcript_path = self._write_compile_transcript(run_str, result)
+        if make_state is not None:
+            self._end_make(plan, make_state, ok=result.returncode == 0)
         if ver_files_before is not None and (
             result.returncode == 0
             or self._verilation_evidence(plan) not in (ver_files_before, {})

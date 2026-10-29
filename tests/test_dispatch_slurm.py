@@ -2100,6 +2100,131 @@ def test_a_failed_slice_cancels_the_slices_already_submitted(monkeypatch, tmp_pa
     assert calls[-1] == ["scancel", "100"]
 
 
+_MAX_JOB_COUNT = (
+    "sbatch: error: Slurm job queue full, sleeping and retrying.\n"
+    "sbatch: error: Batch job submission failed: MaxJobCount limit reached"
+)
+
+
+class _FakeClock:
+    """Stands in for the `time` module in slurm.py: sleeping advances the clock."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def __getattr__(self, name):
+        import time
+
+        return getattr(time, name)
+
+
+def test_an_array_refused_at_max_job_count_is_resubmitted(
+    monkeypatch, tmp_path, caplog
+):
+    """A full queue drains on its own, so the array waits and goes out again."""
+    import logging
+
+    calls = []
+    results = [
+        SimpleNamespace(returncode=1, stdout="", stderr=_MAX_JOB_COUNT),
+        SimpleNamespace(returncode=1, stdout="", stderr=_MAX_JOB_COUNT),
+        SimpleNamespace(returncode=0, stdout="100\n", stderr=""),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    clock = _FakeClock()
+    monkeypatch.setattr(slurm_module, "time", clock)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.WARNING):
+        handles = backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+
+    assert [h.job_id for h in handles] == ["100_1", "100_2", "100_3"]
+    assert len(calls) == 3 and calls[0] == calls[2]
+    assert clock.sleeps == [30, 60]
+    deferred = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "dispatch.submit_deferred"
+    ]
+    assert [r.rtl_fields["attempt"] for r in deferred] == [1, 2]
+    assert deferred[0].rtl_fields["jobs"] == 3
+    assert "MaxJobCount limit reached" in deferred[0].rtl_fields["error"]
+
+
+def test_a_queue_that_stays_full_fails_naming_the_refusal(monkeypatch, tmp_path):
+    """The backoff is bounded; the failure carries the job count and sbatch's message."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=1, stdout="", stderr=_MAX_JOB_COUNT)
+        for _ in range(50)
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    clock = _FakeClock()
+    monkeypatch.setattr(slurm_module, "time", clock)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+
+    assert clock.sleeps == [30, 60, 120, 240, 300, 300, 300, 300]
+    assert sum(clock.sleeps) <= slurm_module.SUBMIT_RETRY_DEADLINE_SEC
+    assert len(calls) == len(clock.sleeps) + 1
+    message = str(excinfo.value)
+    assert "sbatch array submit failed (3 jobs, rc=1)" in message
+    assert "still refused after 8 retries over 1650s" in message
+    assert "MaxJobCount limit reached" in message
+
+
+def test_a_permanent_refusal_is_not_retried(monkeypatch, tmp_path):
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: Invalid account",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    clock = _FakeClock()
+    monkeypatch.setattr(slurm_module, "time", clock)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with pytest.raises(FatalRtlBuddyError, match="Invalid account") as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    assert clock.sleeps == []
+    assert len(calls) == 1
+    assert "still refused" not in str(excinfo.value)
+
+
+def test_a_single_job_refused_at_max_job_count_is_resubmitted(monkeypatch):
+    calls = []
+    results = [
+        SimpleNamespace(returncode=1, stdout="", stderr=_MAX_JOB_COUNT),
+        SimpleNamespace(returncode=0, stdout="500\n", stderr=""),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    clock = _FakeClock()
+    monkeypatch.setattr(slurm_module, "time", clock)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    assert backend.submit(_spec()).job_id == "500"
+    assert clock.sleeps == [30]
+
+
 def test_selected_cluster_reads_every_spelling_and_takes_the_last():
     """sbatch takes four forms of the cluster option and a later one overrides an
     earlier.

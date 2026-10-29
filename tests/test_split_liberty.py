@@ -454,6 +454,10 @@ def test_a_foreign_scl_cache_in_the_inherited_tmpdir_is_not_used(tmp_path, monke
         inherited = _log(dict(os.environ))
         if "scl" not in inherited.lower():
             pytest.skip("this yosys has no merged SCL cache")
+        if list(shared.glob("*/yosys-liberty-scl-cache")):
+            pytest.skip(
+                "the yosys on PATH re-roots TMPDIR, so it ignores the inherited one"
+            )
         assert "falling back to liberty format" in inherited
         own = _log(yosys_env(synth.artefact_dir))
     finally:
