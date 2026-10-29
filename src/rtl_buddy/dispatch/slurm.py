@@ -1086,6 +1086,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 if proc.stderr.strip()
                 else "",
             )
+            self._notify_before_wait()
             if abandon is None:
                 time.sleep(delay)
                 continue
@@ -1164,7 +1165,9 @@ class SlurmDispatchBackend(DispatchBackend):
         else:
             fields.update(model=spec.model_name, profile=spec.profile_name)
         log_event(logger, logging.INFO, "dispatch.submitted", **fields)
-        return JobHandle(job_id=job_id, spec=spec, cluster=cluster)
+        handle = JobHandle(job_id=job_id, spec=spec, cluster=cluster)
+        self._notify_accepted([handle])
+        return handle
 
     def submit_coverage(self, spec: CoverageJobSpec) -> JobHandle:
         """Submit the coverage tail as one job, with the ``cfg-dispatch.coverage`` reservation.
@@ -1728,10 +1731,12 @@ class SlurmDispatchBackend(DispatchBackend):
             slices=slice_count,
             cluster=cluster,
         )
-        return [
+        handles = [
             JobHandle(job_id=f"{base_id}_{i}", spec=spec, cluster=cluster)
             for i, spec in enumerate(specs, start=1)
         ]
+        self._notify_accepted(handles)
+        return handles
 
     @staticmethod
     def _base_ids(handles: Sequence[JobHandle | None]) -> list[str]:

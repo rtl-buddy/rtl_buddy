@@ -303,7 +303,7 @@ If the head process dies (late `Ctrl-C`, dropped SSH session, login node reboot)
 | `cancel` | Cancels the old jobs and waits until the queue no longer holds them, then submits. If jobs remain after 30 seconds, nothing is submitted and the run fails with `dispatch.orphans_cancel_failed` naming the IDs to cancel by hand. |
 | `adopt` | Submits nothing. Waits on the old jobs, collects their results, and reports them as this run's (`dispatch.orphans_adopted`). |
 
-A run that died while still submitting can never be adopted. `--orphans` has no effect for `local` and `local-parallel`; `--orphans adopt` there is a fatal error.
+Each accepted job is recorded before the head next waits on the scheduler, including while it waits to resubmit a refused `sbatch`, so `cancel` reaches every job a killed head had queued. A run that died while still submitting can never be adopted. `--orphans` has no effect for `local` and `local-parallel`; `--orphans adopt` there is a fatal error.
 
 A head can also die while it waits on its [coverage tail job](#run-the-coverage-tail-as-a-job), which keeps writing `cov_dir/`. `rb test`, `rb randtest` and `rb regression` check the command root's `artefacts/.dispatch/coverage/` records at start-up too:
 

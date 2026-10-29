@@ -6168,6 +6168,27 @@ class RtlBuddy:
         # Read once, and only where a build job exists: a suite whose tests each compile
         # in their own job has none.
         build_cluster = None if build_handle is None else build_handle.cluster
+        # Jobs already named in the run record, by handle identity.
+        recorded = set()
+        row_by_spec = {
+            id(spec): idx
+            for group_entries in groups.values()
+            for idx, _plan_index, spec in group_entries
+        }
+
+        def record_accepted(accepted):
+            # Each array slice (or single job) is queued once the scheduler answers,
+            # so it is named before the next `sbatch` call can block on a full queue.
+            rows = [
+                (row_by_spec[id(handle.spec)], handle)
+                for handle in accepted
+                if id(handle.spec) in row_by_spec
+            ]
+            self._grow_run_manifest(
+                run_manifest, record_pending_handles, rows, suite_dir=suite_dir
+            )
+            recorded.update(id(handle) for _row, handle in rows)
+
         try:
             # Per-invocation array dir (head pid), so a resubmit or overlapping run
             # never rewrites a manifest under another run's queued elements, which `sed`
@@ -6177,18 +6198,20 @@ class RtlBuddy:
                 array_dir = run_scoped_path(
                     dispatch_root, "array", run_token, suffix=f"-{array_seq:03d}"
                 )
-                handles = backend.submit_array(
-                    specs,
-                    array_dir=array_dir,
-                    max_parallel=dispatch_cfg.max_jobs_per_array,
-                    # Every group waits for the build job, including self-compiling
-                    # ones: it runs PRE+COMPILE for the whole plan and writes their
-                    # `artefacts/<test>/` too, so an ungated element would race it. A
-                    # suite with no build job runs unblocked.
-                    dependency=(
-                        build_handle.job_id if build_handle is not None else None
-                    ),
-                )
+                with backend.submission_hooks(on_accepted=record_accepted):
+                    handles = backend.submit_array(
+                        specs,
+                        array_dir=array_dir,
+                        max_parallel=dispatch_cfg.max_jobs_per_array,
+                        # Every group waits for the build job, including
+                        # self-compiling ones: it runs PRE+COMPILE for the whole
+                        # plan and writes their `artefacts/<test>/` too, so an
+                        # ungated element would race it. A suite with no build job
+                        # runs unblocked.
+                        dependency=(
+                            build_handle.job_id if build_handle is not None else None
+                        ),
+                    )
                 for (idx, plan_index, spec), handle in zip(group_entries, handles):
                     pending.append((idx, handle))
                     gate_entries.append(
@@ -6205,17 +6228,20 @@ class RtlBuddy:
                             else build_cluster,
                         )
                     )
-                # This array is accepted, so it is running whether or not the head
-                # survives to submit the next: record it now.
-                self._grow_run_manifest(
-                    run_manifest,
-                    record_pending_handles,
-                    [
-                        (idx, handle)
-                        for (idx, _pi, _s), handle in zip(group_entries, handles)
-                    ],
-                    suite_dir=suite_dir,
-                )
+                # A backend that does not report its own acceptances (the default
+                # loop, local-parallel) is recorded here, once the group is out.
+                unrecorded = [
+                    (idx, handle)
+                    for (idx, _pi, _s), handle in zip(group_entries, handles)
+                    if id(handle) not in recorded
+                ]
+                if unrecorded:
+                    self._grow_run_manifest(
+                        run_manifest,
+                        record_pending_handles,
+                        unrecorded,
+                        suite_dir=suite_dir,
+                    )
         except BaseException:
             # A mid-fan-out submit failure must not leak this suite's build job or
             # already-submitted arrays.
@@ -6723,8 +6749,9 @@ class RtlBuddy:
         attempt's evidence. The result envelope path is unchanged: the job and head must
         agree on it, and this run's token still guards it.
 
-        ``on_submitted`` is called with the accepted ``[(row, handle)]`` once the round
-        is out and before the wait.
+        ``on_submitted`` is called with the accepted ``[(row, handle)]`` before the head
+        blocks on the scheduler: before each wait to resubmit a refused job, with the
+        jobs accepted since the last call, and once the round is out, with the rest.
 
         The longest delay is passed to ``wait_all`` as ``extra_wait``, so a
         ``cfg-dispatch.max-wait`` shorter than the backoff does not trip on every retry
@@ -6733,6 +6760,16 @@ class RtlBuddy:
         resubmitted = []
         staged = []
         longest_delay = 0.0
+        flushed = 0
+
+        def flush_before_wait():
+            # `backend.submit` is about to sleep for a refused `sbatch`: name what
+            # the round has had accepted, once per wait rather than once per job.
+            nonlocal flushed
+            if on_submitted is not None and len(resubmitted) > flushed:
+                on_submitted(resubmitted[flushed:])
+                flushed = len(resubmitted)
+
         try:
             for idx, handle, classifier in retryable:
                 delay = backoff_delay(attempt, retry_cfg)
@@ -6770,11 +6807,12 @@ class RtlBuddy:
                             suite_results[idx], spec, backend=backend
                         )
                     )
-                resubmitted.append((idx, backend.submit(spec, delay_sec=delay)))
-            if on_submitted is not None:
-                # The whole round is accepted and none waited on yet: the only moment a
-                # record can be written before the head blocks.
-                on_submitted(resubmitted)
+                with backend.submission_hooks(before_wait=flush_before_wait):
+                    resubmitted.append((idx, backend.submit(spec, delay_sec=delay)))
+            if on_submitted is not None and len(resubmitted) > flushed:
+                # The rest of the round is accepted and none waited on yet: record it
+                # before the head blocks.
+                on_submitted(resubmitted[flushed:])
             backend.wait_all([h for _, h in resubmitted], extra_wait=longest_delay)
             # The round landed, so the rows may now describe it. Anything short leaves
             # them describing the attempt whose results the caller keeps.
