@@ -2359,6 +2359,84 @@ def test_an_sbatch_that_does_not_answer_is_stopped_and_fails(tmp_path, monkeypat
     assert not (tmp_path / "03_cts.sbatch.tmp").exists()
 
 
+_QUEUE_FULL = (
+    'echo "sbatch: error: Batch job submission failed: MaxJobCount limit reached" >&2'
+)
+
+
+def _counting_sbatch(tmp_path, refusals, answer="echo 4242"):
+    """An sbatch body that refuses at MaxJobCount ``refusals`` times, then runs ``answer``; each call appends to `tmp_path/attempts`."""
+    return (
+        f"echo x >> {tmp_path}/attempts\n"
+        f'if [ "$(wc -l < {tmp_path}/attempts)" -le {refusals} ]; then\n'
+        f"    {_QUEUE_FULL}; exit 1\n"
+        "fi\n"
+        f"{answer}\n"
+    )
+
+
+def _attempts(tmp_path):
+    return len((tmp_path / "attempts").read_text().splitlines())
+
+
+def test_a_stage_refused_at_max_job_count_is_resubmitted(tmp_path, monkeypatch):
+    backend, spec = _guard_backend(tmp_path, monkeypatch, _counting_sbatch(tmp_path, 2))
+    monkeypatch.setattr(slurm_module, "SUBMIT_RETRY_BACKOFF_SEC", 0.05)
+
+    handle = backend.submit_pnr_stage(spec, abandon=lambda: False)
+
+    assert handle.job_id == "4242"
+    assert _attempts(tmp_path) == 3
+    assert (tmp_path / "03_cts.sbatch").read_text() == "4242\n"
+
+
+def test_a_stage_whose_queue_stays_full_fails_naming_the_refusal(tmp_path, monkeypatch):
+    backend, spec = _guard_backend(
+        tmp_path, monkeypatch, _counting_sbatch(tmp_path, 99)
+    )
+    monkeypatch.setattr(slurm_module, "SUBMIT_RETRY_BACKOFF_SEC", 0.05)
+    monkeypatch.setattr(slurm_module, "SUBMIT_RETRY_DEADLINE_SEC", 0.2)
+
+    with pytest.raises(
+        FatalRtlBuddyError,
+        match=r"^sbatch failed for pnr:blk:cts \(rc=1\) \(still refused after "
+        r"\d+ retr(y|ies) over \d+s\): .*MaxJobCount limit reached$",
+    ):
+        backend.submit_pnr_stage(spec)
+    assert _attempts(tmp_path) > 1
+
+
+def test_a_stage_submission_that_timed_out_is_not_resubmitted(tmp_path, monkeypatch):
+    """sbatch waiting out a full queue on its own may already have been accepted."""
+    backend, spec = _guard_backend(
+        tmp_path,
+        monkeypatch,
+        f"echo x >> {tmp_path}/attempts\n"
+        'echo "sbatch: error: Slurm job queue full, sleeping and retrying." >&2\n'
+        "sleep 30\necho 4242\n",
+    )
+    monkeypatch.setattr(slurm_module, "SUBMIT_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(slurm_module, "SUBMIT_RETRY_BACKOFF_SEC", 0.05)
+
+    with pytest.raises(FatalRtlBuddyError, match=r"\(rc=124\): sbatch did not answer"):
+        backend.submit_pnr_stage(spec)
+    assert _attempts(tmp_path) == 1
+
+
+def test_a_cancel_ends_the_wait_before_a_resubmission(tmp_path, monkeypatch):
+    backend, spec = _guard_backend(
+        tmp_path, monkeypatch, _counting_sbatch(tmp_path, 99)
+    )
+    start = time.monotonic()
+
+    with pytest.raises(SubmissionAbandoned):
+        backend.submit_pnr_stage(spec, abandon=lambda: (tmp_path / "attempts").exists())
+
+    assert time.monotonic() - start < 10
+    assert _attempts(tmp_path) == 1
+    assert not (tmp_path / "scancel.log").exists()
+
+
 def test_submit_pnr_stage_argv(monkeypatch):
     slurm = _FakeSlurm(
         monkeypatch,
