@@ -1195,6 +1195,7 @@ class RtlBuddy:
         command_root: str | Path | None = None,
         list_only: bool = False,
         log_path: str | Path | None = None,
+        writes_artifacts: bool = True,
     ) -> ExecutionContext:
         """Build the command's ExecutionContext and attach the file log.
 
@@ -1221,6 +1222,11 @@ class RtlBuddy:
         the run being queried. These paths (`rb phys`, `rb cov`, the `rb graph` read
         verbs, `rb xplr`, `--list`) keep only the console handler. An explicit
         ``log_path`` still attaches.
+
+        ``writes_artifacts=False`` is for commands that load the project but write
+        nothing under ``artefacts/`` (`rb filelist`, `rb saif`, `rb verible`): they
+        take no artefact-tree lock and, like ``list_only``, attach no file log, so they
+        run alongside each other and alongside a run that holds the tree.
         """
         if (primary_config is None) == (command_root is None):
             raise FatalRtlBuddyError(
@@ -1246,7 +1252,7 @@ class RtlBuddy:
             log_path = Path(log_path)
             log_path.parent.mkdir(parents=True, exist_ok=True)
             attach_file_log(log_path)
-        elif not list_only:
+        elif not list_only and writes_artifacts:
             # Under `--run-tag` the log directory does not exist yet; the tree lock
             # below creates it.
             ctx.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1257,11 +1263,13 @@ class RtlBuddy:
             return ctx
 
         # Fail loud if another process uses this artefact tree; held until exit.
-        # `--list` paths stay lock-free.
+        # `--list` paths and commands that write no artefacts stay lock-free.
         # Dispatched `_test-job` processes share the head's tree and must not take the
         # lock.
         # `ctx.artifact_root` carries the `--run-tag`, so the lock is per tag.
-        if getattr(self, "_pending_invoked_subcommand", None) not in (
+        if writes_artifacts and getattr(
+            self, "_pending_invoked_subcommand", None
+        ) not in (
             "_test-job",
             "_build-job",
             "_elab-job",
@@ -8129,7 +8137,9 @@ class RtlBuddy:
         """
         generate filelists using models.yaml
         """
-        ctx = self._enter_command_context(primary_config=model_config)
+        ctx = self._enter_command_context(
+            primary_config=model_config, writes_artifacts=False
+        )
         model_cfg = ModelConfigLoader(str(ctx.primary_config)).get_model(model_name)
         resolved_output = str(ctx.resolve_input(output_path))
         vlog_fl = VlogFilelist(
@@ -13576,7 +13586,9 @@ class RtlBuddy:
         """convert FST/VCD trace to SAIF v2.0"""
         from .tools.saif_from_trace import convert
 
-        ctx = self._enter_command_context(command_root=self.invocation_cwd)
+        ctx = self._enter_command_context(
+            command_root=self.invocation_cwd, writes_artifacts=False
+        )
         convert(ctx.resolve_input(trace), ctx.resolve_input(output))
 
     def do_cmd_cdc(
@@ -15630,7 +15642,9 @@ class RtlBuddy:
         the `--model` expansion, filtered by the cfg-verible `exclude` globs plus
         `excludes`. Always exits through `typer.Exit` with the binary's return code.
         """
-        self._enter_command_context(command_root=self.invocation_cwd)
+        self._enter_command_context(
+            command_root=self.invocation_cwd, writes_artifacts=False
+        )
         verible_cfg = self.root_cfg.platform_cfg.get_verible()
         if not verible_cfg.available:
             log_event(logger, logging.ERROR, "verible.unavailable")
@@ -15749,7 +15763,9 @@ class RtlBuddy:
         generate verible.filelist from models.yaml so verible-verilog-ls can
         resolve cross-file symbols (go-to-definition, hover, references)
         """
-        self._enter_command_context(command_root=self.invocation_cwd)
+        self._enter_command_context(
+            command_root=self.invocation_cwd, writes_artifacts=False
+        )
         project_root = self.root_cfg.get_project_rootdir()
         if output is None:
             output = os.path.join(project_root, "verible.filelist")
