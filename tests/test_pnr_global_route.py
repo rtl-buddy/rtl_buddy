@@ -260,7 +260,10 @@ def test_a_route_without_repair_rebuilds_the_grid_at_the_origin(tmp_path):
 def test_the_global_route_checkpoint_precedes_the_grid_rebuild(tmp_path):
     """The `global_route` checkpoint holds the router's own route: its segments are written before `read_guides`, after which OpenROAD writes segments it cannot read back (GRT-0265)."""
     platform = _gr_platform(
-        tmp_path, {"grid_origin": [3, 3]}, global_route_hold_repair=True
+        tmp_path,
+        {"grid_origin": [3, 3]},
+        global_route_hold_repair=True,
+        global_route_antenna_repair=False,
     )
     pnr_cfg = replace(
         _pnr_cfg(tmp_path, CHECKPOINT_STAGES),
@@ -307,7 +310,10 @@ def test_an_incremental_repair_carries_the_origin_and_rebuilds_the_grid(tmp_path
 
 def test_the_hold_shorthand_carries_the_origin(tmp_path):
     platform = _gr_platform(
-        tmp_path, {"grid_origin": [3, 3]}, global_route_hold_repair=True
+        tmp_path,
+        {"grid_origin": [3, 3]},
+        global_route_hold_repair=True,
+        global_route_antenna_repair=False,
     )
     text = _render(tmp_path, platform)
     assert "global_route -start_incremental -grid_origin {3 3}\n" in text

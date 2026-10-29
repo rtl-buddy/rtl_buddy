@@ -305,8 +305,9 @@ def test_stage_scripts_are_the_one_session_flow_split_at_its_markers(tmp_path):
 
 def test_unbroken_render_is_unchanged_but_for_the_checkpoint_block(tmp_path):
     """With `checkpoints:` the flow differs from a plain render only by the
-    checkpoint block, the global-route stage end after hold repair and the
-    timing events of `place` and `finish`.
+    checkpoint block, the global-route stage end after its repair and the
+    timing event before it, the `place` stage end before `repair_clock_inverters`, the detailed-route stage
+    end after antenna repair and the timing events of `place` and `finish`.
     """
     (tmp_path / "plain").mkdir()
     (tmp_path / "armed").mkdir()
@@ -317,6 +318,13 @@ def test_unbroken_render_is_unchanged_but_for_the_checkpoint_block(tmp_path):
     without = armed[:block_start] + armed[block_end:]
     without = without.replace("rb::ckpt::stage_end global_route\n", "", 1)
     without = without.replace("rb::ckpt::stage_timing place stage_end\n", "", 1)
+    without = without.replace(
+        "rb::ckpt::checkpoint_for clock_tree_synthesis enter\n", "", 1
+    )
+    without = without.replace(
+        "rb::ckpt::stage_timing global_route before_repair\n", "", 1
+    )
+    without = without.replace("rb::ckpt::stage_end detailed_route\n", "", 1)
     without = without.replace(
         "rb::ckpt::timing_event finish stage_end global_route\n", "", 1
     )
@@ -621,6 +629,10 @@ def test_a_hook_that_wraps_an_anchor_fails_the_unbroken_run_as_checkpoint(
         hooks={"after-repair-design": (str(hook),)},
     )
     backend, _ = _backend(tmp_path, monkeypatch, pnr_cfg=cfg)
+    # `repair_clock_inverters` would otherwise end `place` before the wrapped anchor.
+    backend.root_cfg.get_pnr_platform_cfg.return_value = _platform(
+        _pdk(tmp_path), cts_repair_clock_inverters=False
+    )
 
     res = backend.run()
 

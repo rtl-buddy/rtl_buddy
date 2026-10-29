@@ -1368,6 +1368,18 @@ class PnrConfigFile:
     post_cts_setup_repair: bool | None = field(
         rename="post-cts-setup-repair", default=None
     )
+    floorplan_setup_repair: bool | None = field(
+        rename="floorplan-setup-repair", default=None
+    )
+    cts_repair_clock_inverters: bool | None = field(
+        rename="cts-repair-clock-inverters", default=None
+    )
+    global_route_antenna_repair: bool | None = field(
+        rename="global-route-antenna-repair", default=None
+    )
+    detailed_route_antenna_repair: bool | None = field(
+        rename="detailed-route-antenna-repair", default=None
+    )
     global_route_hold_repair: bool | None = field(
         rename="global-route-hold-repair", default=None
     )
@@ -1515,6 +1527,10 @@ class PnrConfigFile:
             keep_sizing_vt=self.keep_sizing_vt,
             signoff=self.signoff,
             global_route=self.global_route,
+            floorplan_setup_repair=self.floorplan_setup_repair,
+            cts_repair_clock_inverters=self.cts_repair_clock_inverters,
+            global_route_antenna_repair=self.global_route_antenna_repair,
+            detailed_route_antenna_repair=self.detailed_route_antenna_repair,
         )
         post_route_repair = read_post_route_repair(
             f"pnr run '{self.name}'", self.post_route_repair

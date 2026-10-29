@@ -1,6 +1,6 @@
 """Timing-repair knobs of `rb pnr`: `global-route-repair` and `post-route-repair`, set on a P&R platform and overridden by a run field by field, and the run's `mode`.
 
-A block is read in two steps. :func:`read_global_route_repair` and :func:`read_post_route_repair` turn one level's YAML into a layer: the keys it writes, validated, with `null` kept as a value (skip that repair), or `None` for a block written as `null` (off). :func:`resolve_global_route_repair` and :func:`resolve_post_route_repair` merge the platform's layer and the run's into the repair the flow runs. Rules about the whole block (it must repair something; several rounds need a margin) apply only there, to the merged block a run uses, so a platform may set part of a block that its runs complete.
+A block is read in two steps. :func:`read_global_route_repair` and :func:`read_post_route_repair` turn one level's YAML into a layer: the keys it writes, validated, with `null` kept as a value (skip that repair), or `None` for a block written as `null` (off). :func:`resolve_global_route_repair` and :func:`resolve_post_route_repair` merge the platform's layer and the run's into the repair the flow runs. When neither level writes a global-route repair, it is :data:`DEFAULT_GLOBAL_ROUTE_REPAIR`, the repair ORFS runs after global route. Rules about the whole block (it must repair something; several rounds need a margin) apply only there, to the merged block a run uses, so a platform may set part of a block that its runs complete.
 """
 
 import math
@@ -462,8 +462,18 @@ def _repairs(where: str, block: str, merged: dict) -> RepairDesign | None:
     )
 
 
+#: The global-route repair when neither the platform nor the run writes one: `repair_design`, then setup and hold `repair_timing` with no margin, as ORFS repairs after global route unless `SKIP_INCREMENTAL_REPAIR`.
+DEFAULT_GLOBAL_ROUTE_REPAIR = {
+    "repair_design": {},
+    "setup_margin": 0.0,
+    "hold_margin": 0.0,
+}
+
+
 def resolve_global_route_repair(where: str, layers) -> GlobalRouteRepair | None:
-    """The global-route repair `layers` (platform first, then run) configure, or None when off."""
+    """The global-route repair `layers` (platform first, then run) configure, or None when off; :data:`DEFAULT_GLOBAL_ROUTE_REPAIR`, less a run's dropped hold repair, when neither writes one."""
+    if all(layer is UNSET or layer is HOLD_REPAIR_DROPPED for layer in layers):
+        layers = [DEFAULT_GLOBAL_ROUTE_REPAIR, *layers]
     merged = _merge(layers)
     if merged is None:
         return None

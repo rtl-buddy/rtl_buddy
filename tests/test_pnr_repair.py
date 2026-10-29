@@ -40,6 +40,7 @@ from rtl_buddy.config.pnr_platform import (
     PnrRoutingLayersFile,
 )
 from rtl_buddy.config.pnr_repair import (
+    HOLD_REPAIR_DROPPED,
     UNSET,
     GlobalRouteRepair,
     PnrMode,
@@ -50,6 +51,7 @@ from rtl_buddy.config.pnr_repair import (
     WireRc,
     read_global_route_repair,
     read_post_route_repair,
+    resolve_global_route_repair,
 )
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.logging_utils import _human_message
@@ -78,10 +80,27 @@ def _platform(pdk=None, **kw):
     return PnrPlatformConfig(PnrPlatformConfigFile(**base), lambda _name: pdk)
 
 
-def test_no_repair_block_leaves_both_repairs_off():
+def test_no_repair_block_runs_only_the_default_global_route_repair():
     platform = _platform()
-    assert platform.get_global_route_repair() is None
+    assert platform.get_global_route_repair() == GlobalRouteRepair(
+        repair_design=RepairDesign(),
+        setup_margin=0.0,
+        hold_margin=0.0,
+        reroute=Reroute.INCREMENTAL,
+    )
     assert platform.get_post_route_repair() is None
+
+
+def test_a_null_global_route_repair_turns_it_off():
+    assert _platform(global_route_repair=None).get_global_route_repair() is None
+
+
+def test_a_run_without_hold_repair_drops_it_from_the_default():
+    assert resolve_global_route_repair(
+        "run", [UNSET, HOLD_REPAIR_DROPPED]
+    ) == GlobalRouteRepair(
+        repair_design=RepairDesign(), setup_margin=0.0, reroute=Reroute.INCREMENTAL
+    )
 
 
 def test_a_platform_block_resolves_with_its_defaults():
@@ -403,11 +422,12 @@ _BASE_HOLD_REPAIR = (
 def test_a_flow_without_repair_knobs_is_the_template_as_before(
     tmp_path, monkeypatch, kind, setup_repair, hold_shorthand
 ):
-    """Without the new knobs, with or without `global-route-hold-repair: true`, every script a run writes is the earlier template's render, whole."""
+    """Without the new knobs (the default global-route repair turned off unless `global-route-hold-repair: true` replaces it), every script a run writes is the earlier template's render, whole."""
     platform = _real_platform(
         tmp_path,
         post_cts_setup_repair=setup_repair,
         global_route_hold_repair=hold_shorthand,
+        **({} if hold_shorthand else {"global_route_repair": None}),
     )
 
     def _write(base: bool) -> dict[str, str]:

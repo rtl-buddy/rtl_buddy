@@ -181,6 +181,8 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `placement.routability-use-grt` | PDK, platform | `true` adds `-routability_use_grt`. Needs `routability-driven: true` after overrides. Default `false` |
 | `placement.timing-driven` | PDK, platform | `true` adds `-timing_driven`; on OpenROAD 26Q4 it also buffers and resizes during placement. Default `false` |
 | `placement.rotated-macro-footprint` | PDK, platform | `block` (default), `diamond-legalizer` or `none`. See [Known Issues](../known-issues.md#openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint) |
+| `placement.improve-placement` | PDK, platform | `true` (default) runs `improve_placement` after the placement stage's legalization, as ORFS does unless `ENABLE_DPO` is 0. `false` leaves it out |
+| `placement.optimize-mirroring` | PDK, platform | `true` (default) runs `optimize_mirroring` after the placement stage's legalization, as ORFS does. `false` leaves it out |
 | `placement.macro-pin-limits` | PDK, platform | Mapping; unset (default) turns the step off. `buffers` (required): buffer cell names, weakest first. `margin`: fraction of a pin's max-slew limit kept in hand, from 0 up to but not including 1, default `0.05`. `capacitance-margin`: the same for max-capacitance, default `margin`. A block replaces a lower level's whole. See [Tune placement, clock tree and repair](../concepts/pnr.md#tune-placement-clock-tree-and-repair) |
 | `dont-use-cells` | PDK, synth and P&R platforms | Cell names or globs (`*`, `?`), one per entry. Empty by default |
 | `pdn-config` | PDK | Tcl that declares the power grid; the flow calls `pdngen`. Unset means no grid |
@@ -200,9 +202,13 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `cts-obstruction-aware` | platform, run | `false` adds `-no_obstruction_aware`, so CTS does not steer its buffers around macro blockages. Unset (default) leaves OpenROAD's behavior: obstruction-aware on every build whose `clock_tree_synthesis` takes `-no_obstruction_aware` (builds since 20 January 2025, so 25Q2 and newer), off before that. `true` adds no flag on such a build and `-obstruction_aware` on an older one. rb asks OpenROAD at setup, and `false` on a build without `-no_obstruction_aware` fails setup naming the key and the version |
 | `cts-apply-ndr` | platform | `none`, `root_only`, `half` or `full`. Unset keeps OpenROAD's `half` |
 | `port-buffer` | platform, run | Cell `buffer_ports` inserts. Unset lets OpenROAD choose |
+| `floorplan-setup-repair` | platform, run | `true` (default) ends the floorplan with ORFS's setup repair before placement, `repair_timing -setup -sequence "unbuffer,sizeup,swap,vt_swap" -skip_last_gasp`: buffer removal and sizing only. `false` leaves it out. Needs wire RC; see [Set wire RC](../concepts/pnr.md#set-wire-rc) |
+| `cts-repair-clock-inverters` | platform, run | `true` (default) runs `repair_clock_inverters` before CTS, after the `before-cts` hooks, as ORFS does: each inverter in the clock tree is cloned next to its register loads, so CTS does not buffer an inverted clock. `false` leaves it out |
 | `post-cts-setup-repair` | platform, run | `true` (default) runs `repair_timing -setup` after CTS, before the hold repair, as ORFS repairs both; `false` repairs hold only. Setup repair needs wire RC: with none, OpenROAD stops with `RSZ-0089`. See [Set wire RC](../concepts/pnr.md#set-wire-rc) |
-| `global-route-hold-repair` | platform, run | `true` is `global-route-repair: {hold-margin: 0}`; not with `global-route-repair` at the same level. On a run, `false` drops the hold repair from the platform's block, and turns the block off when nothing is left. Default `false` |
-| `global-route-repair` | platform, run | Repair after global route. See below |
+| `global-route-hold-repair` | platform, run | `true` is `global-route-repair: {hold-margin: 0}`; not with `global-route-repair` at the same level. On a run, `false` drops the hold repair from the platform's block, or from the default block when nothing writes one, and turns the block off when nothing is left. Default `false` |
+| `global-route-repair` | platform, run | Repair after global route; on by default. See below |
+| `global-route-antenna-repair` | platform, run | `true` (default) runs `repair_antennas -iterations 5` after the global-route repair and the `after-global-route-repair` hooks, then `check_antennas` into `grt_antennas.rpt`, as ORFS does. It inserts diodes and legalizes them. `false` leaves it out |
+| `detailed-route-antenna-repair` | platform, run | `true` (default) repairs antennas after detailed route as ORFS does: while violations remain, `repair_antennas` and a detailed route, at most five more detailed routes, then `check_antennas` into `drt_antennas.rpt`. `route.drc.rpt` is the last detailed route's. `false` leaves it out |
 | `post-route-repair` | platform, run | Repair rounds after detailed route. See below |
 | `signoff` | platform, run | Signoff corners and the gates that fail a routed run. See below |
 | `routing-layer-adjustment` | platform, run | 0 to 1: signal-layer capacity withheld from the global router, over `routing-layers.signal`, or every layer when that is unset. Unset keeps the router's default |
@@ -223,7 +229,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `margin-step` | `post-route-repair` only. ns added to the margins each round after the first. Default 0 |
 | `electrical-repair` | `post-route-repair` only. `{slew-margin, cap-margin}` (percent): one more round runs `repair_design` alone when the best round has max-slew or max-capacitance violators. Unset runs none |
 
-The block a run ends up with must set at least one of `repair-design`, `setup-margin` and `hold-margin`. A run's block overrides the platform's field by field; `null` turns a field or the block off. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing).
+When neither the platform nor the run sets `global-route-repair` or `global-route-hold-repair`, the repair after global route is `{repair-design: {}, setup-margin: 0, hold-margin: 0}`: `repair_design`, then setup and hold repair with no margin, as ORFS repairs after global route. A block that is written runs only what it sets, and `global-route-repair: null` runs no repair after global route. `post-route-repair` is off unless set. The block a run ends up with must set at least one of `repair-design`, `setup-margin` and `hold-margin`. A run's block overrides the platform's field by field; `null` turns a field or the block off. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing).
 
 `signoff` takes:
 
@@ -886,10 +892,10 @@ runs:
 | `pdn-config` | PDK's | Tcl that replaces the PDK's `pdn-config` |
 | `pdn` | — | Core grid in YAML; see below |
 | `placement` | Platform's | Any `placement.*` key, overriding the platform for this run |
-| `routing-layers`, `routing-layer-adjustment`, `cts-buffer`, `cts-root-buffer`, `cts-clock-nets`, `cts-latency-balancing`, `cts-repair-clock-nets`, `cts-sink-clustering`, `cts-obstruction-aware`, `cts-dont-use-cells`, `post-cts-setup-repair`, `global-route-hold-repair`, `port-buffer`, `keep-sizing-vt`, `tapcell-tcl` | Platform's | Override the platform's value for this run. See [P&R keys](#synthesis-and-physical-design-tools) |
+| `routing-layers`, `routing-layer-adjustment`, `cts-buffer`, `cts-root-buffer`, `cts-clock-nets`, `cts-latency-balancing`, `cts-repair-clock-nets`, `cts-sink-clustering`, `cts-obstruction-aware`, `cts-dont-use-cells`, `cts-repair-clock-inverters`, `floorplan-setup-repair`, `post-cts-setup-repair`, `global-route-hold-repair`, `global-route-antenna-repair`, `detailed-route-antenna-repair`, `port-buffer`, `keep-sizing-vt`, `tapcell-tcl` | Platform's | Override the platform's value for this run. See [P&R keys](#synthesis-and-physical-design-tools) |
 | `global-route` | Platform's | Overrides the platform's block field by field. See [P&R keys](#synthesis-and-physical-design-tools) |
 | `global-route-repair`, `post-route-repair` | Platform's | Overrides the platform's block field by field; `null` turns it off. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing) |
-| `mode` | `closure` | `probe` skips timing repair and stops after global route. Not with `harden: true`. See [Probe a floorplan](../concepts/pnr.md#probe-a-floorplan) |
+| `mode` | `closure` | `probe` skips timing repair and the antenna repair after global route, and stops after global route. Not with `harden: true`. See [Probe a floorplan](../concepts/pnr.md#probe-a-floorplan) |
 | `signoff` | Platform's | Overrides the platform's block field by field; `null` turns it off. See [Gate signoff](../concepts/pnr.md#gate-signoff) |
 | `fail-on-electrical` | `false` | `true` fails a routed run with any max-slew, max-capacitance or max-fanout violator, and post-route repair counts each round's max-slew and max-capacitance violators, so a round that ties on timing and DRCs wins with fewer. It adds `electrical` to `signoff.fail-on` |
 | `threads` | OpenROAD's | Positive integer, or `auto` for the CPUs of the current allocation. Unset passes none, and OpenROAD picks its own. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |

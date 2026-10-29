@@ -155,6 +155,9 @@ def test_the_block_joins_the_hardened_config_digest_only_when_set(tmp_path):
 # --- rendered flow ------------------------------------------------------------
 
 _LEGALIZED = 'puts ">>> Detail placement (legalize)"\ndetailed_placement\n'
+_OPTIMIZED = (
+    'puts ">>> Detail placement optimization"\nimprove_placement\noptimize_mirroring\n'
+)
 _PLACE_END = 'rb::global_connect\n\nputs ">>> Clock tree synthesis"'
 _CTS = 'puts ">>> Clock tree synthesis"'
 
@@ -176,18 +179,18 @@ def test_an_unset_key_renders_the_flow_byte_identically(tmp_path):
     assert on.replace(block, "", 1) == off
     assert "rb::macro_pins" not in off
     assert "Macro pin limits" not in off
-    assert f"{_LEGALIZED}{_PLACE_END}" in off
+    assert f"{_LEGALIZED}{_OPTIMIZED}{_PLACE_END}" in off
 
 
 def test_the_step_runs_on_the_legalised_post_repair_placement_before_cts(tmp_path):
-    """After `repair_design`, its hook and its legalisation, at the end of the place
+    """After `repair_design`, its hook, its legalisation and the placement optimisation, at the end of the place
     stage: legalisation moves a macro output's loads, so checks read before it miss pins.
     """
     platform = _on(tmp_path, margin=0.1)
     text = _render_flow(tmp_path, platform)
     block = _block(tmp_path, platform)
 
-    assert f"repair_design\n\n{_LEGALIZED}{block}{_PLACE_END}" in text
+    assert f"repair_design\n\n{_LEGALIZED}{_OPTIMIZED}{block}{_PLACE_END}" in text
     assert text.count('puts ">>> Macro pin limits"') == 1
     assert text.index("global_placement -density") < text.index(block)
     assert text.index(block) < text.index("clock_tree_synthesis")

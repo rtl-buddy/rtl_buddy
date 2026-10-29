@@ -118,6 +118,8 @@ _FLOW_OUTPUT_NAMES = (
     "route.drc.rpt",
     "timing.rpt",
     "electrical.rpt",
+    "grt_antennas.rpt",
+    "drt_antennas.rpt",
     "{design}.def",
     "{design}.routed.v",
     "{design}.routed.pwr.v",
@@ -287,6 +289,22 @@ _NO_WIRE_RC_CODES = ("EST-0018", "CTS-0104")
 # Where the `pnr.no_wire_rc` warning sends the reader.
 _NO_WIRE_RC_DOCS = "rb docs show concepts/pnr#set-wire-rc"
 
+#: OpenROAD's error when a setup repair finds no signal wire resistance at any corner.
+_NO_WIRE_RC_ERROR = "[ERROR RSZ-0089]"
+
+
+def _no_wire_rc_hint(log_text: str) -> str:
+    """The cause and the fix of a run that failed `RSZ-0089`, or `""`: each setup repair needs a wire RC, which a PDK without `layer-rc-tcl` gets only from its technology LEF, so turning one off moves the failure to the next."""
+    if _NO_WIRE_RC_ERROR not in log_text:
+        return ""
+    return (
+        "; setup repair found no wire RC (RSZ-0089): set the PDK's layer-rc-tcl "
+        f"(see {_NO_WIRE_RC_DOCS}), or turn every setup repair off with "
+        "floorplan-setup-repair: false, post-cts-setup-repair: false and a "
+        "global-route-repair without setup-margin, such as {hold-margin: 0}"
+    )
+
+
 _STA_CELL_NOT_FOUND = re.compile(
     r"^\[WARNING STA-0122\] cell '(.+)' not found\.$", re.M
 )
@@ -382,12 +400,12 @@ def _stage_end_block(stage: str, hooks: dict) -> str:
     )
 
 
-def _before_cts_block(hooks: dict, *, checkpoints: bool) -> str:
-    """Return the `before-cts` hook lines, or `""` when the run has none.
+def _before_cts_block(hooks: dict, *, checkpoints: bool, steps: str = "") -> str:
+    """Return the `before-cts` hook lines, then the flow's `steps` before CTS, or `""` when there are neither.
 
-    With `checkpoints` (a one-session run that writes them), the `place` stage ends before the hooks; it otherwise ends on entering `clock_tree_synthesis`, and its checkpoint would hold what they changed.
+    With `checkpoints` (a one-session run that writes them), the `place` stage ends before them; it otherwise ends on entering `clock_tree_synthesis`, and its checkpoint would hold what they changed.
     """
-    block = _run_hook_block("before-cts", hooks)
+    block = _run_hook_block("before-cts", hooks) + steps
     if block and checkpoints:
         return "\nrb::ckpt::checkpoint_for clock_tree_synthesis enter" + block
     return block
@@ -702,6 +720,90 @@ def _post_cts_repair_tcl(platform, mode: PnrMode) -> str:
         '\nputs ">>> Post-CTS timing repair"\n'
         "estimate_parasitics -placement\n"
         f"{setup}repair_timing -hold\n"
+    )
+
+
+def _floorplan_setup_repair_tcl(platform, mode: PnrMode) -> str:
+    """Return ORFS's setup repair at the end of the floorplan, before placement: sizing and buffer removal only, without last-gasp moves. `""` when `floorplan-setup-repair` is false; a probe skips it."""
+    if not platform.get_floorplan_setup_repair():
+        return ""
+    if mode is PnrMode.PROBE:
+        return 'puts ">>> Floorplan setup repair: skipped (mode: probe)"\n'
+    return (
+        'puts ">>> Floorplan setup repair"\n'
+        'repair_timing -setup -sequence "unbuffer,sizeup,swap,vt_swap" '
+        "-skip_last_gasp\n"
+    )
+
+
+def _detailed_placement_optimization_tcl(platform) -> str:
+    """Return `improve_placement` and `optimize_mirroring` after the placement stage's legalization, each as its `placement:` key sets, or `""` when both are off."""
+    commands = [
+        command
+        for command, on in (
+            ("improve_placement", platform.get_placement_improve_placement()),
+            ("optimize_mirroring", platform.get_placement_optimize_mirroring()),
+        )
+        if on
+    ]
+    if not commands:
+        return ""
+    return 'puts ">>> Detail placement optimization"\n' + "".join(
+        f"{command}\n" for command in commands
+    )
+
+
+def _cts_repair_clock_inverters_tcl(platform) -> str:
+    """Return `repair_clock_inverters` before CTS, which clones each clock-tree inverter next to its register loads so CTS does not buffer the inverted clocks, or `""` when `cts-repair-clock-inverters` is false. The block carries its own leading newline, as the `before-cts` hook block does."""
+    if not platform.get_cts_repair_clock_inverters():
+        return ""
+    return "\nrepair_clock_inverters\n"
+
+
+#: Antenna repair rounds after global route (`repair_antennas -iterations`) and the most detailed routes after detailed route, as ORFS's `MAX_REPAIR_ANTENNAS_ITER_GRT` and `_DRT`.
+_ANTENNA_REPAIR_ITERATIONS = 5
+
+
+def _global_route_antenna_repair_tcl(
+    platform, mode: PnrMode, gr: GlobalRoute = GlobalRoute()
+) -> str:
+    """Return `repair_antennas` after global route, which inserts diodes and legalizes them, then `check_antennas` into `grt_antennas.rpt`, as ORFS runs them; `""` when `global-route-antenna-repair` is false. A probe skips it. `allow-congestion` passes on, as to every incremental route."""
+    if not platform.get_global_route_antenna_repair():
+        return ""
+    if mode is PnrMode.PROBE:
+        return 'puts ">>> Global-route antenna repair: skipped (mode: probe)"\n'
+    congestion = " -allow_congestion" if gr.allow_congestion else ""
+    return (
+        'puts ">>> Global-route antenna repair"\n'
+        f"repair_antennas -iterations {_ANTENNA_REPAIR_ITERATIONS}{congestion}\n"
+        "check_placement -verbose\n"
+        "check_antennas -report_file $OUT_DIR/grt_antennas.rpt\n"
+    )
+
+
+def _detailed_route_antenna_repair_tcl(platform, verbose: int) -> str:
+    """Return the antenna repair after detailed route, as ORFS runs it, or `""` when `detailed-route-antenna-repair` is false: `repair_antennas` and a detailed route while violations remain, at most five more detailed routes, then `check_antennas` into `drt_antennas.rpt`. Each detailed route writes `route.drc.rpt` again, so the report is the last one's."""
+    if not platform.get_detailed_route_antenna_repair():
+        return ""
+    route = (
+        "detailed_route \\\n"
+        "      -output_drc  $OUT_DIR/route.drc.rpt \\\n"
+        "      -output_maze $OUT_DIR/route.maze.log \\\n"
+        f"      -verbose {verbose}\n"
+    )
+    return (
+        'puts ">>> Detailed-route antenna repair"\n'
+        "set rb_antenna_rounds 1\n"
+        "if {[repair_antennas]} {\n"
+        f"  {route}"
+        "}\n"
+        "while {[check_antennas] && "
+        f"$rb_antenna_rounds < {_ANTENNA_REPAIR_ITERATIONS}}} {{\n"
+        "  repair_antennas\n"
+        f"  {route}"
+        "  incr rb_antenna_rounds\n"
+        "}\n"
+        "check_antennas -report_file $OUT_DIR/drt_antennas.rpt\n"
     )
 
 
@@ -3306,7 +3408,9 @@ class OpenRoadPnr:
                 "after-repair-design", hooks
             ),
             "hook_before_cts_block": _before_cts_block(
-                hooks, checkpoints=self._arms_checkpoints() and not self._staged
+                hooks,
+                checkpoints=self._arms_checkpoints() and not self._staged,
+                steps=_cts_repair_clock_inverters_tcl(platform),
             ),
             "hook_before_repair_clock_nets_block": _run_hook_block(
                 "before-repair-clock-nets", hooks
@@ -3345,6 +3449,16 @@ class OpenRoadPnr:
                 else ""
             ),
             "post_cts_repair": _post_cts_repair_tcl(platform, self._mode),
+            "floorplan_setup_repair": _floorplan_setup_repair_tcl(platform, self._mode),
+            "detailed_placement_optimization": _detailed_placement_optimization_tcl(
+                platform
+            ),
+            "global_route_antenna_repair": _global_route_antenna_repair_tcl(
+                platform, self._mode, platform.get_global_route()
+            ),
+            "detailed_route_antenna_repair": _detailed_route_antenna_repair_tcl(
+                platform, self.pnr_cfg.get_detailed_route_verbose()
+            ),
             "layer_adjustment": _layer_adjustment_tcl(platform),
             "global_route_cmd": _global_route_cmd(platform.get_global_route()),
             "grid_origin_guides": _grid_origin_guides_tcl(platform.get_global_route()),
@@ -3424,9 +3538,7 @@ class OpenRoadPnr:
             corners=self._timing_corners,
             scenes=bool(self._corners),
             modes=self._mode_corners,
-            flow_ended=(
-                ("detailed_route",) if "stage-end" in self.pnr_cfg.get_hooks() else ()
-            ),
+            flow_ended=("detailed_route",) if self._flow_ends_detailed_route() else (),
         )
 
     def _render(self, text: str, substitutions: dict) -> str:
@@ -3440,16 +3552,23 @@ class OpenRoadPnr:
         return text
 
     def _unbroken_marker(self, marker: str) -> str:
-        """A one-session run's text for a template marker: nothing, except that with checkpoints armed the global-route stage ends after any global-route repair, before the `before-detailed-route` hooks, and `place` is timed before the clocks are propagated, as a staged `place` session and its report time it (its checkpoint is written on entering clock-tree synthesis). With `stage-end` hooks the detailed route ends after its `stage-end` hooks rather than on leaving `detailed_route`."""
+        """A one-session run's text for a template marker: nothing, except that with checkpoints armed the global-route stage ends after any global-route repair, before the `before-detailed-route` hooks, and `place` is timed before the clocks are propagated, as a staged `place` session and its report time it (its checkpoint is written before the `before-cts` hooks and `repair_clock_inverters`, or on entering clock-tree synthesis without them). With `stage-end` hooks or detailed-route antenna repair the detailed route ends after them rather than on leaving `detailed_route`."""
         if not self._arms_checkpoints():
             return ""
         if marker == "cts":
             return "rb::ckpt::stage_timing place stage_end\n"
         if marker == "detailed_route":
             return "rb::ckpt::stage_end global_route\n"
-        if marker == "finish" and "stage-end" in self.pnr_cfg.get_hooks():
+        if marker == "finish" and self._flow_ends_detailed_route():
             return "rb::ckpt::stage_end detailed_route\n"
         return ""
+
+    def _flow_ends_detailed_route(self) -> bool:
+        """Whether a one-session run ends its detailed route itself, where the `finish` stage begins, rather than on leaving `detailed_route`: after its `stage-end` hooks, or after the antenna repair's detailed routes."""
+        return (
+            "stage-end" in self.pnr_cfg.get_hooks()
+            or self._platform.get_detailed_route_antenna_repair()
+        )
 
     def _run_stages(self) -> tuple[str, ...]:
         """The stages this run executes: from `--from` (or the start) through `--stop-after` (or `finish`)."""
@@ -3736,6 +3855,10 @@ class OpenRoadPnr:
                 + "repair",
             ),
         )
+
+    def _hints(self, log_text: str) -> str:
+        """What to change, appended to a failed run's description: the `eco` hint (`_eco_hint`) and the wire-RC hint (`_no_wire_rc_hint`), each `""` when it does not apply."""
+        return self._eco_hint(log_text) + _no_wire_rc_hint(log_text)
 
     def _eco_hint(self, log_text: str) -> str:
         """What to change when the post-route repair session that failed the run, the last one in `log_text`, is an `eco` round's repair that failed RSZ-0074, else "".
@@ -6229,7 +6352,7 @@ class OpenRoadPnr:
             return None
         fail_stage = INCOMPLETE_FAIL_STAGE
         if chain_problem is not None:
-            desc = chain_problem + self._eco_hint(log_text)
+            desc = chain_problem + self._hints(log_text)
             fail_stage = self._chain_fail_stage
         elif self._failed_stage is not None:
             return None
@@ -7034,7 +7157,7 @@ class OpenRoadPnr:
                 log=log_path,
             )
             return self._fail_after_openroad(
-                chain_problem + self._eco_hint(log_text),
+                chain_problem + self._hints(log_text),
                 fail_stage=self._chain_fail_stage,
             )
         if returncode != 0:
@@ -7055,7 +7178,7 @@ class OpenRoadPnr:
                 desc = f"{desc}: {first_line.strip()}"
             if self._dispatch_reason:
                 desc = f"{desc} ({self._dispatch_reason})"
-            desc += self._eco_hint(log_text)
+            desc += self._hints(log_text)
             if not self._staged and self.stop_after is not None:
                 stop_unwritten = checkpoint_error(self._ckpt_run_dir, self.stop_after)
             else:
@@ -7072,7 +7195,7 @@ class OpenRoadPnr:
             desc = f"{stage_prefix}{len(error_lines)} ERROR(s) in OpenROAD log"
             if self._dispatch_reason:
                 desc = f"{desc} ({self._dispatch_reason})"
-            desc += self._eco_hint(log_text)
+            desc += self._hints(log_text)
             return self._fail_after_openroad(desc, fail_stage=self._chain_fail_stage)
 
         unwritten = self._unwritten_checkpoint(log_text)

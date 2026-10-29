@@ -164,7 +164,7 @@ A synthesis effort with `openroad.repair: true` runs `repair_design -pre_placeme
 
 ### P&R defaults follow OpenROAD and ORFS
 
-Each default `rb pnr` applies is now the OpenROAD command's own default or the setting ORFS uses. Two keys that neither has a default for are required, and the rest of the defaults below changed, so a run that relies on them places, routes and times differently. To keep the v7 flow, set the v7 value:
+Each default `rb pnr` applies is now the OpenROAD command's own default or the setting ORFS uses, and the flow runs the optimisation steps ORFS runs. Two keys that neither has a default for are required, and the rest of the defaults below changed, so a run that relies on them places, routes and times differently. To keep the v7 flow, set the v7 value:
 
 | Key | v7 default | v8 default | v7 behaviour |
 | --- | --- | --- | --- |
@@ -178,10 +178,19 @@ Each default `rb pnr` applies is now the OpenROAD command's own default or the s
 | `cts-root-buffer` unset, `cts-buffer` a list | The first entry | CTS picks the root from the list, as `clock_tree_synthesis` without `-root_buf` and ORFS | `cts-root-buffer:` the first entry |
 | `post-cts-setup-repair` | `false` | `true`: setup, then hold, as ORFS repairs both after CTS | `post-cts-setup-repair: false` |
 | `global-route.congestion-iterations` | `20` | `30`, as ORFS | `global-route: {congestion-iterations: 20}` |
+| `floorplan-setup-repair` | No step | `true`: setup repair by buffer removal and sizing at the end of the floorplan, as ORFS | `floorplan-setup-repair: false` |
+| `placement.improve-placement`, `placement.optimize-mirroring` | No step | `true`: `improve_placement`, then `optimize_mirroring`, after the placement stage's legalization, as ORFS | `placement: {improve-placement: false, optimize-mirroring: false}` |
+| `cts-repair-clock-inverters` | No step | `true`: `repair_clock_inverters` before CTS, as ORFS | `cts-repair-clock-inverters: false` |
+| `global-route-repair` and `global-route-hold-repair` unset on the platform and the run | No repair after global route | `repair_design`, then setup and hold repair, on global-route parasitics, as ORFS. A written block runs what it sets, as in v7 | `global-route-repair: null` |
+| `global-route-antenna-repair`, `detailed-route-antenna-repair` | No antenna repair | `true`: `repair_antennas` after global route, and after detailed route with a detailed route again, as ORFS | `global-route-antenna-repair: false`, `detailed-route-antenna-repair: false` |
 
-A PDK without both `pin-layers` fails every `rb pnr` run on it at setup (`pnr.pin_layers_missing`); one used only by `rb synth` or `rb power` needs nothing. A `pnr.yaml` run without `floorplan.utilization` or `die-area` fails to load. Setup repair after CTS needs wire RC, so on a PDK without `layer-rc-tcl` whose technology LEF has no layer RC, such as Nangate45, OpenROAD stops there with `RSZ-0089`: set the PDK's `layer-rc-tcl` (see [Set wire RC](concepts/pnr.md#set-wire-rc)) or `post-cts-setup-repair: false`. A platform without `cts-buffer` or `routing-layers`, which failed in v7, now runs: CTS picks its buffers from the libraries, and the global router keeps the technology's routing layers. The packer's `placement.macro-halo` default stays 20 µm. See [Configure the physical platform](concepts/pnr.md#configure-the-physical-platform).
+A PDK without both `pin-layers` fails every `rb pnr` run on it at setup (`pnr.pin_layers_missing`); one used only by `rb synth` or `rb power` needs nothing. A `pnr.yaml` run without `floorplan.utilization` or `die-area` fails to load. Setup repair needs wire RC, so on a PDK without `layer-rc-tcl` whose technology LEF has no layer RC, such as Nangate45, OpenROAD stops at the floorplan's setup repair with `RSZ-0089`. Set the PDK's `layer-rc-tcl` (see [Set wire RC](concepts/pnr.md#set-wire-rc)), or turn every setup repair off: `floorplan-setup-repair: false`, `post-cts-setup-repair: false`, and a `global-route-repair` without `setup-margin`, such as `{hold-margin: 0}`. A platform without `cts-buffer` or `routing-layers`, which failed in v7, now runs: CTS picks its buffers from the libraries, and the global router keeps the technology's routing layers. The packer's `placement.macro-halo` default stays 20 µm. See [Configure the physical platform](concepts/pnr.md#configure-the-physical-platform).
 
 The hardened-block config digest records these defaults, so every abstract hardened with v7 is stale. Harden the blocks again, or pass `--accept-stale` to use them as they are. See [Harden a block](concepts/pnr.md#harden-a-block).
+
+### `openroad_threads.effective` is null when `threads:` is unset
+
+With `threads:` unset, rb passes no thread count and OpenROAD picks its own, which it does not log: every hardware thread of the host on 26Q4. The `openroad_threads.effective` field of `rb pnr`, `rb power` and `rb synth` results is then null; v7 reported 1. Set `threads:` to a count or `auto` to know the count. See [OpenROAD threads](concepts/pnr.md#openroad-threads).
 
 ## Submodule to uv
 
