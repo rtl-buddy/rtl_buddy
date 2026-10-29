@@ -2311,7 +2311,7 @@ def run_post_route_repair(
         plan["out_dir"], pnr_checkpoints.STAGE_REPORTS[POST_ROUTE_REPAIR_STAGE]["drc"]
     )
     sections: list[bytes] = []
-    used = {"wall_s": 0.0, "cpu_s": 0.0, "peak_rss_kb": 0, "threads": 1}
+    used = {"wall_s": 0.0, "cpu_s": 0.0, "peak_rss_kb": 0, "threads": 0}
 
     def _run(file: str, label: str, done: str):
         """Run one session; return its exit code, stderr, why the stage fails if it exited 0 before `done`, why it failed (None if it did not), and its log."""
@@ -2327,7 +2327,10 @@ def run_post_route_repair(
         used["peak_rss_kb"] = max(
             used["peak_rss_kb"], resources.get("peak_rss_kb") or 0
         )
-        used["threads"] = max(used["threads"], resources.get("threads") or 1)
+        threads = resources.get("threads")
+        # One session of unknown count makes the stage's unknown.
+        if used["threads"] is not None:
+            used["threads"] = None if threads is None else max(used["threads"], threads)
         problem = failure = None
         text = section.decode(errors="replace")
         errors = _error_lines(text)
@@ -2688,11 +2691,11 @@ def checkpoint_error(run_dir: str | None, stage: str) -> str | None:
 _SET_THREAD_COUNT_RE = re.compile(r"^set_thread_count (\d+)$", re.MULTILINE)
 
 
-def _session_threads(script: str, log_text: str) -> int:
-    """The threads a stage session ran on: the count OpenROAD reported, else the one its script set, else OpenROAD's default of one."""
+def _session_threads(script: str, log_text: str) -> int | None:
+    """The threads a stage session ran on: the count OpenROAD reported, else the one its script set; None when the script set none, since OpenROAD then picks a count it does not log."""
     match = _SET_THREAD_COUNT_RE.search(script)
     if match is None:
-        return 1
+        return None
     reported = parse_reported_threads(log_text)
     return reported if reported is not None else int(match.group(1))
 

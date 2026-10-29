@@ -132,6 +132,7 @@ cfg-pdks:
       - pdk/sky130hd/gds/sky130_fd_sc_hd.gds
       - pdk/sky130hd/gds/sky130_fd_sc_hd_fill.gds
     klayout-tech: pdk/sky130hd/sky130hd.lyt
+    pin-layers: {horizontal: met3, vertical: met2}
     placement: {density: 0.55, padding: 2, macro-channel: [80, 80]}
     dont-use-cells: ["*_lp__*", "sky130_fd_sc_hd__probe*"]
     pdn-config: pdk/sky130hd/pdn.tcl

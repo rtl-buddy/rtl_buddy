@@ -412,3 +412,19 @@ def test_a_count_in_the_log_is_ignored_when_none_was_set():
     """With nothing emitted OpenROAD logs no count; one in the log is stale."""
     plan = plan_threads(None, flow="pnr", run="r", allocation=_NO_ALLOCATION)
     assert plan.fields(reported=8)["effective"] is None
+
+
+@pytest.mark.parametrize(
+    "script, log_text, expected",
+    [
+        ("read_db x.odb\n", "[INFO ORD-0030] Using 8 thread(s).\n", None),
+        ("set_thread_count 4\n", "", 4),
+        ("set_thread_count 4\n", "[INFO ORD-0030] Using 3 thread(s).\n", 3),
+    ],
+)
+def test_a_stage_session_without_a_thread_count_reports_none(
+    script, log_text, expected
+):
+    from rtl_buddy.tools.pnr_openroad import _session_threads
+
+    assert _session_threads(script, log_text) == expected

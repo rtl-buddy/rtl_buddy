@@ -393,7 +393,7 @@ def test_a_dispatched_run_submits_one_chained_job_per_stage(tmp_path, monkeypatc
     assert [e["slurm_job"] for e in ended] == [j["id"] for j in jobs]
     assert all(e["measured_by"] == "process" for e in ended)
     assert all(e["status"] == "ok" for e in ended)
-    assert all(e["threads"] == 1 for e in ended)
+    assert all(e["threads"] is None for e in ended)
     for stage in _STAGES:
         result = pnr_dispatch.read_result(str(run_dir), stage)
         assert result["ok"] is True and result["started"] is True
