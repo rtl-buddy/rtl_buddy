@@ -31,10 +31,6 @@ class PdkPinLayersFile:
 DEFAULT_PLACEMENT_DENSITY = 0.7
 DEFAULT_PLACEMENT_PADDING = 0
 
-#: The packer's minimum channel in microns between two macros and between a macro and each core edge; RTL-MP gets one only when `macro-halo` is set.
-#: It must be wide enough for `pdngen` to repair the channel, or the run fails at PDN-0179; sky130hd needs about 19.2 um.
-DEFAULT_PLACEMENT_MACRO_HALO = 20.0
-
 #: Standard-cell keep-out in microns around each placed macro; 0 places no blockage.
 #: Without a keep-out, cells abut the macro and the detailed router reports Metal Spacing violations at the shared edge;
 #: the rows `cut_rows` cuts around each macro when no `tapcell-tcl` is set are one.

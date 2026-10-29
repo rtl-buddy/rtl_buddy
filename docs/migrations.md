@@ -174,7 +174,6 @@ Each default `rb pnr` applies is now the OpenROAD command's own default or the s
 | `placement.padding` | `1` | `0`, as `global_placement` and ORFS | `placement: {padding: 1}` |
 | `placement.macro-cell-halo` | `1.0` | `0`, no blockage | `placement: {macro-cell-halo: 1.0}` |
 | `tapcell-tcl` unset | No tap-cell step | `cut_rows`, 2 µm around each placed macro, as ORFS | A `tapcell-tcl` file with no commands |
-| `placement.macro-halo` unset, `macro-placement: rtl-mp` | RTL-MP gets a 20 µm halo | RTL-MP keeps its own channels, as ORFS | `placement: {macro-halo: 20}` |
 | `cts-root-buffer` unset, `cts-buffer` a list | The first entry | CTS picks the root from the list, as `clock_tree_synthesis` without `-root_buf` and ORFS | `cts-root-buffer:` the first entry |
 | `post-cts-setup-repair` | `false` | `true`: setup, then hold, as ORFS repairs both after CTS | `post-cts-setup-repair: false` |
 | `global-route.congestion-iterations` | `20` | `30`, as ORFS | `global-route: {congestion-iterations: 20}` |
@@ -184,9 +183,29 @@ Each default `rb pnr` applies is now the OpenROAD command's own default or the s
 | `global-route-repair` and `global-route-hold-repair` unset on the platform and the run | No repair after global route | `repair_design`, then setup and hold repair, on global-route parasitics, as ORFS. A written block runs what it sets, as in v7 | `global-route-repair: null` |
 | `global-route-antenna-repair`, `detailed-route-antenna-repair` | No antenna repair | `true`: `repair_antennas` after global route, and after detailed route with a detailed route again, as ORFS | `global-route-antenna-repair: false`, `detailed-route-antenna-repair: false` |
 
-A PDK without both `pin-layers` fails every `rb pnr` run on it at setup (`pnr.pin_layers_missing`); one used only by `rb synth` or `rb power` needs nothing. A `pnr.yaml` run without `floorplan.utilization` or `die-area` fails to load. Setup repair needs wire RC, so on a PDK without `layer-rc-tcl` whose technology LEF has no layer RC, such as Nangate45, OpenROAD stops at the floorplan's setup repair with `RSZ-0089`. Set the PDK's `layer-rc-tcl` (see [Set wire RC](concepts/pnr.md#set-wire-rc)), or turn every setup repair off: `floorplan-setup-repair: false`, `post-cts-setup-repair: false`, and a `global-route-repair` without `setup-margin`, such as `{hold-margin: 0}`. A platform without `cts-buffer` or `routing-layers`, which failed in v7, now runs: CTS picks its buffers from the libraries, and the global router keeps the technology's routing layers. The packer's `placement.macro-halo` default stays 20 µm. See [Configure the physical platform](concepts/pnr.md#configure-the-physical-platform).
+A PDK without both `pin-layers` fails every `rb pnr` run on it at setup (`pnr.pin_layers_missing`); one used only by `rb synth` or `rb power` needs nothing. A `pnr.yaml` run without `floorplan.utilization` or `die-area` fails to load. Setup repair needs wire RC, so on a PDK without `layer-rc-tcl` whose technology LEF has no layer RC, such as Nangate45, OpenROAD stops at the floorplan's setup repair with `RSZ-0089`. Set the PDK's `layer-rc-tcl` (see [Set wire RC](concepts/pnr.md#set-wire-rc)), or turn every setup repair off: `floorplan-setup-repair: false`, `post-cts-setup-repair: false`, and a `global-route-repair` without `setup-margin`, such as `{hold-margin: 0}`. A platform without `cts-buffer` or `routing-layers`, which failed in v7, now runs: CTS picks its buffers from the libraries, and the global router keeps the technology's routing layers. See [Configure the physical platform](concepts/pnr.md#configure-the-physical-platform).
 
 The hardened-block config digest records the flow's generation, so every abstract hardened with v7 is stale. Harden the blocks again, or pass `--accept-stale` to use them as they are. See [Harden a block](concepts/pnr.md#harden-a-block).
+
+### RTL-MP is the only built-in macro placer
+
+`rb pnr` places hard macros with OpenROAD's RTL-MP, as ORFS does. rb's macro packer, the v7 default, is gone, with the two keys that steered it. A run that still writes either key fails to load with `config.unknown_key_rejected`, whose message says what to do instead.
+
+| Key | v7 | v8 | Migration |
+| --- | --- | --- | --- |
+| `floorplan.macro-placement` | `pack` (default), rb's packer, or `rtl-mp` | Removed; RTL-MP places the macros | Remove the key. To place macros another way, fix them with `floorplan.macros` locations or place them in a `macro-placement` hook |
+| `floorplan.macro-anchor` | `lower-left`, the core corner the packer started from | Removed | Remove the key. Fix the macros that must sit at a corner with `floorplan.macros` locations, or place them in a `macro-placement` hook |
+| `placement.macro-halo` unset | 20 µm, the packer's channel between macros and from the core edge, and RTL-MP's halo | No halo; RTL-MP keeps its own channels, as ORFS | `placement: {macro-halo: 20}` |
+
+Macros land where RTL-MP puts them, by connectivity and possibly mirrored, so a design with macros places, routes and times differently. Also:
+
+- Without a halo, RTL-MP can put macros against each other and the core edge, leaving no routing channel; global routing then fails with `GRT-0116`. Set `placement: {macro-halo: 20}`, the v7 channel, on such a run.
+
+- A `floorplan.macros` or `macros-file` entry with an `orientation` and no `location` fails to load, because RTL-MP chooses each orientation. Give it a location, or place the macros in a `macro-placement` hook, which may still use such entries.
+- RTL-MP keeps macros out of every flow blockage, `soft` and `partial` ones included; the packer kept out of `hard` ones only.
+- A `macro-placement` hook replaces RTL-MP as it replaced the packer, and no longer conflicts with any floorplan key.
+
+See [Place macros](concepts/pnr.md#place-macros).
 
 ### `openroad_threads.effective` is null when `threads:` is unset
 

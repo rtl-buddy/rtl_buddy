@@ -26,7 +26,6 @@ from ..config.pnr_signoff import effective_gates
 from ..config.pnr import (
     ABSTRACT_BLOAT_OCCUPIED,
     BlockageLifetime,
-    MacroPlacement,
     PnrAbstract,
     PortBuffers,
 )
@@ -404,7 +403,6 @@ def abstract_config(pnr_cfg, platform) -> dict:
             "utilization": fp.utilization,
             "aspect": fp.aspect,
             "core_margin": fp.core_margin,
-            "macro_anchor": str(fp.macro_anchor),
             "blockages": [
                 {
                     "rect": list(b.rect),
@@ -419,12 +417,6 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 }
                 for b in fp.blockages
             ],
-            # Emitted only when non-default so existing digests do not change.
-            **(
-                {"macro_placement": str(fp.macro_placement)}
-                if fp.macro_placement is not MacroPlacement.PACK
-                else {}
-            ),
             **({"pins": [_pin_config(p) for p in fp.pins]} if fp.pins else {}),
             **({"macros": [_macro_config(m) for m in fp.macros]} if fp.macros else {}),
             # Planner files by path; their contents are fingerprinted as inputs.
@@ -447,8 +439,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
         "placement": {
             "density": platform.get_placement_density(),
             "padding": platform.get_placement_padding(),
-            # As configured: RTL-MP places differently with it unset than with the packer's default.
-            "macro_halo": platform.get_placement_macro_halo_setting(),
+            "macro_halo": platform.get_placement_macro_halo(),
             # Emitted only when non-default so existing digests do not change.
             **(
                 {"macro_cell_halo": platform.get_placement_macro_cell_halo()}

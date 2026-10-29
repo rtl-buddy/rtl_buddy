@@ -173,7 +173,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 |---|---|---|
 | `placement.density` | PDK, platform | Global-placement target density, above 0 and at most 1. Default `0.7` |
 | `placement.padding` | PDK, platform | Cell padding in sites on each side. Default `0`, as `global_placement` and ORFS |
-| `placement.macro-halo` | PDK, platform | Channel in µm the packer keeps between macros and from the core edge. Default `20.0`; below about 19 fails `PDN-0179` on sky130hd. RTL-MP gets it as its halo only when set; unset leaves RTL-MP's own channels |
+| `placement.macro-halo` | PDK, platform | RTL-MP's halo in µm around each macro. Unset passes none, so RTL-MP keeps its own channels, as ORFS. A channel too narrow for the power grid fails `PDN-0179`; set a halo then |
 | `placement.macro-cell-halo` | PDK, platform | Standard-cell keep-out in µm around each macro: a hard placement blockage that leaves the rows whole. Default `0`, no blockage |
 | `placement.tie-separation` | PDK, platform | Distance in µm between each constant-driven load and its own tie cell. Default `0` |
 | `placement.reference-hpwl` | PDK, platform | Positive number passed as `global_placement -reference_hpwl`. Unset keeps the placer's own |
@@ -913,8 +913,6 @@ runs:
 | `floorplan.die-area`, `floorplan.core-area` | — | `[x0, y0, x1, y1]` in µm, set together, core inside die. Exclude the three keys above |
 | `floorplan.core-cutouts` | — | Rectangles removed from the core |
 | `floorplan.blockages` | — | Placement blockages; see below |
-| `floorplan.macro-placement` | `pack` | `pack` (rb's packer) or `rtl-mp` (OpenROAD's RTL-MP) |
-| `floorplan.macro-anchor` | `lower-left` | Core corner the packer starts from. Another corner is an error with `rtl-mp` or a `macro-placement` hook |
 | `floorplan.macros`, `floorplan.macros-file` | — | Per-macro directives, inline or from a YAML or JSON file; see below |
 | `floorplan.macro-snap` | `true` | `false` keeps macro locations off the site and row grid |
 | `floorplan.pins`, `floorplan.pins-file` | — | Pin constraints, inline or from a YAML or JSON file; see below |
@@ -927,7 +925,7 @@ runs:
 Each `floorplan.blockages` entry:
 
 - `rect: [x0, y0, x1, y1]` in die µm.
-- `type`: `hard` (default; rows cut, macros kept out), `soft` (global placement only) or `partial` with `max-density` between 0 and 1.
+- `type`: `hard` (default; rows cut), `soft` (global placement only) or `partial` with `max-density` between 0 and 1. RTL-MP keeps macros out of every type.
 - `lifetime`: `flow` (default) or `global-placement`, which exists only during global placement.
 
 Blockages need OpenROAD 26Q1.
@@ -935,7 +933,7 @@ Blockages need OpenROAD 26Q1.
 Each `floorplan.macros` entry has `instance` (a name, or a glob where `*` crosses `/`) and at least one of:
 
 - `location: [x, y]`: lower-left corner after orientation, die µm. Must match one macro.
-- `orientation`: `R0`, `R90`, `R180`, `R270`, `MX`, `MY`, `MXR90` or `MYR90`. Under `rtl-mp` it needs a `location`.
+- `orientation`: `R0`, `R90`, `R180`, `R270`, `MX`, `MY`, `MXR90` or `MYR90`. It needs a `location`, unless a `macro-placement` hook places the macros.
 - `halo: [x, y]`: standard-cell keep-out in µm, replacing `placement.macro-cell-halo`.
 
 Only one entry may set each key for a macro.

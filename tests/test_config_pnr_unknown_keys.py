@@ -100,8 +100,6 @@ RUN_SIZED = {
         "utilization": 0.5,
         "aspect": 1.0,
         "core-margin": 5.0,
-        "macro-anchor": "lower-right",
-        "macro-placement": "pack",
         "blockages": [
             {"rect": [0, 0, 10, 10]},
             {"rect": [0, 0, 10, 10], "type": "soft"},
@@ -376,7 +374,7 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "pnr run 'a': floorplan",
             ("floorplan",),
             "utilization, aspect, core-margin, die-area, core-area, core-cutouts, "
-            "macro-anchor, macro-placement, blockages, pins, macros, macros-file, "
+            "blockages, pins, macros, macros-file, "
             "macro-snap, pins-file, pin-snap, pins-complete",
         ),
         (
@@ -595,6 +593,31 @@ def test_an_unknown_key_is_logged_at_error_with_its_fields(tmp_path, caplog):
         f"{path}: pnr run 'a': abstract: unknown key 'feedthrough_layers', "
         "did you mean 'feedthrough-layers'? (valid keys: bloat, feedthrough-layers, gds)"
     )
+
+
+def test_a_removed_key_is_logged_with_what_to_do_instead(tmp_path, caplog):
+    run = copy.deepcopy(RUN_SIZED)
+    run["floorplan"]["macro-placement"] = "pack"
+    path = _write_pnr(tmp_path, run)
+    caplog.set_level(logging.ERROR)
+
+    with pytest.raises(FatalRtlBuddyError) as err:
+        PnrSuiteConfig(path)
+
+    [event] = [
+        r.rtl_fields
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "config.unknown_key_rejected"
+    ]
+    assert event["key"] == "macro-placement"
+    assert "suggestion" not in event
+    message = (
+        f"{path}: pnr run 'a': floorplan: 'macro-placement' is no longer a key: "
+        "rb places macros with RTL-MP; remove the key, or use a "
+        "'macro-placement' hook for another placement"
+    )
+    assert _human_message("config.unknown_key_rejected", event) == message
+    assert str(err.value) == message
 
 
 def test_a_run_without_a_name_is_labelled_by_position(tmp_path):

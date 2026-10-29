@@ -11,7 +11,6 @@ from ..errors import FatalRtlBuddyError
 from .pdk import (
     PLACEMENT_SPEC,
     DEFAULT_PLACEMENT_DENSITY,
-    DEFAULT_PLACEMENT_MACRO_HALO,
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
     DEFAULT_PLACEMENT_PADDING,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
@@ -537,7 +536,7 @@ class PnrPlatformConfig:
         self._placement_padding = _pick(
             "padding", pdk.get_placement_padding(), DEFAULT_PLACEMENT_PADDING
         )
-        # Unset gives the packer its default and RTL-MP no channel, as ORFS passes none.
+        # Unset gives RTL-MP no halo, as ORFS passes none.
         self._placement_macro_halo = _pick(
             "macro_halo", pdk.get_placement_macro_halo(), None
         )
@@ -762,14 +761,8 @@ class PnrPlatformConfig:
         """Global-placement cell padding, after platform/PDK/default."""
         return self._placement_padding
 
-    def get_placement_macro_halo(self) -> float:
-        """Macro halo in microns, after platform/PDK/default."""
-        if self._placement_macro_halo is None:
-            return DEFAULT_PLACEMENT_MACRO_HALO
-        return self._placement_macro_halo
-
-    def get_placement_macro_halo_setting(self) -> float | None:
-        """Macro halo in microns from platform or PDK, or `None` when neither sets it."""
+    def get_placement_macro_halo(self) -> float | None:
+        """RTL-MP's macro halo in microns from the run, platform or PDK, or `None` when none sets it."""
         return self._placement_macro_halo
 
     def get_placement_macro_cell_halo(self) -> float:

@@ -18,7 +18,7 @@ from rtl_buddy.config.pdk import PdkConfig
 from rtl_buddy.tools import pnr_openroad
 
 from test_pnr_blocks import _BLOCK_YAML, _block_suite, _top_backend, _write
-from test_pnr_macro_pack import _tcl_eval
+from tcl_eval import _tcl_eval
 
 
 def _tcl(body: str) -> str:

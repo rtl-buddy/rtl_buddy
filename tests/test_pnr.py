@@ -391,12 +391,11 @@ def _platform(pdk, **overrides):
 
 
 def test_pnr_platform_placement_falls_back_to_the_flow_defaults(tmp_path):
-    """With neither block set, placement uses `global_placement`'s defaults and the packer's halo."""
+    """With neither block set, placement uses `global_placement`'s defaults and RTL-MP's own halo."""
     cfg = _platform(_make_pdk_cfg(tmp_path))
     assert cfg.get_placement_density() == 0.7
     assert cfg.get_placement_padding() == 0
-    assert cfg.get_placement_macro_halo() == 20.0
-    assert cfg.get_placement_macro_halo_setting() is None
+    assert cfg.get_placement_macro_halo() is None
     assert cfg.get_placement_macro_cell_halo() == 0.0
 
 
@@ -772,10 +771,11 @@ def test_pnr_flow_substitutes_placement_density_and_padding(tmp_path):
     assert "global_placement -density 0.55 -pad_left 2 -pad_right 2\n" in text
 
 
-def test_pnr_flow_renders_the_default_macro_halo(tmp_path):
+def test_pnr_flow_renders_no_macro_halo_by_default(tmp_path):
     text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
 
-    assert "set MACRO_HALO      20\n" in text
+    assert "set MACRO_HALO      0\n" in text
+    assert "set_macro_base_halo" not in text
 
 
 def test_pnr_flow_renders_a_configured_macro_halo(tmp_path):
@@ -785,18 +785,6 @@ def test_pnr_flow_renders_a_configured_macro_halo(tmp_path):
     text = _render_flow(tmp_path, _platform(pdk))
 
     assert "set MACRO_HALO      27.5\n" in text
-
-
-def test_pnr_flow_embeds_the_macro_packer(tmp_path):
-    """The packer file is substituted verbatim, so pnr.tcl is self-contained."""
-    from importlib.resources import files
-
-    text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
-    packer = files("rtl_buddy.pnr").joinpath("macro_pack.tcl").read_text()
-
-    assert packer.strip() in text
-    assert "rb::macro_pack::solve" in text
-    assert "{{" not in text
 
 
 def test_pnr_flow_placement_honours_the_platform_override(tmp_path):
@@ -2413,32 +2401,21 @@ def test_pnr_template_legalizes_after_every_cell_inserting_repair():
     assert "check_placement -verbose" in pre_route[last_dp + 1 :]
 
 
-def test_pnr_template_packs_macros_by_their_own_size():
-    """The flow hands every macro's own footprint to the packer and places the result FIRM.
-
-    Packing is tested in test_pnr_macro_pack.py.
-    """
+def test_pnr_template_places_macros_with_rtl_mp(tmp_path):
+    """The flow places every hard macro with RTL-MP, and carries no packer."""
     from importlib.resources import files
-
-    from rtl_buddy.config.pnr import PnrFloorplan
-    from rtl_buddy.tools.pnr_openroad import _macro_place_block
 
     template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
     assert "[[$inst getMaster] isBlock]" in template
     assert "{{ macro_place_block }}" in template
-    pack = _macro_place_block(
-        PnrFloorplan(utilization=0.5, aspect=1, core_margin=2), ""
-    )
+    text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
     assert (
-        "lappend footprints [list [$inst getName] [$master getWidth] [$master getHeight]]"
-        in pack
-    )
-    assert "rb::macro_pack::solve \\" in pack
-    assert "$inst setPlacementStatus FIRM" in pack
-    assert "rtl_macro_placer" not in pack
-    # No slot is sized for the largest macro.
-    assert "max_macro_w" not in template
-    assert "slot_w" not in template
+        "if {[llength $macros] > 0} {\n"
+        "  file mkdir $OUT_DIR/rtlmp\n"
+        "  rtl_macro_placer -report_directory $OUT_DIR/rtlmp\n"
+    ) in text
+    assert "macro_pack" not in text
+    assert not files("rtl_buddy.pnr").joinpath("macro_pack.tcl").is_file()
 
 
 def test_drc_count_counts_violations_not_report_lines(tmp_path):
@@ -2716,7 +2693,7 @@ def test_pnr_openroad_writes_odb_then_fails_removes_it(tmp_path, monkeypatch):
 
 
 def test_pnr_openroad_stderr_reaches_the_log_and_the_verdict(tmp_path, monkeypatch):
-    """A Tcl error (say, the macro packer refusing a floorplan) goes to stderr, not to
+    """A Tcl error (say, a `floorplan.macros` location outside the core) goes to stderr, not to
     the stdout OpenROAD writes the log on.
 
     The whole diagnostic reaches the log and its first line the verdict.
@@ -3723,6 +3700,23 @@ def test_pnr_flow_extracts_writes_and_times_on_the_routed_spef(tmp_path):
     assert "{{" not in text
 
 
+def test_rtl_mp_reports_are_cleared_up_front_only(tmp_path):
+    """A run that skips RTL-MP (a hook, or every macro located) leaves no older reports."""
+    from rtl_buddy.tools import pnr_openroad
+
+    reports = tmp_path / "rtlmp"
+    reports.mkdir()
+    (reports / "macro_placement.cfg").write_text("old\n")
+
+    pnr_openroad.clear_run_outputs(str(tmp_path), owner="r", design="top")
+    assert reports.is_dir()
+    stale = pnr_openroad.clear_run_outputs(
+        str(tmp_path), owner="r", design="top", include_script=True
+    )
+    assert not reports.exists()
+    assert str(reports) in stale
+
+
 def test_pnr_clear_list_covers_the_rendered_spef_target(tmp_path):
     """The SPEF write is not in the template text the static coverage test scans, so check
     the rendered script: every `$OUT_DIR` target it writes is cleared before a run.
@@ -3739,8 +3733,10 @@ def test_pnr_clear_list_covers_the_rendered_spef_target(tmp_path):
     }
     assert "${DESIGN}.routed.spef" in written
 
+    # RTL-MP's report directory is cleared up front only, as the congestion report.
     fixed = set(pnr_openroad._FIXED_OUTPUT_NAMES) | {
-        pnr_openroad._CONGESTION_REPORT_NAME
+        pnr_openroad._CONGESTION_REPORT_NAME,
+        pnr_openroad._RTL_MP_REPORT_DIR,
     }
     suffixes = pnr_openroad._MANAGED_OUTPUT_SUFFIXES
     missed = {
@@ -3960,7 +3956,7 @@ def test_pdk_rejects_an_unusable_macro_cell_halo(tmp_path, halo):
 
 
 def test_pnr_flow_blocks_cells_around_each_macro_after_placing_it(tmp_path):
-    """A hard blockage per macro, once its location is FIRM and before the tap-cell
+    """A hard blockage per macro, once RTL-MP has placed it and before the tap-cell
     step, the PDN and any standard-cell placement. It leaves the rows whole.
     """
     from rtl_buddy.config.pdk import PlacementFile
@@ -3970,7 +3966,7 @@ def test_pnr_flow_blocks_cells_around_each_macro_after_placing_it(tmp_path):
 
     assert "set MACRO_CELL_HALO 1\n" in text
     blockage = text.index("odb::dbBlockage_create $block")
-    assert text.index("$inst setPlacementStatus FIRM") < blockage
+    assert text.index("rtl_macro_placer -report_directory") < blockage
     assert blockage < text.index('puts ">>> Cut rows around macros"')
     assert blockage < text.index('puts ">>> IO pin placement"')
     assert blockage < text.index("global_placement -density")
@@ -4349,57 +4345,40 @@ def _rtl_mp_yaml(tmp_path, floorplan_extra):
     return pnr_yaml
 
 
-def test_macro_placement_defaults_to_the_packer(tmp_path):
-    from rtl_buddy.config.pnr import MacroPlacement
+@pytest.mark.parametrize(
+    ("key", "message"),
+    [
+        (
+            "macro-placement: rtl-mp",
+            "'macro-placement' is no longer a key: rb places macros with RTL-MP; "
+            "remove the key, or use a 'macro-placement' hook for another placement",
+        ),
+        (
+            "macro-anchor: upper-right",
+            "'macro-anchor' is no longer a key: the packer that used it is gone; "
+            "remove the key, fix macros with floorplan.macros locations, or use a "
+            "'macro-placement' hook",
+        ),
+    ],
+)
+def test_the_removed_macro_placement_keys_fail_to_load_saying_what_to_do(
+    tmp_path, key, message
+):
+    pnr_yaml = _rtl_mp_yaml(tmp_path, f"      {key}\n")
 
-    run = PnrSuiteConfig(str(_rtl_mp_yaml(tmp_path, ""))).get_runs("demo_pnr")[0]
-
-    assert run.get_floorplan().macro_placement is MacroPlacement.PACK
-
-
-def test_macro_placement_rtl_mp_loads(tmp_path):
-    from rtl_buddy.config.pnr import MacroPlacement
-
-    pnr_yaml = _rtl_mp_yaml(tmp_path, "      macro-placement: rtl-mp\n")
-    run = PnrSuiteConfig(str(pnr_yaml)).get_runs("demo_pnr")[0]
-
-    assert run.get_floorplan().macro_placement is MacroPlacement.RTL_MP
-
-
-def test_an_unknown_macro_placement_is_refused_naming_the_choices(tmp_path):
-    pnr_yaml = _rtl_mp_yaml(tmp_path, "      macro-placement: grid\n")
-
-    with pytest.raises(
-        FatalRtlBuddyError, match=r"'grid' \(expected one of pack, rtl-mp\)"
-    ):
+    with pytest.raises(FatalRtlBuddyError) as err:
         PnrSuiteConfig(str(pnr_yaml))
-
-
-def test_macro_anchor_with_rtl_mp_is_refused(tmp_path):
-    """The anchor steers only the packer, so combining it with rtl-mp is refused."""
-    pnr_yaml = _rtl_mp_yaml(
-        tmp_path,
-        "      macro-placement: rtl-mp\n      macro-anchor: upper-right\n",
-    )
-
-    with pytest.raises(FatalRtlBuddyError, match="macro-anchor' steers the packer"):
-        PnrSuiteConfig(str(pnr_yaml))
+    assert f"pnr run 'demo_pnr': floorplan: {message}" in str(err.value)
 
 
 def test_rtl_mp_without_a_macro_halo_keeps_its_own_channels():
     """As ORFS runs it: no halo, no minimum channel."""
-    from rtl_buddy.config.pnr import MacroPlacement, PnrFloorplan
+    from rtl_buddy.config.pnr import PnrFloorplan
     from rtl_buddy.tools.pnr_openroad import _macro_place_block
 
-    fp = PnrFloorplan(
-        utilization=0.5,
-        aspect=1,
-        core_margin=2,
-        macro_placement=MacroPlacement.RTL_MP,
-    )
-    block = _macro_place_block(fp, " \\\n      upper-right")
+    fp = PnrFloorplan(utilization=0.5, aspect=1, core_margin=2)
+    block = _macro_place_block(fp, False)
 
-    assert "rb::macro_pack::solve" not in block
     assert "  rtl_macro_placer -report_directory $OUT_DIR/rtlmp\n" in block
     assert "MACRO_HALO" not in block
     assert "halo" not in block.replace("(rtl-mp)", "")
@@ -4408,9 +4387,7 @@ def test_rtl_mp_without_a_macro_halo_keeps_its_own_channels():
 def test_rtl_mp_gets_the_macro_halo_only_when_it_is_set(tmp_path):
     from rtl_buddy.config.pdk import PlacementFile
 
-    pnr_cfg = PnrSuiteConfig(
-        str(_rtl_mp_yaml(tmp_path, "      macro-placement: rtl-mp\n"))
-    ).get_runs("demo_pnr")[0]
+    pnr_cfg = PnrSuiteConfig(str(_rtl_mp_yaml(tmp_path, ""))).get_runs("demo_pnr")[0]
     unset = _render_flow(
         tmp_path, _platform(_make_pdk_cfg(tmp_path)), floorplan=pnr_cfg.get_floorplan()
     )
@@ -4425,7 +4402,7 @@ def test_rtl_mp_gets_the_macro_halo_only_when_it_is_set(tmp_path):
 
 
 def test_the_abstract_digest_takes_the_macro_halo_as_configured(tmp_path):
-    """RTL-MP places differently with the halo unset than at the packer's 20 um."""
+    """RTL-MP places differently with the halo unset than set."""
     from rtl_buddy.config.pdk import PlacementFile
     from rtl_buddy.tools import pnr_abstract
 
@@ -4441,44 +4418,16 @@ def test_the_abstract_digest_takes_the_macro_halo_as_configured(tmp_path):
 
 
 def test_rtl_mp_renders_rtl_macro_placer_with_the_halo_both_ways():
-    from rtl_buddy.config.pnr import MacroPlacement, PnrFloorplan
+    from rtl_buddy.config.pnr import PnrFloorplan
     from rtl_buddy.tools.pnr_openroad import _macro_place_block
 
-    fp = PnrFloorplan(
-        utilization=0.5,
-        aspect=1,
-        core_margin=2,
-        macro_placement=MacroPlacement.RTL_MP,
-    )
-    block = _macro_place_block(fp, " \\\n      upper-right", True)
+    fp = PnrFloorplan(utilization=0.5, aspect=1, core_margin=2)
+    block = _macro_place_block(fp, True)
 
-    assert "rb::macro_pack::solve" not in block
-    assert "upper-right" not in block
     assert "set_macro_base_halo $MACRO_HALO $MACRO_HALO\n" in block
     assert "rtl_macro_placer -report_directory $OUT_DIR/rtlmp" in block
     assert "-halo_width $MACRO_HALO -halo_height $MACRO_HALO" in block
     assert "[info commands set_macro_base_halo]" in block
-
-
-def test_rtl_mp_goes_into_the_abstract_digest_only_when_set(tmp_path):
-    """The placer enters the abstract digest only when set, so an older block keeps its
-    digest and one that switches placer differs.
-    """
-    from dataclasses import replace
-
-    from rtl_buddy.config.pnr import MacroPlacement
-    from rtl_buddy.tools import pnr_abstract
-
-    run = PnrSuiteConfig(str(_rtl_mp_yaml(tmp_path, ""))).get_runs("demo_pnr")[0]
-    platform = _platform(_make_pdk_cfg(tmp_path))
-    packed = pnr_abstract.abstract_config(run, platform)
-    assert "macro_placement" not in packed["floorplan"]
-
-    run.floorplan = replace(run.floorplan, macro_placement=MacroPlacement.RTL_MP)
-    placed = pnr_abstract.abstract_config(run, platform)
-
-    assert placed["floorplan"]["macro_placement"] == "rtl-mp"
-    assert pnr_abstract.config_digest(placed) != pnr_abstract.config_digest(packed)
 
 
 _HOOK_FILES = {

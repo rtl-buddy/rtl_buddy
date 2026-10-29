@@ -68,7 +68,6 @@ puts ">>> Reading SDC"
 {{ blockages_block }}
 puts ">>> Tie cells"
 {{ tie_cells_block }}{{ floorplan_setup_repair }}{{ hook_after_floorplan_block }}
-{{ macro_pack_procs }}
 puts ">>> Macro placement"
 {{ @design }}set block [ord::get_db_block]
 # Macro origins snap to the site grid from the core corner; a bottom edge
@@ -108,8 +107,7 @@ foreach inst [$block getInsts] {
 {{ tapcell_block }}{{ pdn_block }}{{ hook_after_pdn_block }}
 # Pins are placed after the macros and power grid so the pin placer sees placed
 # macros (unplaced ones raise PPL-0015). `place_pins` only avoids boundary
-# stretches a placed macro touches; keeping pins clear of macros kept a halo
-# inside the core is `floorplan.macro-anchor`'s job.
+# stretches a placed macro touches.
 puts ">>> IO pin placement"
 {{ floorplan_pins_block }}{{ pin_constraints_tcl }}
 {{ place_pins_block }}

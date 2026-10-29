@@ -5,7 +5,7 @@ from importlib.resources import files
 
 import pytest
 from test_pnr_floorplan_controls import _floorplan, _load, _render
-from test_pnr_macro_pack import _tcl_eval
+from tcl_eval import _tcl_eval
 
 from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr import (
