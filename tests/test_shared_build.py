@@ -8067,6 +8067,233 @@ def test_a_scrub_explains_itself(tmp_path, monkeypatch, caplog):
     )
 
 
+# --- a failed make must not leave targets the next make keeps --------
+# Verilator's makefiles do not set `.DELETE_ON_ERROR`: a compiler that dies writing an
+# object leaves it truncated and newer than its source.
+
+_DPI_MAKEFILE = """\
+simv: dpi.o
+\t./link.sh dpi.o simv
+dpi.o: dpi.cpp
+\t./cc.sh dpi.cpp dpi.o
+"""
+
+
+def _install_make_builder(monkeypatch, calls, fail_flag, link_fail_flag=None):
+    """A builder that runs a real make: `cc.sh` leaves an empty object and fails while
+    ``fail_flag`` exists, and the link fails on an empty object. While
+    ``link_fail_flag`` exists, the link leaves an empty executable and fails.
+    """
+    link_fail = link_fail_flag or Path(fail_flag).with_name("no-such-flag")
+    _install_fake_builder(monkeypatch, calls)
+
+    def _run(cmd, capture_output, text, cwd, env=None):
+        calls.append({"cmd": list(cmd), "cwd": cwd})
+        mdir = Path(cwd) / cmd[cmd.index("--Mdir") + 1]
+        mdir.mkdir(parents=True, exist_ok=True)
+        if not (mdir / "dpi.cpp").exists():
+            (mdir / "dpi.cpp").write_text("void dpi_fn() {}\n")
+            old = time.time() - 60
+            os.utime(mdir / "dpi.cpp", (old, old))
+        (mdir / "Makefile").write_text(_DPI_MAKEFILE)
+        for name, body in (
+            (
+                "cc.sh",
+                f'if [ -e "{fail_flag}" ]; then : > "$2"; exit 1; fi\n'
+                'echo object > "$2"\n',
+            ),
+            (
+                "link.sh",
+                f'if [ -e "{link_fail}" ]; then : > "$2"; exit 1; fi\n'
+                '[ -s "$1" ] || { echo "undefined reference to dpi_fn" >&2; '
+                'exit 1; }\necho binary > "$2"\n',
+            ),
+        ):
+            (mdir / name).write_text("#!/bin/sh\n" + body)
+            (mdir / name).chmod(0o755)
+        proc = subprocess.run(
+            ["make", "-s", "simv"], cwd=mdir, capture_output=True, text=True
+        )
+        return ManagedProcessResult(
+            returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr
+        )
+
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _run)
+
+
+needs_make = pytest.mark.skipif(shutil.which("make") is None, reason="needs make")
+
+
+@needs_make
+@pytest.mark.parametrize("share_build", [False, True])
+def test_a_failed_make_does_not_poison_the_next_build(
+    tmp_path, monkeypatch, share_build
+):
+    """The compile that fails writing an object leaves nothing the next make keeps."""
+    _write_source(tmp_path)
+    calls = []
+    fail_flag = tmp_path / "disk-full"
+    _install_make_builder(monkeypatch, calls, fail_flag)
+
+    def _sim():
+        return _make_sim(
+            tmp_path, monkeypatch, test_name="test_a", share_build=share_build
+        )
+
+    fail_flag.touch()
+    failed = _sim()
+    assert failed.compile() != 0
+    mdir = Path(failed._get_simv_path()).parent
+    assert not (mdir / "dpi.o").exists()
+    assert (mdir / vlog_sim_module.BUILD_MAKE_MARKER_NAME).exists()
+
+    fail_flag.unlink()
+    again = _sim()
+    assert again.compile() == 0
+    assert (mdir / "simv").read_text() == "binary\n"
+    assert not (mdir / vlog_sim_module.BUILD_MAKE_MARKER_NAME).exists()
+
+
+@needs_make
+@pytest.mark.parametrize("share_build", [False, True])
+def test_a_killed_make_is_cleaned_up_by_the_next_build(
+    tmp_path, monkeypatch, share_build, caplog
+):
+    """A make killed before rtl_buddy saw it fail leaves the marker, and the next build
+    drops every target before its make runs.
+    """
+    _write_source(tmp_path)
+    calls = []
+    fail_flag = tmp_path / "disk-full"
+    _install_make_builder(monkeypatch, calls, fail_flag)
+
+    def _sim():
+        return _make_sim(
+            tmp_path, monkeypatch, test_name="test_a", share_build=share_build
+        )
+
+    first = _sim()
+    assert first.compile() == 0
+    mdir = Path(first._get_simv_path()).parent
+    (mdir / "dpi.o").write_text("")
+    (mdir / "Vtop__ALL.cpp").write_text("")
+    (mdir / vlog_sim_module.BUILD_MAKE_MARKER_NAME).touch()
+    (mdir / "Vtop__ver.d").write_text("deps\n")
+    sub = mdir / "Vsub"
+    sub.mkdir()
+    for name in ("Vsub__ALL.o", "Vsub__ALL.a", "Vsub__ver.d", "Vsub.mk"):
+        (sub / name).write_text("")
+    if share_build:
+        (mdir / vlog_sim_module.SHARED_BUILD_STAMP_NAME).unlink()
+
+    with caplog.at_level(logging.INFO):
+        assert _sim().compile() == 0
+    assert (mdir / "dpi.o").read_text() == "object\n"
+    assert not (mdir / "Vtop__ALL.cpp").exists()
+    assert (mdir / "Vtop__ver.d").exists()
+    assert {p.name for p in sub.iterdir()} == {"Vsub__ver.d", "Vsub.mk"}
+    assert "an earlier make there did not finish" in caplog.text
+
+
+@needs_make
+@pytest.mark.parametrize("share_build", [False, True])
+def test_a_failed_link_drops_the_executable(tmp_path, monkeypatch, share_build):
+    """A link that truncates the executable and fails leaves no executable behind."""
+    _write_source(tmp_path)
+    calls = []
+    link_fail_flag = tmp_path / "link-killed"
+    _install_make_builder(
+        monkeypatch, calls, tmp_path / "disk-full", link_fail_flag=link_fail_flag
+    )
+
+    def _sim():
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name="test_a",
+            share_build=share_build,
+            compile_opts=["--binary", "-o", "simv"],
+        )
+
+    first = _sim()
+    assert first.compile() == 0
+    mdir = Path(first._get_simv_path()).parent
+    (mdir / "dpi.cpp").touch()
+    if share_build:
+        (mdir / vlog_sim_module.SHARED_BUILD_STAMP_NAME).unlink()
+
+    link_fail_flag.touch()
+    assert _sim().compile() != 0
+    assert not (mdir / "simv").exists()
+    assert (mdir / vlog_sim_module.BUILD_MAKE_MARKER_NAME).exists()
+
+
+@pytest.mark.parametrize(
+    "argv, name",
+    [
+        (["--binary", "-o", "simv"], "simv"),
+        (["-o", "first", "--top-module", "top", "-o", "simv"], "simv"),
+        (["--prefix", "Vmodel", "--top-module", "top"], "Vmodel"),
+        (["--top", "tb"], "Vtb"),
+        (["--top-module", "tb", "-Wall"], "Vtb"),
+        (["--binary", "-Wall"], None),
+    ],
+)
+def test_the_linked_executable_comes_from_the_command_line(tmp_path, argv, name):
+    found = vlog_sim_module._verilator_executable(tmp_path, ["verilator", *argv])
+    assert found == (tmp_path / name if name else None)
+
+
+def test_an_absolute_output_is_the_executable(tmp_path):
+    exe = tmp_path / "bin" / "model"
+    found = vlog_sim_module._verilator_executable(
+        tmp_path / "build", ["verilator", "-o", str(exe)]
+    )
+    assert found == exe
+
+
+def test_a_failed_front_end_keeps_the_objects(tmp_path, monkeypatch):
+    """A verilation that fails runs no make, so the next build stays incremental."""
+    _write_source(tmp_path)
+    calls = []
+    _install_listing_builder(monkeypatch, calls)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", share_build=False)
+    mdir = Path(sim._get_simv_path()).parent
+    mdir.mkdir(parents=True)
+    (mdir / "Vtop__verFiles.dat").write_text("verilated\n")
+    assert sim.compile() == 0
+    _plant_stale_objects(sim)
+    _install_fake_builder(monkeypatch, calls, returncode=1)
+
+    failed = _make_sim(tmp_path, monkeypatch, test_name="test_a", share_build=False)
+    assert failed.compile() != 0
+    assert _STALE <= {p.name for p in mdir.iterdir()}
+    assert not (mdir / vlog_sim_module.BUILD_MAKE_MARKER_NAME).exists()
+
+
+def test_a_failed_make_after_a_verilation_drops_the_objects(tmp_path, monkeypatch):
+    """A front end that finished (its `__verFiles.dat` rewritten) handed over to make."""
+    _write_source(tmp_path)
+    calls = []
+    _install_listing_builder(monkeypatch, calls)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", share_build=False)
+    assert sim.compile() == 0
+    mdir = _plant_stale_objects(sim)
+    (mdir / "Vtop__verFiles.dat").write_text("verilated\n")
+    inner = vlog_sim_module.run_managed_process
+
+    def _verilate_then_fail(cmd, capture_output, text, cwd, env=None):
+        inner(cmd, capture_output=capture_output, text=text, cwd=cwd, env=env)
+        (mdir / "Vtop__verFiles.dat").write_text("verilated again\n")
+        return ManagedProcessResult(returncode=2, stdout="", stderr="make: Error 1")
+
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _verilate_then_fail)
+    failed = _make_sim(tmp_path, monkeypatch, test_name="test_a", share_build=False)
+    assert failed.compile() != 0
+    assert not _STALE & {p.name for p in mdir.iterdir()}
+    assert (mdir / vlog_sim_module.BUILD_MAKE_MARKER_NAME).exists()
+
+
 _PRUNABLE = {
     "Vtop.cpp",
     "Vtop.h",

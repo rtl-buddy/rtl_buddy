@@ -15,6 +15,7 @@ from rtl_buddy.config.root import (
     RootConfig,
     _discover_root_cfg,
     discover_project_root,
+    root_cfg_not_found_message,
 )
 from rtl_buddy.config.suite import SuiteConfig
 
@@ -924,6 +925,42 @@ def test_discover_root_cfg_walks_up_to_root_config(tmp_path, monkeypatch):
     monkeypatch.chdir(nested)
     assert _discover_root_cfg() == str(root / "root_config.yaml")
     assert discover_project_root() == root
+
+
+def test_a_missing_root_config_names_where_the_search_started(tmp_path, monkeypatch):
+    """A config outside the project is searched from its own directory, not the cwd's project."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "root_config.yaml").write_text(
+        "rtl-buddy-filetype: project_root_config\n"
+    )
+    outside = tmp_path / "elsewhere" / "pnr"
+    outside.mkdir(parents=True)
+    monkeypatch.chdir(project)
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        RootConfig(name="t", start_dir=outside)
+    message = str(excinfo.value)
+    assert message.startswith(
+        f"unable to discover root_config.yaml: searched {outside} and "
+    )
+    assert "current working directory" not in message
+    assert f"the working directory's project has {project / 'root_config.yaml'}" in (
+        message
+    )
+
+
+def test_a_missing_root_config_stops_after_the_level_limit(tmp_path, monkeypatch):
+    deep = tmp_path.joinpath(*[f"d{i}" for i in range(10)])
+    deep.mkdir(parents=True)
+    monkeypatch.chdir(deep)
+
+    message = root_cfg_not_found_message(max_levels=2)
+    assert message == (
+        f"unable to discover root_config.yaml: searched {deep} and 2 parent "
+        f"directories up to {deep.parent.parent}"
+    )
+    assert _discover_root_cfg(max_levels=2) is None
 
 
 def test_discover_project_root_falls_back_to_git(tmp_path, monkeypatch):

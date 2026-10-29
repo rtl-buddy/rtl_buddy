@@ -185,8 +185,8 @@ def test_test_list_opens_no_log_anywhere(minimal_project: Path, monkeypatch):
     """`rb test --list` opens no log, so it neither fails in a read-only checkout nor
     truncates an earlier run's log.
 
-    `test_filelist_explicit_output_anchors_to_invocation_dir` pins the log
-    anchoring for a command that does write one.
+    `rb filelist` opens none either; see
+    `test_filelist_explicit_output_anchors_to_invocation_dir`.
     """
     unrelated = minimal_project.parent / "unrelated"
     unrelated.mkdir()
@@ -229,8 +229,9 @@ def test_filelist_explicit_output_anchors_to_invocation_dir(
     assert result.exit_code == 0, result.output
 
     assert (unrelated / "out.f").exists()
-    # The orchestration log lands under the command root.
-    assert (minimal_project / "rtl_buddy.log").exists()
+    # A command that writes no artefacts opens no log.
+    assert not (minimal_project / "rtl_buddy.log").exists()
+    assert not (unrelated / "rtl_buddy.log").exists()
 
 
 def test_enter_command_context_log_path_override_attaches_there(
