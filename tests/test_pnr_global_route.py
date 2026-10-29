@@ -741,6 +741,7 @@ def test_a_caught_route_failure_then_a_later_failure_names_no_failed_route(
         "sdc": "04_global_route.sdc",
         "guides": "04_global_route.guide",
         "segments": "04_global_route.segments",
+        "grt_antennas": "04_global_route.grt_antennas.rpt",
     }
     assert (run_dir / "04_global_route.odb").read_text() == "odb\n"
     assert not (run_dir / "04_global_route.congestion.rpt").exists()

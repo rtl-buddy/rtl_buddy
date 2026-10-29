@@ -577,7 +577,9 @@ def test_successful_run_writes_every_checkpoint_and_a_complete_manifest(
                 f"04_global_route.{e}"
                 for e in ("odb", "def", "sdc", "guide", "segments")
             ),
+            "04_global_route.grt_antennas.rpt",
             *(f"05_detailed_route.{e}" for e in ("odb", "def", "sdc")),
+            "05_detailed_route.drt_antennas.rpt",
         ]
     )
     # Never a name a consumer of the final outputs would take.
@@ -594,7 +596,14 @@ def test_successful_run_writes_every_checkpoint_and_a_complete_manifest(
     gr = manifest["checkpoints"]["global_route"]
     assert gr["final"] is False and gr["detail_routed"] is False
     assert gr["global_routed"] is True
-    assert set(gr["files"]) == {"odb", "def", "sdc", "guides", "segments"}
+    assert set(gr["files"]) == {
+        "odb",
+        "def",
+        "sdc",
+        "guides",
+        "segments",
+        "grt_antennas",
+    }
     assert gr["files"]["segments"]["sha256"]
     place = manifest["checkpoints"]["place"]
     assert place["global_routed"] is False
