@@ -208,7 +208,7 @@ def _floorplan(**fields) -> PnrFloorplan:
     return PnrFloorplan(utilization=0.55, aspect=1.0, core_margin=2.0, **fields)
 
 
-_RTL_MP = "  rtl_macro_placer -report_directory $OUT_DIR/rtlmp\n"
+_RTL_MP = "  rtl_macro_placer -report_directory $OUT_DIR/rtlmp -target_util 0.7\n"
 
 
 def test_unset_controls_render_no_blockages_and_rtl_mp(tmp_path):

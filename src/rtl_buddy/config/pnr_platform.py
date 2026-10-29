@@ -536,9 +536,14 @@ class PnrPlatformConfig:
         self._placement_padding = _pick(
             "padding", pdk.get_placement_padding(), DEFAULT_PLACEMENT_PADDING
         )
-        # Unset gives RTL-MP no halo, as ORFS passes none.
-        self._placement_macro_halo = _pick(
-            "macro_halo", pdk.get_placement_macro_halo(), None
+        # Unset gives RTL-MP no minimum channel, as ORFS without RTLMP_MIN_CHANNEL_SIZE.
+        self._placement_macro_channel = _pick(
+            "macro_channel", pdk.get_placement_macro_channel(), None
+        )
+        self._placement_macro_pin_aware_channels = _pick(
+            "macro_pin_aware_channels",
+            pdk.get_placement_macro_pin_aware_channels(),
+            True,
         )
         self._placement_macro_cell_halo = _pick(
             "macro_cell_halo",
@@ -577,6 +582,16 @@ class PnrPlatformConfig:
         self._placement_optimize_mirroring = _pick(
             "optimize_mirroring", pdk.get_placement_optimize_mirroring(), True
         )
+        # RTL-MP rejects `-pin_aware_channels` without `-min_channel_size` (MPL-0079).
+        if self._placement_macro_channel is None and (
+            pdk.get_placement_macro_pin_aware_channels() is not None
+            or any(layer.macro_pin_aware_channels is not None for layer in layers)
+        ):
+            raise FatalRtlBuddyError(
+                f"{where}: placement.macro-pin-aware-channels needs "
+                f"placement.macro-channel ({levels}); RTL-MP's pin-aware "
+                "channels trim a minimum channel"
+            )
         # The placer reads `-routability_use_grt` only in routability mode, so alone it would be silently ignored.
         if (
             self._placement_routability_use_grt
@@ -761,9 +776,13 @@ class PnrPlatformConfig:
         """Global-placement cell padding, after platform/PDK/default."""
         return self._placement_padding
 
-    def get_placement_macro_halo(self) -> float | None:
-        """RTL-MP's macro halo in microns from the run, platform or PDK, or `None` when none sets it."""
-        return self._placement_macro_halo
+    def get_placement_macro_channel(self) -> list[float] | None:
+        """RTL-MP's minimum channel as [width, height] in microns from the run, platform or PDK, or `None` when none sets it."""
+        return self._placement_macro_channel
+
+    def get_placement_macro_pin_aware_channels(self) -> bool:
+        """Whether RTL-MP trims its channels to the macro pins (`-pin_aware_channels`) when it has a channel, run over platform over PDK, default `True`."""
+        return self._placement_macro_pin_aware_channels
 
     def get_placement_macro_cell_halo(self) -> float:
         """Macro-to-row keep-out in microns, after platform/PDK/default."""

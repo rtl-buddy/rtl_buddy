@@ -572,14 +572,14 @@ def test_run_placement_overrides_the_platform_and_pdk_field_by_field(tmp_path):
         pdk_placement=PlacementFile(
             density=0.5, padding=2, rotated_macro_footprint="none"
         ),
-        placement=PlacementFile(density=0.6, macro_halo=15.0),
+        placement=PlacementFile(density=0.6, macro_channel=15.0),
     )
     run = PlacementFile(density=0.45, rotated_macro_footprint="diamond-legalizer")
     merged = platform.with_run_placement(run, "r")
 
     assert merged.get_placement_density() == 0.45
     assert merged.get_placement_padding() == 2
-    assert merged.get_placement_macro_halo() == 15.0
+    assert merged.get_placement_macro_channel() == [15.0, 15.0]
     assert merged.get_placement_rotated_macro_footprint() == "diamond-legalizer"
     assert platform.get_placement_density() == 0.6
     assert platform.get_placement_rotated_macro_footprint() == "none"

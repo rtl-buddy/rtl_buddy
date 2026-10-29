@@ -1507,30 +1507,35 @@ _RTL_MP_REPORT = """\
     puts ">>>   placed [$inst getName] at ($x, $y) DBU [$inst getOrient] (rtl-mp)"
   }}
 """
-# OpenROAD RTL-MP with its own channels, as ORFS runs it.
-_RTL_MP_PLACEMENT = """\
-  file mkdir $OUT_DIR/rtlmp
-  rtl_macro_placer -report_directory $OUT_DIR/rtlmp
-"""
-# RTL-MP with `placement.macro-halo`. The halo option spelling depends on the OpenROAD version, so both are emitted.
-_RTL_MP_HALO_PLACEMENT = """\
-  file mkdir $OUT_DIR/rtlmp
-  if {[llength [info commands set_macro_base_halo]]} {
-    set_macro_base_halo $MACRO_HALO $MACRO_HALO
-    rtl_macro_placer -report_directory $OUT_DIR/rtlmp
-  } else {
-    rtl_macro_placer -halo_width $MACRO_HALO -halo_height $MACRO_HALO \\
-        -report_directory $OUT_DIR/rtlmp
+# RTL-MP with a minimum channel needs `-min_channel_size`, which older OpenROAD lacks.
+_RTL_MP_CHANNEL_PROBE = """\
+  if {[string first -min_channel_size [info body rtl_macro_placer]] < 0} {
+    error {placement.macro-channel needs rtl_macro_placer -min_channel_size (OpenROAD 26Q4 or newer)}
   }
 """
 
 
-def _macro_place_block(fp: PnrFloorplan, halo: bool) -> str:
-    """Return the RTL-MP Tcl for the flow's macro branch, with `MACRO_HALO` only with `halo`.
+def _rtl_mp_tcl(platform) -> str:
+    """Return the `rtl_macro_placer` call with the arguments ORFS passes: `-target_util` from the placement density, and `-min_channel_size` and `-pin_aware_channels` only with `placement.macro-channel`."""
+    call = (
+        "  rtl_macro_placer -report_directory $OUT_DIR/rtlmp"
+        f" -target_util {platform.get_placement_density():g}"
+    )
+    channel = platform.get_placement_macro_channel()
+    if channel is None:
+        return f"  file mkdir $OUT_DIR/rtlmp\n{call}\n"
+    call += f" \\\n      -min_channel_size {_tcl_list(f'{v:g}' for v in channel)}"
+    if platform.get_placement_macro_pin_aware_channels():
+        call += " -pin_aware_channels"
+    return f"  file mkdir $OUT_DIR/rtlmp\n{_RTL_MP_CHANNEL_PROBE}{call}\n"
+
+
+def _macro_place_block(fp: PnrFloorplan, platform) -> str:
+    """Return the RTL-MP Tcl for the flow's macro branch.
 
     With `floorplan.macros`, RTL-MP places around the located macros, reports only the macros it placed, and is skipped when every macro is located.
     """
-    block = _RTL_MP_HALO_PLACEMENT if halo else _RTL_MP_PLACEMENT
+    block = _rtl_mp_tcl(platform)
     if not fp.macros:
         return block + _RTL_MP_REPORT.format(placed="$macros")
     block += _RTL_MP_REPORT.format(placed="$rb_movable_macros")
@@ -3304,7 +3309,6 @@ class OpenRoadPnr:
             "reference_hpwl_option": _reference_hpwl_option(platform),
             "routability_options": _routability_options(platform),
             "timing_driven_option": _timing_driven_option(platform),
-            "macro_halo": f"{platform.get_placement_macro_halo() or 0:g}",
             "macro_cell_halo": f"{platform.get_placement_macro_cell_halo():g}",
             "macro_directives_block": _macro_directives_block(fp),
             "initialize_floorplan": _initialize_floorplan_tcl(fp),
@@ -3312,9 +3316,7 @@ class OpenRoadPnr:
             "macro_place_block": (
                 _macro_hook_block(fp, hooks["macro-placement"])
                 if "macro-placement" in hooks
-                else _macro_place_block(
-                    fp, platform.get_placement_macro_halo() is not None
-                )
+                else _macro_place_block(fp, platform)
             ),
             "no_macros_block": _no_macros_block(fp),
             "blockages_block": blockages_block,

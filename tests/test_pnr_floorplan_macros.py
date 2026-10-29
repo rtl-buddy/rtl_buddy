@@ -147,7 +147,7 @@ def test_unset_directives_render_the_plain_macro_branch(tmp_path):
     assert (
         "if {[llength $macros] > 0} {\n"
         "  file mkdir $OUT_DIR/rtlmp\n"
-        "  rtl_macro_placer -report_directory $OUT_DIR/rtlmp\n"
+        "  rtl_macro_placer -report_directory $OUT_DIR/rtlmp -target_util 0.7\n"
     ) in text
 
 
@@ -172,7 +172,7 @@ def test_directives_fix_macros_before_rtl_mp_places_the_rest(tmp_path):
     assert (
         _APPLY + "  if {[llength $rb_movable_macros] > 0} {\n"
         "    file mkdir $OUT_DIR/rtlmp\n"
-        "    rtl_macro_placer -report_directory $OUT_DIR/rtlmp\n"
+        "    rtl_macro_placer -report_directory $OUT_DIR/rtlmp -target_util 0.7\n"
         "    foreach inst $rb_movable_macros {\n"
     ) in text
     assert (

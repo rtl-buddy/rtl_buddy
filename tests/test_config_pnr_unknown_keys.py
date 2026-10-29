@@ -25,7 +25,8 @@ from rtl_buddy.logging_utils import _human_message
 PLACEMENT_ALL = {
     "density": 0.5,
     "padding": 1,
-    "macro-halo": 10,
+    "macro-channel": [10, 20],
+    "macro-pin-aware-channels": False,
     "macro-cell-halo": 1,
     "tie-separation": 0,
     "reference-hpwl": 1000,
@@ -416,7 +417,8 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
         (
             "pnr run 'a': placement",
             ("placement",),
-            "density, padding, macro-halo, macro-cell-halo, tie-separation, "
+            "density, padding, macro-channel, macro-pin-aware-channels, macro-cell-halo, "
+            "tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
             "rotated-macro-footprint, macro-pin-limits, improve-placement, "
             "optimize-mirroring",
@@ -756,7 +758,8 @@ cfg-pnr-platforms:
             "pdk",
             ("placement",),
             "cfg-pdks 'pdk1': placement",
-            "density, padding, macro-halo, macro-cell-halo, tie-separation, "
+            "density, padding, macro-channel, macro-pin-aware-channels, macro-cell-halo, "
+            "tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
             "rotated-macro-footprint, macro-pin-limits, improve-placement, "
             "optimize-mirroring",
@@ -823,7 +826,8 @@ cfg-pnr-platforms:
             "platform",
             ("placement",),
             "cfg-pnr-platforms 'pl1': placement",
-            "density, padding, macro-halo, macro-cell-halo, tie-separation, "
+            "density, padding, macro-channel, macro-pin-aware-channels, macro-cell-halo, "
+            "tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
             "rotated-macro-footprint, macro-pin-limits, improve-placement, "
             "optimize-mirroring",

@@ -17,7 +17,6 @@ set SITE            {{ site }}
 set CORE_UTIL_PCT   {{ util_pct }}
 set CORE_ASPECT     {{ aspect }}
 set CORE_MARGIN     {{ core_margin }}
-set MACRO_HALO      {{ macro_halo }}
 set MACRO_CELL_HALO {{ macro_cell_halo }}
 # Instance name -> {x y} micron cell halo, from `floorplan.macros`.
 set MACRO_CELL_HALOS {}
