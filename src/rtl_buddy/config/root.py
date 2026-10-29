@@ -52,29 +52,66 @@ from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
 
+def _search_root_cfg(start: str, max_levels: int) -> tuple[str | None, str, int]:
+    """Walk up from ``start`` for ``root_config.yaml``.
+
+    Returns ``(path or None, last directory checked, parents walked)``. Never logs.
+    """
+    path = start
+    level = 0
+    while not os.path.isfile(os.path.join(path, "root_config.yaml")):
+        parent = os.path.dirname(path)
+        if level >= max_levels or parent == path:
+            return None, path, level
+        path = parent
+        level += 1
+    return os.path.join(path, "root_config.yaml"), path, level
+
+
 def _discover_root_cfg(max_levels=8, start_dir: str | Path | None = None) -> str:
     """Find ``root_config.yaml`` by walking up from ``start_dir`` (default: cwd); None if not found."""
     start = os.path.abspath(str(start_dir)) if start_dir is not None else os.getcwd()
-    path = start
-
-    level = 0
-    while level < max_levels and not os.path.isfile(path + "/root_config.yaml"):
-        path = os.path.dirname(path)
-        level += 1
-
-    filepath = path + "/root_config.yaml"
-    if os.path.isfile(filepath):
+    filepath, searched_to, levels = _search_root_cfg(start, max_levels)
+    if filepath is not None:
         log_event(logger, logging.DEBUG, "root_config.discovered", path=filepath)
         return filepath
-    else:
-        log_event(
-            logger,
-            logging.ERROR,
-            "root_config.not_found",
-            cwd=start,
-            max_levels=max_levels,
-        )
-        return None
+    log_event(
+        logger,
+        logging.ERROR,
+        "root_config.not_found",
+        cwd=start,
+        max_levels=max_levels,
+        searched_to=searched_to,
+        levels=levels,
+    )
+    return None
+
+
+def root_cfg_not_found_message(
+    start_dir: str | Path | None = None, max_levels: int = 8
+) -> str:
+    """Why discovery from ``start_dir`` (default: cwd) failed: where it started and how far it walked.
+
+    Names the working directory's root config when it has one the search could not reach.
+    """
+    cwd = os.getcwd()
+    start = os.path.abspath(str(start_dir)) if start_dir is not None else cwd
+    _, searched_to, levels = _search_root_cfg(start, max_levels)
+    parents = "parent directory" if levels == 1 else "parent directories"
+    message = (
+        f"unable to discover root_config.yaml: searched {start} and {levels} "
+        f"{parents} up to {searched_to}"
+    )
+    if start != cwd:
+        cwd_cfg = _search_root_cfg(cwd, max_levels)[0]
+        if cwd_cfg is not None:
+            message += (
+                f"; the working directory's project has {cwd_cfg}, but discovery "
+                "starts from the directory of the command's config: keep that "
+                f"config inside the project tree, at most {max_levels} levels below "
+                "root_config.yaml"
+            )
+    return message
 
 
 def discover_project_root(
@@ -320,9 +357,7 @@ class RootConfig:
         self.name = name
         self.root_cfg_path = _discover_root_cfg(start_dir=start_dir)
         if self.root_cfg_path is None:
-            raise FatalRtlBuddyError(
-                "unable to discover root_config.yaml from current working directory"
-            )
+            raise FatalRtlBuddyError(root_cfg_not_found_message(start_dir))
         log_event(
             logger, logging.INFO, "root_config.load_start", path=self.root_cfg_path
         )
@@ -629,9 +664,7 @@ class RootConfig:
         """
         root_cfg_path = _discover_root_cfg(max_levels=max_levels)
         if root_cfg_path is None:
-            raise ValueError(
-                "unable to discover root_config.yaml from current working directory"
-            )
+            raise ValueError(root_cfg_not_found_message(max_levels=max_levels))
 
         try:
             with open(root_cfg_path, "r") as file:

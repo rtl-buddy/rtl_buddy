@@ -2749,7 +2749,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         # -- config / setup errors (logged at ERROR, immediately followed by FatalRtlBuddyError) --
         case "root_config.not_found":
-            return f"root_config.yaml not found (searched {fields.get('max_levels')} levels from {fields.get('cwd')})"
+            return (
+                f"root_config.yaml not found (searched {fields.get('cwd')} and "
+                f"{fields.get('levels')} parent directories up to "
+                f"{fields.get('searched_to')})"
+            )
         case "root_config.load_failed":
             return f'failed to load root config "{fields.get("path")}": {fields.get("error")}'
         case "root_config.reg_cfg_block_unreadable":
