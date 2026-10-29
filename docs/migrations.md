@@ -204,7 +204,7 @@ Macros land where RTL-MP puts them, by connectivity and possibly mirrored, so a 
 - Without a channel, RTL-MP can put macros against each other and the core edge, leaving no routing channel; global routing then fails with `GRT-0116`. Set `placement.macro-channel` on the PDK, such as ORFS's `[80, 80]` on sky130hd. It needs OpenROAD 26Q4 or newer.
 
 - A `floorplan.macros` or `macros-file` entry with an `orientation` and no `location` fails to load, because RTL-MP chooses each orientation. Give it a location, or place the macros in a `macro-placement` hook, which may still use such entries.
-- RTL-MP keeps macros out of every flow blockage, `soft` and `partial` ones included; the packer kept out of `hard` ones only.
+- Macros placed by RTL-MP or a `macro-placement` hook are checked against `hard` blockages and core cut-outs, as the packer kept out of `hard` ones. An overlap fails the run (see [Shape the floorplan](concepts/pnr.md#shape-the-floorplan)).
 - A `macro-placement` hook replaces RTL-MP as it replaced the packer, and no longer conflicts with any floorplan key.
 
 See [Place macros](concepts/pnr.md#place-macros).
