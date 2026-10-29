@@ -16,7 +16,7 @@ from ..config.model import ModelConfig, resolve_back_pointer
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..tools.artifact_paths import clear_stale_artefacts
-from ..tools.cdc_rtl_buddy import warn_unsupported_incdirs
+from ..tools.cdc_rtl_buddy import incdir_args
 from ..tools.vlog_filelist import VlogFilelist
 from .view_builder import cache_dir
 
@@ -83,7 +83,7 @@ def _resolve_cdc_executable() -> str:
     return exe
 
 
-# rtl-buddy-cdc takes plain source paths only; these filelist options are dropped.
+# rtl-buddy-cdc takes plain source paths; `+incdir+` goes separately as `--incdir`.
 _FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
 _FILELIST_SOURCE_PREFIX = "-v "
 
@@ -169,7 +169,7 @@ def build_domain_map(
         )
 
     cdc_exe = _resolve_cdc_executable()
-    warn_unsupported_incdirs(analysis.get_name(), fl_path)
+    incdir_cmd_args = incdir_args(analysis.get_name(), fl_path, cdc_exe)
     log_path = artefact_dir / "cdc.log"
     # Lint output is discarded; only the emitted domain map is used.
     cmd = [
@@ -190,6 +190,7 @@ def build_domain_map(
         cmd += ["--waivers", waivers_path]
     if analysis.frontend is not None:
         cmd += ["--frontend", analysis.frontend]
+    cmd += incdir_cmd_args
     cmd += sources
 
     log_event(

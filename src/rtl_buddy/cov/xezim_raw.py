@@ -10,8 +10,9 @@ xezim writes one JSON document per run. The parts this reader uses:
   with ``statements[] {file, line, kind, count}``, ``branches[] {file, line, kind,
   arms[] {line, arm, count}}`` and ``toggles[] {signal, width, rise[], fall[]}``.
   ``code_coverage`` is absent when the run had no ``--code-coverage``.
-- ``assertions[] {file, line, span_start, kind, pass, fail}``: ``kind == "cover"``
-  entries are cover points, ``pass`` their hit count. The file carries no label.
+- ``assertions[] {name?, file, line, span_start, kind, pass, fail}``: ``kind == "cover"``
+  entries are cover points, ``pass`` their hit count. ``name`` is the statement label
+  (xezim 0.11.3 from git 8082de3c on); older files carry none.
 
 Records have the shape :func:`rtl_buddy.cov.raw.parse_raw_records` returns, so the
 coverage model treats both simulators alike:
@@ -25,8 +26,8 @@ coverage model treats both simulators alike:
   so a bit counts as hit only when it rose and fell (``hits = min(rise, fall)``).
   Toggles carry no source position: they are filed under the design unit's source
   file (its first statement's) at line 0, and dropped when the unit has no statements.
-- cover: ``name`` is the statement label read back from the source line
-  (``label: cover ...``), else ``cover@<line>``.
+- cover: ``name`` is the file's ``name`` when present, else the statement label read
+  back from the source line (``label: cover ...``), else ``cover@<line>``.
 
 xezim has no expression coverage, so no expression records are produced.
 """
@@ -224,7 +225,7 @@ def records_from_doc(doc: dict, *, base_dir, raw_path=None) -> list[dict]:
             continue
         file = assertion.get("file")
         line = assertion.get("line")
-        name = labels.label(file, line) or f"cover@{line}"
+        name = assertion.get("name") or labels.label(file, line) or f"cover@{line}"
         records.append(
             _record(
                 COVER,

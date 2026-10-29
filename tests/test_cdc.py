@@ -404,13 +404,15 @@ def _setup_lint_run(
     return wrapper, calls, _fake_run, cdc_rtl_buddy_module, nullcontext
 
 
-def test_lint_warns_when_the_filelist_has_incdirs(tmp_path, monkeypatch, caplog):
+def test_lint_warns_when_the_analyzer_has_no_incdir(tmp_path, monkeypatch, caplog):
+    """An rtl-buddy-cdc without ``--incdir`` gets no include dirs, and the run says so."""
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
     (tmp_path / "inc").mkdir()
     wrapper.cdc_cfg.model.filelist.insert(0, f"+incdir+{tmp_path / 'inc'}")
     monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
     monkeypatch.setattr(mod, "run_managed_process", fake_run)
     monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+    monkeypatch.setattr(mod, "_lint_supports_incdir", lambda exe: False)
 
     with caplog.at_level(logging.WARNING, logger="rtl_buddy"):
         wrapper.run()
@@ -423,7 +425,63 @@ def test_lint_warns_when_the_filelist_has_incdirs(tmp_path, monkeypatch, caplog)
     assert len(events) == 1
     assert events[0].rtl_fields["incdirs"] == [str(tmp_path / "inc")]
     assert events[0].rtl_fields["analysis"] == "test_cdc"
-    assert all("-I" not in cmd and "+incdir+" not in " ".join(cmd) for cmd in calls)
+    assert events[0].rtl_fields["exe"] == "rtl-buddy-cdc"
+    assert all(
+        "--incdir" not in cmd and "+incdir+" not in " ".join(cmd) for cmd in calls
+    )
+
+
+def test_lint_forwards_filelist_incdirs(tmp_path, monkeypatch, caplog):
+    """Each ``+incdir+``, nested filelists included, reaches both invocations as an absolute ``--incdir``."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    vendor = tmp_path / "vendor" / "lib"
+    (vendor / "source" / "sub").mkdir(parents=True)
+    (vendor / "source" / "a.v").write_text("module a(); endmodule\n")
+    (vendor / "lib.f").write_text("+incdir+source/\n+incdir+source/sub/\nsource/a.v\n")
+    (tmp_path / "inc").mkdir()
+    wrapper.cdc_cfg.model.filelist[:0] = [
+        f"+incdir+{tmp_path / 'inc'}",
+        f"-F {vendor / 'lib.f'}",
+    ]
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+    monkeypatch.setattr(mod, "_lint_supports_incdir", lambda exe: True)
+
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy"):
+        wrapper.run()
+
+    assert not [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "cdc.filelist_incdirs_unsupported"
+    ]
+    expected = [
+        str(tmp_path / "inc"),
+        str(vendor / "source"),
+        str(vendor / "source" / "sub"),
+    ]
+    assert len(calls) == 2
+    for cmd in calls:
+        got = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--incdir"]
+        assert got == expected
+        # Options come before the positional sources.
+        assert cmd.index("--incdir") < cmd.index(str(vendor / "source" / "a.v"))
+        assert "+incdir+" not in " ".join(cmd)
+
+
+def test_lint_does_not_probe_incdir_without_filelist_incdirs(tmp_path, monkeypatch):
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    def _no_probe(exe):
+        raise AssertionError("probed --incdir with no +incdir+ in the filelist")
+
+    monkeypatch.setattr(mod, "_lint_supports_incdir", _no_probe)
+    wrapper.run()
+    assert calls and all("--incdir" not in cmd for cmd in calls)
 
 
 def test_lint_is_quiet_without_filelist_incdirs(tmp_path, monkeypatch, caplog):
@@ -599,6 +657,27 @@ def test_lint_argv_project_root_precedes_extra_args(tmp_path, monkeypatch):
 
     for cmd in calls:
         assert cmd.index("--project-root") < cmd.index("--yosys-plugin")
+
+
+def test_lint_supports_incdir_probe(monkeypatch):
+    """The ``--incdir`` probe greps ``lint --help``, like the other capability probes."""
+    from types import SimpleNamespace
+    from rtl_buddy.tools import cdc_rtl_buddy as mod
+
+    mod._lint_supports_incdir.cache_clear()
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda cmd, **kw: SimpleNamespace(stdout="  -I, --incdir DIRECTORY", stderr=""),
+    )
+    assert mod._lint_supports_incdir("cdc-new") is True
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda cmd, **kw: SimpleNamespace(stdout="  --single-unit", stderr=""),
+    )
+    assert mod._lint_supports_incdir("cdc-old") is False
+    mod._lint_supports_incdir.cache_clear()
 
 
 def test_lint_supports_project_root_probe(monkeypatch):

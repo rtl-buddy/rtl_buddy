@@ -33,27 +33,8 @@ from ..runner.cdc_results import (
 _FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
 
 
-def warn_unsupported_incdirs(analysis: str, fl_path: str) -> None:
-    """Warn that filelist ``+incdir+`` entries are not passed to rtl-buddy-cdc, which has no include-path option."""
-    incdirs = incdirs_from_filelist(fl_path)
-    if not incdirs:
-        return
-    log_event(
-        logger,
-        logging.WARNING,
-        "cdc.filelist_incdirs_unsupported",
-        analysis=analysis,
-        incdirs=incdirs,
-        count=len(incdirs),
-    )
-
-
-_FILELIST_SOURCE_PREFIX = "-v "
-
-
-@functools.lru_cache(maxsize=None)
-def _lint_supports_project_root(executable: str) -> bool:
-    """Whether ``<executable> lint --help`` lists ``--project-root``; False on any probe failure.
+def _lint_help_lists(executable: str, flag: str) -> bool:
+    """Whether ``<executable> lint --help`` lists ``flag``; False on any probe failure.
 
     The analyzer version is not pinned and its ``version`` output is static, so
     ``--help`` is the only capability signal.
@@ -67,22 +48,52 @@ def _lint_supports_project_root(executable: str) -> bool:
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return "--project-root" in (proc.stdout + proc.stderr)
+    return flag in (proc.stdout + proc.stderr)
+
+
+@functools.lru_cache(maxsize=None)
+def _lint_supports_project_root(executable: str) -> bool:
+    """Whether ``<executable> lint --help`` lists ``--project-root``."""
+    return _lint_help_lists(executable, "--project-root")
 
 
 @functools.lru_cache(maxsize=None)
 def _lint_supports_single_unit(executable: str) -> bool:
-    """Whether ``<executable> lint --help`` lists ``--single-unit``; False on any probe failure."""
-    try:
-        proc = subprocess.run(
-            [executable, "lint", "--help"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return "--single-unit" in (proc.stdout + proc.stderr)
+    """Whether ``<executable> lint --help`` lists ``--single-unit``."""
+    return _lint_help_lists(executable, "--single-unit")
+
+
+@functools.lru_cache(maxsize=None)
+def _lint_supports_incdir(executable: str) -> bool:
+    """Whether ``<executable> lint --help`` lists ``--incdir`` (rtl-buddy-cdc#311)."""
+    return _lint_help_lists(executable, "--incdir")
+
+
+def incdir_args(analysis: str, fl_path: str, executable: str) -> list[str]:
+    """Return ``--incdir <dir>`` for each filelist ``+incdir+``, or warn and return none.
+
+    The directories are absolute, each resolved against the filelist that declared
+    it, in filelist order. An analyzer whose ``lint --help`` does not list
+    ``--incdir`` gets nothing, and the run warns ``cdc.filelist_incdirs_unsupported``.
+    """
+    incdirs = incdirs_from_filelist(fl_path)
+    if not incdirs:
+        return []
+    if _lint_supports_incdir(executable):
+        return [arg for inc in incdirs for arg in ("--incdir", inc)]
+    log_event(
+        logger,
+        logging.WARNING,
+        "cdc.filelist_incdirs_unsupported",
+        analysis=analysis,
+        exe=executable,
+        incdirs=incdirs,
+        count=len(incdirs),
+    )
+    return []
+
+
+_FILELIST_SOURCE_PREFIX = "-v "
 
 
 class RtlBuddyCdc:
@@ -245,7 +256,7 @@ class RtlBuddyCdc:
                 ),
             )
 
-        warn_unsupported_incdirs(self.cdc_cfg.get_name(), fl_path)
+        incdir_cmd_args = incdir_args(self.cdc_cfg.get_name(), fl_path, executable)
 
         stale = self._clear_stale_outputs()
         if stale:
@@ -311,6 +322,7 @@ class RtlBuddyCdc:
                 cmd.append("--single-unit")
             for module in self.cdc_cfg.blackbox:
                 cmd += ["--blackbox", module]
+            cmd += incdir_cmd_args
             if self.emit_maps:
                 cmd += [
                     "--emit-domain-map",
