@@ -8068,10 +8068,12 @@ dpi.o: dpi.cpp
 """
 
 
-def _install_make_builder(monkeypatch, calls, fail_flag):
+def _install_make_builder(monkeypatch, calls, fail_flag, link_fail_flag=None):
     """A builder that runs a real make: `cc.sh` leaves an empty object and fails while
-    ``fail_flag`` exists, and the link fails on an empty object.
+    ``fail_flag`` exists, and the link fails on an empty object. While
+    ``link_fail_flag`` exists, the link leaves an empty executable and fails.
     """
+    link_fail = link_fail_flag or Path(fail_flag).with_name("no-such-flag")
     _install_fake_builder(monkeypatch, calls)
 
     def _run(cmd, capture_output, text, cwd, env=None):
@@ -8091,6 +8093,7 @@ def _install_make_builder(monkeypatch, calls, fail_flag):
             ),
             (
                 "link.sh",
+                f'if [ -e "{link_fail}" ]; then : > "$2"; exit 1; fi\n'
                 '[ -s "$1" ] || { echo "undefined reference to dpi_fn" >&2; '
                 'exit 1; }\necho binary > "$2"\n',
             ),
@@ -8165,6 +8168,10 @@ def test_a_killed_make_is_cleaned_up_by_the_next_build(
     (mdir / "Vtop__ALL.cpp").write_text("")
     (mdir / vlog_sim_module.BUILD_MAKE_MARKER_NAME).touch()
     (mdir / "Vtop__ver.d").write_text("deps\n")
+    sub = mdir / "Vsub"
+    sub.mkdir()
+    for name in ("Vsub__ALL.o", "Vsub__ALL.a", "Vsub__ver.d", "Vsub.mk"):
+        (sub / name).write_text("")
     if share_build:
         (mdir / vlog_sim_module.SHARED_BUILD_STAMP_NAME).unlink()
 
@@ -8173,7 +8180,65 @@ def test_a_killed_make_is_cleaned_up_by_the_next_build(
     assert (mdir / "dpi.o").read_text() == "object\n"
     assert not (mdir / "Vtop__ALL.cpp").exists()
     assert (mdir / "Vtop__ver.d").exists()
+    assert {p.name for p in sub.iterdir()} == {"Vsub__ver.d", "Vsub.mk"}
     assert "an earlier make there did not finish" in caplog.text
+
+
+@needs_make
+@pytest.mark.parametrize("share_build", [False, True])
+def test_a_failed_link_drops_the_executable(tmp_path, monkeypatch, share_build):
+    """A link that truncates the executable and fails leaves no executable behind."""
+    _write_source(tmp_path)
+    calls = []
+    link_fail_flag = tmp_path / "link-killed"
+    _install_make_builder(
+        monkeypatch, calls, tmp_path / "disk-full", link_fail_flag=link_fail_flag
+    )
+
+    def _sim():
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name="test_a",
+            share_build=share_build,
+            compile_opts=["--binary", "-o", "simv"],
+        )
+
+    first = _sim()
+    assert first.compile() == 0
+    mdir = Path(first._get_simv_path()).parent
+    (mdir / "dpi.cpp").touch()
+    if share_build:
+        (mdir / vlog_sim_module.SHARED_BUILD_STAMP_NAME).unlink()
+
+    link_fail_flag.touch()
+    assert _sim().compile() != 0
+    assert not (mdir / "simv").exists()
+    assert (mdir / vlog_sim_module.BUILD_MAKE_MARKER_NAME).exists()
+
+
+@pytest.mark.parametrize(
+    "argv, name",
+    [
+        (["--binary", "-o", "simv"], "simv"),
+        (["-o", "first", "--top-module", "top", "-o", "simv"], "simv"),
+        (["--prefix", "Vmodel", "--top-module", "top"], "Vmodel"),
+        (["--top", "tb"], "Vtb"),
+        (["--top-module", "tb", "-Wall"], "Vtb"),
+        (["--binary", "-Wall"], None),
+    ],
+)
+def test_the_linked_executable_comes_from_the_command_line(tmp_path, argv, name):
+    found = vlog_sim_module._verilator_executable(tmp_path, ["verilator", *argv])
+    assert found == (tmp_path / name if name else None)
+
+
+def test_an_absolute_output_is_the_executable(tmp_path):
+    exe = tmp_path / "bin" / "model"
+    found = vlog_sim_module._verilator_executable(
+        tmp_path / "build", ["verilator", "-o", str(exe)]
+    )
+    assert found == exe
 
 
 def test_a_failed_front_end_keeps_the_objects(tmp_path, monkeypatch):
