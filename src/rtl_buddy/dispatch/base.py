@@ -10,7 +10,8 @@ backend-independent (``runner.result_io``).
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -249,6 +250,41 @@ class DispatchBackend(ABC):
     """
 
     name: str = "?"
+
+    # Set by :meth:`submission_hooks` while a caller listens; ``None`` otherwise.
+    _on_accepted: Callable[[Sequence["JobHandle"]], None] | None = None
+    _before_wait: Callable[[], None] | None = None
+
+    @contextmanager
+    def submission_hooks(
+        self,
+        *,
+        on_accepted: Callable[[Sequence["JobHandle"]], None] | None = None,
+        before_wait: Callable[[], None] | None = None,
+    ) -> Iterator[None]:
+        """Let the caller record accepted jobs before the backend blocks on the scheduler.
+
+        ``on_accepted`` is called with the handles of each submission the scheduler
+        has accepted (one job, or one array slice) before the next submission starts.
+        ``before_wait`` is called before the backend sleeps to resubmit a refused
+        submission. Both are best effort for the caller: neither may raise, since
+        the jobs they name are already queued. A backend that never waits on the
+        scheduler calls neither.
+        """
+        previous = (self._on_accepted, self._before_wait)
+        self._on_accepted, self._before_wait = on_accepted, before_wait
+        try:
+            yield
+        finally:
+            self._on_accepted, self._before_wait = previous
+
+    def _notify_accepted(self, handles: Sequence["JobHandle"]) -> None:
+        if self._on_accepted is not None:
+            self._on_accepted(handles)
+
+    def _notify_before_wait(self) -> None:
+        if self._before_wait is not None:
+            self._before_wait()
 
     # False for a backend that runs jobs itself, where a missing result cannot be
     # blamed on a scheduler.

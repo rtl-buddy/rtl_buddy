@@ -2225,6 +2225,121 @@ def test_a_single_job_refused_at_max_job_count_is_resubmitted(monkeypatch):
     assert clock.sleeps == [30]
 
 
+def test_an_accepted_slice_is_reported_before_the_next_is_refused_and_waited_on(
+    monkeypatch, tmp_path
+):
+    """The hooks see slice 1 before the backend sleeps to resubmit slice 2."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout="100\n", stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr=_MAX_JOB_COUNT),
+        SimpleNamespace(returncode=0, stdout="200\n", stderr=""),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    clock = _FakeClock()
+    monkeypatch.setattr(slurm_module, "time", clock)
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=3).initialise())
+    events = []
+    clock_sleep = clock.sleep
+    clock.sleep = lambda seconds: (
+        events.append(("sleep", seconds)),
+        clock_sleep(seconds),
+    )
+
+    with backend.submission_hooks(
+        on_accepted=lambda handles: events.append(
+            ("accepted", [h.job_id for h in handles])
+        ),
+        before_wait=lambda: events.append(("before_wait",)),
+    ):
+        handles = backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 5)], array_dir=tmp_path / "arr"
+        )
+
+    assert [h.job_id for h in handles] == ["100_1", "100_2", "200_1", "200_2"]
+    assert events == [
+        ("accepted", ["100_1", "100_2"]),
+        ("before_wait",),
+        ("sleep", 30),
+        ("accepted", ["200_1", "200_2"]),
+    ]
+
+
+def test_a_single_job_reports_its_acceptance_and_the_wait_before_a_resubmit(
+    monkeypatch,
+):
+    calls = []
+    results = [
+        SimpleNamespace(returncode=1, stdout="", stderr=_MAX_JOB_COUNT),
+        SimpleNamespace(returncode=0, stdout="500\n", stderr=""),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module, "time", _FakeClock())
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    events = []
+
+    with backend.submission_hooks(
+        on_accepted=lambda handles: events.append([h.job_id for h in handles]),
+        before_wait=lambda: events.append("before_wait"),
+    ):
+        backend.submit(_spec())
+
+    assert events == ["before_wait", ["500"]]
+
+
+def test_a_slice_whose_acceptance_hook_is_interrupted_is_still_cancelled(
+    monkeypatch, tmp_path
+):
+    """Ctrl-C inside the hook must not leak the slice it was recording."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout="100\n", stderr=""),
+        SimpleNamespace(returncode=0, stdout="200\n", stderr=""),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=3).initialise())
+    cancelled = []
+    monkeypatch.setattr(
+        backend,
+        "cancel_all",
+        lambda handles: cancelled.extend(h.job_id for h in handles),
+    )
+
+    def on_accepted(handles):
+        if handles[0].job_id.startswith("200"):
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        with backend.submission_hooks(on_accepted=on_accepted):
+            backend.submit_array(
+                [_spec(run_id=i) for i in range(1, 5)], array_dir=tmp_path / "arr"
+            )
+
+    assert cancelled == ["100_1", "100_2", "200_1", "200_2"]
+
+
+def test_a_single_job_whose_acceptance_hook_is_interrupted_is_cancelled(monkeypatch):
+    calls = []
+    results = [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    cancelled = []
+    monkeypatch.setattr(
+        backend,
+        "cancel_all",
+        lambda handles: cancelled.extend(h.job_id for h in handles),
+    )
+
+    def on_accepted(handles):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        with backend.submission_hooks(on_accepted=on_accepted):
+            backend.submit(_spec())
+
+    assert cancelled == ["500"]
+
+
 def test_selected_cluster_reads_every_spelling_and_takes_the_last():
     """sbatch takes four forms of the cluster option and a later one overrides an
     earlier.
