@@ -7717,3 +7717,236 @@ def test_an_invalid_job_tag_fails_the_run_before_anything_is_submitted(
     assert isinstance(result.exception, FatalRtlBuddyError), result.output
     assert "RTL_BUDDY_JOB_TAG='ci,run'" in str(result.exception)
     assert calls == []
+
+
+_MAX_JOB_COUNT_REFUSAL = (
+    "sbatch: error: Batch job submission failed: MaxJobCount limit reached"
+)
+
+
+class _SleepWatcher:
+    """Stands in for `time` in slurm.py: a sleep is where a head blocks, so it reads the
+    run manifest there instead of waiting.
+    """
+
+    def __init__(self, project: Path):
+        self.project = project
+        self.now = 0.0
+        self.pending_at_sleep: list[list[tuple[int, str]]] = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+        paths = sorted(self.project.glob("artefacts/.dispatch/run-*.json"))
+        payload = json.loads(paths[0].read_text())
+        self.pending_at_sleep.append(
+            [(entry["row"], entry["job_id"]) for entry in payload["pending"]]
+        )
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+class _ScriptedSlurm:
+    """A real `SlurmDispatchBackend` over a scripted `sbatch`.
+
+    Only the queue is faked: `wait_all` plays the jobs, writing a PASS envelope for each
+    from `passes_on_attempt` on and otherwise the license-queue evidence of a kill.
+    """
+
+    @staticmethod
+    def build(sbatch_answers, *, project, passes_on_attempt=1, max_array_size=None):
+        import subprocess
+
+        from rtl_buddy.config.dispatch import DispatchConfigFile
+        from rtl_buddy.dispatch import slurm as slurm_module
+        from rtl_buddy.dispatch.base import telemetry_key
+
+        class Backend(slurm_module.SlurmDispatchBackend):
+            def __init__(self):
+                super().__init__(
+                    DispatchConfigFile(max_array_size=max_array_size).initialise()
+                )
+                self.attempts: dict[str, int] = {}
+                self.states: dict[str, str] = {}
+
+            def submit_build(self, spec, *, dependency=None):
+                write_build_result_json(spec.result_json, built=[], failed=[])
+                return JobHandle(job_id=f"{spec.phase}-1", spec=spec)
+
+            def wait_all(self, handles, *, extra_wait=0.0):
+                for handle in handles:
+                    spec = handle.spec
+                    if not isinstance(spec, SimJobSpec):
+                        continue
+                    attempt = self.attempts.get(spec.test_name, 0) + 1
+                    self.attempts[spec.test_name] = attempt
+                    artefacts = Path(spec.suite_dir) / "artefacts" / spec.test_name
+                    artefacts.mkdir(parents=True, exist_ok=True)
+                    (artefacts / "test.log").write_text(LICENSE_BANNER)
+                    if attempt >= passes_on_attempt:
+                        write_result_json(
+                            spec.result_json,
+                            test_name=spec.test_name,
+                            run_id=spec.run_id,
+                            results=TestPassResults(name=spec.test_name + "/results"),
+                            run_token=read_plan_token(spec.plan_path),
+                        )
+                        self.states[telemetry_key(handle)] = "COMPLETED"
+                    else:
+                        self.states[telemetry_key(handle)] = "TIMEOUT"
+
+            def cancel_all(self, handles):
+                return True
+
+            def collect_telemetry(self, handles):
+                return {
+                    telemetry_key(h): {"state": self.states.get(telemetry_key(h))}
+                    for h in handles
+                }
+
+        answers = list(sbatch_answers)
+        calls = []
+        real_run = subprocess.run
+
+        def run(argv, *args, **kwargs):
+            if argv[0] == "sbatch":
+                calls.append(list(argv))
+                answer = answers.pop(0)
+                if answer is None:
+                    return subprocess.CompletedProcess(
+                        argv, 1, "", _MAX_JOB_COUNT_REFUSAL
+                    )
+                return subprocess.CompletedProcess(argv, 0, f"{answer}\n", "")
+            if argv[0] in ("scontrol", "squeue", "sacct"):
+                return subprocess.CompletedProcess(argv, 1, "", "no cluster")
+            return real_run(argv, *args, **kwargs)
+
+        return Backend, run, calls
+
+
+def _scripted_slurm_run(
+    monkeypatch, project, sbatch_answers, *, argv=(), **backend_kwargs
+):
+    """Run a dispatched regression whose second `sbatch` is refused once."""
+    from rtl_buddy.dispatch import slurm as slurm_module
+
+    _mark_stub_builder_verilator(project)
+    monkeypatch.setattr(slurm_module, "require_tool", lambda name: None)
+    backend_cls, run, calls = _ScriptedSlurm.build(
+        sbatch_answers, project=project, **backend_kwargs
+    )
+    backend = backend_cls()
+    watcher = _SleepWatcher(project)
+    monkeypatch.setattr(slurm_module, "time", watcher)
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    monkeypatch.setattr(
+        rtl_buddy_module,
+        "create_dispatch_backend",
+        lambda name, cfg, *, config_path=None: backend,
+    )
+    result, rb = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm", *argv]
+    )
+    rb._artifact_locks.release_all()
+    return result, backend, watcher, calls
+
+
+def test_a_refused_later_array_slice_leaves_the_earlier_slice_in_the_manifest(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The head waits to resubmit slice 2 while slice 1 is queued, so slice 1 is on
+    disk before it sleeps.
+    """
+    result, _backend, watcher, calls = _scripted_slurm_run(
+        monkeypatch,
+        minimal_project,
+        # Slice 1, slice 2 refused, slice 2 again.
+        ["100", None, "200"],
+        # One element per array.
+        max_array_size=2,
+    )
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 3
+    assert watcher.pending_at_sleep == [[(0, "100_1")]]
+    manifest = _run_manifest(minimal_project)
+    assert [(e["row"], e["job_id"]) for e in manifest["pending"]] == [
+        (0, "100_1"),
+        (1, "200_1"),
+    ]
+    assert manifest["status"] == "collected"
+
+
+def test_a_group_in_one_array_is_recorded_once(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    result, _backend, watcher, _calls = _scripted_slurm_run(
+        monkeypatch, minimal_project, ["100"]
+    )
+    assert result.exit_code == 0, result.output
+    assert watcher.pending_at_sleep == []
+    manifest = _run_manifest(minimal_project)
+    assert [e["job_id"] for e in manifest["pending"]] == ["100_1", "100_2"]
+
+
+def test_a_refused_retry_job_leaves_the_round_so_far_in_the_manifest(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A retry round submits one job at a time; the head waits to resubmit the second
+    while the first is queued, and the manifest already names the first.
+    """
+    _enable_retry(minimal_project)
+    writes = []
+    real_update = rtl_buddy_module.update_pending_job_ids
+
+    def counting_update(path, pending):
+        writes.append([(row, handle.job_id) for row, handle in pending])
+        return real_update(path, pending)
+
+    monkeypatch.setattr(rtl_buddy_module, "update_pending_job_ids", counting_update)
+    result, _backend, watcher, _calls = _scripted_slurm_run(
+        monkeypatch,
+        minimal_project,
+        # The array, then the retry round: job 1, job 2 refused, job 2 again.
+        ["100", "301", None, "302"],
+        passes_on_attempt=2,
+    )
+    assert result.exit_code == 0, result.output
+    # The sleep sees the new id for row 0 and the old one, not yet replaced, for row 1.
+    assert watcher.pending_at_sleep == [[(0, "301"), (1, "100_2")]]
+    # One merge before the sleep and one for the rest: not one per job accepted.
+    assert writes == [[(0, "301")], [(1, "302")]]
+    manifest = _run_manifest(minimal_project)
+    assert [(e["row"], e["job_id"]) for e in manifest["pending"]] == [
+        (0, "301"),
+        (1, "302"),
+    ]
+
+
+def test_an_unrefused_retry_round_is_recorded_in_one_merge(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_retry(minimal_project)
+    writes = []
+    real_update = rtl_buddy_module.update_pending_job_ids
+
+    def counting_update(path, pending):
+        writes.append([(row, handle.job_id) for row, handle in pending])
+        return real_update(path, pending)
+
+    monkeypatch.setattr(rtl_buddy_module, "update_pending_job_ids", counting_update)
+    result, _backend, watcher, _calls = _scripted_slurm_run(
+        monkeypatch,
+        minimal_project,
+        ["100", "301", "302"],
+        passes_on_attempt=2,
+    )
+    assert result.exit_code == 0, result.output
+    assert watcher.pending_at_sleep == []
+    assert writes == [[(0, "301"), (1, "302")]]
