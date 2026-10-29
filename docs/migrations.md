@@ -189,17 +189,19 @@ The hardened-block config digest records the flow's generation, so every abstrac
 
 ### RTL-MP is the only built-in macro placer
 
-`rb pnr` places hard macros with OpenROAD's RTL-MP, as ORFS does. rb's macro packer, the v7 default, is gone, with the two keys that steered it. A run that still writes either key fails to load with `config.unknown_key_rejected`, whose message says what to do instead.
+`rb pnr` places hard macros with OpenROAD's RTL-MP, as ORFS does. rb's macro packer, the v7 default, is gone, with the two keys that steered it, and RTL-MP takes the arguments ORFS passes it. A run that still writes `floorplan.macro-placement`, `floorplan.macro-anchor` or `placement.macro-halo` fails to load with `config.unknown_key_rejected`, whose message says what to do instead.
 
 | Key | v7 | v8 | Migration |
 | --- | --- | --- | --- |
 | `floorplan.macro-placement` | `pack` (default), rb's packer, or `rtl-mp` | Removed; RTL-MP places the macros | Remove the key. To place macros another way, fix them with `floorplan.macros` locations or place them in a `macro-placement` hook |
 | `floorplan.macro-anchor` | `lower-left`, the core corner the packer started from | Removed | Remove the key. Fix the macros that must sit at a corner with `floorplan.macros` locations, or place them in a `macro-placement` hook |
-| `placement.macro-halo` unset | 20 µm, the packer's channel between macros and from the core edge, and RTL-MP's halo | No halo; RTL-MP keeps its own channels, as ORFS | `placement: {macro-halo: 20}` |
+| `placement.macro-halo` | RTL-MP's halo in µm, default 20, also the packer's channel between macros and from the core edge | Removed; `placement.macro-channel` is RTL-MP's minimum channel (`-min_channel_size`), unset by default, as ORFS without `RTLMP_MIN_CHANNEL_SIZE` | Set `placement.macro-channel` to twice the halo, as OpenROAD converts a halo: the v7 default is `macro-channel: 40`. Or take ORFS's platform value, such as `[80, 80]` on sky130hd |
+| `placement.macro-pin-aware-channels` | None | `true`: with a `macro-channel`, RTL-MP trims each channel to the macro pins along it (`-pin_aware_channels`), as ORFS | `placement: {macro-pin-aware-channels: false}` |
+| RTL-MP `-target_util` | Not passed; RTL-MP used its own `0.25` | `placement.density`, as ORFS | None; `placement.density` sets both |
 
 Macros land where RTL-MP puts them, by connectivity and possibly mirrored, so a design with macros places, routes and times differently. Also:
 
-- Without a halo, RTL-MP can put macros against each other and the core edge, leaving no routing channel; global routing then fails with `GRT-0116`. Set `placement: {macro-halo: 20}`, the v7 channel, on such a run.
+- Without a channel, RTL-MP can put macros against each other and the core edge, leaving no routing channel; global routing then fails with `GRT-0116`. Set `placement.macro-channel` on the PDK, such as ORFS's `[80, 80]` on sky130hd. It needs OpenROAD 26Q4 or newer.
 
 - A `floorplan.macros` or `macros-file` entry with an `orientation` and no `location` fails to load, because RTL-MP chooses each orientation. Give it a location, or place the macros in a `macro-placement` hook, which may still use such entries.
 - RTL-MP keeps macros out of every flow blockage, `soft` and `partial` ones included; the packer kept out of `hard` ones only.
