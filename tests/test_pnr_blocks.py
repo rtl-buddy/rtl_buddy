@@ -507,6 +507,23 @@ def test_every_kind_of_change_makes_a_block_stale(tmp_path, mutate, expected):
     assert any(expected in c for c in changes), changes
 
 
+def test_a_block_hardened_by_an_earlier_flow_generation_is_stale(tmp_path, monkeypatch):
+    """A block hardened before the flow's own steps or defaults changed is stale, whatever its config says."""
+    suite = _block_suite(tmp_path)
+    monkeypatch.setattr(
+        pnr_abstract,
+        "ABSTRACT_FLOW_GENERATION",
+        pnr_abstract.ABSTRACT_FLOW_GENERATION + 1,
+    )
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = _block_platform(tmp_path)
+    block = resolve_block(_ref(suite))
+
+    changes = pnr_abstract.block_changes(block, root_cfg)
+
+    assert any("config changed (flow)" in c for c in changes), changes
+
+
 def test_accept_stale_runs_the_top_and_qualifies_the_result(tmp_path, monkeypatch):
     _block_suite(tmp_path)
     (tmp_path / "blk/blk.sdc").write_text("create_clock -period 5\n")

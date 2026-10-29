@@ -186,7 +186,7 @@ Each default `rb pnr` applies is now the OpenROAD command's own default or the s
 
 A PDK without both `pin-layers` fails every `rb pnr` run on it at setup (`pnr.pin_layers_missing`); one used only by `rb synth` or `rb power` needs nothing. A `pnr.yaml` run without `floorplan.utilization` or `die-area` fails to load. Setup repair needs wire RC, so on a PDK without `layer-rc-tcl` whose technology LEF has no layer RC, such as Nangate45, OpenROAD stops at the floorplan's setup repair with `RSZ-0089`. Set the PDK's `layer-rc-tcl` (see [Set wire RC](concepts/pnr.md#set-wire-rc)), or turn every setup repair off: `floorplan-setup-repair: false`, `post-cts-setup-repair: false`, and a `global-route-repair` without `setup-margin`, such as `{hold-margin: 0}`. A platform without `cts-buffer` or `routing-layers`, which failed in v7, now runs: CTS picks its buffers from the libraries, and the global router keeps the technology's routing layers. The packer's `placement.macro-halo` default stays 20 µm. See [Configure the physical platform](concepts/pnr.md#configure-the-physical-platform).
 
-The hardened-block config digest records these defaults, so every abstract hardened with v7 is stale. Harden the blocks again, or pass `--accept-stale` to use them as they are. See [Harden a block](concepts/pnr.md#harden-a-block).
+The hardened-block config digest records the flow's generation, so every abstract hardened with v7 is stale. Harden the blocks again, or pass `--accept-stale` to use them as they are. See [Harden a block](concepts/pnr.md#harden-a-block).
 
 ### `openroad_threads.effective` is null when `threads:` is unset
 

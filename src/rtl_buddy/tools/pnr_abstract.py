@@ -38,6 +38,8 @@ ABSTRACT_STAGING_NAME = "abstract.partial"
 ABSTRACT_MANIFEST_NAME = "abstract.manifest.json"
 #: Bumped on an incompatible manifest change.
 ABSTRACT_MANIFEST_SCHEMA = 1
+#: Enters every config digest; bumped when the flow's own steps or defaults change what a hardened block's views hold, so every abstract hardened before goes stale.
+ABSTRACT_FLOW_GENERATION = 8
 #: Manifest keys of the three views; each file is `<top>.<key>`.
 ABSTRACT_VIEWS = ("lef", "lib", "gds")
 #: The real-shape LEF a run with `abstract.feedthrough-layers` writes beside `<top>.lef`; spliced in and removed before publishing.
@@ -376,6 +378,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
     platform = platform.with_run_overrides(pnr_cfg.get_overrides())
     hooks = platform.get_tcl_hooks()
     return {
+        "flow": ABSTRACT_FLOW_GENERATION,
         "platform": pnr_cfg.get_platform(),
         "synth": {
             "name": pnr_cfg.get_synth_name(),
