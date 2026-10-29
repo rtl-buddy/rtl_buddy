@@ -92,7 +92,7 @@ rb graph results --run-tag icarus
 
 ## Handle an artefact lock
 
-Every artefact-writing command takes a non-blocking advisory lock on `<artifact_root>/.rtl-buddy.lock`. A second writer to the same tree fails immediately and reports the holder's PID, command, start time and host. Listing commands do not lock, and neither do `rb filelist`, `rb saif` and `rb verible`, which write nothing under `artefacts/`; they run alongside each other and alongside a run that holds the tree.
+Every artefact-writing command takes a non-blocking advisory lock on `<artifact_root>/.rtl-buddy.lock`. A second writer to the same tree fails immediately and reports the holder's PID, command, start time and host. Listing commands do not lock, and neither do `rb verible`, `rb filelist` and `rb saif`. They run alongside each other and alongside a run that holds the tree. A `rb filelist`, `rb saif` or `rb verible filelist -o` whose output lies inside the artefact tree does lock, since a run holding the tree may be reading that file.
 
 - Wait for the first process to finish, or terminate it if it is stale.
 - The lock is released on a clean exit, a tool failure and `Ctrl-C` (exit 130). The kernel also releases it on crash or kill, so the metadata file never needs removal.
@@ -107,4 +107,4 @@ Read `<command_root>/rtl_buddy.log`: plain text by default, JSON Lines under `--
 
 Each run's first open of the log truncates it, so the file holds one run. That is why `--run-tag` moves the log into the tagged artefact root: concurrent runs sharing one file would erase each other's record.
 
-Commands that take no lock attach no file log: `rb phys`, `rb cov`, the `rb graph` read verbs, `rb xplr`, `rb filelist`, `rb saif`, `rb verible`, and `--list` on any flow command. They report on the console and, under `--machine`, in the JSON result. See [Agent Use](../agents.md#know-which-commands-write-a-log).
+Commands that take no lock attach no file log: `rb phys`, `rb cov`, the `rb graph` read verbs, `rb xplr`, `rb filelist`, `rb saif`, `rb verible` (each writing outside the artefact tree), and `--list` on any flow command. They report on the console and, under `--machine`, in the JSON result. See [Agent Use](../agents.md#know-which-commands-write-a-log).
