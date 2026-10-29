@@ -1166,7 +1166,12 @@ class SlurmDispatchBackend(DispatchBackend):
             fields.update(model=spec.model_name, profile=spec.profile_name)
         log_event(logger, logging.INFO, "dispatch.submitted", **fields)
         handle = JobHandle(job_id=job_id, spec=spec, cluster=cluster)
-        self._notify_accepted([handle])
+        try:
+            self._notify_accepted([handle])
+        except BaseException:
+            # The caller never learns of this handle, so it cannot cancel it.
+            self.cancel_all([handle])
+            raise
         return handle
 
     def submit_coverage(self, spec: CoverageJobSpec) -> JobHandle:
@@ -1626,7 +1631,7 @@ class SlurmDispatchBackend(DispatchBackend):
             # layout.
             slice_dir = array_dir if len(slices) == 1 else array_dir / f"slice-{index}"
             try:
-                handles += self._submit_one_array(
+                accepted = self._submit_one_array(
                     slice_specs,
                     array_dir=slice_dir,
                     max_parallel=max_parallel,
@@ -1634,6 +1639,9 @@ class SlurmDispatchBackend(DispatchBackend):
                     slice_index=index,
                     slice_count=len(slices),
                 )
+                # Owned for cancellation before the hook's I/O can be interrupted.
+                handles += accepted
+                self._notify_accepted(accepted)
             except BaseException:
                 # The caller only learns of returned handles, so cancelling earlier
                 # slices is this method's job.
@@ -1731,12 +1739,10 @@ class SlurmDispatchBackend(DispatchBackend):
             slices=slice_count,
             cluster=cluster,
         )
-        handles = [
+        return [
             JobHandle(job_id=f"{base_id}_{i}", spec=spec, cluster=cluster)
             for i, spec in enumerate(specs, start=1)
         ]
-        self._notify_accepted(handles)
-        return handles
 
     @staticmethod
     def _base_ids(handles: Sequence[JobHandle | None]) -> list[str]:

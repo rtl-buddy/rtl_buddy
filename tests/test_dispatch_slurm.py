@@ -2287,6 +2287,59 @@ def test_a_single_job_reports_its_acceptance_and_the_wait_before_a_resubmit(
     assert events == ["before_wait", ["500"]]
 
 
+def test_a_slice_whose_acceptance_hook_is_interrupted_is_still_cancelled(
+    monkeypatch, tmp_path
+):
+    """Ctrl-C inside the hook must not leak the slice it was recording."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout="100\n", stderr=""),
+        SimpleNamespace(returncode=0, stdout="200\n", stderr=""),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=3).initialise())
+    cancelled = []
+    monkeypatch.setattr(
+        backend,
+        "cancel_all",
+        lambda handles: cancelled.extend(h.job_id for h in handles),
+    )
+
+    def on_accepted(handles):
+        if handles[0].job_id.startswith("200"):
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        with backend.submission_hooks(on_accepted=on_accepted):
+            backend.submit_array(
+                [_spec(run_id=i) for i in range(1, 5)], array_dir=tmp_path / "arr"
+            )
+
+    assert cancelled == ["100_1", "100_2", "200_1", "200_2"]
+
+
+def test_a_single_job_whose_acceptance_hook_is_interrupted_is_cancelled(monkeypatch):
+    calls = []
+    results = [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    cancelled = []
+    monkeypatch.setattr(
+        backend,
+        "cancel_all",
+        lambda handles: cancelled.extend(h.job_id for h in handles),
+    )
+
+    def on_accepted(handles):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        with backend.submission_hooks(on_accepted=on_accepted):
+            backend.submit(_spec())
+
+    assert cancelled == ["500"]
+
+
 def test_selected_cluster_reads_every_spelling_and_takes_the_last():
     """sbatch takes four forms of the cluster option and a later one overrides an
     earlier.
