@@ -303,6 +303,21 @@ BUILD_TOOLCHAIN_MARKER_NAME = "rb-toolchain.json"
 # Everything else in a build dir is rewritten by the next compile or owned by rtl_buddy.
 _STALE_BUILD_OUTPUT_GLOBS = ("*.d", "*.o", "*.a")
 
+# Present in a Verilator build dir from the start of a compile that may run make until
+# it succeeds. Verilator's makefiles do not set `.DELETE_ON_ERROR`, so a failed or killed
+# make can leave a truncated target newer than its sources, which the next make keeps.
+BUILD_MAKE_MARKER_NAME = "rb-make-incomplete"
+
+# Every target such a make writes: objects, archives, `-MMD` dependency files,
+# precompiled headers, the `__ALL.cpp` amalgamation and the archive's object list.
+_UNFINISHED_MAKE_OUTPUT_GLOBS = (
+    *_STALE_BUILD_OUTPUT_GLOBS,
+    "*.gch",
+    "*.pch",
+    "*__ALL.cpp",
+    "*.verilator_deplist.tmp",
+)
+
 
 def _toolchain_marker_identity(toolchain) -> dict:
     """The part of a toolchain fingerprint that decides the make is stale.
@@ -330,15 +345,19 @@ def _describe_marker_toolchain(identity):
     )
 
 
-def _scrub_stale_build_outputs(build_dir) -> int:
-    """Delete the make outputs a new toolchain must not inherit; return how many.
+def _scrub_stale_build_outputs(build_dir, globs=_STALE_BUILD_OUTPUT_GLOBS) -> int:
+    """Delete the make outputs matching ``globs``; return how many.
 
-    Top level only. Never raises; a file that will not go is left for make.
+    Top level only. Keeps the verilation's own ``*__ver.d``, which no make writes and
+    a make-only compile cannot regenerate. Never raises; a file that will not go is
+    left for make.
     """
     removed = 0
     root = Path(build_dir)
-    for pattern in _STALE_BUILD_OUTPUT_GLOBS:
+    for pattern in globs:
         for path in root.glob(pattern):
+            if path.name.endswith("__ver.d"):
+                continue
             try:
                 if path.is_file():
                     path.unlink()
@@ -4359,6 +4378,67 @@ class VlogSim:
                 # full C++ build and is never wrong.
                 pass
 
+    def _begin_make(self, plan, *, verilate_only):
+        """Before a Verilator compile that may run make: drop what an unfinished make
+        left, then mark this one unfinished until it succeeds.
+
+        Returns the state :meth:`_end_make` needs, or ``None`` when no make runs into
+        a Verilator build dir.
+        """
+        if not plan.is_verilator or verilate_only:
+            return None
+        mdir = Path(plan.compile_work_dir) / plan.build_dir
+        marker = mdir / BUILD_MAKE_MARKER_NAME
+        if marker.exists():
+            removed = _scrub_stale_build_outputs(mdir, _UNFINISHED_MAKE_OUTPUT_GLOBS)
+            if removed:
+                # Console: the C++ build that follows is a full one and this says why.
+                log_console_event(
+                    logger,
+                    logging.INFO,
+                    "compile.build_dir_scrubbed",
+                    test=self.test_name,
+                    build_path=str(mdir),
+                    removed=removed,
+                    reason="make-incomplete",
+                )
+        try:
+            mdir.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+        except OSError:
+            # Best-effort: a failed make is still scrubbed in _end_make; only a killed
+            # one goes unnoticed.
+            pass
+        evidence = None if self._skip_verilate else self._verilation_evidence(plan)
+        return mdir, marker, evidence
+
+    def _end_make(self, plan, state, *, ok):
+        """Clear the marker after a successful compile; after a failed one whose make
+        may have run, drop its outputs now and keep the marker.
+
+        A front end that failed (its ``*__verFiles.dat`` unchanged) ran no make, so its
+        build dir keeps its objects.
+        """
+        mdir, marker, evidence = state
+        front_end_failed = (
+            not ok and bool(evidence) and self._verilation_evidence(plan) == evidence
+        )
+        if ok or front_end_failed:
+            with contextlib.suppress(OSError):
+                marker.unlink(missing_ok=True)
+            return
+        removed = _scrub_stale_build_outputs(mdir, _UNFINISHED_MAKE_OUTPUT_GLOBS)
+        if removed:
+            log_event(
+                logger,
+                logging.INFO,
+                "compile.build_dir_scrubbed",
+                test=self.test_name,
+                build_path=str(mdir),
+                removed=removed,
+                reason="make-failed",
+            )
+
     def _rebuild_forced(self, build_dir, *, shared=True):
         """Does ``--rebuild`` override the stamp on ``build_dir`` right now?
 
@@ -5154,6 +5234,7 @@ class VlogSim:
             if plan.records_verilation and not self._skip_verilate
             else None
         )
+        make_state = self._begin_make(plan, verilate_only=verilate_only)
         log_event(
             logger,
             logging.INFO,
@@ -5199,6 +5280,8 @@ class VlogSim:
         # applies. Consumers read the path off the events below, not a name of their
         # own.
         transcript_path = self._write_compile_transcript(run_str, result)
+        if make_state is not None:
+            self._end_make(plan, make_state, ok=result.returncode == 0)
         if ver_files_before is not None and (
             result.returncode == 0
             or self._verilation_evidence(plan) not in (ver_files_before, {})

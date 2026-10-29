@@ -1176,11 +1176,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     f"built by {fields.get('was')}, now {fields.get('now')}"
                 ),
                 "toolchain-unrecorded": "no record of the Verilator that built it",
+                "make-incomplete": "an earlier make there did not finish",
+                "make-failed": "its make failed",
             }.get(fields.get("reason"), fields.get("reason"))
+            starts = "next " if fields.get("reason") == "make-failed" else ""
             return (
                 f"{target or 'compile'}: dropped {fields.get('removed')} stale "
                 f"object/dependency files from {fields.get('build_path')} "
-                f"({why}); the C++ build starts clean"
+                f"({why}); the {starts}C++ build starts clean"
             )
         case "compile.build_toolchain_changed":
             return (
