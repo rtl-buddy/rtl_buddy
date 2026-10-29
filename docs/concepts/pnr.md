@@ -94,7 +94,7 @@ A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in 
 | `<top>.routed.spef` | Extracted parasitics, when the PDK sets `rcx-rules` |
 | `timing.rpt`, `electrical.rpt` | Worst paths and electrical violators, all corners |
 | `route.drc.rpt`, `route.maze.log` | Detailed-route DRCs and router log |
-| `grt_antennas.rpt`, `drt_antennas.rpt` | Antenna violations left after the antenna repair after global route and after detailed route |
+| `grt_antennas.rpt`, `drt_antennas.rpt` | Antenna violations left after the antenna repair after global route and after detailed route; with `post-route-repair`, `drt_antennas.rpt` is the kept round's |
 | `congestion.rpt` | Overflowing global-route tiles, only when global routing overflows. Loads in the OpenROAD GUI's DRC viewer. |
 | `congestion-<i>.rpt` | The same at iteration `i`, every `global-route.congestion-report-iter-step` iterations of an overflowing route |
 | `<top>.gds`, `<top>.png`, `klayout.*.log`, `def2stream.inputs.json` | Stream-out outputs, logs and the inputs it read |
@@ -327,7 +327,7 @@ The flow runs the optimisation steps ORFS runs by default. Each has a key on the
 | `repair_clock_inverters` | Before CTS, after the `before-cts` hooks | `cts-repair-clock-inverters` |
 | `repair_design`, then setup and hold `repair_timing`, on global-route parasitics | After global route | `global-route-repair: null` turns it off, and a written block replaces it; see [Repair timing after routing](#repair-timing-after-routing) |
 | `repair_antennas` (5 iterations), `check_antennas` into `grt_antennas.rpt` | After the global-route repair and its hooks | `global-route-antenna-repair` |
-| `repair_antennas` and a detailed route while violations remain (at most 5), `check_antennas` into `drt_antennas.rpt` | After detailed route | `detailed-route-antenna-repair` |
+| `repair_antennas` and a detailed route while violations remain (at most 5), `check_antennas` into `drt_antennas.rpt` | After detailed route, and after each [post-route repair](#repair-timing-after-routing) round's detailed route, before its `stage-end` hooks | `detailed-route-antenna-repair` |
 
 Turning a step off gives up what it does: the floorplan and global-route repairs recover setup slack, `improve_placement` and `optimize_mirroring` shorten wires, `repair_clock_inverters` keeps CTS from buffering inverted clocks, and antenna repair fixes antenna violations, which no other step repairs. Antenna repair inserts the PDK's antenna diode cells, LEF class `CORE ANTENNACELL`. A `probe` run skips the floorplan setup repair, the global-route repair and the antenna repair after global route.
 
@@ -375,7 +375,7 @@ Each block runs `repair_design` when `repair-design` is set (`{}` for OpenROAD's
 
 **`global-route-repair`** runs after global route on its parasitic estimate, then legalizes and reroutes the changed nets (`reroute: incremental`, default) or the whole design (`full`).
 
-**`post-route-repair`** adds the stage `post_route_repair` after detailed route. It needs the PDK's `rcx-rules`. It extracts and times the detailed route (round 0), then runs up to `rounds` (default 1) repair rounds, each in fresh OpenROAD sessions: repair on the extracted parasitics, route again, extract and time. `reroute: eco` (default) keeps the detailed route and reroutes only the changed nets; `full` routes the whole design again, costing about a global and a detailed route per round. Round k repairs with the margins plus (k − 1) × `margin-step`. `rounds` above 1 needs a margin.
+**`post-route-repair`** adds the stage `post_route_repair` after detailed route. It needs the PDK's `rcx-rules`. It extracts and times the detailed route (round 0), then runs up to `rounds` (default 1) repair rounds, each in fresh OpenROAD sessions: repair on the extracted parasitics, route again, repair antennas as after the detailed route (with `detailed-route-antenna-repair`), extract and time. `reroute: eco` (default) keeps the detailed route and reroutes only the changed nets; `full` routes the whole design again, costing about a global and a detailed route per round. Round k repairs with the margins plus (k − 1) × `margin-step`. `rounds` above 1 needs a margin.
 
 Each round, the electrical round included, starts by running `remove_fillers`, which removes every instance of a `CORE_SPACER` master that is not `LOCKED`. A spacer a hook placed `FIRM` or `FIXED` to reserve sites is gone after the first round; place it `LOCKED` to keep it.
 
@@ -571,9 +571,9 @@ A run killed at a wall-time limit leaves only its log. `checkpoints: true` (or o
 | `floorplan` | Floorplan, macros, power grid, pins |
 | `place` | Legalized global placement |
 | `cts` | Clock tree and hold repair |
-| `global_route` | The global route after global-route repair, with route guides and segments; with `global-route.grid-origin`, before the GCell grid is rebuilt from the guides |
-| `detailed_route` | The detailed route, before fill, with its DRC report |
-| `post_route_repair` | The kept repair round (only with `post-route-repair`) |
+| `global_route` | The global route after global-route repair and antenna repair, with route guides and segments and `grt_antennas.rpt`; with `global-route.grid-origin`, before the GCell grid is rebuilt from the guides |
+| `detailed_route` | The detailed route after antenna repair, before fill, with its DRC report and `drt_antennas.rpt` |
+| `post_route_repair` | The kept repair round, with its DRC report and `drt_antennas.rpt` (only with `post-route-repair`) |
 
 On a multi-corner platform the `.sdc` holds every corner's SDC mode, and `<NN>_<stage>.<corner>.sdc` each corner's alone.
 
@@ -620,7 +620,7 @@ rb pnr alu_pnr -c pnr/alu/pnr.yaml --resume latest --from detailed_route
 ```
 
 - `--stop-after <stage>` works on any run, writes that checkpoint and a stage report, and passes with `routed: false`. It writes no routed outputs, GDS or abstract, and `xfail:` does not apply.
-- `--resume <run> --from <stage>` starts a new staged run from a staged run's checkpoint of the stage before. `<run>` is `latest`, a run id or a checkpoint directory. The old run is left unchanged, so detailed routing can be retried from one global route.
+- `--resume <run> --from <stage>` starts a new staged run from a staged run's checkpoint of the stage before. `<run>` is `latest`, a run id or a checkpoint directory. The old run is left unchanged, so detailed routing can be retried from one global route. The reports the inherited checkpoints keep (`grt_antennas.rpt`, `route.drc.rpt`, `route.maze.log`, `drt_antennas.rpt`) are copied into `artefacts/<run>/`.
 - The resume is refused (`fail_stage: resume`) when the earlier stages' generated scripts, their input files or the OpenROAD version changed, or when resuming a probe into a closure run. A `constraints:` path and a map of that path to every corner count as different. Settings read only from `--from` on, such as `detailed-route-verbose`, routing layers or `threads:`, may change. Files sourced by hooks, `platform-tcl`, a `pdn-config` or the SDC are not checked unless listed under [`inputs:`](#run-tcl-hooks), and environment variables are not checked.
 
 ## Dispatch the stages to Slurm
@@ -732,7 +732,7 @@ For maintainers and hook authors. The generated `pnr.tcl` runs:
 3. Macro placement, tap cells, power grid, pin placement, port buffering.
 4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and the output port buffers `hold-outputs-at-pins` fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, `improve_placement` and `optimize_mirroring`, the `placement.macro-pin-limits` step.
 5. `repair_clock_inverters`, CTS, post-CTS setup repair, hold repair, legalization.
-6. Global route, global-route repair, antenna repair, detailed route, antenna repair with detailed routes, optional post-route repair stage.
+6. Global route, global-route repair, antenna repair, detailed route, antenna repair with detailed routes, optional post-route repair stage, whose rounds each repair antennas after their detailed route.
 7. Fill, global connections, extraction with `rcx-rules`, final reports, outputs.
 8. After OpenROAD: the routed-floorplan check, then stream-out and abstract.
 

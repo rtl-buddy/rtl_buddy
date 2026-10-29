@@ -105,10 +105,19 @@ DETAIL_ROUTED = ("detailed_route", "post_route_repair")
 #: Checkpoints that also carry the route guides and global-route segments; the detailed-route session reads the segments. A routed database's pin access points no longer match the segments, which OpenROAD then refuses (GRT-0263), so a later session takes the global route from the guides the database keeps.
 ROUTE_FILES = ("global_route",)
 
-#: Reports in the artefact directory a stage's checkpoint keeps a copy of, as `kind: file name`: the detailed router's DRC report and log, of the detailed route and of the kept post-route repair round, which a run resumed after that stage restores.
+#: Reports in the artefact directory a stage's checkpoint keeps a copy of, as `kind: file name`: the antenna report after global route, and the detailed router's DRC report and log and the antenna report after detailed route, of the detailed route and of the kept post-route repair round. A run resumed after that stage restores them.
 STAGE_REPORTS = {
-    "detailed_route": {"drc": "route.drc.rpt", "maze": "route.maze.log"},
-    "post_route_repair": {"drc": "route.drc.rpt", "maze": "route.maze.log"},
+    "global_route": {"grt_antennas": "grt_antennas.rpt"},
+    "detailed_route": {
+        "drc": "route.drc.rpt",
+        "maze": "route.maze.log",
+        "drt_antennas": "drt_antennas.rpt",
+    },
+    "post_route_repair": {
+        "drc": "route.drc.rpt",
+        "maze": "route.maze.log",
+        "drt_antennas": "drt_antennas.rpt",
+    },
 }
 
 #: Flow globals a staged checkpoint saves for the next session: per-macro cell halos from `floorplan.macros`, which the rotated-macro blockages read in the place session.
@@ -126,10 +135,15 @@ PROGRESS_STEPS = (
     "repair_tie_fanout",
     "repair_design",
     "detailed_placement",
+    "improve_placement",
+    "optimize_mirroring",
+    "repair_clock_inverters",
     "clock_tree_synthesis",
     "repair_timing",
     "check_placement",
     "global_route",
+    "repair_antennas",
+    "check_antennas",
     "detailed_route",
     "filler_placement",
 )

@@ -56,7 +56,7 @@ from rtl_buddy.config.pnr_repair import (
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.logging_utils import _human_message
 from rtl_buddy.rtl_buddy import RtlBuddy
-from rtl_buddy.tools import pnr_openroad
+from rtl_buddy.tools import pnr_checkpoints, pnr_openroad
 from rtl_buddy.tools.pnr_openroad import (
     _DETAILED_ROUTE_CMD,
     _END_INCREMENTAL_CMD,
@@ -949,6 +949,80 @@ def test_rounds_repair_until_timing_is_met(tmp_path, monkeypatch, stages):
     assert "read_db [file join $RB_PRED_DIR 06_post_route_repair.odb]" in finish
 
 
+@pytest.mark.parametrize("stages", [False, True])
+def test_each_round_repairs_antennas_after_its_detailed_route(
+    tmp_path, monkeypatch, stages
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        stages=stages,
+        env={"RB_STUB_SETUP": "-0.2 -0.1 0.01", "RB_STUB_ANTENNAS": "1"},
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    for round_ in (1, 2):
+        script = (run_dir / f"06_post_route_repair.r{round_}.repair.tcl").read_text()
+        order = [
+            f">>> Post-route repair round {round_}: detailed route",
+            ">>> Detailed-route antenna repair",
+            "check_antennas -report_file $OUT_DIR/drt_antennas.rpt\nrb::global_connect\n",
+            "rb::ckpt::stage_end post_route_repair",
+        ]
+        positions = [script.index(text) for text in order]
+        assert positions == sorted(positions), round_
+        log = (run_dir / f"06_post_route_repair.r{round_}.repair.log").read_text()
+        repair = log.split(">>> Detailed-route antenna repair")[1]
+        assert repair.count("stub: repair_antennas") == 1
+        report = run_dir / f"06_post_route_repair.r{round_}.drt_antennas.rpt"
+        assert report.read_text().split() == [
+            "antennas",
+            "0",
+            f"06_post_route_repair.r{round_}.repair.tcl",
+        ]
+    # The kept round's report is the run's.
+    assert (artefacts / "drt_antennas.rpt").read_bytes() == (
+        run_dir / "06_post_route_repair.r2.drt_antennas.rpt"
+    ).read_bytes()
+
+
+def test_without_antenna_repair_the_rounds_render_as_before(tmp_path, monkeypatch):
+    scripts = {}
+    seen = set()
+    for on in (False, True):
+        backend, artefacts = _repair_backend(
+            tmp_path,
+            monkeypatch,
+            post_route=_PR,
+            platform={"detailed_route_antenna_repair": on},
+            env={"RB_STUB_SETUP": "-0.2 -0.1 0.01"},
+        )
+        assert backend.run().results["result"] == "PASS"
+        run_dir = next(r for r in _runs(artefacts) if r.name not in seen)
+        seen.add(run_dir.name)
+        scripts[on] = {
+            p.name: pnr_checkpoints.RUN_BINDING_RE.sub("", p.read_text())
+            for p in sorted(run_dir.glob("06_post_route_repair.r*.tcl"))
+        }
+        if not on:
+            assert not (artefacts / "drt_antennas.rpt").exists()
+    platform = backend.root_cfg.get_pnr_platform_cfg.return_value
+    block = (
+        pnr_openroad._detailed_route_antenna_repair_tcl(platform, 1)
+        + "rb::global_connect\n"
+    )
+    assert scripts[True].keys() == scripts[False].keys()
+    assert "06_post_route_repair.r2.repair.tcl" in scripts[True]
+    for name, text in scripts[True].items():
+        assert "repair_antennas" not in scripts[False][name]
+        assert text.count(block) == (1 if name.endswith(".repair.tcl") else 0)
+        assert text.replace(block, "") == scripts[False][name]
+
+
 def test_a_full_reroute_round_routes_the_unrouted_design_first(tmp_path, monkeypatch):
     backend, artefacts = _repair_backend(
         tmp_path,
@@ -1619,6 +1693,9 @@ def test_a_round_that_worsens_timing_keeps_the_detailed_route(
         run_dir / "05_detailed_route.odb"
     )
     assert (artefacts / "route.maze.log").read_text().strip() == "maze r0"
+    assert (artefacts / "drt_antennas.rpt").read_bytes() == (
+        run_dir / "05_detailed_route.drt_antennas.rpt"
+    ).read_bytes()
     (checkpoint,) = [
         e
         for e in _events(run_dir)
@@ -1666,6 +1743,9 @@ def test_a_better_round_then_a_worse_one_keeps_the_better(tmp_path, monkeypatch)
         "maze r1"
     )
     assert (artefacts / "route.maze.log").read_text().strip() == "maze r1"
+    assert (artefacts / "drt_antennas.rpt").read_text().split()[-1] == (
+        "06_post_route_repair.r1.repair.tcl"
+    )
     # Round 2 started from round 1's database and SPEF.
     r2 = (run_dir / "06_post_route_repair.r2.repair.tcl").read_text()
     assert "read_db [file join $RB_RUN_DIR 06_post_route_repair.r1.odb]" in r2
@@ -2467,7 +2547,8 @@ def test_a_resume_from_finish_restores_the_last_round_s_reports(tmp_path, monkey
     )
     assert first.run().results["result"] == "PASS"
     (first_dir,) = _runs(artefacts)
-    (artefacts / "route.maze.log").unlink()
+    for name in ("route.maze.log", "grt_antennas.rpt", "drt_antennas.rpt"):
+        (artefacts / name).unlink()
 
     again, _artefacts = _repair_backend(
         tmp_path,
@@ -2482,6 +2563,12 @@ def test_a_resume_from_finish_restores_the_last_round_s_reports(tmp_path, monkey
 
     assert res.results["result"] == "PASS", res.results
     assert (artefacts / "route.maze.log").read_text().strip() == "maze r1"
+    assert (artefacts / "drt_antennas.rpt").read_text().split()[-1] == (
+        "06_post_route_repair.r1.repair.tcl"
+    )
+    assert (artefacts / "grt_antennas.rpt").read_text().split()[-1] == (
+        "04_global_route.tcl"
+    )
 
 
 @pytest.mark.parametrize("rcx", [True, False])

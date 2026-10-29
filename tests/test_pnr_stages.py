@@ -943,6 +943,54 @@ def test_a_resume_from_finish_reports_the_inherited_route_drcs(tmp_path, monkeyp
     assert Path(kept["files"]["drc"]["path"]).name == "05_detailed_route.route.drc.rpt"
 
 
+@pytest.mark.parametrize(
+    "resume_from, inherited",
+    [
+        ("detailed_route", ("global_route",)),
+        ("finish", ("global_route", "detailed_route")),
+    ],
+)
+def test_a_resume_restores_the_inherited_antenna_reports(
+    tmp_path, monkeypatch, resume_from, inherited
+):
+    backend, artefacts = _staged(tmp_path, monkeypatch, stop_after="detailed_route")
+    assert backend.run().results["result"] == "PASS"
+    first = _only_run(artefacts)
+    kept = {
+        "global_route": first / "04_global_route.grt_antennas.rpt",
+        "detailed_route": first / "05_detailed_route.drt_antennas.rpt",
+    }
+    assert kept["global_route"].read_text().split()[-1] == "04_global_route.tcl"
+    assert kept["detailed_route"].read_text().split()[-1] == "05_detailed_route.tcl"
+    for name in ("grt_antennas.rpt", "drt_antennas.rpt"):
+        (artefacts / name).write_text("another run's report\n")
+
+    backend, _ = _backend(
+        tmp_path, monkeypatch, resume=first.name, resume_from=resume_from
+    )
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    second = next(r for r in _runs(artefacts) if r != first)
+    reports = {
+        "global_route": artefacts / "grt_antennas.rpt",
+        "detailed_route": artefacts / "drt_antennas.rpt",
+    }
+    for stage, report in reports.items():
+        if stage in inherited:
+            assert report.read_bytes() == kept[stage].read_bytes()
+        else:
+            assert (
+                report.read_bytes()
+                == (second / "05_detailed_route.drt_antennas.rpt").read_bytes()
+            )
+    manifest = json.loads((second / "manifest.json").read_text())
+    files = manifest["checkpoints"]["global_route"]["files"]
+    assert (
+        Path(files["grt_antennas"]["path"]).name == "04_global_route.grt_antennas.rpt"
+    )
+
+
 def test_a_resume_may_change_settings_of_the_stages_it_runs(tmp_path, monkeypatch):
     first = _stopped_at_global_route(tmp_path, monkeypatch)
     cfg = replace(_pnr_cfg(tmp_path, stages=True), detailed_route_verbose=2)

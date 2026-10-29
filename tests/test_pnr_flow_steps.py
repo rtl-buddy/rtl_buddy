@@ -1,6 +1,6 @@
 """Tests for the optimisation steps the flow runs as ORFS does, each behind a key that turns it off.
 
-The steps are the floorplan's setup repair, `improve_placement` and `optimize_mirroring` after the placement stage's legalization, `repair_clock_inverters` before CTS, the repair after global route, and antenna repair after global route and after detailed route. With every step off, every script a run writes renders as the flow did without them.
+The steps are the floorplan's setup repair, `improve_placement` and `optimize_mirroring` after the placement stage's legalization, `repair_clock_inverters` before CTS, the repair after global route, and antenna repair after global route and after detailed route. With every step off, every script a run writes renders as the flow did without them. Each step's command is a traced progress step. The post-route repair rounds' antenna repair is tested with the rounds, in `test_pnr_repair`.
 """
 
 import os
@@ -359,3 +359,26 @@ def test_a_step_turned_off_enters_the_block_digest(tmp_path):
     }
     assert "cts_repair_clock_inverters" not in _cts_controls_digest(default)
     assert _cts_controls_digest(off)["cts_repair_clock_inverters"] is False
+
+
+@pytest.mark.parametrize(
+    "step, after",
+    [
+        ("repair_timing", ">>> Floorplan setup repair"),
+        ("improve_placement", ">>> Detail placement optimization"),
+        ("optimize_mirroring", ">>> Detail placement optimization"),
+        ("repair_clock_inverters", ">>> Clock tree synthesis"),
+        ("repair_antennas", ">>> Global-route antenna repair"),
+        ("check_antennas", ">>> Global-route antenna repair"),
+    ],
+)
+def test_a_run_killed_in_a_step_names_it(tmp_path, monkeypatch, step, after):
+    backend, artefacts = _backend(tmp_path, monkeypatch, env={"RB_STUB_KILL": step})
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert res.results["last_step"] == {"step": step, "status": "running"}
+    log = (artefacts / "pnr.log").read_text()
+    assert after in log
+    assert f"stub: killing in {step}" in log

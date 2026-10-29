@@ -63,7 +63,8 @@ DESIGN = "demo_top"
 # `RB_STUB_ERRLINE=<cmd>` prints an OpenROAD `[ERROR` line in that command, which returns.
 # `RB_STUB_CKPT_FAIL=<NN_stage>` makes `write_db` of that checkpoint fail without an `[ERROR` line.
 # `RB_STUB_ANTENNAS=<n>` makes `check_antennas` report n violating nets, one fewer after each
-# `repair_antennas`, which returns whether there were any.
+# `repair_antennas`, which returns whether there were any. Its `-report_file` names the count
+# and the session's script.
 # `read_guides` and `read_global_route_segments` fail on a missing file. Segments written
 # after a `read_guides` in the session are refused on reading, as OpenROAD 26Q4 refuses
 # their single-point segments (GRT-0265).
@@ -123,6 +124,11 @@ proc repair_antennas {args} {
 }
 proc check_antennas {args} {
     rb_stub check_antennas
+    set i [lsearch -exact $args -report_file]
+    if {$i >= 0} {
+        rb_write [lindex $args [expr {$i + 1}]] \
+            "antennas $::rb_antennas [file tail [lindex $::argv 0]]"
+    }
     return $::rb_antennas
 }
 proc detailed_route {args} {

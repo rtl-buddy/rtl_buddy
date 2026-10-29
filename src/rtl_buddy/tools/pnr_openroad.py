@@ -3768,7 +3768,7 @@ class OpenRoadPnr:
         )
 
     def _post_route_repair_script(self, round_: int, run_dir: str) -> str:
-        """Round `round_`'s repair session, bound to `run_dir`: repair round `round_ - 1`'s database on its SPEF, legalize inside an incremental global route, connect the supply pins of the cells the repair added, run the `before-detailed-route` hooks and connect again, route in detail, run the `stage-end` hooks and write the stage's checkpoint.
+        """Round `round_`'s repair session, bound to `run_dir`: repair round `round_ - 1`'s database on its SPEF, legalize inside an incremental global route, connect the supply pins of the cells the repair added, run the `before-detailed-route` hooks and connect again, route in detail, repair antennas as the flow does after its detailed route (`_round_antenna_repair_tcl`), run the `stage-end` hooks and write the stage's checkpoint, which keeps the round's `drt_antennas.rpt`.
 
         The rounds work on the unfilled database; `finish` fills after the last. Each round starts with `remove_fillers`, which removes every CORE_SPACER instance that is not LOCKED, spacers a hook placed included. A repair in the session that routed fails detailed routing (DRT-0218), so each round is a fresh session that reads the routed database.
 
@@ -3840,6 +3840,7 @@ class OpenRoadPnr:
             # So the round's DRC count is its own route's.
             "file delete -force $OUT_DIR/route.drc.rpt\n",
             _DETAILED_ROUTE_CMD,
+            self._round_antenna_repair_tcl(),
             "{{ hook_stage_end_post_route_repair_block }}",
             f"\nrb::ckpt::stage_end {POST_ROUTE_REPAIR_STAGE}\n",
             f'puts "{_ROUND_DONE_MARKER}{round_} repair"\n',
@@ -3855,6 +3856,13 @@ class OpenRoadPnr:
                 + "repair",
             ),
         )
+
+    def _round_antenna_repair_tcl(self) -> str:
+        """A repair round's antenna repair after its detailed route, as the flow's after its own (`_detailed_route_antenna_repair_tcl`), then the supply connections of the diodes it added; `""` when `detailed-route-antenna-repair` is false."""
+        repair = _detailed_route_antenna_repair_tcl(
+            self._platform, self.pnr_cfg.get_detailed_route_verbose()
+        )
+        return repair + "rb::global_connect\n" if repair else ""
 
     def _hints(self, log_text: str) -> str:
         """What to change, appended to a failed run's description: the `eco` hint (`_eco_hint`) and the wire-RC hint (`_no_wire_rc_hint`), each `""` when it does not apply."""
