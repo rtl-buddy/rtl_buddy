@@ -6289,9 +6289,9 @@ Find limitations and workarounds by workflow, from CDC and simulation through di
 
 rtl-buddy-cdc 0.3.x treats `xpm_cdc_*` instances as dual-clock blackboxes. It reports `CDC-BBX` and drops their crossings from the report and domain map. Waivers hide the finding but do not recover the crossings. Upgrade with `uv tool install -U rtl-buddy-cdc`.
 
-## rtl-buddy-cdc cannot take a filelist `+incdir+`
+## Filelist `+incdir+` needs rtl-buddy-cdc 0.7 or later
 
-rtl-buddy-cdc has no include-path option, so `rb cdc` and the hub's domain-map build cannot pass it `+incdir+` entries. The run warns `cdc.filelist_incdirs_unsupported` and names the directories. A header that resolves only through one of them fails with `Cannot find include file`. Write the `` `include `` path relative to the including file, or use the `vivado` cdc tool.
+`rb cdc` and the hub's domain-map build pass each `+incdir+` to rtl-buddy-cdc as `--incdir`, but only when `rtl-buddy-cdc lint --help` lists that option (rtl-buddy-cdc#311, released after 0.6.0). An older analyzer gets no include directories, and the run warns `cdc.filelist_incdirs_unsupported`, naming the directories. A header that resolves only through one of them then fails with `Cannot find include file`. Upgrade with `uv tool install -U rtl-buddy-cdc`, write the `` `include `` path relative to the including file, or use the `vivado` cdc tool.
 
 ## Coverage totals are per elaboration by default
 
@@ -10477,7 +10477,7 @@ Flows differ in which entries they honor:
 
 - Simulation and model elaboration apply `+incdir+` and `+define+`.
 - Synthesis (`read_verilog -I` and `read_slang -I`, on both yosys backends), FPGA (openXC7's `read_verilog -I`, Vivado's `synth_design -include_dirs`), and the Vivado CDC tool forward every `+incdir+`, each directory resolved against the filelist that declared it.
-- `rb cdc` and the hub's domain-map build use rtl-buddy-cdc, which has no include-path option. The run logs `cdc.filelist_incdirs_unsupported` naming the directories, and the analyzer's own `Cannot find include file` error follows if a header resolves only through them.
+- `rb cdc` and the hub's domain-map build pass every `+incdir+` to rtl-buddy-cdc as `--incdir <dir>`, resolved the same way. An rtl-buddy-cdc whose `lint --help` does not list `--incdir` gets none; the run logs `cdc.filelist_incdirs_unsupported` naming the directories, and the analyzer's own `Cannot find include file` error follows if a header resolves only through them. See [Quirks & Known Issues](../known-issues.md#filelist-incdir-needs-rtl-buddy-cdc-07-or-later).
 - `rb synth` applies `+define+` entries. The `synth.yaml` entry's `defines:` win on conflict and log `synth.filelist_defines_overridden`.
 - Renderer-only flows drop definitions.
 

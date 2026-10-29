@@ -1,0 +1,3 @@
+## Filelist `+incdir+` needs rtl-buddy-cdc 0.7 or later
+
+`rb cdc` and the hub's domain-map build pass each `+incdir+` to rtl-buddy-cdc as `--incdir`, but only when `rtl-buddy-cdc lint --help` lists that option (rtl-buddy-cdc#311, released after 0.6.0). An older analyzer gets no include directories, and the run warns `cdc.filelist_incdirs_unsupported`, naming the directories. A header that resolves only through one of them then fails with `Cannot find include file`. Upgrade with `uv tool install -U rtl-buddy-cdc`, write the `` `include `` path relative to the including file, or use the `vivado` cdc tool.

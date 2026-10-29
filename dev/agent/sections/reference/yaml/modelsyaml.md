@@ -78,7 +78,7 @@ Flows differ in which entries they honor:
 
 - Simulation and model elaboration apply `+incdir+` and `+define+`.
 - Synthesis (`read_verilog -I` and `read_slang -I`, on both yosys backends), FPGA (openXC7's `read_verilog -I`, Vivado's `synth_design -include_dirs`), and the Vivado CDC tool forward every `+incdir+`, each directory resolved against the filelist that declared it.
-- `rb cdc` and the hub's domain-map build use rtl-buddy-cdc, which has no include-path option. The run logs `cdc.filelist_incdirs_unsupported` naming the directories, and the analyzer's own `Cannot find include file` error follows if a header resolves only through them.
+- `rb cdc` and the hub's domain-map build pass every `+incdir+` to rtl-buddy-cdc as `--incdir <dir>`, resolved the same way. An rtl-buddy-cdc whose `lint --help` does not list `--incdir` gets none; the run logs `cdc.filelist_incdirs_unsupported` naming the directories, and the analyzer's own `Cannot find include file` error follows if a header resolves only through them. See [Quirks & Known Issues](https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#filelist-incdir-needs-rtl-buddy-cdc-07-or-later).
 - `rb synth` applies `+define+` entries. The `synth.yaml` entry's `defines:` win on conflict and log `synth.filelist_defines_overridden`.
 - Renderer-only flows drop definitions.
 

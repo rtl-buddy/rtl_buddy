@@ -2441,10 +2441,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/xpm-cdc-macros-require-rtl-buddy-cdc-04-or-later.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#rtl-buddy-cdc-cannot-take-a-filelist-incdir",
-          "slug": "rtl-buddy-cdc-cannot-take-a-filelist-incdir",
-          "title": "rtl-buddy-cdc cannot take a filelist `+incdir+`",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/rtl-buddy-cdc-cannot-take-a-filelist-incdir.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#filelist-incdir-needs-rtl-buddy-cdc-07-or-later",
+          "slug": "filelist-incdir-needs-rtl-buddy-cdc-07-or-later",
+          "title": "Filelist `+incdir+` needs rtl-buddy-cdc 0.7 or later",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/filelist-incdir-needs-rtl-buddy-cdc-07-or-later.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#coverage-totals-are-per-elaboration-by-default",
