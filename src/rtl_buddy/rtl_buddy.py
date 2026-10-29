@@ -1196,6 +1196,7 @@ class RtlBuddy:
         list_only: bool = False,
         log_path: str | Path | None = None,
         writes_artifacts: bool = True,
+        output: str | Path | None = None,
     ) -> ExecutionContext:
         """Build the command's ExecutionContext and attach the file log.
 
@@ -1227,6 +1228,10 @@ class RtlBuddy:
         nothing under ``artefacts/`` (`rb filelist`, `rb saif`, `rb verible`): they
         take no artefact-tree lock and, like ``list_only``, attach no file log, so they
         run alongside each other and alongside a run that holds the tree.
+
+        ``output`` is for a command whose only write is that one file (`rb filelist`,
+        `rb saif`, `rb verible filelist -o`): it writes artefacts, so locks and logs,
+        exactly when ``output`` resolves inside the artefact tree.
         """
         if (primary_config is None) == (command_root is None):
             raise FatalRtlBuddyError(
@@ -1245,6 +1250,11 @@ class RtlBuddy:
                 invocation_cwd=self.invocation_cwd,
                 command_root=command_root,
                 run_tag=self._run_tag,
+            )
+
+        if output is not None:
+            writes_artifacts = ctx.resolve_input(output).is_relative_to(
+                ctx.artifact_root.resolve()
             )
 
         ctx.command_root.mkdir(parents=True, exist_ok=True)
@@ -8138,7 +8148,7 @@ class RtlBuddy:
         generate filelists using models.yaml
         """
         ctx = self._enter_command_context(
-            primary_config=model_config, writes_artifacts=False
+            primary_config=model_config, output=output_path
         )
         model_cfg = ModelConfigLoader(str(ctx.primary_config)).get_model(model_name)
         resolved_output = str(ctx.resolve_input(output_path))
@@ -13587,7 +13597,7 @@ class RtlBuddy:
         from .tools.saif_from_trace import convert
 
         ctx = self._enter_command_context(
-            command_root=self.invocation_cwd, writes_artifacts=False
+            command_root=self.invocation_cwd, output=output
         )
         convert(ctx.resolve_input(trace), ctx.resolve_input(output))
 
@@ -15764,7 +15774,7 @@ class RtlBuddy:
         resolve cross-file symbols (go-to-definition, hover, references)
         """
         self._enter_command_context(
-            command_root=self.invocation_cwd, writes_artifacts=False
+            command_root=self.invocation_cwd, writes_artifacts=False, output=output
         )
         project_root = self.root_cfg.get_project_rootdir()
         if output is None:

@@ -113,7 +113,7 @@ def test_cli_command_fails_loud_when_artefacts_locked(minimal_project: Path, loc
 
 
 def test_filelist_runs_while_another_run_holds_the_tree(minimal_project: Path, locks):
-    """`rb filelist` writes nothing under artefacts/, so it neither takes the lock nor touches the holder's log."""
+    """`rb filelist` writing outside artefacts/ neither takes the lock nor touches the holder's log."""
     locks().acquire(minimal_project / "artefacts", command="test")
     log = minimal_project / "rtl_buddy.log"
     log.write_text("the holder's log\n")
@@ -134,6 +134,40 @@ def test_saif_takes_no_tree_lock(minimal_project: Path, locks):
     result = runner.invoke(rb.app, ["saif", "missing.fst", "out.saif"])
     assert "another rtl-buddy run" not in str(result.exception)
     assert not rb._artifact_locks._held
+
+
+def test_filelist_into_the_tree_takes_the_lock(minimal_project: Path, locks):
+    out = minimal_project / "artefacts" / "basic" / "run.f"
+    out.parent.mkdir(parents=True)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["filelist", "example", "artefacts/basic/run.f", "-c", "models.yaml"]
+    )
+    assert result.exit_code == 0, result.output
+    assert out.read_text()
+    assert (minimal_project / "artefacts" / LOCK_FILENAME).is_file()
+    assert rb._artifact_locks._held
+    rb._artifact_locks.release_all()
+
+    locks().acquire(minimal_project / "artefacts", command="test")
+    out.write_text("the holder's input\n")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["filelist", "example", str(out), "-c", "models.yaml"]
+    )
+    assert result.exit_code != 0
+    assert "another rtl-buddy run" in str(result.exception)
+    assert out.read_text() == "the holder's input\n"
+
+
+def test_saif_into_the_tree_fails_while_another_run_holds_it(
+    minimal_project: Path, locks
+):
+    locks().acquire(minimal_project / "artefacts", command="test")
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["saif", "missing.fst", "artefacts/power.saif"])
+    assert result.exit_code != 0
+    assert "another rtl-buddy run" in str(result.exception)
 
 
 def test_cli_list_path_ignores_held_lock(minimal_project: Path, locks):
@@ -627,3 +661,15 @@ def test_acquirer_that_loses_the_path_to_a_reclaimer_stands_down(tmp_path, monke
     with pytest.raises(FatalRtlBuddyError, match="already using"):
         locks.acquire(tmp_path, command="pnr")
     assert not locks._held
+
+
+def test_verible_filelist_into_the_tree_fails_while_another_run_holds_it(
+    minimal_project: Path, locks
+):
+    locks().acquire(minimal_project / "artefacts", command="test")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["verible", "filelist", "-o", "artefacts/verible.filelist"]
+    )
+    assert result.exit_code != 0
+    assert "another rtl-buddy run" in str(result.exception)
