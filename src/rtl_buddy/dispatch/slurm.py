@@ -128,6 +128,45 @@ _DEDUP_STATES = _LIVE_STATES + _TERMINAL_RETAINED_STATES
 _DRAIN_FILTER = ",".join(_LIVE_STATES)
 _DEDUP_FILTER = ",".join(_DEDUP_STATES)
 
+# sbatch refusals that clear as the cluster's queue drains (the controller's
+# `MaxJobCount`). Matched case-insensitively against sbatch's stderr. A timeout is not
+# one: the controller may have accepted the job, and a resubmit would duplicate it.
+_TRANSIENT_SUBMIT_ERRORS = (
+    "maxjobcount",
+    "job queue full",
+    "temporarily unable to accept job",
+    "unable to create job record, try again",
+)
+# A transiently refused submission waits SUBMIT_RETRY_BACKOFF_SEC, doubling up to
+# SUBMIT_RETRY_BACKOFF_MAX_SEC, and gives up once the next wait would pass
+# SUBMIT_RETRY_DEADLINE_SEC since the first attempt.
+SUBMIT_RETRY_BACKOFF_SEC = 30
+SUBMIT_RETRY_BACKOFF_MAX_SEC = 300
+SUBMIT_RETRY_DEADLINE_SEC = 1800
+
+
+def _is_transient_refusal(stderr: str | None) -> bool:
+    text = (stderr or "").lower()
+    return any(marker in text for marker in _TRANSIENT_SUBMIT_ERRORS)
+
+
+class _SbatchOutcome(NamedTuple):
+    proc: subprocess.CompletedProcess
+    # Resubmissions after the first attempt, and seconds spent waiting between them.
+    retries: int
+    waited_sec: float
+
+    def retry_note(self) -> str:
+        """`` (still refused after N retries over Ss)`` once a retry was made, else empty."""
+        if not self.retries:
+            return ""
+        return (
+            f" (still refused after {self.retries} "
+            f"{'retry' if self.retries == 1 else 'retries'} over "
+            f"{round(self.waited_sec)}s)"
+        )
+
+
 # squeue answers a state name its Slurm predates with `Invalid job state specified:
 # <NAME>`. Dropping only that name keeps every state the cluster knows; dropping
 # `--states` would fall back to squeue's narrower default and hide held jobs. An empty
@@ -945,11 +984,12 @@ class SlurmDispatchBackend(DispatchBackend):
             else []
         )
         cmd += ["--wrap", shlex.join(build_job_argv(spec))]
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=spec.suite_dir)
+        outcome = self._run_sbatch(cmd, cwd=spec.suite_dir, what="build job")
+        proc = outcome.proc
         if proc.returncode != 0:
             raise FatalRtlBuddyError(
-                f"sbatch failed for build job (rc={proc.returncode}): "
-                f"{proc.stderr.strip()}"
+                f"sbatch failed for build job (rc={proc.returncode})"
+                f"{outcome.retry_note()}: {proc.stderr.strip()}"
             )
         job_id, cluster = self._accepted_on(proc.stdout)
         if not job_id:
@@ -990,6 +1030,70 @@ class SlurmDispatchBackend(DispatchBackend):
             cluster=cluster,
         )
         return JobHandle(job_id=job_id, spec=spec, cluster=cluster)
+
+    def _run_sbatch(
+        self,
+        cmd: list[str],
+        *,
+        cwd,
+        what: str,
+        jobs: int = 1,
+        run=None,
+        abandon=None,
+    ):
+        """Run ``sbatch``, resubmitting a transient refusal with bounded backoff.
+
+        Returns an :class:`_SbatchOutcome`; the caller reports a final failure. Only
+        refusals matching :data:`_TRANSIENT_SUBMIT_ERRORS` are retried, so nothing was
+        queued by the attempt being repeated; a submission stopped by its timeout is
+        not, whatever sbatch printed. ``run`` makes one attempt and returns a
+        :class:`subprocess.CompletedProcess`, by default running ``cmd`` directly.
+        ``abandon`` is polled through each wait as :meth:`_guarded_sbatch` polls it.
+        """
+        if run is None:
+
+            def run():
+                return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+
+        started = time.monotonic()
+        retries = 0
+        while True:
+            proc = run()
+            waited = time.monotonic() - started
+            if proc.returncode in (0, _TIMED_OUT) or not _is_transient_refusal(
+                proc.stderr
+            ):
+                return _SbatchOutcome(proc, retries, waited)
+            delay = min(
+                SUBMIT_RETRY_BACKOFF_MAX_SEC,
+                SUBMIT_RETRY_BACKOFF_SEC * 2**retries,
+            )
+            if waited + delay > SUBMIT_RETRY_DEADLINE_SEC:
+                return _SbatchOutcome(proc, retries, waited)
+            retries += 1
+            log_event(
+                logger,
+                logging.WARNING,
+                "dispatch.submit_deferred",
+                backend=self.name,
+                what=what,
+                jobs=jobs,
+                attempt=retries,
+                delay_sec=delay,
+                waited_sec=round(waited),
+                deadline_sec=SUBMIT_RETRY_DEADLINE_SEC,
+                error=proc.stderr.strip().splitlines()[-1]
+                if proc.stderr.strip()
+                else "",
+            )
+            if abandon is None:
+                time.sleep(delay)
+                continue
+            until = time.monotonic() + delay
+            while (left := until - time.monotonic()) > 0:
+                if abandon():
+                    raise SubmissionAbandoned(f"submission of {what} given up")
+                time.sleep(min(_SUBMIT_POLL_S, left))
 
     def _accepted_on(self, stdout: str) -> tuple[str, str | None]:
         """``(job id, cluster)`` for a submission just made.
@@ -1033,11 +1137,12 @@ class SlurmDispatchBackend(DispatchBackend):
         delay_sec: float = 0.0,
     ) -> JobHandle:
         argv = self._sbatch_argv(spec, dependency, delay_sec)
-        proc = subprocess.run(argv, capture_output=True, text=True, cwd=spec.suite_dir)
+        outcome = self._run_sbatch(argv, cwd=spec.suite_dir, what=spec.display_name())
+        proc = outcome.proc
         if proc.returncode != 0:
             raise FatalRtlBuddyError(
                 f"sbatch failed for {spec.display_name()} "
-                f"(rc={proc.returncode}): {proc.stderr.strip()}"
+                f"(rc={proc.returncode}){outcome.retry_note()}: {proc.stderr.strip()}"
             )
         job_id, cluster = self._accepted_on(proc.stdout)
         if not job_id:
@@ -1075,11 +1180,12 @@ class SlurmDispatchBackend(DispatchBackend):
         )
         cmd += self.sbatch_args
         cmd += ["--wrap", shlex.join(coverage_job_argv(spec))]
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=spec.suite_dir)
+        outcome = self._run_sbatch(cmd, cwd=spec.suite_dir, what="coverage job")
+        proc = outcome.proc
         if proc.returncode != 0:
             raise FatalRtlBuddyError(
-                f"sbatch failed for the coverage job (rc={proc.returncode}): "
-                f"{proc.stderr.strip()}"
+                f"sbatch failed for the coverage job (rc={proc.returncode})"
+                f"{outcome.retry_note()}: {proc.stderr.strip()}"
             )
         job_id, cluster = self._accepted_on(proc.stdout)
         if not job_id:
@@ -1109,7 +1215,9 @@ class SlurmDispatchBackend(DispatchBackend):
 
         ``sbatch`` runs through ``_GUARDED_SBATCH`` (see :meth:`_guarded_sbatch`), so an
         interrupt, or ``abandon`` returning true, gives the submission up at once, and
-        a job sbatch has accepted or accepts later is cancelled.
+        a job sbatch has accepted or accepts later is cancelled. A transient refusal is
+        resubmitted as :meth:`_run_sbatch` describes, and ``abandon`` also ends the
+        wait before a resubmission.
 
         The chain's ``afterok`` goes after ``sbatch-args``, because Slurm takes the last
         ``--dependency``: a dependency there or in ``SBATCH_DEPENDENCY`` holds the first
@@ -1131,17 +1239,30 @@ class SlurmDispatchBackend(DispatchBackend):
         if gate is not None:
             cmd.append(gate)
         cmd += ["--wrap", shlex.join(pnr_stage_job_argv(spec))]
-        returncode, stdout, stderr = self._guarded_sbatch(
-            cmd, spec=spec, abandon=abandon
+
+        def guarded():
+            returncode, stdout, stderr = self._guarded_sbatch(
+                cmd, spec=spec, abandon=abandon
+            )
+            return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
+
+        outcome = self._run_sbatch(
+            cmd,
+            cwd=spec.suite_dir,
+            what=spec.display_name(),
+            run=guarded,
+            abandon=abandon,
         )
+        returncode, stdout = outcome.proc.returncode, outcome.proc.stdout
         if returncode != 0:
-            detail = stderr.strip()
+            detail = outcome.proc.stderr.strip()
             if returncode == _TIMED_OUT:
                 detail = f"sbatch did not answer within {SUBMIT_TIMEOUT_S:g}s" + (
                     f"; {detail}" if detail else ""
                 )
             raise FatalRtlBuddyError(
-                f"sbatch failed for {spec.display_name()} (rc={returncode}): {detail}"
+                f"sbatch failed for {spec.display_name()} (rc={returncode})"
+                f"{outcome.retry_note()}: {detail}"
             )
         job_id, cluster = self._accepted_on(stdout)
         if not job_id:
@@ -1572,14 +1693,18 @@ class SlurmDispatchBackend(DispatchBackend):
         cmd += self.sbatch_args
         cmd += [str(script), str(manifest)]
 
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, cwd=specs[0].suite_dir
-        )
         where = f" (slice {slice_index}/{slice_count})" if slice_count > 1 else ""
+        outcome = self._run_sbatch(
+            cmd,
+            cwd=specs[0].suite_dir,
+            what=f"array {job_name}{where}",
+            jobs=len(specs),
+        )
+        proc = outcome.proc
         if proc.returncode != 0:
             raise FatalRtlBuddyError(
                 f"sbatch array submit failed{where} ({len(specs)} jobs, "
-                f"rc={proc.returncode}): {proc.stderr.strip()}"
+                f"rc={proc.returncode}){outcome.retry_note()}: {proc.stderr.strip()}"
                 f"{self._array_limit_hint(proc.stderr)}"
             )
         base_id, cluster = self._accepted_on(proc.stdout)

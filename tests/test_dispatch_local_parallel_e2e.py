@@ -31,6 +31,18 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _clean_env() -> dict[str, str]:
+    """The environment for an `rb` subprocess, without settings that change what it builds.
+
+    A shared-build root in the caller's shell would let a job reuse a build another
+    run left there, so no compiler starts.
+    """
+    env = dict(os.environ)
+    for name in ("RTL_BUDDY_SHARED_BUILD_ROOT", "RTL_BUDDY_JOB_TAG"):
+        env.pop(name, None)
+    return env
+
+
 _COLOCATED_BASES = {
     "tests-left.yaml": ["left_alpha", "left_beta"],
     "tests-right.yaml": ["right_alpha", "right_beta"],
@@ -81,7 +93,7 @@ def _run(
     shutil.copytree(fixture, project)
     if prepare_project is not None:
         prepare_project(project)
-    env = dict(os.environ)
+    env = _clean_env()
     # The fake verilator lives beside the Slurm shims; RB_SHIM_DB is where they record
     # calls.
     env["PATH"] = f"{_SHIMS}{os.pathsep}{env['PATH']}"
@@ -298,7 +310,7 @@ def _recorded_compiler_pids(pids_file: Path) -> list[int]:
 
 
 def _start_hanging_build_job(project: Path, pids_file: Path, parallel: str):
-    env = dict(os.environ)
+    env = _clean_env()
     env["PATH"] = f"{_SHIMS}{os.pathsep}{env['PATH']}"
     # Long enough that "it died" cannot be confused with "it finished".
     env["RB_SHIM_HANG"] = "60"
@@ -322,6 +334,31 @@ def _start_hanging_build_job(project: Path, pids_file: Path, parallel: str):
     )
 
 
+def _wait_for_compilers(proc, pids_file: Path, count: int, *, timeout=300):
+    """The pids of the first ``count`` compilers the build job started.
+
+    The failure says whether the job exited first, with its output, or was still
+    running at the deadline.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        compilers = _recorded_compiler_pids(pids_file)
+        if len(compilers) >= count:
+            return compilers
+        if proc.poll() is not None:
+            out = proc.communicate()[0]
+            pytest.fail(
+                f"build job exited {proc.returncode} after starting "
+                f"{len(compilers)} of {count} compilers:\n{out}"
+            )
+        if time.monotonic() >= deadline:
+            pytest.fail(
+                f"build job still running after {timeout}s with {len(compilers)} "
+                f"of {count} compilers started"
+            )
+        time.sleep(0.1)
+
+
 def test_cancelling_a_parallel_build_job_kills_its_compilers(tmp_path_factory):
     """SIGTERM to the build job takes the compilers with it.
 
@@ -335,17 +372,10 @@ def test_cancelling_a_parallel_build_job_kills_its_compilers(tmp_path_factory):
     shutil.copytree(_PARALLEL_FIXTURE, project)
     pids_file = work / "compiler_pids.txt"
     proc = _start_hanging_build_job(project, pids_file, "2")
-    compilers: list[int] = []
     try:
         # Both compilers are in flight; cancelling before the pool filled would prove
         # nothing.
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
-            compilers = _recorded_compiler_pids(pids_file)
-            if len(compilers) >= 2:
-                break
-            time.sleep(0.1)
-        assert len(compilers) >= 2, f"compilers never started: {compilers}"
+        compilers = _wait_for_compilers(proc, pids_file, 2)
 
         proc.send_signal(signal.SIGTERM)
         out = proc.communicate(timeout=60)[0]
@@ -363,7 +393,7 @@ def test_cancelling_a_parallel_build_job_kills_its_compilers(tmp_path_factory):
         if proc.poll() is None:  # pragma: no cover - only on a failed run
             proc.kill()
             proc.communicate()
-        for pid in compilers:  # pragma: no cover - only on a failed run
+        for pid in _recorded_compiler_pids(pids_file):  # pragma: no cover
             try:
                 os.killpg(pid, signal.SIGKILL)
             except OSError:
@@ -411,15 +441,8 @@ def test_cancelling_a_parallel_build_job_starts_no_queued_compiler(tmp_path_fact
     _append_third_compile_key(project)
     pids_file = work / "compiler_pids.txt"
     proc = _start_hanging_build_job(project, pids_file, "2")
-    compilers: list[int] = []
     try:
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
-            compilers = _recorded_compiler_pids(pids_file)
-            if len(compilers) >= 2:
-                break
-            time.sleep(0.1)
-        assert len(compilers) >= 2, f"compilers never started: {compilers}"
+        _wait_for_compilers(proc, pids_file, 2)
 
         proc.send_signal(signal.SIGTERM)
         out = proc.communicate(timeout=60)[0]
@@ -472,7 +495,7 @@ def test_a_second_build_job_waits_for_the_first_and_reuses_its_build(tmp_path_fa
     first_log = work / "first.log"
     second_log = work / "second.log"
 
-    env = dict(os.environ)
+    env = _clean_env()
     env["PATH"] = f"{_SHIMS}{os.pathsep}{env['PATH']}"
     # One line per verilator invocation from both processes; the count is the assertion.
     env["RB_SHIM_SPANS"] = str(spans)
@@ -593,7 +616,7 @@ def _run_same_key_build_job(work: Path, *, precreate: bool):
     spans = work / "compiler_spans.txt"
     log = work / "build.log"
 
-    env = dict(os.environ)
+    env = _clean_env()
     env["PATH"] = f"{_SHIMS}{os.pathsep}{env['PATH']}"
     env["RB_SHIM_SPANS"] = str(spans)
     # The narrowing applies to builds that report their dependencies, as real Verilator
