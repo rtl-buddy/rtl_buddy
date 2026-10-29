@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import shutil
+import subprocess
+import sys
 import threading
 import time
 from contextlib import contextmanager, nullcontext
@@ -6299,10 +6301,16 @@ def test_an_input_too_large_to_hash_keeps_two_checkouts_apart(tmp_path, monkeypa
     """Above the hashing cap the input falls back to its stats, so two branches with different ROM images get different keys."""
     cache = tmp_path / "cache"
     monkeypatch.setattr(vlog_sim_module, "_CONTENT_HASH_MAX_BYTES", 8)
-    for name, rom in (("wt-a", "0" * 64), ("wt-b", "1" * 64)):
+    for name, rom, mtime_ns in (
+        ("wt-a", "0" * 64, 1_700_000_000_000_000_000),
+        ("wt-b", "1" * 64, 1_700_000_100_000_000_000),
+    ):
         checkout = tmp_path / name
         _write_checkout(checkout)
-        (checkout / "rtl" / "rom.hex").write_text(rom)
+        image = checkout / "rtl" / "rom.hex"
+        image.write_text(rom)
+        # Explicit mtimes: same-size writes can share one mtime on a coarse clock.
+        os.utime(image, ns=(mtime_ns, mtime_ns))
 
     def _key(name):
         _as_a_fresh_process()
@@ -6328,10 +6336,12 @@ def test_an_unhashable_run_f_source_keeps_two_checkouts_apart(tmp_path, monkeypa
     cache = tmp_path / "cache"
     monkeypatch.setattr(vlog_sim_module, "_CONTENT_HASH_MAX_BYTES", 8)
 
-    def _key(name, rom):
+    def _key(name, rom, mtime_ns):
         checkout = tmp_path / name
         suite = _write_checkout(checkout)
-        (checkout / "rtl" / "rom.hex").write_text(rom)
+        image = checkout / "rtl" / "rom.hex"
+        image.write_text(rom)
+        os.utime(image, ns=(mtime_ns, mtime_ns))
         _as_a_fresh_process()
         return (
             _make_sim(
@@ -6348,7 +6358,9 @@ def test_an_unhashable_run_f_source_keeps_two_checkouts_apart(tmp_path, monkeypa
             .shared_dir.name
         )
 
-    assert _key("wt-a", "0" * 64) != _key("wt-b", "1" * 64)
+    assert _key("wt-a", "0" * 64, 1_700_000_000_000_000_000) != _key(
+        "wt-b", "1" * 64, 1_700_000_100_000_000_000
+    )
 
 
 def test_an_out_of_root_input_that_cannot_be_hashed_stays_stat_free(
@@ -8083,6 +8095,20 @@ _PRESERVED = {
 }
 
 
+def _lock_is_held_by_another_process(lock):
+    """flock conflicts only across processes on filesystems that emulate it (NFS)."""
+    probe = (
+        "import fcntl, sys\n"
+        "fd = open(sys.argv[1], 'a')\n"
+        "try:\n"
+        "    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "except BlockingIOError:\n"
+        "    sys.exit(0)\n"
+        "sys.exit(1)\n"
+    )
+    return subprocess.run([sys.executable, "-c", probe, str(lock)]).returncode == 0
+
+
 def _install_prunable_builder(monkeypatch, calls, **kwargs):
     _install_fake_builder(monkeypatch, calls, **kwargs)
     original = vlog_sim_module.run_managed_process
@@ -8125,9 +8151,7 @@ def test_shared_build_pruning_preserves_runtime_and_stamp_dependencies(
         if path.name == "Vtop.cpp":
             assert not marker.exists()
             assert not (directory / "Vtop__verFiles.dat").exists()
-            with lock.open() as other:
-                with pytest.raises(BlockingIOError):
-                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assert _lock_is_held_by_another_process(lock)
         return original_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", checked_unlink)

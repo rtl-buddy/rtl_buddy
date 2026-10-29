@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from pathlib import Path
@@ -104,6 +105,24 @@ def reset_print_failures_only():
     logging_utils.set_print_failures_only(False)
     yield
     logging_utils.set_print_failures_only(False)
+
+
+@pytest.fixture(autouse=True)
+def drop_root_log_handlers_a_test_attached():
+    """Remove root handlers a test attached, so none outlives its captured stream.
+
+    `setup_logging()` binds a console handler to the stderr in force at the time. After
+    a test that captured stderr, that stream is closed and the next log record in the
+    same process prints a `--- Logging error ---` block.
+    """
+    root = logging.getLogger()
+    before = list(root.handlers)
+    yield
+    for handler in list(root.handlers):
+        if handler in before or type(handler).__module__.startswith("_pytest"):
+            continue
+        root.removeHandler(handler)
+        handler.close()
 
 
 @pytest.fixture
