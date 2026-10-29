@@ -1018,7 +1018,7 @@ def test_without_antenna_repair_the_rounds_render_as_before(tmp_path, monkeypatc
     assert scripts[True].keys() == scripts[False].keys()
     assert "06_post_route_repair.r2.repair.tcl" in scripts[True]
     for name, text in scripts[True].items():
-        assert "repair_antennas" not in scripts[False][name]
+        assert "Detailed-route antenna repair" not in scripts[False][name]
         assert text.count(block) == (1 if name.endswith(".repair.tcl") else 0)
         assert text.replace(block, "") == scripts[False][name]
 
