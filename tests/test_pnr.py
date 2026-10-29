@@ -403,7 +403,7 @@ def test_pnr_platform_placement_falls_back_to_the_flow_defaults(tmp_path):
     assert cfg.get_placement_density() == 0.7
     assert cfg.get_placement_padding() == 0
     assert cfg.get_placement_macro_channel() is None
-    assert cfg.get_placement_macro_pin_aware_channels() is True
+    assert cfg.get_placement_macro_pin_aware_channels() is None
     assert cfg.get_placement_macro_cell_halo() == 0.0
 
 
@@ -433,19 +433,55 @@ def test_pnr_platform_placement_overrides_the_pdk_field_by_field(tmp_path):
 
 
 @pytest.mark.parametrize("pin_aware", [True, False])
-def test_pnr_platform_rejects_pin_aware_channels_without_a_channel(tmp_path, pin_aware):
-    """RTL-MP fails MPL-0079 on `-pin_aware_channels` without `-min_channel_size`."""
+def test_pin_aware_channels_resolve_to_none_without_a_channel(tmp_path, pin_aware):
+    """RTL-MP takes `-pin_aware_channels` only with `-min_channel_size`, so the flag has no value without a channel."""
     from rtl_buddy.config.pdk import PlacementFile
 
     pdk = _make_pdk_cfg(
         tmp_path, placement=PlacementFile(macro_pin_aware_channels=pin_aware)
     )
-    with pytest.raises(FatalRtlBuddyError) as excinfo:
-        _platform(pdk)
-    assert (
-        "placement.macro-pin-aware-channels needs placement.macro-channel "
-        "(set on the platform or its PDK)"
-    ) in str(excinfo.value)
+    cfg = _platform(pdk)
+    assert cfg.get_placement_macro_pin_aware_channels() is None
+    with_channel = cfg.with_run_placement(PlacementFile(macro_channel=40), "r")
+    assert with_channel.get_placement_macro_pin_aware_channels() is pin_aware
+
+
+def test_a_null_macro_channel_clears_the_one_a_lower_level_sets(tmp_path):
+    """`macro-channel: null` on a platform or run drops the PDK's or platform's channel, and with it the pin-aware flag."""
+    from rtl_buddy.config.pdk import PlacementFile, validate_placement
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(macro_channel=80))
+    assert _platform(pdk).get_placement_macro_channel() == [80.0, 80.0]
+
+    platform = _platform(pdk, placement=PlacementFile(macro_channel=None))
+    assert platform.get_placement_macro_channel() is None
+    assert platform.get_placement_macro_pin_aware_channels() is None
+
+    run = _platform(pdk).with_run_placement(PlacementFile(macro_channel=None), "r")
+    assert run.get_placement_macro_channel() is None
+
+    reset = platform.with_run_placement(
+        validate_placement(PlacementFile(macro_channel=20), "r"), "r"
+    )
+    assert reset.get_placement_macro_channel() == [20.0, 20.0]
+
+    kept = _platform(pdk, placement=PlacementFile(density=0.5))
+    assert kept.get_placement_macro_channel() == [80.0, 80.0]
+    assert kept.with_run_placement(
+        PlacementFile(density=0.4), "r"
+    ).get_placement_macro_channel() == [80.0, 80.0]
+
+
+def test_a_null_macro_channel_loads_from_yaml(tmp_path):
+    pnr_yaml = tmp_path / "pnr.yaml"
+    pnr_yaml.write_text(
+        _PNR_YAML.replace(
+            "      core-margin: 3.0\n",
+            "      core-margin: 3.0\n    placement:\n      macro-channel: null\n",
+        )
+    )
+    placement = PnrSuiteConfig(str(pnr_yaml)).get_runs("demo_pnr")[0].get_placement()
+    assert placement.macro_channel is None
 
 
 def test_pnr_platform_rejects_its_own_out_of_range_placement(tmp_path):
@@ -4369,14 +4405,13 @@ def _rtl_mp_yaml(tmp_path, floorplan_extra):
     [
         (
             "macro-placement: rtl-mp",
-            "'macro-placement' is no longer a key: rb places macros with RTL-MP; "
+            "'macro-placement' is not a key: rb places macros with RTL-MP; "
             "remove the key, or use a 'macro-placement' hook for another placement",
         ),
         (
             "macro-anchor: upper-right",
-            "'macro-anchor' is no longer a key: the packer that used it is gone; "
-            "remove the key, fix macros with floorplan.macros locations, or use a "
-            "'macro-placement' hook",
+            "'macro-anchor' is not a key: fix macros with floorplan.macros "
+            "locations, or place them with a 'macro-placement' hook",
         ),
     ],
 )
@@ -4434,7 +4469,10 @@ def test_rtl_mp_gets_the_macro_channel_as_orfs_passes_it(tmp_path, placement, op
 
     assert (
         "  file mkdir $OUT_DIR/rtlmp\n"
-        "  if {[string first -min_channel_size [info body rtl_macro_placer]] < 0} {\n"
+        "  if {[catch {info body rtl_macro_placer} rb_mp_body]} {\n"
+        "    set rb_mp_body -min_channel_size\n"
+        "  }\n"
+        "  if {[string first -min_channel_size $rb_mp_body] < 0} {\n"
         "    error {placement.macro-channel needs rtl_macro_placer -min_channel_size "
         "(OpenROAD 26Q4 or newer)}\n"
         "  }\n"
@@ -4442,6 +4480,30 @@ def test_rtl_mp_gets_the_macro_channel_as_orfs_passes_it(tmp_path, placement, op
         f"      {options}\n"
     ) in text
     assert "halo" not in text.split(">>> Macro placement")[1].split("MACRO_CELL")[0]
+
+
+@pytest.mark.parametrize(
+    ("definition", "outcome"),
+    [
+        ("proc rtl_macro_placer {args} { # -min_channel_size\n }", "0 "),
+        ("proc rtl_macro_placer {args} { return }", "1 placement.macro-channel needs"),
+        # A command that is not a Tcl proc cannot be probed: the option is assumed.
+        ("", "0 "),
+    ],
+)
+def test_the_channel_probe_assumes_the_option_when_the_placer_is_not_a_proc(
+    definition, outcome
+):
+    from tcl_eval import _tcl_eval
+
+    from rtl_buddy.tools.pnr_openroad import _RTL_MP_CHANNEL_PROBE
+
+    result = _tcl_eval(
+        f"{definition}\n"
+        f"set result [catch {{{_RTL_MP_CHANNEL_PROBE}}} message]\n"
+        'set result "$result $message"'
+    )
+    assert result.startswith(outcome)
 
 
 def test_rtl_mp_target_util_follows_the_run_density(tmp_path):
@@ -4471,7 +4533,7 @@ def test_the_removed_macro_halo_key_fails_to_load_saying_what_to_do(tmp_path):
     with pytest.raises(FatalRtlBuddyError) as err:
         PnrSuiteConfig(str(pnr_yaml))
     assert (
-        "pnr run 'demo_pnr': placement: 'macro-halo' is no longer a key: set "
+        "pnr run 'demo_pnr': placement: 'macro-halo' is not a key: set "
         "placement.macro-channel to twice the halo (macro-halo: 20 is "
         "macro-channel: 40), RTL-MP's minimum channel between macros and from the "
         "core edge"
@@ -4490,8 +4552,10 @@ def test_the_abstract_digest_takes_the_macro_channel_and_pin_awareness(tmp_path)
         return pnr_abstract.abstract_config(pnr_cfg, platform)["placement"]
 
     unset = placement()
-    assert unset["macro_channel"] is None
+    assert "macro_channel" not in unset
     assert "macro_pin_aware_channels" not in unset
+    assert "macro_channel" not in placement(macro_pin_aware_channels=False)
+    assert "macro_pin_aware_channels" not in placement(macro_pin_aware_channels=False)
     assert placement(macro_channel=80)["macro_channel"] == [80.0, 80.0]
     assert placement(macro_channel=80)["macro_pin_aware_channels"] is True
     assert (

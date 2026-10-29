@@ -44,6 +44,8 @@ from test_pnr_checkpoints import (
 from rtl_buddy.config.pdk import PlacementFile
 from rtl_buddy.config.pnr import (
     HOOK_POINTS,
+    BlockageType,
+    PnrBlockage,
     PnrConfigFile,
     PnrFloorplan,
     PnrFloorplanFile,
@@ -418,6 +420,27 @@ def test_the_macro_placement_hook_replaces_rtl_mp_after_the_directives(tmp_path)
     assert "rtl_macro_placer" not in text
     # The macro branch and its keep-out halos are still there around the hook.
     assert text.index("if {[llength $macros] > 0} {") < apply_at
+
+
+def test_the_keepout_check_follows_a_macro_placement_hook(tmp_path):
+    """A hook may place a macro on a hard blockage as RTL-MP may, so the check runs after either."""
+    hook = str(tmp_path / "macros.tcl")
+    floorplan = PnrFloorplan(
+        utilization=0.55,
+        aspect=1.0,
+        core_margin=2.0,
+        blockages=[PnrBlockage((5.0, 5.0, 50.0, 50.0), BlockageType.HARD)],
+    )
+    text = _render_flow(
+        tmp_path,
+        _full_platform(tmp_path),
+        floorplan=floorplan,
+        hooks={"macro-placement": (hook,)},
+    )
+
+    assert text.index("rb::hook::run macro-placement") < text.index(
+        "  rb::keepouts::check $macros"
+    )
 
 
 def test_a_macro_placement_hook_loads_with_any_floorplan_and_lets_entries_orient(

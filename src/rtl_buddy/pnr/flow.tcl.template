@@ -79,7 +79,7 @@ foreach inst [$block getInsts] {
   if {[[$inst getMaster] isBlock]} { lappend macros $inst }
 }
 {{ @/design }}if {[llength $macros] > 0} {
-{{ macro_directives_block }}{{ macro_place_block }}  # A hard placement blockage over each macro grown by MACRO_CELL_HALO, or by
+{{ macro_directives_block }}{{ macro_place_block }}{{ keepout_check_block }}  # A hard placement blockage over each macro grown by MACRO_CELL_HALO, or by
   # its `floorplan.macros` halo in MACRO_CELL_HALOS, so no standard cell abuts
   # a macro edge; the router reaches such a cell's pins only with a Metal
   # Spacing violation. It leaves the rows whole: rows cut closer to a macro

@@ -254,10 +254,6 @@ class PnrFloorplan:
     # A `macro-placement` hook places the macros instead of RTL-MP, so a `floorplan.macros` entry may orient a macro without locating it.
     macro_hook: bool = False
 
-    def flow_blockages(self) -> list["PnrBlockage"]:
-        """The blockages that live for the whole flow."""
-        return [b for b in self.blockages if b.lifetime is BlockageLifetime.FLOW]
-
     def global_placement_blockages(self) -> list["PnrBlockage"]:
         """The blockages that exist only during `global_placement`."""
         return [
@@ -1617,9 +1613,8 @@ PNR_RUN_SPEC = KeySpec(
             removed={
                 "macro-placement": "rb places macros with RTL-MP; remove the "
                 "key, or use a 'macro-placement' hook for another placement",
-                "macro-anchor": "the packer that used it is gone; remove the "
-                "key, fix macros with floorplan.macros locations, or use a "
-                "'macro-placement' hook",
+                "macro-anchor": "fix macros with floorplan.macros locations, "
+                "or place them with a 'macro-placement' hook",
             },
         ),
         "pdn": KeySpec(

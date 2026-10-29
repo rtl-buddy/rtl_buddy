@@ -2782,7 +2782,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "config.unknown_key_rejected":
             if fields.get("removed"):
-                return f"{fields.get('path')}: {fields.get('block')}: {fields.get('key')!r} is no longer a key: {fields.get('removed')}"
+                return f"{fields.get('path')}: {fields.get('block')}: {fields.get('key')!r} is not a key: {fields.get('removed')}"
             msg = f"{fields.get('path')}: {fields.get('block')}: unknown key {fields.get('key')!r}"
             if fields.get("suggestion"):
                 msg += f", did you mean {fields.get('suggestion')!r}?"

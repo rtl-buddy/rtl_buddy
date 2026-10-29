@@ -614,7 +614,7 @@ def test_a_removed_key_is_logged_with_what_to_do_instead(tmp_path, caplog):
     assert event["key"] == "macro-placement"
     assert "suggestion" not in event
     message = (
-        f"{path}: pnr run 'a': floorplan: 'macro-placement' is no longer a key: "
+        f"{path}: pnr run 'a': floorplan: 'macro-placement' is not a key: "
         "rb places macros with RTL-MP; remove the key, or use a "
         "'macro-placement' hook for another placement"
     )

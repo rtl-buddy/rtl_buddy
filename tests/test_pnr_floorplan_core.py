@@ -175,7 +175,9 @@ def test_cutouts_are_checked_hard_blockages_that_cut_rows_before_macro_placement
 ):
     text = _render(tmp_path, _floorplan(core_cutouts=[(80.0, 80.0, 140.0, 140.0)]))
 
-    assert 'puts ">>> Core cut-outs"\nset HARD_BLOCKAGES {}\n' in text
+    assert (
+        'puts ">>> Core cut-outs"\nset HARD_BLOCKAGES {}\nset HARD_BLOCKAGE_LABELS {}\n'
+    ) in text
     assert (
         "set blockage_box [[create_blockage -region {80 80 140 140}] getBBox]\n"
     ) in text

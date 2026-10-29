@@ -439,15 +439,15 @@ def abstract_config(pnr_cfg, platform) -> dict:
         "placement": {
             "density": platform.get_placement_density(),
             "padding": platform.get_placement_padding(),
-            # RTL-MP's `-target_util` is the density above.
-            "macro_channel": platform.get_placement_macro_channel(),
+            # RTL-MP's `-target_util` is the density above; its channel and pin-aware flag count only when a channel is set.
             **(
                 {
+                    "macro_channel": channel,
                     "macro_pin_aware_channels": (
                         platform.get_placement_macro_pin_aware_channels()
-                    )
+                    ),
                 }
-                if platform.get_placement_macro_channel() is not None
+                if (channel := platform.get_placement_macro_channel()) is not None
                 else {}
             ),
             # Emitted only when non-default so existing digests do not change.

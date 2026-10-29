@@ -24,7 +24,7 @@ def serde_keys(cls) -> tuple[str, ...]:
 class KeySpec(NamedTuple):
     """A block's serde class and the specs of its nested mapping blocks, by YAML key.
 
-    ``many`` marks a block that is a list of mappings, each read by ``cls``. ``removed`` maps a key the block no longer reads to what to do instead.
+    ``many`` marks a block that is a list of mappings, each read by ``cls``. ``removed`` maps a key the block does not read to what to do instead.
     """
 
     cls: type
@@ -42,7 +42,7 @@ class UnknownKey(NamedTuple):
 
     def message(self) -> str:
         if self.removed:
-            return f"{self.location}: {self.key!r} is no longer a key: {self.removed}"
+            return f"{self.location}: {self.key!r} is not a key: {self.removed}"
         hint = f", did you mean {self.suggestion!r}?" if self.suggestion else ""
         return (
             f"{self.location}: unknown key {self.key!r}{hint} "

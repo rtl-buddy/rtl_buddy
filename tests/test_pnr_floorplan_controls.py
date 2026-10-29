@@ -271,9 +271,11 @@ def test_blockages_render_after_the_floorplan_and_before_rtl_mp(tmp_path):
         "\n"
         'puts ">>> Placement blockages"\n'
         "set HARD_BLOCKAGES {}\n"
+        "set HARD_BLOCKAGE_LABELS {}\n"
         "set blockage_box [[create_blockage -region {0 0 120 90.5}] getBBox]\n"
         "lappend HARD_BLOCKAGES [list [$blockage_box xMin] [$blockage_box yMin]"
         " [$blockage_box xMax] [$blockage_box yMax]]\n"
+        "lappend HARD_BLOCKAGE_LABELS floorplan.blockages[0]\n"
         "create_blockage -region {10 10 20.123 20} -soft\n"
         "create_blockage -region {1 2 3 4} -max_density 35\n"
     )

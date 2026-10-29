@@ -1,10 +1,12 @@
 import logging
 import os
 from enum import StrEnum
+from typing import Any
 
 from serde import serde, field
 
 from ..errors import FatalRtlBuddyError
+from .pnr_repair import UNSET
 from .unknown_keys import KeySpec
 
 logger = logging.getLogger(__name__)
@@ -81,10 +83,8 @@ class PlacementFile:
 
     density: float | None = None
     padding: int | None = None
-    # RTL-MP `-min_channel_size`: one number or [width, height] in microns. Typed loosely so `validate_placement` names a bad value.
-    macro_channel: float | int | str | list | None = field(
-        rename="macro-channel", default=None
-    )
+    # RTL-MP `-min_channel_size`: one number or [width, height] in microns, typed loosely so `validate_placement` names a bad value. `UNSET` inherits; `null` clears a channel a lower level sets.
+    macro_channel: Any = field(rename="macro-channel", default=UNSET)
     # RTL-MP `-pin_aware_channels` with a channel; `None` inherits, unset means on.
     macro_pin_aware_channels: bool | None = field(
         rename="macro-pin-aware-channels", default=None
@@ -254,10 +254,10 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
     )
 
 
-def _macro_channel(value, where: str) -> list[float] | None:
-    """`placement.macro-channel` as [width, height] in microns; one number is both."""
-    if value is None:
-        return None
+def _macro_channel(value, where: str) -> Any:
+    """`placement.macro-channel` as [width, height] in microns, one number being both; `UNSET` and `None` (written `null`) pass through."""
+    if value is None or value is UNSET:
+        return value
     pair = value if isinstance(value, list) else [value]
     if len(pair) == 1:
         pair = pair * 2
@@ -472,7 +472,8 @@ class PdkConfig:
 
     def get_placement_macro_channel(self) -> list[float] | None:
         """Configured RTL-MP minimum channel as [width, height] in microns, or `None` when unset."""
-        return self._placement.macro_channel
+        channel = self._placement.macro_channel
+        return None if channel is UNSET else channel
 
     def get_placement_macro_pin_aware_channels(self) -> bool | None:
         """Configured RTL-MP `-pin_aware_channels`, or `None` when unset."""

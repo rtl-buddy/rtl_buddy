@@ -27,6 +27,7 @@ from ..config.pnr import (
     PNR_STAGES,
     POST_ROUTE_REPAIR_STAGE,
     ROTATED_ORIENTATIONS,
+    BlockageLifetime,
     BlockageType,
     GdsMode,
     PnrBlockage,
@@ -83,6 +84,8 @@ _TEMPLATE_FILE = "flow.tcl.template"
 _MACRO_PIN_LIMITS_FILE = "macro_pin_limits.tcl"
 # Cuts the rows under hard placement blockages before tap insertion; see `_blockages_block`.
 _CUT_ROWS_FILE = "cut_rows.tcl"
+# `rb::keepouts::check`, run after macro placement when the floorplan has hard blockages or cut-outs.
+_KEEPOUTS_FILE = "keepouts.tcl"
 # Replaces the pdn-config's core grid with a run's `pdn:` block; see `_pdn_block`.
 _PDN_GRID_FILE = "pdn_grid.tcl"
 # `floorplan.macros` directives; see `_macro_directives_block`.
@@ -1248,10 +1251,10 @@ def _blockage_command(blockage: PnrBlockage) -> str:
     return command
 
 
-def _blockages_block(fp: PnrFloorplan) -> str:
-    """Return the Tcl for `floorplan.core-cutouts` and `floorplan.blockages`, or "" when the floorplan sets neither.
+def _blockages_block(fp: PnrFloorplan) -> tuple[str, str]:
+    """Return the Tcl for `floorplan.core-cutouts` and `floorplan.blockages`, and the check that no macro overlaps a hard one; each is "" when the floorplan sets neither.
 
-    Blockages with `lifetime: global-placement` are left to `_global_placement_blocks`. The block runs right after the floorplan, so RTL-MP keeps macros out of every blockage it creates. The rows under hard blockages (`HARD_BLOCKAGES`) are cut, so the later tap insertion leaves them empty (rtl_buddy#773); soft and partial ones only thin standard cells.
+    Blockages with `lifetime: global-placement` are left to `_global_placement_blocks`. The block runs right after the floorplan, so RTL-MP weighs every blockage it creates. The rows under hard blockages (`HARD_BLOCKAGES`) are cut, so the later tap insertion leaves them empty (rtl_buddy#773); soft and partial ones only thin standard cells. Hard blockages and cut-outs are labelled in `HARD_BLOCKAGE_LABELS`, and the returned check, run after macro placement, fails when a macro overlaps one.
     """
     lines = []
     has_hard = False
@@ -1272,8 +1275,13 @@ def _blockages_block(fp: PnrFloorplan) -> str:
             "lappend HARD_BLOCKAGES "
             "[list [$blockage_box xMin] [$blockage_box yMin] [$blockage_box xMax] [$blockage_box yMax]]"
         )
-    blockages = fp.flow_blockages()
-    for blockage in blockages:
+        lines.append(f"lappend HARD_BLOCKAGE_LABELS floorplan.core-cutouts[{index}]")
+    flow_blockages = [
+        (index, blockage)
+        for index, blockage in enumerate(fp.blockages)
+        if blockage.lifetime is BlockageLifetime.FLOW
+    ]
+    for index, blockage in flow_blockages:
         command = _blockage_command(blockage)
         if blockage.type is BlockageType.HARD:
             has_hard = True
@@ -1282,25 +1290,35 @@ def _blockages_block(fp: PnrFloorplan) -> str:
                 "lappend HARD_BLOCKAGES "
                 "[list [$blockage_box xMin] [$blockage_box yMin] [$blockage_box xMax] [$blockage_box yMax]]"
             )
+            lines.append(f"lappend HARD_BLOCKAGE_LABELS floorplan.blockages[{index}]")
         else:
             lines.append(command)
     blockages_block = ""
+    keepout_check = ""
     if lines:
         header = [
             'puts ">>> Placement blockages"'
-            if blockages
+            if flow_blockages
             else 'puts ">>> Core cut-outs"'
         ]
         if has_hard:
             header.append("set HARD_BLOCKAGES {}")
-            procs = files(_TEMPLATE_PACKAGE).joinpath(_CUT_ROWS_FILE).read_text()
+            header.append("set HARD_BLOCKAGE_LABELS {}")
+            package = files(_TEMPLATE_PACKAGE)
+            procs = package.joinpath(_CUT_ROWS_FILE).read_text()
+            keepouts = package.joinpath(_KEEPOUTS_FILE).read_text()
             lines += [
                 procs.rstrip("\n"),
+                keepouts.rstrip("\n"),
                 'puts ">>>   cut [rb::rows::cut_under [ord::get_db_block] $HARD_BLOCKAGES]'
                 ' row(s) under hard placement blockages"',
             ]
+            keepout_check = (
+                "  rb::keepouts::check $macros $HARD_BLOCKAGES "
+                "$HARD_BLOCKAGE_LABELS $dbu_per_micron\n"
+            )
         blockages_block = "\n" + "\n".join(header + lines) + "\n"
-    return blockages_block
+    return blockages_block, keepout_check
 
 
 def _initialize_floorplan_tcl(fp: PnrFloorplan) -> str:
@@ -1507,9 +1525,12 @@ _RTL_MP_REPORT = """\
     puts ">>>   placed [$inst getName] at ($x, $y) DBU [$inst getOrient] (rtl-mp)"
   }}
 """
-# RTL-MP with a minimum channel needs `-min_channel_size`, which older OpenROAD lacks.
+# RTL-MP with a minimum channel needs `-min_channel_size`, which older OpenROAD lacks. A `rtl_macro_placer` that is not a Tcl proc cannot be probed, so the option is assumed.
 _RTL_MP_CHANNEL_PROBE = """\
-  if {[string first -min_channel_size [info body rtl_macro_placer]] < 0} {
+  if {[catch {info body rtl_macro_placer} rb_mp_body]} {
+    set rb_mp_body -min_channel_size
+  }
+  if {[string first -min_channel_size $rb_mp_body] < 0} {
     error {placement.macro-channel needs rtl_macro_placer -min_channel_size (OpenROAD 26Q4 or newer)}
   }
 """
@@ -3197,7 +3218,7 @@ class OpenRoadPnr:
         # Must precede the first `read_liberty`.
         threads_block = _threads_block(self._threads())
 
-        blockages_block = _blockages_block(fp)
+        blockages_block, keepout_check_block = _blockages_block(fp)
         gp_blocks = _global_placement_blocks(
             fp,
             platform.get_placement_rotated_macro_footprint(),
@@ -3318,6 +3339,7 @@ class OpenRoadPnr:
                 if "macro-placement" in hooks
                 else _macro_place_block(fp, platform)
             ),
+            "keepout_check_block": keepout_check_block,
             "no_macros_block": _no_macros_block(fp),
             "blockages_block": blockages_block,
             "dont_use_block": dont_use_block,
