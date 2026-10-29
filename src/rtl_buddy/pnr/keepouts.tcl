@@ -3,8 +3,8 @@
 # Substituted into pnr.tcl after the hard `floorplan.blockages` and
 # `floorplan.core-cutouts`, only when the floorplan has either. After macro
 # placement (RTL-MP or a `macro-placement` hook) no macro may overlap one of
-# them: RTL-MP weighs a blockage as a cost, so it can still place a macro on
-# one. `overlaps` is plain arithmetic, so tests/test_pnr_keepouts.py runs it
+# them: RTL-MP weighs blockages as a cost and does not re-check its result, and
+# a hook places freely. `overlaps` is plain arithmetic, so tests/test_pnr_keepouts.py runs it
 # under a bare Tcl interpreter.
 
 namespace eval rb::keepouts {}
