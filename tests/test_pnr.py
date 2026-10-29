@@ -13,7 +13,7 @@ import pytest
 
 from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr import PnrConfig, PnrSuiteConfig
-from rtl_buddy.config.pnr_repair import GlobalRouteRepair
+from rtl_buddy.config.pnr_repair import GlobalRouteRepair, RepairDesign
 from rtl_buddy.config.pnr_platform import (
     PnrPlatformConfig,
     PnrPlatformConfigFile,
@@ -3175,7 +3175,10 @@ def test_pnr_flow_has_no_dont_use_check_without_dont_use_cells(tmp_path):
 
     assert "Don't-use check" not in text
     assert "RB-DONT-USE-VIOLATION" not in text
-    assert '    -verbose 1\nrb::global_connect\n\nputs ">>> Fill insertion"\n' in text
+    assert (
+        "check_antennas -report_file $OUT_DIR/drt_antennas.rpt\n"
+        'rb::global_connect\n\nputs ">>> Fill insertion"\n'
+    ) in text
 
 
 def test_pnr_flow_checks_dont_use_after_routing_before_fill_and_outputs(tmp_path):
@@ -3715,8 +3718,8 @@ def test_pnr_flow_extracts_writes_and_times_on_the_routed_spef(tmp_path):
     ]
     positions = [text.index(marker) for marker in order]
     assert positions == sorted(positions), order
-    # The estimate is gone, not layered under.
-    assert "estimate_parasitics -global_routing" not in text
+    # The final reports' estimate is gone, not layered under.
+    assert "estimate_parasitics -global_routing" not in text[text.index(">>> Fill") :]
     assert "{{" not in text
 
 
@@ -4686,7 +4689,16 @@ def test_pnr_platform_flow_knobs_default_to_the_tool_or_orfs(tmp_path):
     platform = _platform(_make_pdk_cfg(tmp_path))
     # ORFS repairs setup and hold after CTS.
     assert platform.get_post_cts_setup_repair() is True
-    assert platform.get_global_route_repair() is None
+    # ORFS repairs again after global route.
+    assert platform.get_global_route_repair() == GlobalRouteRepair(
+        repair_design=RepairDesign(), setup_margin=0.0, hold_margin=0.0
+    )
+    assert platform.get_floorplan_setup_repair() is True
+    assert platform.get_cts_repair_clock_inverters() is True
+    assert platform.get_global_route_antenna_repair() is True
+    assert platform.get_detailed_route_antenna_repair() is True
+    assert platform.get_placement_improve_placement() is True
+    assert platform.get_placement_optimize_mirroring() is True
     assert platform.get_post_route_repair() is None
     assert platform.get_routing_layer_adjustment() is None
     assert platform.get_cts_apply_ndr() is None
@@ -4783,8 +4795,9 @@ def test_pnr_flow_without_the_knobs_repairs_as_orfs_does_and_keeps_the_router_de
         "\nglobal_route -congestion_iterations 30 "
         "-congestion_report_file $CONGESTION_RPT -verbose\n"
     ) in text
-    assert text.count("repair_timing -hold") == 1
-    assert "global_route -start_incremental" not in text
+    # Post-CTS and on global-route parasitics.
+    assert text.count("\nrepair_timing -hold\n") == 2
+    assert "global_route -start_incremental" in text
 
 
 def test_pnr_flow_repairs_hold_again_on_global_route_parasitics(tmp_path):
@@ -4814,8 +4827,10 @@ def test_pnr_flow_repairs_hold_again_on_global_route_parasitics(tmp_path):
 def test_pnr_flow_repairs_hold_only_after_cts_without_setup_repair(tmp_path):
     platform = _platform(_make_pdk_cfg(tmp_path), post_cts_setup_repair=False)
     text = _render_flow(tmp_path, platform)
-    assert "repair_timing -setup" not in text
-    assert "estimate_parasitics -placement\nrepair_timing -hold\n" in text
+    assert (
+        'puts ">>> Post-CTS timing repair"\n'
+        "estimate_parasitics -placement\nrepair_timing -hold\n"
+    ) in text
 
 
 def test_pnr_flow_repairs_setup_before_hold_after_cts(tmp_path):
@@ -4824,11 +4839,10 @@ def test_pnr_flow_repairs_setup_before_hold_after_cts(tmp_path):
     assert (
         "estimate_parasitics -placement\nrepair_timing -setup\nrepair_timing -hold\n"
     ) in text
-    assert text.index("clock_tree_synthesis") < text.index("repair_timing -setup")
+    post_cts = text.index("repair_timing -setup\nrepair_timing -hold")
+    assert text.index("clock_tree_synthesis") < post_cts
     # The repair buffers are legalized by the pass after it.
-    assert text.index("repair_timing -setup") < text.index(
-        ">>> Detail placement (legalize repair cells)"
-    )
+    assert post_cts < text.index(">>> Detail placement (legalize repair cells)")
 
 
 def test_pnr_flow_without_ndr_or_fanout_keeps_the_tool_defaults(tmp_path):

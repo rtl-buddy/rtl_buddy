@@ -257,7 +257,7 @@ def test_a_stopped_run_that_ends_early_names_the_last_step(
 
     assert res.results["fail_stage"] == "incomplete"
     last = (
-        "the last step in the log is 'Post-CTS timing repair' "
+        "the last step in the log is 'Floorplan setup repair' "
         "(last command: repair_timing, running)"
     )
     expected = {
@@ -266,8 +266,9 @@ def test_a_stopped_run_that_ends_early_names_the_last_step(
             f"--stop-after cts finished ('>>> STOPPED after cts' is not in the log); {last}"
         ),
         True: (
-            "stage 03_cts: the flow did not finish: OpenROAD exited with code 0 before "
-            f"the end of the stage ('>>> End of stage 03_cts' is not in the log); {last}"
+            "stage 01_floorplan: the flow did not finish: OpenROAD exited with code 0 "
+            "before the end of the stage ('>>> End of stage 01_floorplan' is not in the "
+            f"log); {last}"
         ),
     }
     assert res.results["desc"] == expected[stages]

@@ -103,6 +103,9 @@ class PlacementFile:
     macro_pin_limits: MacroPinLimitsFile | None = field(
         rename="macro-pin-limits", default=None
     )
+    # `improve_placement` and `optimize_mirroring` after the placement stage's legalization, as ORFS runs them; `None` inherits, unset means on.
+    improve_placement: bool | None = field(rename="improve-placement", default=None)
+    optimize_mirroring: bool | None = field(rename="optimize-mirroring", default=None)
 
 
 PLACEMENT_SPEC = KeySpec(
@@ -235,7 +238,19 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
         timing_driven=placement.timing_driven,
         rotated_macro_footprint=rotated,
         macro_pin_limits=_validate_macro_pin_limits(placement.macro_pin_limits, where),
+        improve_placement=_optional_bool(
+            placement.improve_placement, f"{where}: placement.improve-placement"
+        ),
+        optimize_mirroring=_optional_bool(
+            placement.optimize_mirroring, f"{where}: placement.optimize-mirroring"
+        ),
     )
+
+
+def _optional_bool(value, where: str) -> bool | None:
+    if value is not None and not isinstance(value, bool):
+        raise FatalRtlBuddyError(f"{where} must be true or false, got {value!r}")
+    return value
 
 
 _TCL_METACHARACTERS = frozenset('[]{}$"\\;')
@@ -463,6 +478,14 @@ class PdkConfig:
     def get_placement_macro_pin_limits(self) -> MacroPinLimitsFile | None:
         """Configured `placement.macro-pin-limits`, validated, or `None` when unset."""
         return self._placement.macro_pin_limits
+
+    def get_placement_improve_placement(self) -> bool | None:
+        """Configured `placement.improve-placement`, or `None` when unset."""
+        return self._placement.improve_placement
+
+    def get_placement_optimize_mirroring(self) -> bool | None:
+        """Configured `placement.optimize-mirroring`, or `None` when unset."""
+        return self._placement.optimize_mirroring
 
     def get_dont_use_cells(self) -> list[str]:
         return list(self._dont_use_cells)

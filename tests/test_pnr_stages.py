@@ -305,8 +305,9 @@ def test_stage_scripts_are_the_one_session_flow_split_at_its_markers(tmp_path):
 
 def test_unbroken_render_is_unchanged_but_for_the_checkpoint_block(tmp_path):
     """With `checkpoints:` the flow differs from a plain render only by the
-    checkpoint block, the global-route stage end after hold repair and the
-    timing events of `place` and `finish`.
+    checkpoint block, the global-route stage end after its repair and the
+    timing event before it, the `place` stage end before `repair_clock_inverters`, the detailed-route stage
+    end after antenna repair and the timing events of `place` and `finish`.
     """
     (tmp_path / "plain").mkdir()
     (tmp_path / "armed").mkdir()
@@ -317,6 +318,13 @@ def test_unbroken_render_is_unchanged_but_for_the_checkpoint_block(tmp_path):
     without = armed[:block_start] + armed[block_end:]
     without = without.replace("rb::ckpt::stage_end global_route\n", "", 1)
     without = without.replace("rb::ckpt::stage_timing place stage_end\n", "", 1)
+    without = without.replace(
+        "rb::ckpt::checkpoint_for clock_tree_synthesis enter\n", "", 1
+    )
+    without = without.replace(
+        "rb::ckpt::stage_timing global_route before_repair\n", "", 1
+    )
+    without = without.replace("rb::ckpt::stage_end detailed_route\n", "", 1)
     without = without.replace(
         "rb::ckpt::timing_event finish stage_end global_route\n", "", 1
     )
@@ -621,6 +629,10 @@ def test_a_hook_that_wraps_an_anchor_fails_the_unbroken_run_as_checkpoint(
         hooks={"after-repair-design": (str(hook),)},
     )
     backend, _ = _backend(tmp_path, monkeypatch, pnr_cfg=cfg)
+    # `repair_clock_inverters` would otherwise end `place` before the wrapped anchor.
+    backend.root_cfg.get_pnr_platform_cfg.return_value = _platform(
+        _pdk(tmp_path), cts_repair_clock_inverters=False
+    )
 
     res = backend.run()
 
@@ -929,6 +941,54 @@ def test_a_resume_from_finish_reports_the_inherited_route_drcs(tmp_path, monkeyp
     kept = manifest["checkpoints"]["detailed_route"]
     assert kept["inherited_from"] == first.name
     assert Path(kept["files"]["drc"]["path"]).name == "05_detailed_route.route.drc.rpt"
+
+
+@pytest.mark.parametrize(
+    "resume_from, inherited",
+    [
+        ("detailed_route", ("global_route",)),
+        ("finish", ("global_route", "detailed_route")),
+    ],
+)
+def test_a_resume_restores_the_inherited_antenna_reports(
+    tmp_path, monkeypatch, resume_from, inherited
+):
+    backend, artefacts = _staged(tmp_path, monkeypatch, stop_after="detailed_route")
+    assert backend.run().results["result"] == "PASS"
+    first = _only_run(artefacts)
+    kept = {
+        "global_route": first / "04_global_route.grt_antennas.rpt",
+        "detailed_route": first / "05_detailed_route.drt_antennas.rpt",
+    }
+    assert kept["global_route"].read_text().split()[-1] == "04_global_route.tcl"
+    assert kept["detailed_route"].read_text().split()[-1] == "05_detailed_route.tcl"
+    for name in ("grt_antennas.rpt", "drt_antennas.rpt"):
+        (artefacts / name).write_text("another run's report\n")
+
+    backend, _ = _backend(
+        tmp_path, monkeypatch, resume=first.name, resume_from=resume_from
+    )
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    second = next(r for r in _runs(artefacts) if r != first)
+    reports = {
+        "global_route": artefacts / "grt_antennas.rpt",
+        "detailed_route": artefacts / "drt_antennas.rpt",
+    }
+    for stage, report in reports.items():
+        if stage in inherited:
+            assert report.read_bytes() == kept[stage].read_bytes()
+        else:
+            assert (
+                report.read_bytes()
+                == (second / "05_detailed_route.drt_antennas.rpt").read_bytes()
+            )
+    manifest = json.loads((second / "manifest.json").read_text())
+    files = manifest["checkpoints"]["global_route"]["files"]
+    assert (
+        Path(files["grt_antennas"]["path"]).name == "04_global_route.grt_antennas.rpt"
+    )
 
 
 def test_a_resume_may_change_settings_of_the_stages_it_runs(tmp_path, monkeypatch):

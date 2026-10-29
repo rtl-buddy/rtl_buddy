@@ -215,6 +215,10 @@ class PnrRunOverrides:
     cts_obstruction_aware: bool | None = None
     cts_latency_balancing: bool | None = None
     post_cts_setup_repair: bool | None = None
+    floorplan_setup_repair: bool | None = None
+    cts_repair_clock_inverters: bool | None = None
+    global_route_antenna_repair: bool | None = None
+    detailed_route_antenna_repair: bool | None = None
     routing_layer_adjustment: float | None = None
     port_buffer: str | None = None
     tapcell_tcl: str | None = None
@@ -248,6 +252,10 @@ def read_run_overrides(
     keep_sizing_vt: bool | None = None,
     signoff=UNSET,
     global_route: PnrGlobalRouteFile | None = None,
+    floorplan_setup_repair: bool | None = None,
+    cts_repair_clock_inverters: bool | None = None,
+    global_route_antenna_repair: bool | None = None,
+    detailed_route_antenna_repair: bool | None = None,
 ) -> PnrRunOverrides:
     """Validate a run's overrides of its platform's knobs; `where` names the run."""
     layers = routing_layers or PnrRoutingLayersFile()
@@ -279,6 +287,10 @@ def read_run_overrides(
         ),
         cts_latency_balancing=cts_latency_balancing,
         post_cts_setup_repair=post_cts_setup_repair,
+        floorplan_setup_repair=floorplan_setup_repair,
+        cts_repair_clock_inverters=cts_repair_clock_inverters,
+        global_route_antenna_repair=global_route_antenna_repair,
+        detailed_route_antenna_repair=detailed_route_antenna_repair,
         routing_layer_adjustment=_validate_layer_adjustment(
             routing_layer_adjustment, where
         ),
@@ -316,6 +328,19 @@ class PnrPlatformConfigFile:
     cts_repair_clock_nets: Any = field(rename="cts-repair-clock-nets", default=False)
     # Runs `repair_timing -setup` before the post-CTS hold repair.
     post_cts_setup_repair: bool = field(rename="post-cts-setup-repair", default=True)
+    # ORFS's sizing-only `repair_timing -setup` at the end of the floorplan.
+    floorplan_setup_repair: bool = field(rename="floorplan-setup-repair", default=True)
+    # `repair_clock_inverters` before CTS, as ORFS runs it.
+    cts_repair_clock_inverters: bool = field(
+        rename="cts-repair-clock-inverters", default=True
+    )
+    # `repair_antennas` after global route, and after detailed route with a detailed route again, as ORFS runs them.
+    global_route_antenna_repair: bool = field(
+        rename="global-route-antenna-repair", default=True
+    )
+    detailed_route_antenna_repair: bool = field(
+        rename="detailed-route-antenna-repair", default=True
+    )
     # Repairs hold again after global route, on `estimate_parasitics -global_routing`, as ORFS does: shorthand for `global-route-repair: {hold-margin: 0}`.
     global_route_hold_repair: bool = field(
         rename="global-route-hold-repair", default=False
@@ -411,6 +436,10 @@ class PnrPlatformConfig:
             "tapcell-tcl", cfg.tapcell_tcl, f"pnr platform '{self._name}'", config_dir
         )
         self._post_cts_setup_repair = cfg.post_cts_setup_repair
+        self._floorplan_setup_repair = cfg.floorplan_setup_repair
+        self._cts_repair_clock_inverters = cfg.cts_repair_clock_inverters
+        self._global_route_antenna_repair = cfg.global_route_antenna_repair
+        self._detailed_route_antenna_repair = cfg.detailed_route_antenna_repair
         self._read_repairs(cfg)
         self._routing_layer_adjustment = _validate_layer_adjustment(
             cfg.routing_layer_adjustment, f"pnr platform '{self._name}'"
@@ -543,6 +572,12 @@ class PnrPlatformConfig:
         self._placement_macro_pin_limits = _pick(
             "macro_pin_limits", pdk.get_placement_macro_pin_limits(), None
         )
+        self._placement_improve_placement = _pick(
+            "improve_placement", pdk.get_placement_improve_placement(), True
+        )
+        self._placement_optimize_mirroring = _pick(
+            "optimize_mirroring", pdk.get_placement_optimize_mirroring(), True
+        )
         # The placer reads `-routability_use_grt` only in routability mode, so alone it would be silently ignored.
         if (
             self._placement_routability_use_grt
@@ -578,6 +613,10 @@ class PnrPlatformConfig:
             ("_cts_obstruction_aware", o.cts_obstruction_aware),
             ("_cts_latency_balancing", o.cts_latency_balancing),
             ("_post_cts_setup_repair", o.post_cts_setup_repair),
+            ("_floorplan_setup_repair", o.floorplan_setup_repair),
+            ("_cts_repair_clock_inverters", o.cts_repair_clock_inverters),
+            ("_global_route_antenna_repair", o.global_route_antenna_repair),
+            ("_detailed_route_antenna_repair", o.detailed_route_antenna_repair),
             ("_routing_layer_adjustment", o.routing_layer_adjustment),
             ("_port_buffer", o.port_buffer),
             ("_tapcell_tcl", o.tapcell_tcl),
@@ -765,6 +804,14 @@ class PnrPlatformConfig:
         """`placement.macro-pin-limits`, run over platform over PDK, or `None` when the step is off."""
         return self._placement_macro_pin_limits
 
+    def get_placement_improve_placement(self) -> bool:
+        """Whether `improve_placement` runs after the placement stage's legalization, run over platform over PDK, default `True`."""
+        return self._placement_improve_placement
+
+    def get_placement_optimize_mirroring(self) -> bool:
+        """Whether `optimize_mirroring` runs after the placement stage's legalization, run over platform over PDK, default `True`."""
+        return self._placement_optimize_mirroring
+
     def get_dont_use_cells(self) -> list[str]:
         """The PDK's excluded cells plus this platform's, PDK first."""
         return list(self._dont_use_cells)
@@ -826,6 +873,22 @@ class PnrPlatformConfig:
     def get_post_cts_setup_repair(self) -> bool:
         """Whether post-CTS repair fixes setup before hold."""
         return self._post_cts_setup_repair
+
+    def get_floorplan_setup_repair(self) -> bool:
+        """Whether the floorplan ends with ORFS's sizing-only setup repair."""
+        return self._floorplan_setup_repair
+
+    def get_cts_repair_clock_inverters(self) -> bool:
+        """Whether `repair_clock_inverters` runs before CTS."""
+        return self._cts_repair_clock_inverters
+
+    def get_global_route_antenna_repair(self) -> bool:
+        """Whether `repair_antennas` runs after global route."""
+        return self._global_route_antenna_repair
+
+    def get_detailed_route_antenna_repair(self) -> bool:
+        """Whether `repair_antennas` runs after detailed route, each round followed by a detailed route."""
+        return self._detailed_route_antenna_repair
 
     def get_global_route_repair(self) -> GlobalRouteRepair | None:
         """The repair after global route, platform under run, or None when off."""

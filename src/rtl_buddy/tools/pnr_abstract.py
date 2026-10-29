@@ -38,6 +38,8 @@ ABSTRACT_STAGING_NAME = "abstract.partial"
 ABSTRACT_MANIFEST_NAME = "abstract.manifest.json"
 #: Bumped on an incompatible manifest change.
 ABSTRACT_MANIFEST_SCHEMA = 1
+#: Enters every config digest; bumped when the flow's own steps or defaults change what a hardened block's views hold, so every abstract hardened before goes stale.
+ABSTRACT_FLOW_GENERATION = 8
 #: Manifest keys of the three views; each file is `<top>.<key>`.
 ABSTRACT_VIEWS = ("lef", "lib", "gds")
 #: The real-shape LEF a run with `abstract.feedthrough-layers` writes beside `<top>.lef`; spliced in and removed before publishing.
@@ -281,7 +283,25 @@ def _cts_controls_digest(platform) -> dict:
         digest["cts_root_buffer"] = platform.get_cts_root_buffer()
     if platform.get_cts_obstruction_aware() is not None:
         digest["cts_obstruction_aware"] = platform.get_cts_obstruction_aware()
+    if platform.get_cts_repair_clock_inverters() is False:
+        digest["cts_repair_clock_inverters"] = False
     return digest
+
+
+def _flow_steps_digest(platform) -> dict:
+    """The ORFS steps rb runs by default, each emitted only when off, its non-default."""
+    return {
+        key: False
+        for key, on in (
+            ("floorplan_setup_repair", platform.get_floorplan_setup_repair()),
+            ("global_route_antenna_repair", platform.get_global_route_antenna_repair()),
+            (
+                "detailed_route_antenna_repair",
+                platform.get_detailed_route_antenna_repair(),
+            ),
+        )
+        if on is False
+    }
 
 
 def _repair_digest(platform) -> dict:
@@ -358,6 +378,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
     platform = platform.with_run_overrides(pnr_cfg.get_overrides())
     hooks = platform.get_tcl_hooks()
     return {
+        "flow": ABSTRACT_FLOW_GENERATION,
         "platform": pnr_cfg.get_platform(),
         "synth": {
             "name": pnr_cfg.get_synth_name(),
@@ -472,6 +493,16 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 else {}
             ),
             **(
+                {"improve_placement": False}
+                if platform.get_placement_improve_placement() is False
+                else {}
+            ),
+            **(
+                {"optimize_mirroring": False}
+                if platform.get_placement_optimize_mirroring() is False
+                else {}
+            ),
+            **(
                 {
                     "macro_pin_limits": {
                         "buffers": list(macro_pin_limits.buffers),
@@ -510,6 +541,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
             else {}
         ),
         **_repair_digest(platform),
+        **_flow_steps_digest(platform),
         # Emitted only when set so existing digests do not change: the corners the post-route rounds judge each side at decide the round kept. `fail_on` is the effective gates, so equivalent configs share a digest.
         **(
             {

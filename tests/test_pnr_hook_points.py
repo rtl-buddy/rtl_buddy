@@ -83,16 +83,19 @@ def _run_backend(
     corners=None,
     env=None,
     spef_stubs=False,
+    platform=None,
     **options,
 ):
-    """A stub-harness backend with `hooks`, a PDK with `rcx-rules`, and `post_route` as its post-route repair."""
+    """A stub-harness backend with `hooks`, a PDK with `rcx-rules`, `post_route` as its post-route repair, and the platform fields in `platform`."""
     cfg = replace(
         _pnr_cfg(tmp_path, checkpoints, stages=stages), mode=mode, hooks=hooks
     )
     backend, artefacts = _backend(
         tmp_path, monkeypatch, pnr_cfg=cfg, stages=stages, env=env, **options
     )
-    _with_repair(backend, tmp_path, post_route=post_route, corners=corners)
+    _with_repair(
+        backend, tmp_path, post_route=post_route, corners=corners, platform=platform
+    )
     if spef_stubs:
         harness = tmp_path / "harness.tcl"
         harness.write_text(
@@ -125,9 +128,10 @@ def _scripts(artefacts) -> dict[str, str]:
     }
 
 
-#: A new point's block: a `before-cts` one ends a one-session run's `place` stage first, an `after-extraction` one names its SPEF.
+#: A new point's block: a `before-cts` one ends a one-session run's `place` stage first, unless `repair_clock_inverters` follows and that ends it, an `after-extraction` one names its SPEF.
 _NEW_BLOCK_RE = re.compile(
-    r"\n(?:rb::ckpt::checkpoint_for clock_tree_synthesis enter\n)?"
+    r"\n(?:rb::ckpt::checkpoint_for clock_tree_synthesis enter\n"
+    r"(?![^\n]*\n[^\n]*\n\nrepair_clock_inverters\n))?"
     r"(?:set rb_spef [^\n]*\n)?"
     r'puts ">>> Hook (?:' + "|".join(map(re.escape, _NEW_POINTS)) + r")[^\n]*\n"
     r"rb::hook::(?:run|stage_end) [^\n]*\n"
@@ -372,9 +376,14 @@ def test_a_one_session_checkpoint_follows_its_stage_end_hooks(tmp_path, monkeypa
 
 
 def test_the_place_checkpoint_precedes_the_before_cts_hooks(tmp_path, monkeypatch):
-    """The `place` stage, which ends on entering `clock_tree_synthesis` without them, ends before the hooks."""
+    """The `place` stage, which ends on entering `clock_tree_synthesis` without them, ends before the hooks; the detailed route still ends on leaving the router."""
     hooks = _hooks(tmp_path, ("before-cts",))
-    backend, artefacts = _run_backend(tmp_path, monkeypatch, hooks)
+    backend, artefacts = _run_backend(
+        tmp_path,
+        monkeypatch,
+        hooks,
+        platform={"detailed_route_antenna_repair": False},
+    )
 
     assert isinstance(backend.run(), PnrPassResults)
     (run_dir,) = _runs(artefacts)

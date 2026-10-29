@@ -51,7 +51,8 @@ DESIGN = "demo_top"
 
 # Stub OpenROAD: every command the flow calls, as a Tcl proc or through `unknown`.
 # Writers put a recognisable file at the given path (a DEF with its DESIGN statement).
-# `RB_STUB_FAIL=<cmd>` raises an OpenROAD-style error in that command;
+# `RB_STUB_FAIL=<cmd>` raises an OpenROAD-style error in that command, `STUB-0001` or
+# `RB_STUB_FAIL_CODE`;
 # `RB_STUB_KILL=<cmd>` SIGKILLs the interpreter on entry;
 # `RB_STUB_EXIT=<cmd>` exits 0 on entry, as a flow that ends early by accident;
 # `RB_STUB_RULES=1` gives the database global-connection rules, so `rb::global_connect`
@@ -61,6 +62,9 @@ DESIGN = "demo_top"
 # `RB_STUB_DRC=<n>` makes `detailed_route` report n DRC violations and write a maze log;
 # `RB_STUB_ERRLINE=<cmd>` prints an OpenROAD `[ERROR` line in that command, which returns.
 # `RB_STUB_CKPT_FAIL=<NN_stage>` makes `write_db` of that checkpoint fail without an `[ERROR` line.
+# `RB_STUB_ANTENNAS=<n>` makes `check_antennas` report n violating nets, one fewer after each
+# `repair_antennas`, which returns whether there were any. Its `-report_file` names the count
+# and the session's script.
 # `read_guides` and `read_global_route_segments` fail on a missing file. Segments written
 # after a `read_guides` in the session are refused on reading, as OpenROAD 26Q4 refuses
 # their single-point segments (GRT-0265).
@@ -88,8 +92,9 @@ proc rb_stub {name args} {
         exit 0
     }
     if {[info exists env(RB_STUB_FAIL)] && $env(RB_STUB_FAIL) eq $name} {
-        puts "\[ERROR STUB-0001\] $name failed: \"quoted\"\nsecond line"
-        error "STUB-0001 $name failed: \"quoted\"\nsecond line"
+        set code [expr {[info exists env(RB_STUB_FAIL_CODE)] ? $env(RB_STUB_FAIL_CODE) : "STUB-0001"}]
+        puts "\[ERROR $code\] $name failed: \"quoted\"\nsecond line"
+        error "$code $name failed: \"quoted\"\nsecond line"
     }
     if {[info exists env(RB_STUB_DONE_EARLY)] && $env(RB_STUB_DONE_EARLY) eq $name} {
         puts ">>> DONE"
@@ -102,9 +107,29 @@ proc rb_stub {name args} {
 foreach cmd {link_design read_sdc initialize_floorplan place_pins
              insert_tiecells pdngen global_placement repair_tie_fanout
              repair_design
-             detailed_placement clock_tree_synthesis repair_timing
+             detailed_placement improve_placement optimize_mirroring
+             repair_clock_inverters clock_tree_synthesis repair_timing
              check_placement global_route detailed_route filler_placement} {
     proc $cmd {args} [list rb_stub $cmd]
+}
+set rb_antennas [expr {[info exists env(RB_STUB_ANTENNAS)] ? $env(RB_STUB_ANTENNAS) : 0}]
+proc repair_antennas {args} {
+    rb_stub repair_antennas
+    puts "stub: repair_antennas"
+    if {$::rb_antennas > 0} {
+        incr ::rb_antennas -1
+        return 1
+    }
+    return 0
+}
+proc check_antennas {args} {
+    rb_stub check_antennas
+    set i [lsearch -exact $args -report_file]
+    if {$i >= 0} {
+        rb_write [lindex $args [expr {$i + 1}]] \
+            "antennas $::rb_antennas [file tail [lindex $::argv 0]]"
+    }
+    return $::rb_antennas
 }
 proc detailed_route {args} {
     global env
@@ -119,6 +144,7 @@ proc detailed_route {args} {
         close $fh
     }
     rb_stub detailed_route
+    puts "stub: detailed_route"
 }
 proc rb_write {path text} {
     set fh [open $path w]
@@ -518,7 +544,9 @@ def test_flow_with_checkpoints_arms_only_the_requested_stages(tmp_path):
     assert "wanted {cts global_route}" in arm
     # Every stage boundary is armed, so each stage's resources are recorded.
     assert "cts {global_route enter}" in arm
-    assert "detailed_route {detailed_route leave}" in arm
+    # The detailed route ends after its antenna repair, not on leaving the router.
+    assert "detailed_route {detailed_route leave}" not in arm
+    assert "rb::ckpt::stage_end detailed_route" in text
     assert "account 1" in arm
     assert '"' + str(tmp_path / "ck" / "run" / "progress.jsonl") + '"' in arm
     # Armed before the first flow command, so every step is traced.
@@ -549,7 +577,9 @@ def test_successful_run_writes_every_checkpoint_and_a_complete_manifest(
                 f"04_global_route.{e}"
                 for e in ("odb", "def", "sdc", "guide", "segments")
             ),
+            "04_global_route.grt_antennas.rpt",
             *(f"05_detailed_route.{e}" for e in ("odb", "def", "sdc")),
+            "05_detailed_route.drt_antennas.rpt",
         ]
     )
     # Never a name a consumer of the final outputs would take.
@@ -566,7 +596,14 @@ def test_successful_run_writes_every_checkpoint_and_a_complete_manifest(
     gr = manifest["checkpoints"]["global_route"]
     assert gr["final"] is False and gr["detail_routed"] is False
     assert gr["global_routed"] is True
-    assert set(gr["files"]) == {"odb", "def", "sdc", "guides", "segments"}
+    assert set(gr["files"]) == {
+        "odb",
+        "def",
+        "sdc",
+        "guides",
+        "segments",
+        "grt_antennas",
+    }
     assert gr["files"]["segments"]["sha256"]
     place = manifest["checkpoints"]["place"]
     assert place["global_routed"] is False

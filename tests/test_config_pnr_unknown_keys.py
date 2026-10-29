@@ -38,6 +38,8 @@ PLACEMENT_ALL = {
         "margin": 0.05,
         "capacitance-margin": 0.5,
     },
+    "improve-placement": False,
+    "optimize-mirroring": False,
 }
 
 # Sized by core-margin; the second run sizes with die-area, core-area and core-cutouts instead.
@@ -169,6 +171,10 @@ RUN_SIZED = {
     "cts-latency-balancing": False,
     "cts-repair-clock-nets": {"max-wire-length": 1000},
     "post-cts-setup-repair": False,
+    "floorplan-setup-repair": False,
+    "cts-repair-clock-inverters": False,
+    "global-route-antenna-repair": False,
+    "detailed-route-antenna-repair": False,
     "port-buffer": "buf2",
     "tapcell-tcl": "tap_run.tcl",
     "cts-dont-use-cells": ["*_L"],
@@ -254,6 +260,10 @@ PLATFORM_ONE_CORNER = {
     "cts-latency-balancing": False,
     "cts-repair-clock-nets": {"max-wire-length": 1000},
     "post-cts-setup-repair": True,
+    "floorplan-setup-repair": False,
+    "cts-repair-clock-inverters": False,
+    "global-route-antenna-repair": False,
+    "detailed-route-antenna-repair": False,
     "global-route-repair": GLOBAL_ROUTE_REPAIR_ALL,
     "post-route-repair": POST_ROUTE_REPAIR_ALL,
     "routing-layer-adjustment": 0.1,
@@ -354,7 +364,9 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "global-route-repair, post-route-repair, routing-layers, "
             "routing-layer-adjustment, cts-buffer, cts-latency-balancing, "
             "cts-repair-clock-nets, cts-sink-clustering, cts-root-buffer, "
-            "cts-obstruction-aware, post-cts-setup-repair, global-route-hold-repair, "
+            "cts-obstruction-aware, post-cts-setup-repair, floorplan-setup-repair, "
+            "cts-repair-clock-inverters, global-route-antenna-repair, "
+            "detailed-route-antenna-repair, global-route-hold-repair, "
             "port-buffer, tapcell-tcl, cts-dont-use-cells, keep-sizing-vt, "
             "cts-clock-nets, global-route, mode, signoff, reglvl, tool_overrides, "
             "threads, resources, detailed-route-verbose, xfail, xfail_strict, "
@@ -408,7 +420,8 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             ("placement",),
             "density, padding, macro-halo, macro-cell-halo, tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
-            "rotated-macro-footprint, macro-pin-limits",
+            "rotated-macro-footprint, macro-pin-limits, improve-placement, "
+            "optimize-mirroring",
         ),
         (
             "pnr run 'a': placement.macro-pin-limits",
@@ -722,7 +735,8 @@ cfg-pnr-platforms:
             "cfg-pdks 'pdk1': placement",
             "density, padding, macro-halo, macro-cell-halo, tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
-            "rotated-macro-footprint, macro-pin-limits",
+            "rotated-macro-footprint, macro-pin-limits, improve-placement, "
+            "optimize-mirroring",
         ),
         (
             "pdk",
@@ -737,8 +751,10 @@ cfg-pnr-platforms:
             "name, pdk, corner, corners, cts-buffer, cts-sink-clustering, "
             "cts-root-buffer, cts-obstruction-aware, "
             "cts-latency-balancing, cts-repair-clock-nets, "
-            "post-cts-setup-repair, global-route-hold-repair, global-route-repair, "
-            "post-route-repair, routing-layer-adjustment, cts-apply-ndr, "
+            "post-cts-setup-repair, floorplan-setup-repair, "
+            "cts-repair-clock-inverters, global-route-antenna-repair, "
+            "detailed-route-antenna-repair, global-route-hold-repair, "
+            "global-route-repair, post-route-repair, routing-layer-adjustment, cts-apply-ndr, "
             "port-buffer, max-fanout, routing-layers, placement, dont-use-cells, "
             "cts-dont-use-cells, keep-sizing-vt, tapcell-tcl, global-route, signoff",
         ),
@@ -786,7 +802,8 @@ cfg-pnr-platforms:
             "cfg-pnr-platforms 'pl1': placement",
             "density, padding, macro-halo, macro-cell-halo, tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
-            "rotated-macro-footprint, macro-pin-limits",
+            "rotated-macro-footprint, macro-pin-limits, improve-placement, "
+            "optimize-mirroring",
         ),
         (
             "platform",
