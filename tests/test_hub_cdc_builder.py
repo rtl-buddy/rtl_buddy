@@ -151,7 +151,9 @@ def test_build_domain_map_resolves_via_model_match(tmp_path, monkeypatch):
 
 
 def test_build_domain_map_warns_on_filelist_incdirs(tmp_path, monkeypatch, caplog):
-    """A model `+incdir+` is reported, since rtl-buddy-cdc has no include-path option."""
+    """A model `+incdir+` is reported when the analyzer has no ``--incdir``."""
+    from rtl_buddy.tools import cdc_rtl_buddy
+
     model = _seed_project(tmp_path)
     (tmp_path / "inc").mkdir()
     model.filelist.insert(0, "+incdir+inc")
@@ -159,6 +161,7 @@ def test_build_domain_map_warns_on_filelist_incdirs(tmp_path, monkeypatch, caplo
         _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
     )
     monkeypatch.setattr(cdc_builder.shutil, "which", lambda _: "/fake/rtl-buddy-cdc")
+    monkeypatch.setattr(cdc_rtl_buddy, "_lint_supports_incdir", lambda exe: False)
 
     def fake_run(cmd, stdout=None, stderr=None, **kwargs):
         out = cmd[cmd.index("--emit-domain-map") + 1]
@@ -179,6 +182,43 @@ def test_build_domain_map_warns_on_filelist_incdirs(tmp_path, monkeypatch, caplo
     assert len(events) == 1
     assert events[0].rtl_fields["analysis"] == "demo_cdc"
     assert events[0].rtl_fields["incdirs"] == [str(tmp_path / "inc")]
+
+
+def test_build_domain_map_forwards_filelist_incdirs(tmp_path, monkeypatch, caplog):
+    """A model `+incdir+` reaches an analyzer that lists ``--incdir``, as an absolute dir."""
+    from rtl_buddy.tools import cdc_rtl_buddy
+
+    model = _seed_project(tmp_path)
+    (tmp_path / "inc").mkdir()
+    model.filelist.insert(0, "+incdir+inc")
+    (tmp_path / "cdc.yaml").write_text(
+        _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
+    )
+    monkeypatch.setattr(cdc_builder.shutil, "which", lambda _: "/fake/rtl-buddy-cdc")
+    monkeypatch.setattr(cdc_rtl_buddy, "_lint_supports_incdir", lambda exe: True)
+    captured = {}
+
+    def fake_run(cmd, stdout=None, stderr=None, **kwargs):
+        captured["cmd"] = cmd
+        out = cmd[cmd.index("--emit-domain-map") + 1]
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text('{"schema_version": "1.0", "clocks": []}')
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(cdc_builder.subprocess, "run", fake_run)
+
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy"):
+        cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+
+    assert not [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "cdc.filelist_incdirs_unsupported"
+    ]
+    cmd = captured["cmd"]
+    idx = cmd.index("--incdir")
+    assert cmd[idx + 1] == str(tmp_path / "inc")
+    assert cmd.count("--incdir") == 1
 
 
 def test_build_domain_map_resolves_a_model_with_a_top_override(tmp_path, monkeypatch):
