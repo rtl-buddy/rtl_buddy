@@ -1321,6 +1321,15 @@ def _blockages_block(fp: PnrFloorplan) -> tuple[str, str]:
     return blockages_block, keepout_check
 
 
+def _keepout_recheck_block(keepout_check: str, hooks: dict) -> str:
+    """Return the keep-out check again at the end of the floorplan, when a later hook may move a macro."""
+    if not keepout_check or not any(
+        hooks.get(point) for point in ("after-pdn", "after-pins", "stage-end")
+    ):
+        return ""
+    return f"if {{[llength $macros] > 0}} {{\n{keepout_check}}}\n"
+
+
 def _initialize_floorplan_tcl(fp: PnrFloorplan) -> str:
     """Return the `initialize_floorplan` command: explicit die and core areas, or utilization sizing."""
     if fp.die_area is not None and fp.core_area is not None:
@@ -3340,6 +3349,7 @@ class OpenRoadPnr:
                 else _macro_place_block(fp, platform)
             ),
             "keepout_check_block": keepout_check_block,
+            "keepout_recheck_block": _keepout_recheck_block(keepout_check_block, hooks),
             "no_macros_block": _no_macros_block(fp),
             "blockages_block": blockages_block,
             "dont_use_block": dont_use_block,

@@ -443,6 +443,44 @@ def test_the_keepout_check_follows_a_macro_placement_hook(tmp_path):
     )
 
 
+@pytest.mark.parametrize("point", ["after-pdn", "after-pins", "stage-end"])
+def test_the_keepout_check_runs_again_after_a_floorplan_hook_that_may_move_a_macro(
+    tmp_path, point
+):
+    hook = str(tmp_path / "late.tcl")
+    floorplan = PnrFloorplan(
+        utilization=0.55,
+        aspect=1.0,
+        core_margin=2.0,
+        blockages=[PnrBlockage((5.0, 5.0, 50.0, 50.0), BlockageType.HARD)],
+    )
+    text = _render_flow(
+        tmp_path, _full_platform(tmp_path), floorplan=floorplan, hooks={point: (hook,)}
+    )
+
+    check = "  rb::keepouts::check $macros"
+    assert text.count(check) == 2
+    second = text.rindex(check)
+    assert text.index(f"{hook}") < second < text.index(">>> Global placement")
+
+
+def test_without_a_later_floorplan_hook_the_keepout_check_runs_once(tmp_path):
+    floorplan = PnrFloorplan(
+        utilization=0.55,
+        aspect=1.0,
+        core_margin=2.0,
+        blockages=[PnrBlockage((5.0, 5.0, 50.0, 50.0), BlockageType.HARD)],
+    )
+    text = _render_flow(
+        tmp_path,
+        _full_platform(tmp_path),
+        floorplan=floorplan,
+        hooks={"after-global-placement": (str(tmp_path / "gp.tcl"),)},
+    )
+
+    assert text.count("  rb::keepouts::check $macros") == 1
+
+
 def test_a_macro_placement_hook_loads_with_any_floorplan_and_lets_entries_orient(
     tmp_path,
 ):
