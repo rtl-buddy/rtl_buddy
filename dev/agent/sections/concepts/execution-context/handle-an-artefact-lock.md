@@ -1,6 +1,6 @@
 ## Handle an artefact lock
 
-Every artefact-writing command takes a non-blocking advisory lock on `<artifact_root>/.rtl-buddy.lock`. A second writer to the same tree fails immediately and reports the holder's PID, command, start time and host. Listing commands do not lock.
+Every artefact-writing command takes a non-blocking advisory lock on `<artifact_root>/.rtl-buddy.lock`. A second writer to the same tree fails immediately and reports the holder's PID, command, start time and host. Listing commands do not lock, and neither do `rb verible`, `rb filelist` and `rb saif`. They run alongside each other and alongside a run that holds the tree. A `rb filelist`, `rb saif` or `rb verible filelist -o` whose output lies inside the artefact tree does lock, since a run holding the tree may be reading that file.
 
 - Wait for the first process to finish, or terminate it if it is stale.
 - The lock is released on a clean exit, a tool failure and `Ctrl-C` (exit 130). The kernel also releases it on crash or kill, so the metadata file never needs removal.

@@ -627,6 +627,7 @@ runs:
 Each job's reservation comes from `resources.stages.<stage>`, then the run's `resources:`, then `cfg-dispatch.resources`, then built-in defaults (a run with no `resources:` warns `pnr.dispatch_resources_default`). With `threads: auto` each stage uses its job's CPUs. Jobs are named `rb:pnr:<run>:<stage>`; `cfg-dispatch.sbatch-args` apply to each. `--dispatch local` (default) runs stages in place.
 
 - A job that fails, times out or runs out of memory fails the run at that stage (`fail_stage: dispatch` unless the stage itself failed) and Slurm removes the jobs after it.
+- A stage job sbatch refuses because the cluster's queue is full (`MaxJobCount`) is resubmitted with backoff for up to 30 min (`dispatch.submit_deferred`; see [Dispatch](dispatch.md#troubleshoot-reservations-arrays-and-waits)).
 - Ctrl-C, SIGTERM or SIGHUP cancels the run's jobs.
 - If `rb pnr` itself is killed, its jobs keep running. Until they leave the queue, a new `rb pnr` of the same configuration refuses to start and prints the `scancel` command. On a host without `squeue`, that refusal lapses once the dispatch directory has been quiet for the sum of the stages' time limits (`pnr.stage_jobs_unchecked`), so check the queue before starting again. See [Known Issues](../known-issues.md#an-unconfirmed-dispatched-pr-run-blocks-later-runs).
 - `checkpoints/<run-id>/dispatch/` holds each job's id, Slurm log, rtl_buddy log and result.

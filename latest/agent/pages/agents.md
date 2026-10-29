@@ -112,7 +112,7 @@ Per-phase status lines require `--verbose` or `--debug`. Dispatch progress, job 
 
 Flow commands (`test`, `regression`, `synth`, `power`, and so on) write `<command_root>/rtl_buddy.log`, replacing the previous run's log.
 
-Read commands (`rb phys`, `rb cov`, `rb graph query|path|explain`, `rb xplr`, and flow `--list`) preserve that log. They send events to stderr and JSON results to stdout. Debug the flow using the log that produced its artefacts.
+Read commands (`rb phys`, `rb cov`, `rb graph query|path|explain`, `rb xplr`, `rb filelist`, `rb saif`, `rb verible`, and flow `--list`) preserve that log and take no artefact-tree lock; `rb filelist`, `rb saif` and `rb verible filelist -o` writing into `artefacts/` lock it like a flow command. They send events to stderr and JSON results to stdout. Debug the flow using the log that produced its artefacts.
 
 ## Parse command results
 
@@ -136,7 +136,7 @@ Structured commands print this top-level shape:
 
 `meta.cwd` is the invocation directory and `meta.git` describes the project root, so they differ when `rb` runs from outside the checkout.
 
-Parse the whole stdout with `json.loads()`. `command`, `exit_code`, `meta`, and the command-specific `payload` are stable. Optional fields may be added under `meta` or `payload`; an incompatible change needs a major version.
+Parse the whole stdout with `json.loads()`. `command`, `exit_code`, `meta`, and the command-specific `payload` are stable. A command stopped by a fatal error exits 2 with only `payload.error`, so check `exit_code` before reading `payload.results`. Optional fields may be added under `meta` or `payload`; an incompatible change needs a major version.
 
 Payload conventions:
 

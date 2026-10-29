@@ -214,6 +214,14 @@ basic: dropped 12 stale object/dependency files from … (built by …, now …)
 
 An ordinary source edit keeps the objects and stays incremental unless [intermediate pruning](#pruning-verilator-intermediates) is enabled.
 
+### Failed or killed C++ build
+
+Verilator's makefiles keep a target whose recipe failed, so a compile that dies writing an object (a full disk or quota, a killed compiler) would leave a truncated object that every later make links. rtl_buddy marks a Verilator build directory while its make runs, in shared and per-test build directories alike:
+
+- A failed make has its `*.o`, `*.d`, `*.a`, precompiled headers and `*__ALL.cpp` deleted at once, in every subdirectory of the build directory (a `--hierarchical` build makes each sub-model in one), together with the executable the compile line links (`-o`, else `--prefix`, else `V<top>`). The next build of that key rebuilds them.
+- A make killed before rtl_buddy saw it fail leaves the mark, and the next build deletes the same files before its make runs and reports `dropped … (an earlier make there did not finish)`.
+- A compile that failed in Verilator's front end ran no make and keeps its objects.
+
 ### Changing only C++ compile or link flags
 
 Verilator passes `-CFLAGS` and `-LDFLAGS` only to the C++ compile and link of the model. A Verilator build that differs from another only in those options reuses that build's verilation and reruns just the C++ build:
