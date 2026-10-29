@@ -27,10 +27,9 @@ from ..config.pnr import (
     PNR_STAGES,
     POST_ROUTE_REPAIR_STAGE,
     ROTATED_ORIENTATIONS,
+    BlockageLifetime,
     BlockageType,
     GdsMode,
-    MacroAnchor,
-    MacroPlacement,
     PnrBlockage,
     PnrConfig,
     PnrFloorplan,
@@ -81,11 +80,12 @@ from .liberty_units import (
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
 _TEMPLATE_FILE = "flow.tcl.template"
-_MACRO_PACK_FILE = "macro_pack.tcl"
 # The macro pin-limit procedures, substituted only when `placement.macro-pin-limits` is set.
 _MACRO_PIN_LIMITS_FILE = "macro_pin_limits.tcl"
-# Cuts the rows under hard placement blockages before tap insertion; see `_floorplan_directives`.
+# Cuts the rows under hard placement blockages before tap insertion; see `_blockages_block`.
 _CUT_ROWS_FILE = "cut_rows.tcl"
+# `rb::keepouts::check`, run after macro placement when the floorplan has hard blockages or cut-outs.
+_KEEPOUTS_FILE = "keepouts.tcl"
 # Replaces the pdn-config's core grid with a run's `pdn:` block; see `_pdn_block`.
 _PDN_GRID_FILE = "pdn_grid.tcl"
 # `floorplan.macros` directives; see `_macro_directives_block`.
@@ -162,6 +162,8 @@ _CONGESTION_REPORT_NAME = "congestion.rpt"
 
 # Where `harden: true` elaborates the top to record its parameter values; see `_record_block_parameters`.
 _PARAM_PROBE_DIR = "param_probe"
+# RTL-MP's `-report_directory` (`_RTL_MP_PLACEMENT`). A run that places no macro with RTL-MP writes none, so like the script it is cleared up front only.
+_RTL_MP_REPORT_DIR = "rtlmp"
 # The synth netlist with `blocks:` parameter overrides stripped, read in its place; an input like the script.
 _BLOCK_NETLIST_NAME = "pnr_netlist.v"
 # Public: `rb power` uses it to check the SPEF and ODB came from the same run.
@@ -1008,6 +1010,7 @@ def run_output_paths(artefact_dir: str, design: str) -> list[str]:
         os.path.join(artefact_dir, _DEF2STREAM_REPORT_NAME),
         os.path.join(artefact_dir, _EXPORT_PROVENANCE_NAME),
         os.path.join(artefact_dir, _CONGESTION_REPORT_NAME),
+        os.path.join(artefact_dir, _RTL_MP_REPORT_DIR),
     ]
 
 
@@ -1067,10 +1070,11 @@ def clear_run_outputs(
         shutil.rmtree(failed_gr, ignore_errors=True)
         stale.append(failed_gr)
     # The parameter probe's scratch files belong to the abstract.
-    probe_dir = os.path.join(artefact_dir, _PARAM_PROBE_DIR)
-    if include_script and os.path.isdir(probe_dir):
-        shutil.rmtree(probe_dir, ignore_errors=True)
-        stale.append(probe_dir)
+    for name in (_PARAM_PROBE_DIR, _RTL_MP_REPORT_DIR):
+        scratch = os.path.join(artefact_dir, name)
+        if include_script and os.path.isdir(scratch):
+            shutil.rmtree(scratch, ignore_errors=True)
+            stale.append(scratch)
     return stale
 
 
@@ -1247,17 +1251,17 @@ def _blockage_command(blockage: PnrBlockage) -> str:
     return command
 
 
-def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
-    """Return `(blockages_block, macro_pack_directives)` for `floorplan.blockages` and `floorplan.macro-anchor`.
+def _blockages_block(fp: PnrFloorplan) -> tuple[str, str]:
+    """Return the Tcl for `floorplan.core-cutouts` and `floorplan.blockages`, and the check that no macro overlaps a hard one; each is "" when the floorplan sets neither.
 
-    Both are empty when the floorplan sets neither key. Blockages with `lifetime: global-placement` are left to `_global_placement_blocks`. The blockages block runs right after the floorplan. Hard blockages also become `MACRO_KEEPOUTS`, which the packer keeps macros out of, and the rows under them are cut, so the later tap insertion leaves them empty (rtl_buddy#773); soft and partial ones only thin standard cells. The directives are the anchor and keep-outs appended to the `rb::macro_pack::solve` call.
+    Blockages with `lifetime: global-placement` are left to `_global_placement_blocks`. The block runs right after the floorplan, so RTL-MP weighs every blockage it creates. The rows under hard blockages (`HARD_BLOCKAGES`) are cut, so the later tap insertion leaves them empty (rtl_buddy#773); soft and partial ones only thin standard cells. Hard blockages and cut-outs are labelled in `HARD_BLOCKAGE_LABELS`, and the returned check, run after macro placement, fails when a macro overlaps one.
     """
     lines = []
-    has_keepouts = False
+    has_hard = False
     for index, cutout in enumerate(fp.core_cutouts):
         # A cut-out is a hard blockage that must overlap the core; OpenROAD's site
         # snapping may move the core edges a little inside the requested ones.
-        has_keepouts = True
+        has_hard = True
         region = "{" + " ".join(_tcl_microns(v) for v in cutout) + "}"
         lines.append(f"set blockage_box [[create_blockage -region {region}] getBBox]")
         lines.append(
@@ -1268,44 +1272,62 @@ def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
             "the core; a cut-out is carved out of the core} }"
         )
         lines.append(
-            "lappend MACRO_KEEPOUTS "
+            "lappend HARD_BLOCKAGES "
             "[list [$blockage_box xMin] [$blockage_box yMin] [$blockage_box xMax] [$blockage_box yMax]]"
         )
-    blockages = fp.flow_blockages()
-    for blockage in blockages:
+        lines.append(f"lappend HARD_BLOCKAGE_LABELS floorplan.core-cutouts[{index}]")
+    flow_blockages = [
+        (index, blockage)
+        for index, blockage in enumerate(fp.blockages)
+        if blockage.lifetime is BlockageLifetime.FLOW
+    ]
+    for index, blockage in flow_blockages:
         command = _blockage_command(blockage)
         if blockage.type is BlockageType.HARD:
-            has_keepouts = True
+            has_hard = True
             lines.append(f"set blockage_box [[{command}] getBBox]")
             lines.append(
-                "lappend MACRO_KEEPOUTS "
+                "lappend HARD_BLOCKAGES "
                 "[list [$blockage_box xMin] [$blockage_box yMin] [$blockage_box xMax] [$blockage_box yMax]]"
             )
+            lines.append(f"lappend HARD_BLOCKAGE_LABELS floorplan.blockages[{index}]")
         else:
             lines.append(command)
     blockages_block = ""
+    keepout_check = ""
     if lines:
         header = [
             'puts ">>> Placement blockages"'
-            if blockages
+            if flow_blockages
             else 'puts ">>> Core cut-outs"'
         ]
-        if has_keepouts:
-            header.append("set MACRO_KEEPOUTS {}")
-            procs = files(_TEMPLATE_PACKAGE).joinpath(_CUT_ROWS_FILE).read_text()
+        if has_hard:
+            header.append("set HARD_BLOCKAGES {}")
+            header.append("set HARD_BLOCKAGE_LABELS {}")
+            package = files(_TEMPLATE_PACKAGE)
+            procs = package.joinpath(_CUT_ROWS_FILE).read_text()
+            keepouts = package.joinpath(_KEEPOUTS_FILE).read_text()
             lines += [
                 procs.rstrip("\n"),
-                'puts ">>>   cut [rb::rows::cut_under [ord::get_db_block] $MACRO_KEEPOUTS]'
+                keepouts.rstrip("\n"),
+                'puts ">>>   cut [rb::rows::cut_under [ord::get_db_block] $HARD_BLOCKAGES]'
                 ' row(s) under hard placement blockages"',
             ]
+            keepout_check = (
+                "  rb::keepouts::check $macros $HARD_BLOCKAGES "
+                "$HARD_BLOCKAGE_LABELS $dbu_per_micron\n"
+            )
         blockages_block = "\n" + "\n".join(header + lines) + "\n"
+    return blockages_block, keepout_check
 
-    directives = ""
-    if has_keepouts:
-        directives = f" \\\n      {fp.macro_anchor.value} $MACRO_KEEPOUTS"
-    elif fp.macro_anchor is not MacroAnchor.LOWER_LEFT:
-        directives = f" \\\n      {fp.macro_anchor.value}"
-    return blockages_block, directives
+
+def _keepout_recheck_block(keepout_check: str, hooks: dict) -> str:
+    """Return the keep-out check again at the end of the floorplan, when a later hook may move a macro."""
+    if not keepout_check or not any(
+        hooks.get(point) for point in ("after-pdn", "after-pins", "stage-end")
+    ):
+        return ""
+    return f"if {{[llength $macros] > 0}} {{\n{keepout_check}}}\n"
 
 
 def _initialize_floorplan_tcl(fp: PnrFloorplan) -> str:
@@ -1454,7 +1476,7 @@ def _place_pins_block(fp: PnrFloorplan) -> str:
 def _macro_directives_block(fp: PnrFloorplan) -> str:
     """Return the `floorplan.macros` and macros-file Tcl that opens the macro branch, or "" without directives.
 
-    Inline entries come first. It leaves the macros still to place in `rb_movable_macros`; located ones are LOCKED and, for the packer, keep-outs.
+    Inline entries come first. It leaves the macros still to place in `rb_movable_macros`; located ones are LOCKED, so RTL-MP places around them.
     """
     if not fp.macros:
         return ""
@@ -1480,8 +1502,7 @@ def _macro_directives_block(fp: PnrFloorplan) -> str:
     snap = "" if fp.macro_snap else " 0"
     lines.append(
         "  set rb_movable_macros [rb::macros::apply $block $macros $MACRO_DIRECTIVES "
-        "$site_grid_dbu [expr {int(round([ord::microns_to_dbu $MACRO_HALO]))}] "
-        f"$dbu_per_micron{snap}]"
+        f"$site_grid_dbu $dbu_per_micron{snap}]"
     )
     return "\n".join(lines) + "\n"
 
@@ -1507,85 +1528,48 @@ def _no_macros_block(fp: PnrFloorplan) -> str:
     return f" else {{\n  error {{{message}}}\n}}"
 
 
-_PACK_PLACEMENT = """\
-  set core [$block getCoreArea]
-  set halo_dbu [expr {{int(round([ord::microns_to_dbu $MACRO_HALO]))}}]
-  set footprints {{}}
-  foreach inst {packed} {{
-{footprint}  }}
-  set placement [rb::macro_pack::solve \\
-      [list [$core xMin] [$core yMin] [$core xMax] [$core yMax]] \\
-      $footprints $halo_dbu $site_grid_dbu $dbu_per_micron{directives}]
-  foreach inst {packed} {{
-    lassign [dict get $placement [$inst getName]] x y
-    $inst setLocation $x $y
-    $inst setPlacementStatus FIRM
-    puts ">>>   placed [$inst getName] at ($x, $y) DBU"
-  }}
-"""
-
-# A macro the packer places at its master's size, as every macro is R0 before `floorplan.macros` orients one.
-_MASTER_FOOTPRINT = """\
-    set master [$inst getMaster]
-    lappend footprints [list [$inst getName] [$master getWidth] [$master getHeight]]
-"""
-# A macro the packer places at its oriented size: an R90 macro is its master's height wide.
-_ORIENTED_FOOTPRINT = """\
-    set bbox [$inst getBBox]
-    lappend footprints [list [$inst getName] [$bbox getDX] [$bbox getDY]]
-"""
-
 _RTL_MP_REPORT = """\
-  foreach inst $macros {
+  foreach inst {placed} {{
     lassign [$inst getLocation] x y
     puts ">>>   placed [$inst getName] at ($x, $y) DBU [$inst getOrient] (rtl-mp)"
+  }}
+"""
+# RTL-MP with a minimum channel needs `-min_channel_size`, which older OpenROAD lacks. A `rtl_macro_placer` that is not a Tcl proc cannot be probed, so the option is assumed.
+_RTL_MP_CHANNEL_PROBE = """\
+  if {[catch {info body rtl_macro_placer} rb_mp_body]} {
+    set rb_mp_body -min_channel_size
+  }
+  if {[string first -min_channel_size $rb_mp_body] < 0} {
+    error {placement.macro-channel needs rtl_macro_placer -min_channel_size (OpenROAD 26Q4 or newer)}
   }
 """
-# OpenROAD RTL-MP with its own channels, as ORFS runs it.
-_RTL_MP_PLACEMENT = (
-    """\
-  file mkdir $OUT_DIR/rtlmp
-  rtl_macro_placer -report_directory $OUT_DIR/rtlmp
-"""
-    + _RTL_MP_REPORT
-)
-# RTL-MP with `placement.macro-halo`. The halo option spelling depends on the OpenROAD version, so both are emitted.
-_RTL_MP_HALO_PLACEMENT = (
-    """\
-  file mkdir $OUT_DIR/rtlmp
-  if {[llength [info commands set_macro_base_halo]]} {
-    set_macro_base_halo $MACRO_HALO $MACRO_HALO
-    rtl_macro_placer -report_directory $OUT_DIR/rtlmp
-  } else {
-    rtl_macro_placer -halo_width $MACRO_HALO -halo_height $MACRO_HALO \\
-        -report_directory $OUT_DIR/rtlmp
-  }
-"""
-    + _RTL_MP_REPORT
-)
 
 
-def _macro_place_block(
-    fp: PnrFloorplan, directives: str, rtl_mp_halo: bool = False
-) -> str:
-    """Return the macro-placement Tcl for the flow's macro branch.
-
-    With `floorplan.macros` the packer packs only `rb_movable_macros`, keeping out of the located ones (in `MACRO_KEEPOUTS`), and is skipped when every macro is located. RTL-MP gets `MACRO_HALO` only with `rtl_mp_halo`.
-    """
-    if fp.macro_placement is MacroPlacement.RTL_MP:
-        return _RTL_MP_HALO_PLACEMENT if rtl_mp_halo else _RTL_MP_PLACEMENT
-    if not fp.macros:
-        return _PACK_PLACEMENT.format(
-            directives=directives, packed="$macros", footprint=_MASTER_FOOTPRINT
-        )
-    if not directives.endswith("$MACRO_KEEPOUTS"):
-        anchor = f" \\\n      {fp.macro_anchor.value}"
-        directives = f"{anchor} $MACRO_KEEPOUTS"
-    body = _PACK_PLACEMENT.format(
-        directives=directives,
-        packed="$rb_movable_macros",
-        footprint=_ORIENTED_FOOTPRINT,
+def _rtl_mp_tcl(platform) -> str:
+    """Return the `rtl_macro_placer` call with the arguments ORFS passes: `-target_util` from the placement density, and `-min_channel_size` and `-pin_aware_channels` only with `placement.macro-channel`."""
+    call = (
+        "  rtl_macro_placer -report_directory $OUT_DIR/rtlmp"
+        f" -target_util {platform.get_placement_density():g}"
     )
+    channel = platform.get_placement_macro_channel()
+    if channel is None:
+        return f"  file mkdir $OUT_DIR/rtlmp\n{call}\n"
+    call += f" \\\n      -min_channel_size {_tcl_list(f'{v:g}' for v in channel)}"
+    if platform.get_placement_macro_pin_aware_channels():
+        call += " -pin_aware_channels"
+    return f"  file mkdir $OUT_DIR/rtlmp\n{_RTL_MP_CHANNEL_PROBE}{call}\n"
+
+
+def _macro_place_block(fp: PnrFloorplan, platform) -> str:
+    """Return the RTL-MP Tcl for the flow's macro branch.
+
+    With `floorplan.macros`, RTL-MP places around the located macros, reports only the macros it placed, and is skipped when every macro is located.
+    """
+    block = _rtl_mp_tcl(platform)
+    if not fp.macros:
+        return block + _RTL_MP_REPORT.format(placed="$macros")
+    block += _RTL_MP_REPORT.format(placed="$rb_movable_macros")
+    body = "".join(f"  {line}\n" if line else "\n" for line in block.splitlines())
     return f"  if {{[llength $rb_movable_macros] > 0}} {{\n{body}  }}\n"
 
 
@@ -1625,7 +1609,7 @@ def _global_placement_blocks(
 ) -> GlobalPlacementBlocks:
     """Return the Tcl for `lifetime: global-placement` blockages and `placement.rotated-macro-footprint`.
 
-    The blockages are created immediately before `global_placement` and destroyed immediately after by the handles the flow created, so no checkpoint, row cut, packer keep-out or RTL-MP run sees them. With checkpoints, the floorplan checkpoint is written before they exist. `footprint` acts only when a macro is rotated at run time: `block` adds a hard blockage over each rotated macro's unrotated footprint (see `rotated_macros.tcl`), `diamond-legalizer` passes `-use_diamond_legalizer` to every `detailed_placement`.
+    The blockages are created immediately before `global_placement` and destroyed immediately after by the handles the flow created, so no checkpoint, row cut or RTL-MP run sees them. With checkpoints, the floorplan checkpoint is written before they exist. `footprint` acts only when a macro is rotated at run time: `block` adds a hard blockage over each rotated macro's unrotated footprint (see `rotated_macros.tcl`), `diamond-legalizer` passes `-use_diamond_legalizer` to every `detailed_placement`.
     """
     blockages = fp.global_placement_blockages()
     rotated = _may_rotate(fp, hooks) and footprint != RotatedMacroFootprint.NONE
@@ -3081,9 +3065,6 @@ class OpenRoadPnr:
     def _load_template(self) -> str:
         return files(_TEMPLATE_PACKAGE).joinpath(_TEMPLATE_FILE).read_text()
 
-    def _load_macro_pack(self) -> str:
-        return files(_TEMPLATE_PACKAGE).joinpath(_MACRO_PACK_FILE).read_text()
-
     def _pdn_config(self, pdk) -> str:
         """The PDN Tcl this run sources: its own `pdn-config`, else the PDK's, else ""."""
         return self.pnr_cfg.get_pdn_config() or pdk.get_pdn_config()
@@ -3246,7 +3227,7 @@ class OpenRoadPnr:
         # Must precede the first `read_liberty`.
         threads_block = _threads_block(self._threads())
 
-        blockages_block, macro_pack_directives = _floorplan_directives(fp)
+        blockages_block, keepout_check_block = _blockages_block(fp)
         gp_blocks = _global_placement_blocks(
             fp,
             platform.get_placement_rotated_macro_footprint(),
@@ -3358,21 +3339,17 @@ class OpenRoadPnr:
             "reference_hpwl_option": _reference_hpwl_option(platform),
             "routability_options": _routability_options(platform),
             "timing_driven_option": _timing_driven_option(platform),
-            "macro_halo": f"{platform.get_placement_macro_halo():g}",
             "macro_cell_halo": f"{platform.get_placement_macro_cell_halo():g}",
-            "macro_pack_procs": self._load_macro_pack(),
             "macro_directives_block": _macro_directives_block(fp),
             "initialize_floorplan": _initialize_floorplan_tcl(fp),
-            # A `macro-placement` hook replaces the packer or RTL-MP inside the macro branch.
+            # A `macro-placement` hook replaces RTL-MP inside the macro branch.
             "macro_place_block": (
                 _macro_hook_block(fp, hooks["macro-placement"])
                 if "macro-placement" in hooks
-                else _macro_place_block(
-                    fp,
-                    macro_pack_directives,
-                    platform.get_placement_macro_halo_setting() is not None,
-                )
+                else _macro_place_block(fp, platform)
             ),
+            "keepout_check_block": keepout_check_block,
+            "keepout_recheck_block": _keepout_recheck_block(keepout_check_block, hooks),
             "no_macros_block": _no_macros_block(fp),
             "blockages_block": blockages_block,
             "dont_use_block": dont_use_block,

@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from test_pnr_macro_pack import _tcl_eval
+from tcl_eval import _tcl_eval
 from test_pnr_checkpoints import (
     _HARNESS,
     _backend,

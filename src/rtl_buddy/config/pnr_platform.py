@@ -11,7 +11,6 @@ from ..errors import FatalRtlBuddyError
 from .pdk import (
     PLACEMENT_SPEC,
     DEFAULT_PLACEMENT_DENSITY,
-    DEFAULT_PLACEMENT_MACRO_HALO,
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
     DEFAULT_PLACEMENT_PADDING,
     DEFAULT_PLACEMENT_TIE_SEPARATION,
@@ -537,9 +536,21 @@ class PnrPlatformConfig:
         self._placement_padding = _pick(
             "padding", pdk.get_placement_padding(), DEFAULT_PLACEMENT_PADDING
         )
-        # Unset gives the packer its default and RTL-MP no channel, as ORFS passes none.
-        self._placement_macro_halo = _pick(
-            "macro_halo", pdk.get_placement_macro_halo(), None
+        # Unset gives RTL-MP no minimum channel, as ORFS without RTLMP_MIN_CHANNEL_SIZE; a layer's `null` clears the PDK's.
+        macro_channel = pdk.get_placement_macro_channel()
+        for layer in layers:
+            if layer.macro_channel is not UNSET:
+                macro_channel = layer.macro_channel
+                break
+        self._placement_macro_channel = macro_channel
+        pin_aware = _pick(
+            "macro_pin_aware_channels",
+            pdk.get_placement_macro_pin_aware_channels(),
+            True,
+        )
+        # RTL-MP takes `-pin_aware_channels` only with a channel.
+        self._placement_macro_pin_aware_channels = (
+            None if macro_channel is None else pin_aware
         )
         self._placement_macro_cell_halo = _pick(
             "macro_cell_halo",
@@ -762,15 +773,13 @@ class PnrPlatformConfig:
         """Global-placement cell padding, after platform/PDK/default."""
         return self._placement_padding
 
-    def get_placement_macro_halo(self) -> float:
-        """Macro halo in microns, after platform/PDK/default."""
-        if self._placement_macro_halo is None:
-            return DEFAULT_PLACEMENT_MACRO_HALO
-        return self._placement_macro_halo
+    def get_placement_macro_channel(self) -> list[float] | None:
+        """RTL-MP's minimum channel as [width, height] in microns from the run, platform or PDK, or `None` when none sets it."""
+        return self._placement_macro_channel
 
-    def get_placement_macro_halo_setting(self) -> float | None:
-        """Macro halo in microns from platform or PDK, or `None` when neither sets it."""
-        return self._placement_macro_halo
+    def get_placement_macro_pin_aware_channels(self) -> bool | None:
+        """Whether RTL-MP trims its channels to the macro pins (`-pin_aware_channels`), run over platform over PDK, default `True`; `None` when there is no channel, as RTL-MP takes the flag only with one."""
+        return self._placement_macro_pin_aware_channels
 
     def get_placement_macro_cell_halo(self) -> float:
         """Macro-to-row keep-out in microns, after platform/PDK/default."""

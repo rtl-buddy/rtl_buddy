@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from test_pnr_floorplan_controls import _floorplan, _load, _render
 from test_pnr_floorplan_pins import _platform
-from test_pnr_macro_pack import _tcl_eval
+from tcl_eval import _tcl_eval
 
 from rtl_buddy.config.pdk import PdkConfig
 from rtl_buddy.config.pnr import (
@@ -170,25 +170,26 @@ def test_explicit_areas_render_die_and_core(tmp_path):
     assert "-utilization" not in text
 
 
-def test_cutouts_are_checked_hard_blockages_that_cut_rows_and_keep_macros_out(
+def test_cutouts_are_checked_hard_blockages_that_cut_rows_before_macro_placement(
     tmp_path,
 ):
     text = _render(tmp_path, _floorplan(core_cutouts=[(80.0, 80.0, 140.0, 140.0)]))
 
-    assert 'puts ">>> Core cut-outs"\nset MACRO_KEEPOUTS {}\n' in text
+    assert (
+        'puts ">>> Core cut-outs"\nset HARD_BLOCKAGES {}\nset HARD_BLOCKAGE_LABELS {}\n'
+    ) in text
     assert (
         "set blockage_box [[create_blockage -region {80 80 140 140}] getBBox]\n"
     ) in text
     assert "floorplan.core-cutouts[0] {80 80 140 140} um does not overlap" in text
-    assert "[rb::rows::cut_under [ord::get_db_block] $MACRO_KEEPOUTS]" in text
-    assert "      lower-left $MACRO_KEEPOUTS]\n" in text
+    assert "[rb::rows::cut_under [ord::get_db_block] $HARD_BLOCKAGES]" in text
     assert text.index("Core cut-outs") < text.index('puts ">>> Macro placement"')
 
 
 def test_a_cutout_outside_the_core_fails_with_its_message(tmp_path):
     text = _render(tmp_path, _floorplan(core_cutouts=[(80.0, 80.0, 140.0, 140.0)]))
     start = text.index("set blockage_box [[create_blockage")
-    check = text[start : text.index("lappend MACRO_KEEPOUTS", start)]
+    check = text[start : text.index("lappend HARD_BLOCKAGES", start)]
     stubs = textwrap.dedent(
         """\
         proc rb_box {x0 y0 x1 y1} {

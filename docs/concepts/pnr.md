@@ -97,6 +97,7 @@ A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in 
 | `grt_antennas.rpt`, `drt_antennas.rpt` | Antenna violations left after the antenna repair after global route and after detailed route; with `post-route-repair`, `drt_antennas.rpt` is the kept round's |
 | `congestion.rpt` | Overflowing global-route tiles, only when global routing overflows. Loads in the OpenROAD GUI's DRC viewer. |
 | `congestion-<i>.rpt` | The same at iteration `i`, every `global-route.congestion-report-iter-step` iterations of an overflowing route |
+| `rtlmp/` | RTL-MP's reports, when it placed macros |
 | `<top>.gds`, `<top>.png`, `klayout.*.log`, `def2stream.inputs.json` | Stream-out outputs, logs and the inputs it read |
 | `checkpoints/`, `abstract/` | [Stage checkpoints](#keep-stage-checkpoints) and a [hardened block's](#harden-a-block) views |
 
@@ -126,11 +127,11 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `fail_stage: outputs` | rb could not read, decode or rewrite `<top>.routed.pwr.v` or a hardened block's `<top>.lib` to put the supply ports last. The description names the file and error. |
 | `fail_stage: export` | Stream-out failed, under `gds-mode: strict` in `rb pnr` or in any mode in `rb pnr-export`: KLayout, `klayout-tech`, an input file or the render. Fix it and run `rb pnr-export`. |
 | `fail_stage: blocked`, `synth`, `error` | A block this run uses failed, its upstream synthesis failed under `--synth`, or rb crashed (the exception is in the description). Fix the cause first. |
-| `[ERROR PDN-0179] Unable to repair all channels` | Macros too close for the power grid. Raise `placement.macro-halo` (about 19 µm minimum on sky130hd). |
+| `[ERROR PDN-0179] Unable to repair all channels` | Macros too close for the power grid. Set `placement.macro-channel`. |
+| `macro ... overlaps floorplan.blockages[N]` (or `floorplan.core-cutouts[N]`) | A placed macro sits on a `hard` blockage or core cut-out. Fix the macro with a `floorplan.macros` location, enlarge `placement.macro-channel`, or move the blockage. |
 | `PDN-0008 ... halo overlaps row` | A `pdn-config` macro grid's `-halo` reaches a standard-cell row the macro does not sit on. Cut the rows around each macro at least that far; see [Plan the power grid](#plan-the-power-grid). |
 | `PDN-0233` on a turned macro or a block's grid | The power grid has no via for that macro. See [Place macros](#place-macros) and [Harden a block](#harden-a-block). |
-| `N macros do not fit the W x H um floorplan core` | Lower `utilization`, change `aspect`, or lower `placement.macro-halo`. The message gives the smallest core that fits. |
-| `GRT-0116`, global-route overflow | Too congested. The result's `failed_global_route` names the checkpoint (`<run-id>/global_route`) that holds the failed route's database and a copy of `congestion.rpt`; open it with `rb pnr-export --checkpoint` or `read_db` in OpenROAD. Lower utilization or density, try `placement.routability-driven`, or [tune global routing](#tune-global-routing). |
+| `GRT-0116`, global-route overflow | Too congested. The result's `failed_global_route` names the checkpoint (`<run-id>/global_route`) that holds the failed route's database and a copy of `congestion.rpt`; open it with `rb pnr-export --checkpoint` or `read_db` in OpenROAD. Lower utilization or density, try `placement.routability-driven`, or [tune global routing](#tune-global-routing). Congestion between macros or between a macro and the core edge means RTL-MP left no channel there: set `placement.macro-channel`, such as ORFS's `[80, 80]` on sky130hd. |
 | Large `drc_count` | Try `routing-layer-adjustment`, a lower density, or `post-route-repair` with several rounds. |
 | `RSZ-0090` at a slow corner | A macro with one Liberty limits that corner. Map each corner to the macro's Liberty for it in `lib-paths`; see [Sign off at several corners](#sign-off-at-several-corners). |
 | Macro pins in `electrical.rpt`, or `pnr.macro_pin_limits_unmet` | Set `placement.macro-pin-limits`, add a stronger buffer to it, or lower the macro's `macro-cell-halo`. See [Tune placement](#tune-placement-clock-tree-and-repair). |
@@ -266,7 +267,7 @@ The default [global-route repair](#repair-timing-after-routing) repairs again on
 
 ## Tune placement, clock tree and repair
 
-Process-dependent knobs live on the PDK, can be overridden on the platform, and most also on a run, so runs of one block on one platform can differ without a platform per variant. Which level takes each key is in the [YAML reference](../reference/yaml.md#synthesis-and-physical-design-tools). A default is OpenROAD's own or the setting ORFS uses, unless it belongs to an rb step without a counterpart, such as the macro packer, or works around a [known issue](../known-issues.md). Start from the problem:
+Process-dependent knobs live on the PDK, can be overridden on the platform, and most also on a run, so runs of one block on one platform can differ without a platform per variant. Which level takes each key is in the [YAML reference](../reference/yaml.md#synthesis-and-physical-design-tools). A default is OpenROAD's own or the setting ORFS uses, unless it belongs to an rb step without a counterpart, such as `placement.macro-pin-limits`, or works around a [known issue](../known-issues.md). Start from the problem:
 
 | Problem | Knob |
 | --- | --- |
@@ -433,7 +434,7 @@ The die is sized from the netlist's cell area by `floorplan.utilization`, which 
 ```yaml
     floorplan:
       blockages:
-        - rect: [10, 10, 130, 60]                 # hard: no cells, rows cut, macros moved past it
+        - rect: [10, 10, 130, 60]                 # hard: no cells, rows cut
         - rect: [400, 300, 520, 420]
           type: partial                            # global placement caps density here
           max-density: 0.4
@@ -442,11 +443,11 @@ The die is sized from the netlist's cell area by `floorplan.utilization`, which 
           lifetime: global-placement               # removed after global placement
 ```
 
-`lifetime: global-placement` makes any type a screen for global placement alone: no rows are cut, macro placement ignores it and no checkpoint holds it. Blockages need OpenROAD 26Q1.
+After macro placement, and again at the end of the floorplan when an `after-pdn`, `after-pins` or `stage-end` hook is set, a macro that overlaps a `hard` blockage or a core cut-out fails the run, naming the macro, the region and the ways out: a `floorplan.macros` location, a larger `placement.macro-channel`, or moving the blockage. RTL-MP treats every blockage as an obstacle and stops with `MPL-0065` or `MPL-0040` when it finds no placement clear of them, but rb checks only `hard` blockages and cut-outs. `lifetime: global-placement` makes any type a screen for global placement alone: no rows are cut, macro placement ignores it and no checkpoint holds it. Blockages need OpenROAD 26Q1.
 
 ## Place macros
 
-A netlist with hard macros (SRAMs, hardened blocks) gets them placed before the power grid. By default rb's packer puts them in rows from the core's lower-left corner, tallest first, `placement.macro-halo` (default 20 µm) apart and from the core edge, on the site grid. `floorplan.macro-anchor` starts from another corner, keeping the opposite edges free for pins. `floorplan.macro-placement: rtl-mp` uses OpenROAD's RTL-MP instead, which places by connectivity and may mirror macros; it keeps out of every blockage type and cannot take a `macro-anchor`. RTL-MP gets `placement.macro-halo` as its halo only when it is set; unset, it keeps its own channels, as ORFS runs it.
+A netlist with hard macros (SRAMs, hardened blocks) gets them placed before the power grid by OpenROAD's RTL-MP (`rtl_macro_placer`), as ORFS places them. RTL-MP places by connectivity and may mirror a macro. It reports to `rtlmp/` in the run directory, and `pnr.log` has one `placed` line per macro it places. rb passes it the arguments ORFS does: `-target_util` is `placement.density`, and `placement.macro-channel` is its minimum channel in µm between macros and from the core edge (`-min_channel_size`), which it trims to the macro pins along each channel unless `placement.macro-pin-aware-channels` is `false`. ORFS sets a channel on every platform, such as `[80, 80]` on sky130hd; rb sets none unless configured, and RTL-MP then keeps its own channels, which can leave none. A channel too narrow for the power grid fails `pdngen` with `PDN-0179`, and one too narrow for routing fails global routing with `GRT-0116`; set `placement.macro-channel` then. It needs OpenROAD 26Q4 or newer; on an older one, a run with macros stops at macro placement saying so. To place macros another way, fix them with `floorplan.macros` locations, or place them in a [`macro-placement` hook](#run-tcl-hooks), which replaces RTL-MP. Whichever places them, no macro may overlap a core cut-out or a `hard` [blockage](#shape-the-floorplan); the run fails otherwise.
 
 `floorplan.macros` fixes, orients or haloes individual macros:
 
@@ -458,11 +459,11 @@ A netlist with hard macros (SRAMs, hardened blocks) gets them placed before the 
           orientation: MX
           halo: [3, 3]                     # replaces macro-cell-halo for this macro
         - instance: "*/u_rf*"
-          orientation: R180
+          halo: [2, 2]                     # every macro the glob matches
 ```
 
-- A `location` is snapped to the site and row grid, must be inside the core and clear of other fixed macros, and must match one macro. Placers leave it there.
-- Under `rtl-mp`, an `orientation` needs a `location`.
+- A `location` is snapped to the site and row grid, must be inside the core and clear of other fixed macros, and must match one macro. RTL-MP places the other macros around it, and does not run when every macro is located.
+- An `orientation` needs a `location`, because RTL-MP chooses the orientation of each macro it places. With a `macro-placement` hook, an entry may orient a macro for the hook to place.
 - A pattern that matches nothing fails the run.
 - A turned macro (`R90`, `R270`, `MXR90`, `MYR90`) turns its pins and power pins. Give the `pdn-config` a macro grid for that orientation, or `pdngen` fails (`PDN-0233`). `placement.rotated-macro-footprint` works around OpenROAD's legalizer for turned macros; see [Known Issues](../known-issues.md#openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint).
 
@@ -525,7 +526,7 @@ A macro grid in the `pdn-config` with a `-halo` needs the standard-cell rows cut
 | --- | --- |
 | `session` | At the start of every OpenROAD session, after the SDC, before the floorplan |
 | `after-floorplan` | After floorplan, tracks, blockages, tie cells and the floorplan setup repair |
-| `macro-placement` | Instead of rb's macro placement; only when the netlist has macros. `$rb_movable_macros` lists the unlocated ones. Not with `macro-placement: rtl-mp` or a non-default `macro-anchor`. |
+| `macro-placement` | Instead of RTL-MP; only when the netlist has macros. `$rb_movable_macros` lists the unlocated ones. |
 | `after-pdn` | After taps and the power grid |
 | `after-pins` | After pin placement, before port buffering. A hook that buffers ports needs `buffer-ports: false`. |
 | `after-global-placement` | After `global_placement` |

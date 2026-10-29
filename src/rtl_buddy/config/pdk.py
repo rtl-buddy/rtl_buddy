@@ -1,10 +1,12 @@
 import logging
 import os
 from enum import StrEnum
+from typing import Any
 
 from serde import serde, field
 
 from ..errors import FatalRtlBuddyError
+from .pnr_repair import UNSET
 from .unknown_keys import KeySpec
 
 logger = logging.getLogger(__name__)
@@ -30,10 +32,6 @@ class PdkPinLayersFile:
 #: Placement defaults used when neither the PDK nor the P&R platform sets a value: `global_placement`'s own.
 DEFAULT_PLACEMENT_DENSITY = 0.7
 DEFAULT_PLACEMENT_PADDING = 0
-
-#: The packer's minimum channel in microns between two macros and between a macro and each core edge; RTL-MP gets one only when `macro-halo` is set.
-#: It must be wide enough for `pdngen` to repair the channel, or the run fails at PDN-0179; sky130hd needs about 19.2 um.
-DEFAULT_PLACEMENT_MACRO_HALO = 20.0
 
 #: Standard-cell keep-out in microns around each placed macro; 0 places no blockage.
 #: Without a keep-out, cells abut the macro and the detailed router reports Metal Spacing violations at the shared edge;
@@ -85,7 +83,12 @@ class PlacementFile:
 
     density: float | None = None
     padding: int | None = None
-    macro_halo: float | None = field(rename="macro-halo", default=None)
+    # RTL-MP `-min_channel_size`: one number or [width, height] in microns, typed loosely so `validate_placement` names a bad value. `UNSET` inherits; `null` clears a channel a lower level sets.
+    macro_channel: Any = field(rename="macro-channel", default=UNSET)
+    # RTL-MP `-pin_aware_channels` with a channel; `None` inherits, unset means on.
+    macro_pin_aware_channels: bool | None = field(
+        rename="macro-pin-aware-channels", default=None
+    )
     macro_cell_halo: float | None = field(rename="macro-cell-halo", default=None)
     tie_separation: float | None = field(rename="tie-separation", default=None)
     # `global_placement -reference_hpwl`; `None` leaves the placer's own reference.
@@ -109,7 +112,13 @@ class PlacementFile:
 
 
 PLACEMENT_SPEC = KeySpec(
-    PlacementFile, {"macro-pin-limits": KeySpec(MacroPinLimitsFile)}
+    PlacementFile,
+    {"macro-pin-limits": KeySpec(MacroPinLimitsFile)},
+    removed={
+        "macro-halo": "set placement.macro-channel to twice the halo "
+        "(macro-halo: 20 is macro-channel: 40), RTL-MP's minimum channel "
+        "between macros and from the core edge",
+    },
 )
 
 
@@ -187,13 +196,7 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
             raise FatalRtlBuddyError(
                 f"{where}: placement.padding must be >= 0, got {padding}"
             )
-    macro_halo = placement.macro_halo
-    if macro_halo is not None:
-        macro_halo = float(macro_halo)
-        if macro_halo < 0.0:
-            raise FatalRtlBuddyError(
-                f"{where}: placement.macro-halo must be >= 0, got {macro_halo}"
-            )
+    macro_channel = _macro_channel(placement.macro_channel, where)
     macro_cell_halo = placement.macro_cell_halo
     if macro_cell_halo is not None:
         macro_cell_halo = float(macro_cell_halo)
@@ -229,7 +232,11 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
     return PlacementFile(
         density=density,
         padding=padding,
-        macro_halo=macro_halo,
+        macro_channel=macro_channel,
+        macro_pin_aware_channels=_optional_bool(
+            placement.macro_pin_aware_channels,
+            f"{where}: placement.macro-pin-aware-channels",
+        ),
         macro_cell_halo=macro_cell_halo,
         tie_separation=tie_separation,
         reference_hpwl=reference_hpwl,
@@ -245,6 +252,26 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
             placement.optimize_mirroring, f"{where}: placement.optimize-mirroring"
         ),
     )
+
+
+def _macro_channel(value, where: str) -> Any:
+    """`placement.macro-channel` as [width, height] in microns, one number being both; `UNSET` and `None` (written `null`) pass through."""
+    if value is None or value is UNSET:
+        return value
+    pair = value if isinstance(value, list) else [value]
+    if len(pair) == 1:
+        pair = pair * 2
+    if len(pair) != 2 or not all(
+        not isinstance(v, bool)
+        and isinstance(v, (int, float))
+        and 0.0 <= v < float("inf")
+        for v in pair
+    ):
+        raise FatalRtlBuddyError(
+            f"{where}: placement.macro-channel must be a number >= 0 or a "
+            f"[width, height] pair of them in microns, got {value!r}"
+        )
+    return [float(v) for v in pair]
 
 
 def _optional_bool(value, where: str) -> bool | None:
@@ -443,9 +470,14 @@ class PdkConfig:
         """Configured global-placement cell padding, or `None` when unset."""
         return self._placement.padding
 
-    def get_placement_macro_halo(self) -> float | None:
-        """Configured macro halo in microns, or `None` when unset."""
-        return self._placement.macro_halo
+    def get_placement_macro_channel(self) -> list[float] | None:
+        """Configured RTL-MP minimum channel as [width, height] in microns, or `None` when unset."""
+        channel = self._placement.macro_channel
+        return None if channel is UNSET else channel
+
+    def get_placement_macro_pin_aware_channels(self) -> bool | None:
+        """Configured RTL-MP `-pin_aware_channels`, or `None` when unset."""
+        return self._placement.macro_pin_aware_channels
 
     def get_placement_macro_cell_halo(self) -> float | None:
         """Configured macro row keep-out in microns, or `None` when unset."""

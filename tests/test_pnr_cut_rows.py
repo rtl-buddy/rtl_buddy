@@ -8,7 +8,7 @@ under a bare Tcl interpreter.
 from importlib.resources import files
 
 import pytest
-from test_pnr_macro_pack import _tcl_eval
+from tcl_eval import _tcl_eval
 
 
 def _source() -> str:

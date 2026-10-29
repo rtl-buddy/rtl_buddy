@@ -1,8 +1,7 @@
 """Tests for `placement.macro-pin-limits`, the macro pin-limit repair step (rtl_buddy#838).
 
 The pure-Tcl helpers in `rtl_buddy/pnr/macro_pin_limits.tcl` run under a bare Tcl
-interpreter, as the macro packer's do; the OpenROAD half is checked by its place in
-the rendered flow.
+interpreter; the OpenROAD half is checked by its place in the rendered flow.
 """
 
 import logging
@@ -22,7 +21,7 @@ from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
 from test_multi_corner import _pnr_backend_over
 from test_pnr import _make_pdk_cfg, _make_pnr_cfg, _platform, _render_flow
-from test_pnr_macro_pack import _tcl_eval
+from tcl_eval import _tcl_eval
 
 _BUFFERS = ["BUF_X1", "BUF_X4", "BUF_X8"]
 

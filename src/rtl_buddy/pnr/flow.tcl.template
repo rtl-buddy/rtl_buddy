@@ -17,7 +17,6 @@ set SITE            {{ site }}
 set CORE_UTIL_PCT   {{ util_pct }}
 set CORE_ASPECT     {{ aspect }}
 set CORE_MARGIN     {{ core_margin }}
-set MACRO_HALO      {{ macro_halo }}
 set MACRO_CELL_HALO {{ macro_cell_halo }}
 # Instance name -> {x y} micron cell halo, from `floorplan.macros`.
 set MACRO_CELL_HALOS {}
@@ -68,7 +67,6 @@ puts ">>> Reading SDC"
 {{ blockages_block }}
 puts ">>> Tie cells"
 {{ tie_cells_block }}{{ floorplan_setup_repair }}{{ hook_after_floorplan_block }}
-{{ macro_pack_procs }}
 puts ">>> Macro placement"
 {{ @design }}set block [ord::get_db_block]
 # Macro origins snap to the site grid from the core corner; a bottom edge
@@ -81,7 +79,7 @@ foreach inst [$block getInsts] {
   if {[[$inst getMaster] isBlock]} { lappend macros $inst }
 }
 {{ @/design }}if {[llength $macros] > 0} {
-{{ macro_directives_block }}{{ macro_place_block }}  # A hard placement blockage over each macro grown by MACRO_CELL_HALO, or by
+{{ macro_directives_block }}{{ macro_place_block }}{{ keepout_check_block }}  # A hard placement blockage over each macro grown by MACRO_CELL_HALO, or by
   # its `floorplan.macros` halo in MACRO_CELL_HALOS, so no standard cell abuts
   # a macro edge; the router reaches such a cell's pins only with a Metal
   # Spacing violation. It leaves the rows whole: rows cut closer to a macro
@@ -108,14 +106,13 @@ foreach inst [$block getInsts] {
 {{ tapcell_block }}{{ pdn_block }}{{ hook_after_pdn_block }}
 # Pins are placed after the macros and power grid so the pin placer sees placed
 # macros (unplaced ones raise PPL-0015). `place_pins` only avoids boundary
-# stretches a placed macro touches; keeping pins clear of macros kept a halo
-# inside the core is `floorplan.macro-anchor`'s job.
+# stretches a placed macro touches.
 puts ">>> IO pin placement"
 {{ floorplan_pins_block }}{{ pin_constraints_tcl }}
 {{ place_pins_block }}
 {{ hook_after_pins_block }}{{ buffer_ports_block }}
 rb::global_connect
-{{ hook_stage_end_floorplan_block }}{{ @place }}puts ">>> Global placement"
+{{ hook_stage_end_floorplan_block }}{{ keepout_recheck_block }}{{ @place }}puts ">>> Global placement"
 {{ gp_blockages_create }}global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}{{ routability_options }}{{ timing_driven_option }}
 {{ free_port_buffers_block }}{{ gp_blockages_destroy }}{{ hook_after_global_placement_block }}{{ tie_fanout_block }}
 puts ">>> Resize"
