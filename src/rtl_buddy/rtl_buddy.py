@@ -12084,8 +12084,8 @@ class RtlBuddy:
                 help="namespace this invocation's P&R output under "
                 "artefacts/.runs/<tag>/ with its own tree lock and log, so "
                 "concurrent rb pnr calls on one pnr.yaml do not collide; "
-                "blocks: read the tag's abstract, or a copy of the untagged one "
-                "when the tag never ran the block",
+                "block abstracts (the tag's, else the untagged ones) and the "
+                "synthesis netlist are read from copies taken into that tree",
             ),
         ] = None,
     ):
@@ -12677,7 +12677,7 @@ class RtlBuddy:
             typer.Option(
                 "--run-tag",
                 help="export the result an rb pnr --run-tag <tag> wrote under "
-                "artefacts/.runs/<tag>/",
+                "artefacts/.runs/<tag>/, with the block copies that run read",
             ),
         ] = None,
     ):
