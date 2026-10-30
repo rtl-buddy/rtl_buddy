@@ -595,6 +595,11 @@ def abstract_config(pnr_cfg, platform) -> dict:
         ),
         **({"keep_sizing_vt": True} if platform.get_keep_sizing_vt() is True else {}),
         **(
+            {"match_cell_footprint": True}
+            if platform.get_match_cell_footprint() is True
+            else {}
+        ),
+        **(
             {"max_fanout": platform.get_max_fanout()}
             if isinstance(platform.get_max_fanout(), int)
             else {}

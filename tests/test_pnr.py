@@ -3476,6 +3476,65 @@ def test_pnr_with_wire_rc_does_not_warn(tmp_path, monkeypatch):
     assert not [e for e in events if e[1] == "pnr.no_wire_rc"]
 
 
+_EST_0018 = (
+    "[WARNING EST-0018] wire capacitance for corner default is zero. "
+    "Use the set_wire_rc command to set wire resistance and capacitance.\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("log", "cause"),
+    [
+        ("RB-WIRE-RC: 1\n", None),
+        ("RB-WIRE-RC: 1\nRB-WIRE-RC: 1\n", None),
+        ("RB-WIRE-RC: 1\n" + _EST_0018, "(EST-0018)"),
+        ("RB-WIRE-RC: 0\n", "(no layer-rc-tcl)"),
+        ("RB-WIRE-RC: 1\nRB-WIRE-RC: 0\n", "(no layer-rc-tcl)"),
+        ("RB-WIRE-RC: unknown\n", "(no layer-rc-tcl)"),
+        ("", "(no layer-rc-tcl)"),
+    ],
+)
+def test_a_session_hook_without_a_layer_rc_warns_unless_every_session_s_probe_saw_wire_rc(
+    tmp_path, monkeypatch, log, cause
+):
+    """A `session` hook may set the wire RC, so the missing `layer-rc-tcl` is a cause only when a session's probe found zero or could not tell; OpenROAD's warning still is."""
+    events = _capture_pnr_events(monkeypatch)
+    backend, _odb = _dont_use_backend(
+        tmp_path, monkeypatch, log=log, returncode=0, dont_use_cells=[]
+    )
+    hook = tmp_path / "wire_rc.tcl"
+    hook.write_text("set_wire_rc -signal -layer metal3\n")
+    backend.pnr_cfg.hooks = {"session": (str(hook),)}
+
+    res = backend.run()
+
+    assert isinstance(res, PnrPassResults)
+    found = [e for e in events if e[1] == "pnr.no_wire_rc"]
+    if cause is None:
+        assert res.results["desc"] == "P&R passed"
+        assert not found
+    else:
+        assert cause in res.results["desc"]
+        assert found[0][2]["layer_rc_tcl"] is False
+
+
+def test_the_wire_rc_probe_follows_the_session_hooks_only_without_a_layer_rc(tmp_path):
+    from rtl_buddy.tools.pnr_openroad import _session_hook_block
+
+    hook = tmp_path / "wire_rc.tcl"
+    platform = MagicMock()
+    platform.get_pdk.return_value.get_layer_rc_tcl.return_value = ""
+    hooks = {"session": (str(hook),)}
+
+    block = _session_hook_block(platform, hooks)
+    assert block.index(f'rb::hook::run session "{hook}"') < block.index("RB-WIRE-RC:")
+    assert "est::wire_signal_capacitance $rb_scene" in block
+    assert "est::wire_clk_capacitance $rb_scene" in block
+    assert _session_hook_block(platform, {}) == ""
+    platform.get_pdk.return_value.get_layer_rc_tcl.return_value = "rc.tcl"
+    assert "RB-WIRE-RC" not in _session_hook_block(platform, hooks)
+
+
 def test_pnr_fails_naming_a_placed_dont_use_cell(tmp_path, monkeypatch):
     """The check's Tcl error exits OpenROAD non-zero; the verdict names the offender, not
     the exit code, and nothing is published.
