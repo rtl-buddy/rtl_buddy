@@ -26,6 +26,16 @@ blocks:
 
 IDs are arbitrary strings; a block prefix keeps them unique across the project. One file may define several blocks.
 
+An item may carry project metadata, such as the test tier that must own it, under `meta`:
+
+```yaml
+      - id: MYBLK-COV-01
+        desc: Normal operation
+        meta: {tier: pr}
+```
+
+`meta` is a free-form mapping that rtl-buddy does not interpret. `rb --machine spec check-coverage` reports it as `meta` on each item that sets it, so a project script can group or filter items without re-reading `specs.yaml`. Other keys beside `id`, `desc` and `meta` are ignored with a warning.
+
 ## Link the design model
 
 Point the model at `specs.yaml` with a path relative to `models.yaml`:

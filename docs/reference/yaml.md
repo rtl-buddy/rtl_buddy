@@ -1368,6 +1368,7 @@ blocks:
     coverage-items:
       - id: MY-COV-01
         desc: Normal operation
+        meta: {tier: pr}
 ```
 
 | Field | Requirement | Meaning |
@@ -1378,5 +1379,6 @@ blocks:
 | `blocks[].coverage-items` | Default empty | Functional coverage item list |
 | `coverage-items[].id` | Required | Identifier used by `covers` in tests and formal verifications |
 | `coverage-items[].desc` | Required | Verification requirement |
+| `coverage-items[].meta` | Optional mapping | Free-form project metadata, such as the test tier that owns the item. Any keys and values; rtl-buddy does not interpret it. Reported as `meta` per item by `rb --machine spec check-coverage` when set |
 
-A single-block file matches its linked model unconditionally. These fields affect traceability only. See [Spec Traceability](../concepts/spec-traceability.md).
+A key on a coverage item other than `id`, `desc` and `meta` is ignored. The file still loads and a warning names the file, item and key, once per process. A single-block file matches its linked model unconditionally. These fields affect traceability only. See [Spec Traceability](../concepts/spec-traceability.md).

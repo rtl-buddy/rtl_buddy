@@ -3,8 +3,9 @@ import os
 import pprint
 
 from serde import serde, field
-from .yaml_loader import config_from_yaml
-from typing import Literal
+from .unknown_keys import serde_keys
+from .yaml_loader import config_from_data, load_yaml
+from typing import Any, Literal
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
@@ -14,10 +15,11 @@ logger = logging.getLogger(__name__)
 
 @serde
 class SpecCoverageItem:
-    """One functional coverage item; `id` is unique, e.g. "AFIFO-COV-01"."""
+    """One functional coverage item; `id` is unique, e.g. "AFIFO-COV-01". `meta` is free-form project metadata."""
 
     id: str
     desc: str
+    meta: dict[str, Any] = field(default_factory=dict)
 
     def __str__(self):
         return pprint.pformat(self)
@@ -49,6 +51,44 @@ class SpecConfigFile:
     blocks: list[SpecBlock] = field(default_factory=list)
 
 
+_WARNED_ITEM_KEYS: set[tuple[str, str, str, str]] = set()
+
+
+def _warn_unknown_item_keys(raw: Any, path: str) -> None:
+    """Warn once per process for each key on a coverage item that is neither a field nor ``meta``."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("blocks"), list):
+        return
+    known = serde_keys(SpecCoverageItem)
+    for block in raw["blocks"]:
+        items = block.get("coverage-items") if isinstance(block, dict) else None
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for key in item:
+                if key in known:
+                    continue
+                token = (
+                    os.path.abspath(path),
+                    str(block.get("name")),
+                    str(item.get("id")),
+                    str(key),
+                )
+                if token in _WARNED_ITEM_KEYS:
+                    continue
+                _WARNED_ITEM_KEYS.add(token)
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "spec_config.unknown_item_key",
+                    path=path,
+                    block=block.get("name"),
+                    item=item.get("id"),
+                    key=str(key),
+                )
+
+
 class SpecConfig:
     """Loaded `specs.yaml`; `path` is absolute."""
 
@@ -56,7 +96,9 @@ class SpecConfig:
         self.path = os.path.abspath(path)
         try:
             with open(path, "r") as f:
-                data = config_from_yaml(SpecConfigFile, f.read(), path)
+                raw = load_yaml(f.read(), path)
+            data = config_from_data(SpecConfigFile, raw)
+            _warn_unknown_item_keys(raw, path)
         except Exception as e:
             log_event(
                 logger, logging.ERROR, "spec_config.load_failed", path=path, error=e

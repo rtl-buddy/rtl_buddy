@@ -2875,6 +2875,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             if known:
                 msg += f" (valid keys: {', '.join(str(k) for k in known)})"
             return msg
+        case "spec_config.unknown_item_key":
+            return (
+                f"{fields.get('path')}: coverage item {fields.get('item')!r} in block "
+                f"{fields.get('block')!r} has unknown key {fields.get('key')!r}, ignored; "
+                "put project metadata under 'meta:'"
+            )
         case "root_config.reg_cfg_unknown_keys":
             return (
                 f"{fields.get('path')}: cfg-rtl-reg has unknown key(s) "
