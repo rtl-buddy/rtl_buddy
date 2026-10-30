@@ -9,6 +9,7 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -479,6 +480,112 @@ def test_the_copy_is_taken_under_the_block_trees_lock(tmp_path, monkeypatch, tre
     assert waited >= 0.5
     assert Path(block.lef).is_file()
     assert block.run_tag == (None if tree == "untagged" else "t")
+
+
+def _hold(lock: Path, then: str = "") -> subprocess.Popen:
+    """A process that holds `lock`, says `held`, then runs `then`."""
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import fcntl, pathlib, sys, time\n"
+            f"f = open({str(lock)!r}, 'a')\n"
+            "fcntl.flock(f, fcntl.LOCK_EX)\n"
+            "print('held', flush=True)\n" + then,
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert holder.stdout.readline().strip() == "held"
+    return holder
+
+
+def test_a_same_tag_block_run_holding_its_tree_is_waited_for_before_the_marker_is_read(
+    tmp_path, monkeypatch
+):
+    """A block run under the tag that holds its tree but has not marked it yet is not passed over for the untagged abstract."""
+    monkeypatch.setattr(artifact_lock, "TREE_LOCK_POLL_SEC", 0.05)
+    suite = _block_suite(tmp_path)
+    tagged = run_artifact_root(tmp_path / "blk", "t") / "blk_pnr"
+    shutil.copytree(tmp_path / "blk/artefacts/blk_pnr", tagged)
+    marker = tagged / pnr_tag_inputs.ATTEMPT_MARKER_NAME
+    holder = _hold(
+        tagged.parent / LOCK_FILENAME,
+        f"time.sleep(1)\npathlib.Path({str(marker)!r}).touch()\n",
+    )
+    try:
+        block = resolve_block(_ref(suite), source=_source(tmp_path))
+    finally:
+        holder.wait(timeout=10)
+
+    assert block.run_tag == "t"
+
+
+def test_a_tagged_synth_copies_its_blocks_before_locking_the_synthesis_tree(
+    tmp_path, monkeypatch
+):
+    """A same-tag block run holding the block's tree, then waiting for the synthesis tree, does not deadlock a tagged `--synth` whose synthesis has `blocks:`."""
+    monkeypatch.setattr(artifact_lock, "TREE_LOCK_POLL_SEC", 0.05)
+    blk_suite = _block_suite(tmp_path)
+    _tag_abstract(tmp_path, "t")
+    top = tmp_path / "top"
+    _synth_yaml(
+        top / "synth.yaml",
+        "top_s",
+        blocks={"top_s": [("blk_top", "blk_pnr", "../blk/pnr.yaml")]},
+    )
+    suite = _suite(top / "pnr.yaml", _synth_run("top", "top_s"))
+    rb, _ran, _synths = _synth_driver(monkeypatch, {}, {})
+    inner = rb._do_synth_suite
+    resolved = []
+
+    def _synth(suite_cfg, *, tag_inputs=None, **kw):
+        resolved.append(resolve_block(_ref(blk_suite), source=tag_inputs))
+        return inner(suite_cfg, **kw)
+
+    rb._do_synth_suite = _synth
+    synth_lock = run_artifact_root(top) / LOCK_FILENAME
+    synth_lock.parent.mkdir(parents=True)
+    holder = _hold(
+        run_artifact_root(tmp_path / "blk", "t") / LOCK_FILENAME,
+        "time.sleep(0.5)\n"
+        f"g = open({str(synth_lock)!r}, 'a')\n"
+        "fcntl.flock(g, fcntl.LOCK_EX)\n"
+        "print('both', flush=True)\n",
+    )
+    results = []
+    call = threading.Thread(
+        target=lambda: results.extend(
+            rb._do_pnr_suite(suite, pnr_name="top", run_synth=True, run_tag="t")
+        ),
+        daemon=True,
+    )
+    try:
+        call.start()
+        call.join(timeout=20)
+        deadlocked = call.is_alive()
+    finally:
+        holder.kill()
+        holder.wait(timeout=10)
+
+    assert not deadlocked
+    assert results[0]["results"].is_pass(), results
+    assert [b.run_tag for b in resolved] == ["t"]
+
+
+def test_a_tagged_export_refuses_a_block_its_run_consumed_that_blocks_no_longer_lists(
+    tmp_path, monkeypatch
+):
+    suite = _block_suite(tmp_path)
+    backend, _ = _backend(tmp_path, monkeypatch, stages=True, run_tag="t")
+    consumed = resolve_block(_ref(suite), source=_source(tmp_path))
+    pnr_tag_inputs.write_consumed_blocks(backend.artefact_dir, "t", [consumed])
+
+    res = backend.export_only().results
+
+    assert res["fail_stage"] == "setup"
+    assert "'blk_top' (pnr run 'blk_pnr')" in res["desc"]
+    assert "no longer lists" in res["desc"]
 
 
 @pytest.mark.parametrize(

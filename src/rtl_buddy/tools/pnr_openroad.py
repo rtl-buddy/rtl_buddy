@@ -5313,10 +5313,27 @@ class OpenRoadPnr:
             )
         if self.run_tag is not None:
             # The block copies the saved run consumed, not the abstracts current now.
+            pinned = pnr_tag_inputs.read_consumed_blocks(self.artefact_dir) or {}
+            dropped = self._dropped_blocks(pinned)
+            if dropped:
+                desc = (
+                    f"the saved run under --run-tag {self.run_tag} consumed "
+                    f"block(s) {', '.join(dropped)} that pnr.yaml's blocks: no longer "
+                    f"lists, so its layout would be streamed without them — restore "
+                    f"them in blocks:, or re-run the P&R run under --run-tag {self.run_tag}"
+                )
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr_export.blocks_dropped",
+                    pnr=self.pnr_cfg.get_name(),
+                    desc=desc,
+                )
+                return PnrFailResults(
+                    name=self.name + "/results", desc=desc, fail_stage="setup"
+                )
             self.tag_inputs = pnr_tag_inputs.TagInputs(
-                self.run_tag,
-                self.tag_inputs.root,
-                pinned=pnr_tag_inputs.read_consumed_blocks(self.artefact_dir) or {},
+                self.run_tag, self.tag_inputs.root, pinned=pinned
             )
         blocks_failure = self._resolve_blocks(
             platform,
@@ -5957,6 +5974,18 @@ class OpenRoadPnr:
             "sha256": hashlib.sha256(data).hexdigest(),
         }
         return destination, instances
+
+    def _dropped_blocks(self, pinned: dict) -> list[str]:
+        """The blocks a saved tagged run consumed that `blocks:` no longer lists, by name."""
+        current = {
+            (os.path.realpath(ref.pnr_suite_path), ref.pnr_run)
+            for ref in self.pnr_cfg.get_blocks()
+        }
+        return sorted(
+            f"{record.get('name')!r} (pnr run {record.get('pnr')!r})"
+            for key, record in pinned.items()
+            if key not in current
+        )
 
     def _record_consumed_blocks(self) -> None:
         """Under `--run-tag`, record the block copies this run reads, once its previous outputs are cleared."""

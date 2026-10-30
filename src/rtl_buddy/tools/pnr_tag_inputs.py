@@ -120,29 +120,66 @@ def write_consumed_blocks(artefact_dir: str, run_tag: str, blocks) -> None:
 class TagInputs:
     """Where one `--run-tag` call finds its block abstracts and synthesis netlists.
 
-    A block run the tag has attempted (its run directory holds `ATTEMPT_MARKER_NAME`) is
-    copied from the tag's tree; one it has never attempted is copied from the untagged tree, with a `pnr.block_untagged_abstract` warning. Either
-    copy is taken while holding that tree's lock and checked against the abstract's
-    manifest. `pinned` maps (pnr.yaml real path, run) to the record of a saved run, whose
-    copy is read again instead of taking a new one. Each input is copied once per call,
-    so synthesis and P&R in one call read the same copy.
+    A block run the tag has attempted (its run directory holds `ATTEMPT_MARKER_NAME`, checked
+    under the tag's tree lock) is copied from the tag's tree; one it has never attempted is
+    copied from the untagged tree, with a `pnr.block_untagged_abstract` warning. Either copy
+    is taken while holding that tree's lock, and no other tree's lock is waited for meanwhile;
+    the copy is checked against the abstract's manifest. `pinned` maps (pnr.yaml real path,
+    run) to the record of a saved run, whose copy is read again instead of taking a new one.
+    Each block is resolved once per call, and an error is kept like a copy, so synthesis and
+    P&R in one call read the same copy.
     """
 
     run_tag: str
     root: str
     pinned: dict | None = None
     _copies: dict = field(default_factory=dict, repr=False)
-    _mutex: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    _key_locks: dict = field(default_factory=dict, repr=False)
+    _mutex: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def _once(self, key, compute, keep):
+        """Return `compute()` for `key`, computed once while `keep` holds for its result.
+
+        Only computing one key waits for that key; a thread reading another key, or a kept one, never waits for it.
+        """
+        with self._mutex:
+            if key in self._copies:
+                return self._copies[key]
+            key_lock = self._key_locks.setdefault(key, threading.Lock())
+        with key_lock:
+            with self._mutex:
+                if key in self._copies:
+                    return self._copies[key]
+            value = compute()
+            if keep(value):
+                with self._mutex:
+                    self._copies[key] = value
+            return value
 
     def abstract_dir(self, ref, where: str) -> tuple[str, str | None]:
         """Return the copy of `ref`'s abstract to read and the tag it was published under."""
         key = (os.path.realpath(ref.pnr_suite_path), ref.pnr_run)
         if self.pinned is not None:
             return self._pinned(ref, key, where)
-        with self._mutex:
-            if key not in self._copies:
-                self._copies[key] = self._copy_abstract(ref, where)
-            return self._copies[key]
+
+        def _compute():
+            try:
+                return self._copy_abstract(ref, where)
+            except pnr_abstract.BlockResolutionError as e:
+                return e
+
+        result = self._once(("abstract", *key), _compute, lambda _v: True)
+        if isinstance(result, pnr_abstract.BlockResolutionError):
+            raise result
+        return result
+
+    def prefetch(self, refs) -> None:
+        """Resolve `refs` now, so a later resolution under another tree's lock waits for no block tree."""
+        for ref in refs:
+            try:
+                pnr_abstract.resolve_block(ref, source=self)
+            except pnr_abstract.BlockResolutionError:
+                pass
 
     def _pinned(self, ref, key, where: str) -> tuple[str, str | None]:
         record = self.pinned.get(key)
@@ -163,10 +200,16 @@ class TagInputs:
     def _copy_abstract(self, ref, where: str) -> tuple[str, str | None]:
         suite_dir = os.path.dirname(ref.pnr_suite_path)
         tagged_root = run_artifact_root(suite_dir, self.run_tag)
-        if (tagged_root / ref.pnr_run / ATTEMPT_MARKER_NAME).is_file():
-            source_root, source_tag = tagged_root, self.run_tag
-        else:
-            source_root, source_tag = run_artifact_root(suite_dir), None
+        if tagged_root.is_dir():
+            # A same-tag block run holding its tree has marked it or ended by the time the lock is ours.
+            with tree_lock(tagged_root, command="pnr"):
+                if (tagged_root / ref.pnr_run / ATTEMPT_MARKER_NAME).is_file():
+                    return self._copy_from(ref, where, tagged_root, self.run_tag)
+        return self._copy_from(ref, where, run_artifact_root(suite_dir), None)
+
+    def _copy_from(
+        self, ref, where: str, source_root: Path, source_tag: str | None
+    ) -> tuple[str, str | None]:
         source = pnr_abstract.abstract_dir(str(source_root / ref.pnr_run))
         with tree_lock(source_root, command="pnr"):
             manifest_file = Path(source, pnr_abstract.ABSTRACT_MANIFEST_NAME)
@@ -241,11 +284,11 @@ class TagInputs:
 
         Taken under the synthesis tree's lock. The copied filelist names absolute paths. A missing netlist is looked for again on the next call, so a synthesis this call runs later is still copied.
         """
-        key = ("synth", os.path.realpath(synth_suite_path), synth_name)
-        with self._mutex:
-            if self._copies.get(key) is None:
-                self._copies[key] = self._copy_synth(synth_suite_path, synth_name)
-            return self._copies[key]
+        return self._once(
+            ("synth", os.path.realpath(synth_suite_path), synth_name),
+            lambda: self._copy_synth(synth_suite_path, synth_name),
+            lambda copy: copy is not None,
+        )
 
     def _copy_synth(self, synth_suite_path: str, synth_name: str) -> str | None:
         source_root = run_artifact_root(os.path.dirname(synth_suite_path))

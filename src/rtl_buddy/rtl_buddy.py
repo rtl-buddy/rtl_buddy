@@ -12454,6 +12454,9 @@ class RtlBuddy:
         synth_path = run.get_synth_suite_path()
 
         def _synthesize():
+            if tag_inputs is not None:
+                # Copying a block abstract may wait for the block's tree; never while holding the synthesis tree.
+                tag_inputs.prefetch(run.resolve_synth_cfg().get_blocks())
             with (
                 nullcontext()
                 if run_tag is None
