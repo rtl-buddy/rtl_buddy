@@ -3819,3 +3819,178 @@ def test_a_missing_routed_odb_names_a_probe_run(tmp_path, mode, words):
 
     with pytest.raises(RuntimeError, match=re.escape(words)):
         backend._write_script()
+
+
+def _with_session_hooks(backend, tmp_path, *texts, inputs=()):
+    """Give a `netlist-source: pnr` backend's P&R run one `session` hook per text, and `inputs`."""
+    hooks = []
+    for i, text in enumerate(texts):
+        path = tmp_path / "pnr" / f"session{i}.tcl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        hooks.append(str(path))
+    resolved = backend._resolve_inputs()
+    backend._resolve_inputs = lambda: {
+        **resolved,
+        "session_hooks": hooks,
+        "hook_inputs": [str(p) for p in inputs],
+    }
+    return hooks
+
+
+def test_an_estimating_pnr_power_run_runs_the_pnr_session_hooks_before_the_estimate(
+    tmp_path,
+):
+    """A `session` hook's `set_wire_rc` is session state P&R estimated with; it follows the layer RC, as in each P&R session."""
+    backend, _routed = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+    rc = _hook(tmp_path, "setRC.tcl")
+    backend._resolve_platform = lambda: _FakePlatform(
+        pdk=_FakePdk("/pdk/fake/tech.lef", layer_rc_tcl=str(rc))
+    )
+    first, second = _with_session_hooks(
+        backend, tmp_path, "set_wire_rc -signal -layer m3\n", "# second\n"
+    )
+
+    lines = Path(backend._write_script()).read_text().splitlines()
+
+    source = lines.index(f'source "{rc}"')
+    runs = [
+        lines.index(f'rb::hook::run session "{first}"'),
+        lines.index(f'rb::hook::run session "{second}"'),
+    ]
+    estimate = lines.index("estimate_parasitics -global_routing")
+    assert source < runs[0] < runs[1] < estimate
+    assert "proc rb::hook::run {point path} {" in lines
+
+
+def test_session_hooks_run_in_the_pnr_run_directory_with_this_run_s_out_dir(tmp_path):
+    """Relative paths resolve as in P&R; `$OUT_DIR` is this run's, and the directory is restored after."""
+    import subprocess
+
+    backend, _routed = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+    (hook,) = _with_session_hooks(
+        backend, tmp_path, 'puts "HOOK [pwd] $OUT_DIR $DESIGN [info level]"\n'
+    )
+    text = Path(backend._write_script()).read_text()
+    block = text[text.index("set DESIGN") : text.index("cd $rb_power_cwd")]
+    snippet = tmp_path / "snippet.tcl"
+    snippet.write_text(block + 'cd $rb_power_cwd\nputs "AFTER [pwd]"\n')
+
+    out = subprocess.run(
+        ["tclsh", str(snippet)],
+        cwd=backend.artefact_dir,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+    pnr_dir = Path(backend._resolve_inputs()["odb"]).parent.resolve()
+    artefact = os.path.abspath(backend.artefact_dir)
+    assert f"HOOK {pnr_dir} {artefact} demo_top 0\n" in out
+    assert out.endswith(f"AFTER {Path(artefact).resolve()}\n")
+
+
+def test_an_estimating_pnr_power_run_digests_its_session_hooks_and_inputs(tmp_path):
+    """Editing a session hook or a file it sources changes the estimate, so it is a new experiment."""
+    backend, _ = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+    window = tmp_path / "pnr" / "window.tcl"
+    window.parent.mkdir(parents=True, exist_ok=True)
+    window.write_text("set w 1\n")
+    (hook,) = _with_session_hooks(
+        backend, tmp_path, "set_wire_rc -signal -layer m3\n", inputs=[window]
+    )
+
+    def _identity():
+        backend._write_script()
+        return backend._upstream_identity()
+
+    first = _identity()
+    Path(hook).write_text("set_wire_rc -signal -layer m4\n")
+    second = _identity()
+    window.write_text("set w 2\n")
+    third = _identity()
+
+    assert first["session_hooks_sha256"] != second["session_hooks_sha256"]
+    assert second["hook_inputs_sha256"] != third["hook_inputs_sha256"]
+    assert second["session_hooks_sha256"] == third["session_hooks_sha256"]
+
+
+def test_a_pnr_power_run_without_session_hooks_keeps_its_script_and_digest_keys(
+    tmp_path,
+):
+    backend, _ = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+    before = Path(backend._write_script()).read_text()
+    _with_session_hooks(backend, tmp_path)
+
+    assert Path(backend._write_script()).read_text() == before
+    assert "rb::hook" not in before
+    identity = backend._upstream_identity()
+    assert "session_hooks_sha256" not in identity
+    assert "hook_inputs_sha256" not in identity
+
+
+def test_a_spef_timed_power_run_does_not_run_the_session_hooks(tmp_path):
+    """With a trusted SPEF no estimate reads the wire RC the hooks set."""
+    backend, _spef = _make_spef_power_backend(tmp_path)
+    _with_session_hooks(backend, tmp_path, "set_wire_rc -signal -layer m3\n")
+
+    text = Path(backend._write_script()).read_text()
+
+    assert "rb::hook" not in text
+    assert "session_hooks_sha256" not in backend._upstream_identity()
+
+
+def test_a_missing_session_hook_fails_an_estimating_run_at_setup(tmp_path, monkeypatch):
+    from rtl_buddy.tools import power_openroad
+
+    backend, _ = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+    resolved = backend._resolve_inputs()
+    missing = tmp_path / "pnr" / "gone.tcl"
+    backend._resolve_inputs = lambda: {**resolved, "session_hooks": [str(missing)]}
+    events = _capture_power_events(monkeypatch)
+    launched = []
+    monkeypatch.setattr(
+        power_openroad.subprocess, "run", lambda *a, **k: launched.append(a)
+    )
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "setup"
+    assert f"hooks.session not found: {missing}" in res.results["desc"]
+    assert not launched
+    (fields,) = _fields_of(events, "power.tcl_hook_missing")
+    assert fields["key"] == "hooks.session"
+
+
+def test_a_pnr_power_run_resolves_its_pnr_run_s_session_hooks_and_inputs(tmp_path):
+    from unittest.mock import MagicMock
+
+    from rtl_buddy.tools.power_openroad import OpenRoadPower
+
+    backend = _make_power_backend(tmp_path)
+    backend.power_cfg.netlist_source = "pnr"
+    pnr_cfg = MagicMock(
+        get_name=lambda: "demo_pnr",
+        get_blocks=lambda: [],
+        get_lib_path_entries=lambda: [],
+        get_hooks=lambda: {"session": ("/p/a.tcl", "/p/b.tcl"), "after-cts": ("/c",)},
+        get_inputs=lambda: ("/p/window.tcl",),
+    )
+    pnr_cfg.resolve_synth_cfg.return_value.get_top.return_value = "demo_top"
+    backend.power_cfg.resolve_pnr_cfg = lambda: pnr_cfg
+    backend.power_cfg.get_pnr_suite_path = lambda: str(tmp_path / "pnr.yaml")
+
+    inputs = OpenRoadPower._resolve_inputs(backend)
+
+    assert inputs["session_hooks"] == ["/p/a.tcl", "/p/b.tcl"]
+    assert inputs["hook_inputs"] == ["/p/window.tcl"]

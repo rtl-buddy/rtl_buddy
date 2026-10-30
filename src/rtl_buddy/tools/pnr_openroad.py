@@ -378,6 +378,13 @@ def _run_hook_lines(point: str, paths, indent: str = "") -> str:
     )
 
 
+def session_hooks_tcl(paths) -> str:
+    """Return the Tcl that defines `rb::hook::run` and runs the `session` hook files `paths` with it, as a P&R session does; `rb power` estimates a P&R run's database with them."""
+    return files(_TEMPLATE_PACKAGE).joinpath(_HOOKS_FILE).read_text() + (
+        _run_hook_lines("session", paths)
+    )
+
+
 def _run_hook_block(point: str, hooks: dict) -> str:
     """Return the flow block sourcing a run's hook files at `point`, or `""` when it has none.
 
@@ -645,7 +652,9 @@ def _wire_rc_spec(wire_rc: WireRc) -> str:
 
 def _match_footprint_option(platform) -> str:
     """Return ` -match_cell_footprint` for every `repair_design` and `repair_timing` when `match-cell-footprint` is set, as ORFS passes it for `MATCH_CELL_FOOTPRINT`, else `""`."""
-    return " -match_cell_footprint" if platform.get_match_cell_footprint() else ""
+    return (
+        " -match_cell_footprint" if platform.get_match_cell_footprint() is True else ""
+    )
 
 
 def _repair_design_tcl(
@@ -5261,11 +5270,12 @@ class OpenRoadPnr:
     def _no_wire_rc_qualifier(self, platform, log_text: str) -> str:
         """Warn when CTS, placement parasitics and hold repair ran with zero wire R/C, and return the result qualifier, or `""`.
 
-        Without a PDK `layer-rc-tcl` the technology LEF's layer RC is all the pre-route steps see, which is zero on most open PDKs. The run still passes, but CTS balances and hold repair fixes paths whose wires are not there yet, so the final extracted timing can fail hold that repair never saw. Either cause is enough: no `layer-rc-tcl`, or OpenROAD's own warning that the RC it has is zero.
+        Without a PDK `layer-rc-tcl` the technology LEF's layer RC is all the pre-route steps see, which is zero on most open PDKs. The run still passes, but CTS balances and hold repair fixes paths whose wires are not there yet, so the final extracted timing can fail hold that repair never saw. Either cause is enough: no `layer-rc-tcl`, or OpenROAD's own warning that the RC it has is zero. A run with `session` hooks may set the wire RC there, so without `layer-rc-tcl` only OpenROAD's warning is.
         """
         no_layer_rc = not platform.get_pdk().get_layer_rc_tcl()
         codes = [code for code in _NO_WIRE_RC_CODES if f"[WARNING {code}]" in log_text]
-        if not no_layer_rc and not codes:
+        session = bool(self.pnr_cfg.get_hooks().get("session"))
+        if not codes and (not no_layer_rc or session):
             return ""
         causes = (["no layer-rc-tcl"] if no_layer_rc else []) + codes
         log_event(

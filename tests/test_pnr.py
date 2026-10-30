@@ -3476,6 +3476,41 @@ def test_pnr_with_wire_rc_does_not_warn(tmp_path, monkeypatch):
     assert not [e for e in events if e[1] == "pnr.no_wire_rc"]
 
 
+@pytest.mark.parametrize(
+    ("log", "warned"),
+    [
+        ("", False),
+        (
+            "[WARNING EST-0018] wire capacitance for corner default is zero. "
+            "Use the set_wire_rc command to set wire resistance and capacitance.\n",
+            True,
+        ),
+    ],
+)
+def test_a_session_hook_without_a_layer_rc_warns_only_on_openroad_s_codes(
+    tmp_path, monkeypatch, log, warned
+):
+    """A `session` hook can set the wire RC, so a missing `layer-rc-tcl` alone does not claim zero wire RC; OpenROAD's warning still does."""
+    events = _capture_pnr_events(monkeypatch)
+    backend, _odb = _dont_use_backend(
+        tmp_path, monkeypatch, log=log, returncode=0, dont_use_cells=[]
+    )
+    hook = tmp_path / "wire_rc.tcl"
+    hook.write_text("set_wire_rc -signal -layer metal3\n")
+    backend.pnr_cfg.hooks = {"session": (str(hook),)}
+
+    res = backend.run()
+
+    assert isinstance(res, PnrPassResults)
+    found = [e for e in events if e[1] == "pnr.no_wire_rc"]
+    if warned:
+        assert "(no layer-rc-tcl, EST-0018)" in res.results["desc"]
+        assert found[0][2]["codes"] == ["EST-0018"]
+    else:
+        assert res.results["desc"] == "P&R passed"
+        assert not found
+
+
 def test_pnr_fails_naming_a_placed_dont_use_cell(tmp_path, monkeypatch):
     """The check's Tcl error exits OpenROAD non-zero; the verdict names the offender, not
     the exit code, and nothing is published.
