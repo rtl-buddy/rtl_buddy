@@ -4053,8 +4053,17 @@ def _stamp(project: Path, name: str) -> tuple[str, str]:
 
     stamp_dir = project / f"obj_dir_{name}"
     stamp_dir.mkdir(exist_ok=True)
+    simv = stamp_dir / "simv"
+    simv.write_text("binary")
+    stat = simv.stat()
     (stamp_dir / SHARED_BUILD_STAMP_NAME).write_text(
-        json.dumps({"sources": [name], "simv": "simv"})
+        json.dumps(
+            {
+                "sources": [name],
+                "simv": [str(simv), stat.st_size, stat.st_mtime_ns],
+                "deps": None,
+            }
+        )
     )
     return stamp_dir.name, stamp_fingerprint_sha(stamp_dir)
 
@@ -4304,7 +4313,9 @@ def test_the_build_half_releases_a_settled_key_the_verilate_job_did_not(
     assert [r["tests"] for r in released] == [["extra"]]
 
 
-@pytest.mark.parametrize("change", ["evicted", "rebuilt"])
+@pytest.mark.parametrize(
+    "change", ["evicted", "rebuilt", "simv-removed", "simv-rewritten"]
+)
 def test_the_build_half_compiles_a_settled_key_whose_stamp_changed(
     minimal_project: Path,
     stamped_runner: type[_StampedStubRunner],
@@ -4317,10 +4328,15 @@ def test_the_build_half_compiles_a_settled_key_whose_stamp_changed(
     builds = [_settled_record(minimal_project, name) for name in ("basic", "extra")]
     _verilate_envelope(minimal_project, builds)
     stamp = minimal_project / "obj_dir_extra" / SHARED_BUILD_STAMP_NAME
+    simv = minimal_project / "obj_dir_extra" / "simv"
     if change == "evicted":
         stamp.unlink()
-    else:
+    elif change == "rebuilt":
         stamp.write_text(json.dumps({"sources": ["other"], "simv": "simv"}))
+    elif change == "simv-removed":
+        simv.unlink()
+    else:
+        simv.write_text("another binary")
     stamped_runner.canned = EarlyStopResults(name="b/results", desc="built")
     pre: list[str] = []
     stamped_runner.prepare_hook = lambda name: pre.append(name)
@@ -4335,6 +4351,8 @@ def test_the_build_half_compiles_a_settled_key_whose_stamp_changed(
         r for r in records if r.get("event") == "build_job.settled_build_changed"
     ]
     assert (changed["test"], changed["level"]) == ("extra", "WARNING")
+    if change.startswith("simv"):
+        assert "executable" in changed["reason"]
 
 
 def test_a_compile_that_raced_a_preproc_is_rebuilt_after_pre(
@@ -4470,8 +4488,10 @@ def test_the_shrink_and_follow_events_have_dedicated_human_messages():
     unusable = _human_message("build_job.verilate_result_unusable", {"path": "p"})
     assert "dispatch build_job" not in unusable and "p" in unusable
     changed = _human_message(
-        "build_job.settled_build_changed", {"test": "t", "stamp_dir": "obj_dir_k"}
+        "build_job.settled_build_changed",
+        {"test": "t", "stamp_dir": "obj_dir_k", "reason": "the executable changed"},
     )
     assert "obj_dir_k" in changed and "1 CPU" in changed
+    assert "the executable changed" in changed
     moved = _human_message("build_job.compile_inputs_moved", {"test": "t"})
     assert "t was rewritten" in moved and "preproc" in moved

@@ -1402,9 +1402,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "build_job.settled_build_changed":
             return (
                 f"build job: the build the verilate job recorded for "
-                f"{fields.get('test')} is gone or changed (stamp in "
-                f"{fields.get('stamp_dir')}), so it compiles here, with this "
-                "job's reservation, which is 1 CPU if the verilate job lowered it"
+                f"{fields.get('test')} is gone or changed ({fields.get('reason')}; "
+                f"stamp in {fields.get('stamp_dir')}), so it compiles here, with "
+                "this job's reservation, which is 1 CPU if the verilate job "
+                "lowered it"
             )
         case "build_job.compile_inputs_moved":
             return (

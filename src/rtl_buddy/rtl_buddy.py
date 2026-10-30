@@ -268,7 +268,7 @@ from .tools.spec_trace import (
 from .tools.verible import Verible
 from .tools.vlog_filelist import VlogFilelist, apply_exclude_globs
 from .tools.vlog_sim import (
-    stamp_fingerprint_sha,
+    settled_build_problem,
     SHARED_BUILD_ROOT_ENV,
     VlogSim,
     resolve_shared_build_root,
@@ -4267,6 +4267,13 @@ class RtlBuddy:
                     path=str(verilate_result_path),
                 )
         if verilate_envelope is not None:
+            # Where a stamp's relative spellings anchor, as the sim jobs resolve it.
+            try:
+                project_root = os.path.realpath(
+                    self.root_cfg.get_project_rootdir() or suite_dir
+                )
+            except Exception:  # noqa: BLE001 - only narrows what can be re-checked
+                project_root = os.path.realpath(suite_dir)
             verilated = set(verilate_envelope["built"])
             records = {
                 entry.get("test"): entry
@@ -4280,9 +4287,16 @@ class RtlBuddy:
                     continue
                 if record.get("fingerprint_sha") is not None:
                     stamp_dir = record.get("stamp_dir")
-                    if stamp_dir is not None and stamp_fingerprint_sha(
-                        Path(suite_dir) / stamp_dir
-                    ) == record.get("fingerprint_sha"):
+                    problem = (
+                        "the record names no stamp"
+                        if stamp_dir is None
+                        else settled_build_problem(
+                            Path(suite_dir) / stamp_dir,
+                            record["fingerprint_sha"],
+                            project_root,
+                        )
+                    )
+                    if problem is None:
                         settled[index] = record
                         continue
                     # Evicted, cleaned or rebuilt since the verilate job: compile it
@@ -4293,6 +4307,7 @@ class RtlBuddy:
                         "build_job.settled_build_changed",
                         test=cfg.get_name(),
                         stamp_dir=stamp_dir,
+                        reason=problem,
                     )
                 elif record.get("inputs_sha") is not None and record.get("group"):
                     leader = leaders.setdefault(record["group"], index)
@@ -7473,8 +7488,30 @@ class RtlBuddy:
         # reading stands.
         build_finished_partial = []
 
+        # Keys the verilate job found built and released itself: their sims ran
+        # whatever became of the build job, which may have been cancelled or died
+        # without a word about them.
+        verilate_handle = state.get("verilate_handle")
+        verilate_result = (
+            load_build_result_json(verilate_handle.spec.result_json)
+            if verilate_handle is not None
+            and verilate_handle.spec.result_json is not None
+            else None
+        )
+        verilate_released = (
+            {
+                entry.get("test")
+                for entry in verilate_result["builds"]
+                if entry.get("released")
+                and entry.get("fingerprint_sha") is not None
+                and entry.get("test") in verilate_result["built"]
+            }
+            if verilate_result is not None
+            else set()
+        )
+
         def _build_gate_open(test_name):
-            if build_handle is None:
+            if build_handle is None or test_name in verilate_released:
                 return True
             if build_result is None:
                 return False
@@ -7491,7 +7528,6 @@ class RtlBuddy:
         # The build handle joins the query on the first pass only: it is cheap (one
         # `sacct --jobs a,b,c`), finished by then, and never resubmitted, so re-querying
         # would duplicate a row and a write.
-        verilate_handle = state.get("verilate_handle")
         query_handles = [h for _, h in pending]
         if attempt == 0:
             # The compile jobs, in run order, on the first pass only: one `sacct` covers
@@ -7513,11 +7549,6 @@ class RtlBuddy:
                         verilate_handle.spec.result_json, verilate_tele
                     )
                 state["verilate_telemetry"] = verilate_tele
-            verilate_result = (
-                load_build_result_json(verilate_handle.spec.result_json)
-                if verilate_handle.spec.result_json is not None
-                else None
-            )
             state["verilate_compile_work"] = (
                 _summarize_compile_work(verilate_result["builds"])
                 if verilate_result is not None and not verilate_result.get("partial")

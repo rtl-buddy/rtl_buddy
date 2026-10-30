@@ -9400,3 +9400,43 @@ def test_the_build_envelope_outranks_the_verilate_job_s(tmp_path, monkeypatch):
     # Without the head naming the verilate envelope, there is nothing to defer to.
     sim.verilate_result_json = None
     assert sim._gated_build_verdict() == (None, None)
+
+
+def test_a_settled_build_stands_until_its_executable_or_a_dependency_moves(
+    tmp_path, monkeypatch
+):
+    """The build half's re-check of a build the verilate job recorded: the stamp's
+    inputs, its executable, and the content of what the build consumed."""
+    source = _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, depends=["../../src/top.sv"])
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
+    stamp = sim.last_build_stamp
+    root = sim._project_root
+
+    def problem():
+        return vlog_sim_module.settled_build_problem(
+            stamp["build_dir"], stamp["fingerprint_sha"], root
+        )
+
+    assert problem() is None
+    assert "other inputs" in vlog_sim_module.settled_build_problem(
+        stamp["build_dir"], "another digest", root
+    )
+    stored = json.loads(
+        (Path(stamp["build_dir"]) / vlog_sim_module.SHARED_BUILD_STAMP_NAME).read_text()
+    )
+    assert stored.get("deps"), "the fake builder records what it consumed"
+    # Rewritten with the same bytes: content decides, as for a sim job.
+    os.utime(source, ns=(1, 1))
+    assert problem() is None
+    source.write_text("module top; wire w; endmodule\n")
+    assert "consumed input" in problem()
+    source.write_text("module top; endmodule\n")
+    assert problem() is None
+    simv = Path(sim._get_simv_path())
+    simv.write_bytes(simv.read_bytes() + b"\n# rebuilt by a neighbour\n")
+    assert "executable" in problem()
+    simv.unlink()
+    assert "executable" in problem()

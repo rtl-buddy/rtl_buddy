@@ -385,6 +385,44 @@ IDLE_BUILD_JOB_CPUS = 1
 IDLE_BUILD_JOB_MEM = "1G"
 
 
+def pending_reservation(
+    job_id: str, *, cluster: str | None = None, cwd: str | None = None
+) -> dict | None:
+    """What the scheduler holds for ``job_id`` now, or ``None`` if it cannot say.
+
+    Read with ``scontrol -o show job``, so ``sbatch-args`` overrides and anything the
+    site applied are included. Returns ``{"state", "num_cpus", "num_tasks",
+    "mem_node", "mem_cpu"}``; memory is in bytes and is ``None`` where the job does
+    not request it that way. Never raises.
+    """
+    cluster_argv = [] if cluster is None else ["-M", cluster]
+    try:
+        proc = subprocess.run(
+            ["scontrol", *cluster_argv, "-o", "show", "job", str(job_id)],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=_SCONTROL_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    fields = dict(token.split("=", 1) for token in proc.stdout.split() if "=" in token)
+    try:
+        num_cpus = int(fields["NumCPUs"])
+        num_tasks = int(fields.get("NumTasks") or 1)
+    except (KeyError, ValueError):
+        return None
+    return {
+        "state": fields.get("JobState"),
+        "num_cpus": num_cpus,
+        "num_tasks": max(1, num_tasks),
+        "mem_node": mem_to_bytes(fields.get("MinMemoryNode")),
+        "mem_cpu": mem_to_bytes(fields.get("MinMemoryCPU")),
+    }
+
+
 def shrink_pending_job(
     job_id: str,
     *,
@@ -397,28 +435,51 @@ def shrink_pending_job(
 ) -> tuple[list[str], str | None]:
     """Lower a pending job's reservation; return ``(fields changed, error)``.
 
+    ``cpus`` is per task and ``mem`` per node. The current reservation is read back
+    from the scheduler (:func:`pending_reservation`), so an ``sbatch-args`` override
+    of what was submitted counts; ``current_cpus`` and ``current_mem`` are used only
+    when that read fails. A job that is no longer pending is left alone.
+
     Runs ``scontrol update JobId=<id>`` with ``CPUsPerTask``, ``MinCPUsNode`` and
-    ``NumCPUs``, then ``MinMemoryNode`` in a second call, so a site that refuses the
-    memory change still keeps the cpu change. Only lowers: a field already at or below
-    its target is left alone, since Slurm refuses an owner's increase. A reserved
-    memory of 0 is a whole node's, above any target. Never raises; a job left as it
-    was only starts later.
+    ``NumCPUs``, then the memory in a second call, so a site that refuses the memory
+    change still keeps the cpu change. Memory requested per CPU is lowered per CPU.
+    Only lowers: a field already at or below its target is left alone, since Slurm
+    refuses an owner's increase. A reserved memory of 0 is a whole node's, above any
+    target. Never raises; a job left as it was only starts later.
     """
     cluster_argv = [] if cluster is None else ["-M", cluster]
+    held = pending_reservation(job_id, cluster=cluster, cwd=cwd)
+    if held is not None and held["state"] not in (None, "PENDING"):
+        return [], None
+    num_tasks = held["num_tasks"] if held is not None else 1
+    reserved_cpus = held["num_cpus"] if held is not None else current_cpus
+    target_cpus = cpus * num_tasks
     updates = []
-    if current_cpus > cpus:
+    if reserved_cpus > target_cpus:
         updates.append(
             (
                 "cpus",
-                [f"CPUsPerTask={cpus}", f"MinCPUsNode={cpus}", f"NumCPUs={cpus}"],
+                [
+                    f"CPUsPerTask={cpus}",
+                    f"MinCPUsNode={cpus}",
+                    f"NumCPUs={target_cpus}",
+                ],
             )
         )
     target_mem = mem_to_bytes(mem)
-    reserved_mem = mem_to_bytes(current_mem)
-    if target_mem is not None and (
-        reserved_mem is None or reserved_mem == 0 or reserved_mem > target_mem
-    ):
-        updates.append(("mem", [f"MinMemoryNode={math.ceil(target_mem / 2**20)}"]))
+    if held is not None and held["mem_cpu"] is not None:
+        if target_mem is not None:
+            per_cpu = math.ceil(target_mem / target_cpus)
+            if held["mem_cpu"] == 0 or held["mem_cpu"] > per_cpu:
+                updates.append(("mem", [f"MinMemoryCPU={math.ceil(per_cpu / 2**20)}"]))
+    else:
+        reserved_mem = (
+            held["mem_node"] if held is not None else mem_to_bytes(current_mem)
+        )
+        if target_mem is not None and (
+            reserved_mem is None or reserved_mem == 0 or reserved_mem > target_mem
+        ):
+            updates.append(("mem", [f"MinMemoryNode={math.ceil(target_mem / 2**20)}"]))
     changed: list[str] = []
     for field, assignments in updates:
         try:

@@ -1479,6 +1479,64 @@ def stamp_fingerprint_sha(stamp_dir):
     )
 
 
+def settled_build_problem(stamp_dir, fingerprint_sha, project_root):
+    """Why the build stamped in ``stamp_dir`` no longer stands, or ``None``.
+
+    For a build another job recorded as ``fingerprint_sha``: the stamp must still be
+    that one, its executable must be the one it stamped, and every dependency it
+    recorded must be unchanged. This is the part of a simulation job's stamp check
+    that needs no compile plan, so a build that passes is one a gated job will accept
+    unless its compile line moved. Relative spellings re-anchor on ``project_root``.
+    Never raises.
+    """
+
+    def _abspath(path):
+        return (
+            path
+            if os.path.isabs(path)
+            else os.path.normpath(os.path.join(project_root, path))
+        )
+
+    try:
+        stored = json.loads((Path(stamp_dir) / SHARED_BUILD_STAMP_NAME).read_text())
+    except (OSError, ValueError):
+        return "no readable stamp"
+    if not isinstance(stored, dict):
+        return "no readable stamp"
+    inputs = {key: value for key, value in stored.items() if key not in _STAMP_META}
+    if _fingerprint_sha(inputs) != fingerprint_sha:
+        return "the stamp now vouches for other inputs"
+    simv = stored.get("simv")
+    if not (
+        isinstance(simv, list)
+        and len(simv) == 3
+        and isinstance(simv[0], str)
+        and simv[1] is not None
+    ):
+        return "the stamp names no executable"
+    if _stat_entry(_abspath(simv[0]))[1:] != simv[1:]:
+        return f"the executable is missing or changed: {simv[0]}"
+    if "deps" not in stored:
+        return "the stamp predates dependency tracking"
+    deps = stored["deps"]
+    if deps is None:
+        return None
+    if not isinstance(deps, list) or stored.get("deps_format") != _DEPS_FORMAT:
+        return "the stamp's dependency list is unreadable"
+    for entry in deps:
+        if not (
+            isinstance(entry, list) and len(entry) == 4 and isinstance(entry[0], str)
+        ):
+            return "the stamp's dependency list is unreadable"
+        path = _abspath(entry[0])
+        if _stat_entry(path)[1:] == entry[1:3]:
+            continue
+        current = _hashed_stat_entry(path, project_root=project_root)
+        if not _entry_matches(entry, [entry[0], *current[1:]]):
+            return f"a consumed input changed: {entry[0]}"
+    return None
+
+
 def _stat_view(entries):
     """``[path, size, mtime_ns]`` of each tracked entry, listings included.
 

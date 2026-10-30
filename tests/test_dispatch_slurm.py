@@ -4500,6 +4500,17 @@ def test_release_dependency_survives_a_missing_or_wedged_scontrol(monkeypatch):
     assert outcome.systemic is not None
 
 
+def _held(spec):
+    """``scontrol -o show job`` output for a pending job."""
+    return SimpleNamespace(
+        returncode=0, stdout=f"JobId=2000 JobState=PENDING {spec}\n", stderr=""
+    )
+
+
+def _updates(calls):
+    return [call["argv"] for call in calls if "update" in call["argv"]]
+
+
 def test_shrink_pending_job_lowers_cpus_then_memory(monkeypatch):
     """Two calls, so a site that refuses the memory change keeps the cpu change."""
     calls = []
@@ -4516,6 +4527,7 @@ def test_shrink_pending_job_lowers_cpus_then_memory(monkeypatch):
     )
     assert (changed, error) == (["cpus", "mem"], None)
     assert [call["argv"] for call in calls] == [
+        ["scontrol", "-M", "hpc", "-o", "show", "job", "2000"],
         [
             "scontrol",
             "-M",
@@ -4540,7 +4552,7 @@ def test_shrink_pending_job_never_raises_a_reservation(monkeypatch):
     assert slurm_module.shrink_pending_job(
         "2000", cpus=1, mem="1G", current_cpus=1, current_mem="512M"
     ) == ([], None)
-    assert calls == []
+    assert _updates(calls) == []
 
 
 def test_shrink_pending_job_lowers_a_whole_node_memory_request(monkeypatch):
@@ -4551,12 +4563,60 @@ def test_shrink_pending_job_lowers_a_whole_node_memory_request(monkeypatch):
     assert slurm_module.shrink_pending_job(
         "2000", cpus=1, mem="1G", current_cpus=1, current_mem="0"
     ) == (["mem"], None)
-    assert [call["argv"][-1] for call in calls] == ["MinMemoryNode=1024"]
+    assert [argv[-1] for argv in _updates(calls)] == ["MinMemoryNode=1024"]
+
+
+def test_shrink_pending_job_reads_the_reservation_sbatch_args_left(monkeypatch):
+    """An ``sbatch-args`` override outranks the resolved reservation, so the job is
+    shrunk from what the scheduler holds, not from what was resolved."""
+    calls = []
+    held = _held("NumCPUs=16 NumTasks=1 CPUs/Task=16 MinMemoryNode=0")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, [held]))
+
+    assert slurm_module.shrink_pending_job(
+        "2000", cpus=1, mem="1G", current_cpus=1, current_mem="512M"
+    ) == (["cpus", "mem"], None)
+    assert [argv[3:] for argv in _updates(calls)] == [
+        ["CPUsPerTask=1", "MinCPUsNode=1", "NumCPUs=1"],
+        ["MinMemoryNode=1024"],
+    ]
+
+
+def test_shrink_pending_job_keeps_the_task_count_and_lowers_memory_per_cpu(
+    monkeypatch,
+):
+    calls = []
+    held = _held("NumCPUs=16 NumTasks=4 CPUs/Task=4 MinMemoryCPU=2G")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, [held]))
+
+    assert slurm_module.shrink_pending_job(
+        "2000", cpus=1, mem="1G", current_cpus=4, current_mem="8G"
+    ) == (["cpus", "mem"], None)
+    assert [argv[3:] for argv in _updates(calls)] == [
+        ["CPUsPerTask=1", "MinCPUsNode=1", "NumCPUs=4"],
+        ["MinMemoryCPU=256"],
+    ]
+
+
+def test_shrink_pending_job_leaves_a_job_that_already_started(monkeypatch):
+    calls = []
+    running = SimpleNamespace(
+        returncode=0,
+        stdout="JobId=2000 JobState=RUNNING NumCPUs=16 NumTasks=1 MinMemoryNode=32G\n",
+        stderr="",
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, [running]))
+
+    assert slurm_module.shrink_pending_job(
+        "2000", cpus=1, mem="1G", current_cpus=16, current_mem="32G"
+    ) == ([], None)
+    assert _updates(calls) == []
 
 
 def test_shrink_pending_job_reports_a_refusal_and_keeps_what_changed(monkeypatch):
     calls = []
     results = [
+        _held("NumCPUs=8 NumTasks=1 CPUs/Task=8 MinMemoryNode=8G"),
         SimpleNamespace(returncode=0, stdout="", stderr=""),
         SimpleNamespace(returncode=1, stdout="", stderr="Access/permission denied"),
     ]

@@ -7962,3 +7962,58 @@ def test_an_unrefused_retry_round_is_recorded_in_one_merge(
     assert result.exit_code == 0, result.output
     assert watcher.pending_at_sleep == []
     assert writes == [[(0, "301"), (1, "302")]]
+
+
+class _VerilateReleasedBackend(_SplittingBackend):
+    """The verilate job found `basic` built and released its sims; the build job then
+    died without writing an envelope, and no sim result reached disk."""
+
+    def __init__(self):
+        super().__init__(write_results=False)
+        self.telemetry = {"fake-build": {"state": "CANCELLED", "elapsed_s": 0}}
+
+    def build_outcome(self, handle):
+        return "CANCELLED"
+
+    def submit_build(self, spec, *, dependency=None):
+        handle = super().submit_build(spec, dependency=dependency)
+        if spec.phase == "verilate":
+            write_build_result_json(
+                spec.result_json,
+                built=["basic", "extra"],
+                failed=[],
+                builds=[
+                    {"test": "basic", "fingerprint_sha": "sha", "released": True},
+                    {"test": "extra", "fingerprint_sha": "sha"},
+                ],
+            )
+        return handle
+
+
+def test_a_key_the_verilate_job_released_keeps_its_gate_open_without_a_build_envelope(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A sim the verilate job released ran whatever became of the build job, so its
+    missing result is classified like any other; one it did not release stays shut."""
+    _mark_stub_builder_verilator(minimal_project)
+    _enable_retry(minimal_project)
+    backend = _VerilateReleasedBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    gates = {}
+    real_classify = rtl_buddy_module.classify_missing_result
+
+    def _classify(spec, sched_state, **kwargs):
+        gates[spec.test_name] = kwargs.get("build_succeeded")
+        return real_classify(spec, sched_state, **kwargs)
+
+    monkeypatch.setattr(rtl_buddy_module, "classify_missing_result", _classify)
+    result, _rb = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "-l", "5"]
+        + ["--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    assert backend.verilate_submitted, "the suite was not split"
+    assert gates == {"basic": True, "extra": False}, gates
