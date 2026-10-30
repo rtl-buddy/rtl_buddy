@@ -202,7 +202,7 @@ The build job compiles one build at a time by default. `compile.parallel` raises
 - Only `cpus` is scaled by `parallel`. Keep the total within the widest node of the partition.
 - `compile.time` should cover the longest batch, not one build. `ceil(distinct builds / N)` times the slowest build is a safe upper bound.
 - A suite that compiles one build sets `parallel: 1` so it does not reserve `cpus` times the cluster-wide value.
-- At `parallel: 1`, each config runs `preproc` and then compiles before the next starts. Above 1, every config's `preproc` runs first, then the builds overlap, so hooks must not modify another config's inputs.
+- At `parallel: 1`, each config runs `preproc` and then compiles before the next starts. Above 1, `preproc` runs config by config while builds compile: a build starts as soon as the first config that resolves to it is through `preproc`. Hooks must not modify another config's inputs.
 - Configs that resolve to the same build are compiled once. A config whose inputs differ from that build fails with `build_job.group_input_drift`.
 
 ## Split verilation from the C++ build
@@ -214,7 +214,11 @@ Verilation is single-threaded and the C++ build is not, so one job wastes cores 
 | `rb-verilate-<hash>` | `compile.verilate` | Emits C++ sources and the Makefile, builds nothing |
 | `rb-build-<hash>` | `compile` | Compiles and links what the verilate job emitted |
 
-Simulation arrays still wait on the build job. `compile.verilate.cpus` defaults to 2; its `mem` and `time` inherit the resolved `compile` values, and `compile.parallel` applies to each phase.
+Simulation arrays wait on the build job unless a job releases them earlier (see [Start simulations as each build finishes](#start-simulations-as-each-build-finishes)). `compile.verilate.cpus` defaults to 2; its `mem` and `time` inherit the resolved `compile` values, and `compile.parallel` applies to each phase.
+
+- The verilate job runs `preproc` for every config. The build job runs it for one config per build it still has to make, and the other configs of that build take the result without running it. A config whose recorded inputs differ from that build's runs `preproc` and is checked like any other (`build_job.group_input_drift`).
+- A build the verilate job finds already built, or compiles whole because its line has no separate build step, is finished there: the build job records it without running `preproc` or the compiler.
+- When the verilate job leaves the build job nothing to compile, it lowers the pending build job to 1 CPU and 1G (`dispatch.build_job_shrunk`), so the end of a warm run does not queue for a compile reservation. A site that refuses the change logs `dispatch.build_job_shrink_failed`; the run is unaffected except for that wait.
 
 - If the verilate output is missing or stale, or the Verilator lacks `--no-verilate`, the build job verilates that build itself and warns `compile.build_phase_fallback`.
 - With a `shared-build-root` shared by several checkouts, only a finished, stamped build is reused across checkouts. Verilate output from another checkout whose build job has not finished is never built on. The verilate job defers to it (`compile.verilate_deferred`) without verilating or overwriting it. The build job then reuses that checkout's stamp if it has finished by then, and otherwise compiles in full (`marker-foreign`). However many checkouts race on one key, the key is verilated at most twice, and no job waits for another checkout.
@@ -274,17 +278,17 @@ A shared build is reused when no tracked input under the project root has change
 
 ## Start simulations as each build finishes
 
-Simulation jobs wait on the suite's build job, but the build job releases each build's simulations as soon as that build is done, so a fast build does not wait for the slowest. A released array element still honours the array's throttle.
+Simulation jobs wait on the suite's build job, but the build job releases each build's simulations as soon as that build is done, so a fast build does not wait for the slowest. Where verilation is split off, the verilate job releases the simulations of every build it finds already built, so a warm run's simulations do not wait for the build job at all. A released array element still honours the array's throttle.
 
 These jobs start only when the build job ends:
 
 - Jobs whose build failed or left no usable build, and retried jobs.
 - Every job of a suite whose `sbatch-args` has its own `--dependency=...`, because clearing it would drop your gate (`dispatch.gates_skipped`). An exported `SBATCH_DEPENDENCY` does not disable release (`dispatch.env_dependency_overridden`); put the expression in `sbatch-args` if it must hold these jobs.
-- All jobs, when `scontrol` is not on the PATH of the compute node running the build job (`dispatch.release_unavailable`).
+- All jobs, when `scontrol` is not on the PATH of the compute node running the build or verilate job (`dispatch.release_unavailable`).
 
 ## Recover when a gated job cannot use the build
 
-When a simulation job finds the build unusable, the outcome depends on what the build job recorded for that test. The job keeps its simulation reservation.
+When a simulation job finds the build unusable, the outcome depends on what the build job recorded for that test, or, for a job the verilate job released before the build job recorded anything, what the verilate job recorded. The job keeps its simulation reservation.
 
 - **The build failed on the same inputs.** The job does not recompile. Its row reports the build job's exit status and error lines.
 - **The build succeeded but is missing or does not match.** The job does not recompile. The row and `compile.build_stamp_rejected` say what was found. A mismatch usually means `preproc` generates different bytes on this node, or an edit landed mid-run.
@@ -438,7 +442,7 @@ A test whose retries ran under different cpu requests gets no `cpus` row (`right
 
 ## Troubleshoot early release
 
-- **`dispatch.gates_unavailable` / `dispatch.release_failed`:** the build job could not release its simulations, or the scheduler refused. Those jobs start when the build job ends. A timeout or unusable `scontrol` turns release off for the rest of the build job.
+- **`dispatch.gates_unavailable` / `dispatch.release_failed`:** the build or verilate job could not release its simulations, or the scheduler refused. Those jobs start when the build job ends. A timeout or unusable `scontrol` turns release off for the rest of that job.
 - **`dispatch.release_skipped`:** a build's record could not be written, so its jobs are not released.
 - **`dispatch.release_unavailable`:** `scontrol` is not on the compute node's PATH; nothing is released early.
 - **`dispatch.build_result_partial` / `dispatch.build_result_final_write_lost`:** the build job did not finish, or its final record was lost. The head uses the records it has; tests without one count as missing results.
