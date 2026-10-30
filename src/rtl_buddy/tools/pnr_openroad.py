@@ -3639,7 +3639,9 @@ class OpenRoadPnr:
             "cell_count_tag": _CELL_COUNT_TAG,
             "electrical_tag": _ELECTRICAL_TAG,
             "path_fanout_reports": pnr_path_report.report_tcl(
-                list(corner_libs), self.pnr_cfg.get_report_fanout_nets()
+                list(corner_libs),
+                self.pnr_cfg.get_report_fanout_nets(),
+                modes=bool(self._mode_corners),
             ),
             "buffer_ports_block": _buffer_ports_tcl(
                 self.pnr_cfg.get_port_buffers(), platform.get_port_buffer()

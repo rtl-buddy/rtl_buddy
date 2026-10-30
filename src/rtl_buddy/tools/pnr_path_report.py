@@ -119,24 +119,34 @@ proc rb_sinks {net} {
   return $sinks
 }
 proc rb_is_reset_tree {net depth} {
+  return [lindex [rb_reset_search $net $depth] 0]
+}
+proc rb_reset_search {net depth} {
   global rb_reset_tree
-  if {[info exists rb_reset_tree($net)]} { return $rb_reset_tree($net) }
-  set found 0
+  if {[info exists rb_reset_tree($net)]} { return [list $rb_reset_tree($net) 0] }
+  set limited 0
   foreach it [rb_sinks $net] {
     set inst [$it getInst]
     set cell [sta::find_liberty_cell [[$inst getMaster] getName]]
     if {$cell eq "NULL"} continue
-    if {[[$it getMTerm] getName] in [lindex [rb_cell_info $cell] 1]} { set found 1; break }
-    if {$depth < {hops} && [rb_cell_kind $cell] ne "cell"} {
-      foreach out [$inst getITerms] {
-        if {[$out getIoType] eq "OUTPUT" && [$out getNet] ne "NULL"
-            && [rb_is_reset_tree [$out getNet] [expr {$depth + 1}]]} { set found 1; break }
+    if {[[$it getMTerm] getName] in [lindex [rb_cell_info $cell] 1]} {
+      set rb_reset_tree($net) 1
+      return {1 0}
+    }
+    if {[rb_cell_kind $cell] eq "cell"} continue
+    if {$depth >= {hops}} { set limited 1; continue }
+    foreach out [$inst getITerms] {
+      if {[$out getIoType] ne "OUTPUT" || [$out getNet] eq "NULL"} continue
+      lassign [rb_reset_search [$out getNet] [expr {$depth + 1}]] found cut
+      if {$found} {
+        set rb_reset_tree($net) 1
+        return {1 0}
       }
-      if {$found} break
+      if {$cut} { set limited 1 }
     }
   }
-  set rb_reset_tree($net) $found
-  return $found
+  if {!$limited} { set rb_reset_tree($net) 0 }
+  return [list 0 $limited]
 }
 proc rb_fanout_order {a b} {
   set diff [expr {[lindex $b 0] - [lindex $a 0]}]
@@ -196,10 +206,10 @@ proc rb_fanout_nets {count} {
 """
 
 
-def report_tcl(corners: list[str], fanout_nets: int) -> str:
+def report_tcl(corners: list[str], fanout_nets: int, modes: bool = False) -> str:
     """Tcl for the final reports that prints each path group's worst setup path and the `fanout_nets` signal nets of highest fanout, as tagged lines.
 
-    On a multi-corner platform (`corners`) the paths are found at the setup-critical corner, the one with the worst setup slack, using `rb_find_corner` from the per-corner timing reports before it. A failure loses its report, never the routed database: rb then reports it unavailable.
+    On a multi-corner platform (`corners`) the paths are found at the setup-critical corner, the one with the worst setup slack, using `rb_find_corner` from the per-corner timing reports before it. With `modes`, each corner's SDC mode is named after it: its path groups are listed and searched in that mode, and the current mode is restored after. A failure loses its report, never the routed database: rb then reports it unavailable.
     """
     procs = (
         _PROCS.replace("{tag}", WORST_PATH_TAG)
@@ -227,18 +237,32 @@ def report_tcl(corners: list[str], fanout_nets: int) -> str:
         )
     else:
         corner = 'set rb_path_corner "-"\nset rb_corner_args {}'
+    search = (
+        "foreach rb_group [sta::path_group_names] {\n"
+        "  foreach rb_end [find_timing_paths -path_delay max "
+        "-path_group [list $rb_group] {*}$rb_corner_args] {\n"
+        "    rb_worst_path $rb_group $rb_path_corner $rb_end\n"
+        "  }\n"
+        "}"
+    )
+    if corners and modes:
+        search = (
+            "set rb_was_mode [sta::cmd_mode_name]\n"
+            "set_mode $rb_path_corner\n"
+            "try {\n"
+            + "".join(f"  {line}\n" for line in search.splitlines())
+            + "} finally {\n"
+            "  set_mode $rb_was_mode\n"
+            "}"
+        )
+    search = "".join(f"  {line}\n" for line in search.splitlines())
     return (
         "# Each path group's worst setup path and the signal nets of highest fanout;\n"
         f"# rb resolves their names into {WORST_PATHS_REPORT} and {FANOUT_REPORT}.\n"
         + procs
         + "if {[catch {\n"
         + "".join(f"  {line}\n" for line in corner.splitlines())
-        + "  foreach rb_group [sta::path_group_names] {\n"
-        + "    foreach rb_end [find_timing_paths -path_delay max "
-        + "-path_group [list $rb_group] {*}$rb_corner_args] {\n"
-        + "      rb_worst_path $rb_group $rb_path_corner $rb_end\n"
-        + "    }\n"
-        + "  }\n"
+        + search
         + '} rb_err]} { puts "rb: worst path report unavailable: $rb_err" }\n'
         + "if {[catch {\n"
         + f"  rb_fanout_nets {fanout_nets}\n"
@@ -333,6 +357,11 @@ def parse(text: str) -> Reports:
             )
     for m in _UNAVAILABLE_RE.finditer(text):
         reports.errors[m.group(1)] = m.group(2).strip()
+    # A report that failed part way is incomplete, so none of its entries count.
+    if "worst path" in reports.errors:
+        reports.paths = []
+    if "fanout" in reports.errors:
+        reports.nets = []
     return reports
 
 

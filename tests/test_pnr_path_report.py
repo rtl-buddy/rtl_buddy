@@ -144,15 +144,97 @@ def test_a_multi_corner_run_finds_the_paths_at_the_setup_critical_corner(tmp_pat
     text = _render_flow(tmp_path, platform)
     assert text.index("proc rb_find_corner") < text.index("foreach rb_name {tt ss ff}")
     assert "set rb_corner_args [list -corner $rb_path_corner]" in text
+    # Each corner has its own SDC mode, so the groups are listed in the critical corner's.
+    mode = text.index("set_mode $rb_path_corner")
+    assert mode < text.index("foreach rb_group [sta::path_group_names]")
+    assert text.index("foreach rb_group") < text.index("set_mode $rb_was_mode")
+    assert "set_mode" not in report.report_tcl(["tt", "ss"], 10)
+
+
+def _tclsh():
+    tclsh = shutil.which("tclsh")
+    if tclsh is None:
+        pytest.skip("no tclsh")
+    return tclsh
+
+
+def _procs(corners=(), modes=False):
+    text = report.report_tcl(list(corners), 10, modes=modes)
+    return text[: text.index("\nif {[catch {\n") + 1]
+
+
+def test_path_groups_are_listed_and_searched_in_the_critical_corners_mode():
+    """`ss` is setup-critical and only its mode has the group `io`; the current mode is `tt` before and after."""
+    stubs = dedent("""\
+        namespace eval sta {}
+        set mode tt
+        proc rb_find_corner {name} { return $name }
+        proc sta::worst_slack_scene {scene minmax} {
+          return [dict get {tt 1.0 ss -2.0} $scene]
+        }
+        proc sta::cmd_mode_name {} { return $::mode }
+        proc set_mode {name} { set ::mode $name }
+        proc sta::path_group_names {} {
+          return [dict get {tt {clk} ss {clk io}} $::mode]
+        }
+        proc find_timing_paths {args} {
+          return [list "end_$::mode"]
+        }
+        """)
+    tail = dedent("""\
+        proc rb_worst_path {group corner path_end} {
+          puts "PATH $group $corner $path_end"
+        }
+        proc rb_fanout_nets {count} {}
+        """)
+    text = report.report_tcl(["tt", "ss"], 10, modes=True)
+    split = text.index("\nif {[catch {\n") + 1
+    script = stubs + text[:split] + tail + text[split:] + 'puts "MODE $mode"\n'
+    out = subprocess.run([_tclsh()], input=script, capture_output=True, text=True)
+    lines = out.stdout.splitlines()
+    assert lines == ["PATH clk ss end_ss", "PATH io ss end_ss", "MODE tt"], out
+
+
+def test_a_reset_net_first_met_past_the_hop_limit_is_still_found_directly():
+    """A chain of 20 buffers ends at a register's asynchronous reset: from its head the search stops at the hop limit, but from the tenth net the reset is in reach."""
+    stubs = dedent("""\
+        namespace eval sta {}
+        proc sta::find_liberty_cell {name} { return $name }
+        proc obj {name methods} {
+          proc $name {method} "return \\[dict get [list $methods] \\$method\\]"
+        }
+        for {set k 0} {$k < 20} {incr k} {
+          obj m_BUF {getName BUF}
+          obj in_$k [list getIoType INPUT getInst buf_$k getMTerm m_A]
+          obj out_$k [list getIoType OUTPUT getNet net_[expr {$k + 1}]]
+          obj buf_$k [list getMaster m_BUF getITerms [list in_$k out_$k]]
+          set sinks(net_$k) [list in_$k]
+        }
+        obj m_A {getName A}
+        obj m_DFF {getName DFF}
+        obj m_RESET_B {getName RESET_B}
+        obj ff [list getMaster m_DFF]
+        obj rst [list getIoType INPUT getInst ff getMTerm m_RESET_B]
+        set sinks(net_20) [list rst]
+        """)
+    cells = dedent("""\
+        proc rb_sinks {net} { return $::sinks($net) }
+        proc rb_cell_info {cell} {
+          return [expr {$cell eq "DFF" ? {Q RESET_B} : {{} {}}}]
+        }
+        proc rb_cell_kind {cell} { return [expr {$cell eq "BUF" ? "buf" : "cell"}] }
+        puts "HEAD [rb_is_reset_tree net_0 0]"
+        puts "MID [rb_is_reset_tree net_10 0]"
+        """)
+    script = stubs + _procs() + cells
+    out = subprocess.run([_tclsh()], input=script, capture_output=True, text=True)
+    assert out.stdout.splitlines() == ["HEAD 0", "MID 1"], out
 
 
 def test_a_failing_report_does_not_stop_the_flow(tmp_path):
     """Both reports are report-only; an OpenROAD that cannot run them loses them, not the routed database."""
-    tclsh = shutil.which("tclsh")
-    if tclsh is None:
-        pytest.skip("no tclsh")
     script = report.report_tcl(["tt", "ss"], 10) + 'puts "REACHED_WRITE_DB"\n'
-    out = subprocess.run([tclsh], input=script, capture_output=True, text=True)
+    out = subprocess.run([_tclsh()], input=script, capture_output=True, text=True)
     assert "REACHED_WRITE_DB" in out.stdout
     assert "rb: worst path report unavailable:" in out.stdout
     assert "rb: fanout report unavailable:" in out.stdout
@@ -323,6 +405,23 @@ def test_a_report_that_could_not_run_is_unavailable(tmp_path):
         in (tmp_path / report.WORST_PATHS_REPORT).read_text()
     )
     assert "unavailable: no such block" in (tmp_path / report.FANOUT_REPORT).read_text()
+
+
+def test_a_report_that_failed_part_way_drops_its_partial_entries(tmp_path):
+    log = (
+        _path("a", "-1e-10", 3, "x", "", "y", "")
+        + "rb: worst path report unavailable: group b failed\n"
+        + _fanout(12, "n1", "u_core/_10_/Q", "cell")
+        + "rb: fanout report unavailable: net 2 failed\n"
+    )
+    fields = report.write_reports(str(tmp_path), report.parse(log), None, None, 10)
+    assert fields == {}
+    paths = (tmp_path / report.WORST_PATHS_REPORT).read_text()
+    assert "unavailable: group b failed" in paths
+    assert "Path group: a" not in paths
+    nets = (tmp_path / report.FANOUT_REPORT).read_text()
+    assert "unavailable: net 2 failed" in nets
+    assert "n1" not in nets
 
 
 def test_a_log_without_the_reports_says_so(tmp_path):
