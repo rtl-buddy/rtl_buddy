@@ -318,11 +318,14 @@ def _tcl_braced(text: str) -> str:
     return "{" + text + "}"
 
 
-# One line per parsed check: kind, pin, limit, value.
+# One line per parsed check: kind, pin, limit, value, and the scene when the
+# row names one.
 _ROWS_OUT = (
     "set lines {}\n"
     "foreach kind {slew capacitance} {\n"
-    "    foreach row [dict get $c $kind] { lappend lines [join [linsert $row 0 $kind]] }\n"
+    "    foreach row [dict get $c $kind] {\n"
+    "        lappend lines [string trimright [join [linsert $row 0 $kind]]]\n"
+    "    }\n"
     "}\n"
     'set result [join $lines "\\n"]'
 )
@@ -344,7 +347,59 @@ def test_the_check_parser_tolerates_a_scene_column():
         "u_sram/addr0[0]   ss   0.04   0.05   -0.01 (VIOLATED)\n"
     )
     out = _run(f"set c [rb::checks::parse {_tcl_braced(report)}]\n" + _ROWS_OUT)
-    assert out.splitlines() == ["slew u_sram/addr0[0] 0.04 0.05"]
+    assert out.splitlines() == ["slew u_sram/addr0[0] 0.04 0.05 ss"]
+
+
+# `report_check_types -max_slew -max_capacitance -violators -verbose -digits 6`
+# on a design with two scenes, as OpenROAD 26Q4 prints it.
+_VERBOSE = """\
+max slew
+
+Pin u_sram/addr0[0] ^ (corner ss)
+max slew 0.040000
+slew     0.131956
+----------------
+Slack    -0.091956 (VIOLATED)
+
+Pin u_csr/_1119_/Q v (corner tt)
+max slew 1.497951
+slew     1.518542
+----------------
+Slack    -0.020591 (VIOLATED)
+
+max capacitance
+
+Pin u_csr/_1119_/Q   (corner ss)
+max capacitance 0.162058
+capacitance     0.164883
+----------------
+Slack    -0.002825 (VIOLATED)
+
+Pin u_sram/dout1[8]
+max capacitance 0.027560
+capacitance     0.032708
+----------------
+Slack    -0.005148 (VIOLATED)
+
+max fanout
+
+Pin u_csr/_1119_/Q
+max fanout 10
+fanout     12
+----------------
+Slack    -2 (VIOLATED)
+
+"""
+
+
+def test_the_check_parser_reads_verbose_rows_with_their_scene():
+    out = _run(f"set c [rb::checks::parse {_tcl_braced(_VERBOSE)}]\n" + _ROWS_OUT)
+    assert out.splitlines() == [
+        "slew u_sram/addr0[0] 0.040000 0.131956 ss",
+        "slew u_csr/_1119_/Q 1.497951 1.518542 tt",
+        "capacitance u_csr/_1119_/Q 0.162058 0.164883 ss",
+        "capacitance u_sram/dout1[8] 0.027560 0.032708",
+    ]
 
 
 def test_the_worst_check_is_the_named_pin_s_smallest_headroom():
@@ -359,7 +414,7 @@ def test_the_worst_check_is_the_named_pin_s_smallest_headroom():
         "[rb::checks::worst $c slew {u_inner/u_hist_mem/u_sram/addr0[2]}] "
         "[rb::checks::worst $c capacitance {u_inner/u_hist_mem/u_sram/addr0[2]}]]"
     )
-    assert out == "{0.040000 0.143900} {}"
+    assert out == "{0.040000 0.143900 {}} {}"
 
 
 @pytest.mark.parametrize(

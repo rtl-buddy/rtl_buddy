@@ -6,11 +6,13 @@
 # the round's extraction: it reads the max-slew and max-capacitance violators
 # on the extracted parasitics (`check_reports.tcl`), estimates placement
 # parasitics in their place, and prints each violator that is within its limit
-# less the round's margin on that estimate.
+# less the round's margin on that estimate, read from the same check at the
+# scene its extracted row names.
 #
 # It leaves out the violators `repair_design` (OpenROAD 26Q4) does not repair
-# whatever the parasitics: a port, and a pin on a clock net or on a net that is
-# dont_touch, special or connected by abutment.
+# whatever the parasitics: a port, and a pin on a net that is driven by a
+# constant, carries a clock, or is dont_touch, special or connected by
+# abutment.
 namespace eval rb::unseen {}
 
 # Whether `method` of the database object `db` answers 1; 0 when it does not
@@ -25,6 +27,12 @@ proc rb::unseen::skipped {pin net} {
     if {[sta::is_clock $pin] eq "1"} {
         return 1
     }
+    # Tie cells and other constant drivers, by their simulated logic value.
+    foreach driver [sta::net_driver_pins $net] {
+        if {[sta::pin_sim_logic_value $driver] in {0 1}} {
+            return 1
+        }
+    }
     set db [sta::sta_to_db_net $net]
     if {$db eq "" || $db eq "NULL"} {
         return 1
@@ -37,25 +45,12 @@ proc rb::unseen::skipped {pin net} {
     return 0
 }
 
-# The worst capacitance over the scenes that `net` loads its driver with, in
-# the report's unit.
-proc rb::unseen::net_capacitance {net} {
-    set worst 0.0
-    foreach scene [sta::scenes] {
-        set cap [sta::Net_capacitance $net $scene max]
-        if {$cap > $worst} {
-            set worst $cap
-        }
-    }
-    return [sta::capacitance_sta_ui $worst]
-}
-
 # Print `tag check pin limit extracted estimated` for each violator on the
 # extracted parasitics that is within its limit less `slew_margin` or
 # `cap_margin` (percent, as `repair_design` takes them) on the placement
 # estimate. Replaces the session's parasitics with that estimate.
 proc rb::unseen::report {tag slew_margin cap_margin} {
-    set checks [::rb::checks::report -violators]
+    set checks [::rb::checks::report -violators -verbose]
     set violators {}
     foreach check {slew capacitance} {
         set pins {}
@@ -72,10 +67,12 @@ proc rb::unseen::report {tag slew_margin cap_margin} {
     }
     estimate_parasitics -placement
     set margins [dict create slew $slew_margin capacitance $cap_margin]
-    # Per net: whether `repair_design` skips it, and its estimated load.
-    set nets [dict create]
+    # Per net: whether `repair_design` skips it; per net and scene: its
+    # checks on the estimate.
+    set skips [dict create]
+    set estimates [dict create]
     foreach violator $violators {
-        lassign $violator check name limit extracted
+        lassign $violator check name limit extracted scene
         set pin [get_pins -quiet $name]
         if {[llength $pin] == 0} {
             continue
@@ -85,26 +82,27 @@ proc rb::unseen::report {tag slew_margin cap_margin} {
             continue
         }
         set key [get_full_name $net]
-        if {![dict exists $nets $key]} {
-            dict set nets $key [dict create skipped [skipped $pin $net]]
+        if {![dict exists $skips $key]} {
+            dict set skips $key [skipped $pin $net]
         }
-        if {[dict get $nets $key skipped]} {
+        if {[dict get $skips $key]} {
             continue
         }
-        if {$check eq "slew"} {
-            set estimated [get_property $pin slew_max]
-        } else {
-            if {![dict exists $nets $key cap]} {
-                dict set nets $key cap [net_capacitance $net]
+        if {![dict exists $estimates $key $scene]} {
+            set options [list -net $net -verbose]
+            if {$scene ne ""} {
+                lappend options -corner $scene
             }
-            set estimated [dict get $nets $key cap]
+            dict set estimates $key $scene [::rb::checks::report {*}$options]
         }
-        if {$estimated eq ""} {
+        set estimate [::rb::checks::worst [dict get $estimates $key $scene] $check $name]
+        if {[llength $estimate] == 0} {
             continue
         }
+        set estimated [lindex $estimate 1]
         set target [expr {$limit * (1.0 - [dict get $margins $check] / 100.0)}]
         if {$estimated <= $target} {
-            puts [format "%s %s %s %s %s %.6f" $tag $check $name $limit $extracted $estimated]
+            puts [format "%s %s %s %s %s %s" $tag $check $name $limit $extracted $estimated]
         }
     }
 }

@@ -137,8 +137,8 @@ proc rb::macro_pins::measure {pin} {
     set result {}
     foreach kind {slew capacitance} {
         set check [::rb::checks::worst $checks $kind $name]
-        if {[llength $check] == 2} {
-            lappend result {*}$check
+        if {[llength $check] == 3} {
+            lappend result {*}[lrange $check 0 1]
         } else {
             lappend result "" ""
         }
