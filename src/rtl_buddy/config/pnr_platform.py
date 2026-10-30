@@ -41,10 +41,12 @@ from .pnr_repair import (
     UNSET,
     GlobalRouteRepair,
     PostRouteRepair,
+    RepairDesign,
     read_global_route_repair,
     read_hold_repair_shorthand,
     read_post_route_repair,
     resolve_global_route_repair,
+    resolve_placement_repair_design,
     resolve_post_route_repair,
 )
 from .pnr_signoff import SIGNOFF_SPEC, Signoff, read_signoff, resolve_signoff
@@ -597,6 +599,12 @@ class PnrPlatformConfig:
         self._placement_optimize_mirroring = _pick(
             "optimize_mirroring", pdk.get_placement_optimize_mirroring(), True
         )
+        self._placement_repair_design = resolve_placement_repair_design(
+            [
+                pdk.get_placement_repair_design(),
+                *(layer.repair_design for layer in reversed(layers)),
+            ]
+        )
         # The placer reads `-routability_use_grt` only in routability mode, so alone it would be silently ignored.
         if (
             self._placement_routability_use_grt
@@ -828,6 +836,10 @@ class PnrPlatformConfig:
     def get_placement_optimize_mirroring(self) -> bool:
         """Whether `optimize_mirroring` runs after the placement stage's legalization, run over platform over PDK, default `True`."""
         return self._placement_optimize_mirroring
+
+    def get_placement_repair_design(self) -> RepairDesign:
+        """The place stage's `repair_design` options, `placement.repair-design` run over platform over PDK, field by field; all unset by default."""
+        return self._placement_repair_design
 
     def get_dont_use_cells(self) -> list[str]:
         """The PDK's excluded cells plus this platform's, PDK first."""

@@ -13,59 +13,13 @@
 # output's loads tens of microns, so checks read on the unlegalised placement
 # miss output pins that end up over their capacitance limit.
 #
-# The helpers before `repair` take and return plain numbers and strings, so
-# tests/test_pnr_macro_pin_limits.py runs them under a bare Tcl interpreter.
+# It reads the timer's checks with `check_reports.tcl`, which the flow sources
+# before it. The helpers before `repair` take and return plain numbers and
+# strings, so tests/test_pnr_macro_pin_limits.py runs them under a bare Tcl
+# interpreter.
 # Geometry is in integral database units.
 
 namespace eval rb::macro_pins {}
-
-# The checks of one `report_check_types -max_slew -max_capacitance` report, as
-# a dict: `slew` and `capacitance`, each a list of {pin limit value}. Values
-# are in the report's units, which are the load library's thresholds.
-proc rb::macro_pins::parse_checks {text} {
-    set checks [dict create slew {} capacitance {}]
-    set kind ""
-    set number {-?[0-9]+(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?}
-    foreach line [split $text "\n"] {
-        if {[regexp {^\s*max slew\s*$} $line]} {
-            set kind slew
-            continue
-        }
-        if {[regexp {^\s*max capacitance\s*$} $line]} {
-            set kind capacitance
-            continue
-        }
-        if {[regexp {^\s*max fanout\s*$} $line]} {
-            set kind ""
-            continue
-        }
-        if {$kind eq ""} {
-            continue
-        }
-        # Pin, an optional scene name, limit, value, slack, verdict.
-        set row "^(\\S+)(?:\\s+\[A-Za-z_\]\\S*)?\\s+($number)\\s+($number)\\s+($number)\\s+\\((?:VIOLATED|MET)\\)"
-        if {[regexp $row $line -> pin limit value slack]} {
-            dict lappend checks $kind [list $pin $limit $value]
-        }
-    }
-    return $checks
-}
-
-# The worst {limit value} of `pin` in `checks` for `kind`, by the smallest
-# headroom, or an empty list when the report has no such check.
-proc rb::macro_pins::pin_check {checks kind pin} {
-    set worst {}
-    foreach row [dict get $checks $kind] {
-        lassign $row name limit value
-        if {$name ne $pin} {
-            continue
-        }
-        if {$worst eq "" || $limit - $value < [lindex $worst 0] - [lindex $worst 1]} {
-            set worst [list $limit $value]
-        }
-    }
-    return $worst
-}
 
 # Whether `value` is over `limit` less a `margin` fraction of it.
 proc rb::macro_pins::over {value limit margin} {
@@ -175,29 +129,16 @@ proc rb::macro_pins::slot_x {x0 slot_width width px pitch} {
 # ---------------------------------------------------------------------------
 # OpenROAD side.
 
-# The parsed max-slew and max-capacitance checks of every pin on `net`.
-proc rb::macro_pins::net_checks {net} {
-    sta::redirect_string_begin
-    set failed [catch {
-        report_check_types -max_slew -max_capacitance -net $net -max_count 100000 -digits 6
-    } err]
-    set text [sta::redirect_string_end]
-    if {$failed} {
-        error $err
-    }
-    return [parse_checks $text]
-}
-
 # The macro pin's checks against its own limits: {slew_limit slew cap_limit
 # cap}, an empty string for a check the report does not carry.
 proc rb::macro_pins::measure {pin} {
-    set checks [net_checks [get_nets -of_objects $pin]]
+    set checks [::rb::checks::report -net [get_nets -of_objects $pin]]
     set name [get_full_name $pin]
     set result {}
     foreach kind {slew capacitance} {
-        set check [pin_check $checks $kind $name]
-        if {[llength $check] == 2} {
-            lappend result {*}$check
+        set check [::rb::checks::worst $checks $kind $name]
+        if {[llength $check] == 3} {
+            lappend result {*}[lrange $check 0 1]
         } else {
             lappend result "" ""
         }
@@ -221,6 +162,52 @@ proc rb::macro_pins::fits {measured kinds margins} {
     return 1
 }
 
+# How far a measurement (from `measure`) is from its limits less the margins:
+# the largest ratio of a counted check's value to its limit less its margin, so
+# 1 or below fits. Of two candidates that both miss, the lower one is closer;
+# for an input, judged on slew alone, it is the one with the lower slew.
+proc rb::macro_pins::shortfall {measured kinds margins} {
+    lassign $measured slew_limit slew cap_limit cap
+    lassign $margins slew_margin cap_margin
+    set worst 0.0
+    foreach {kind value limit margin} [list slew $slew $slew_limit $slew_margin \
+            capacitance $cap $cap_limit $cap_margin] {
+        if {$kind ni $kinds || $value eq ""} {
+            continue
+        }
+        set target [expr {$limit * (1.0 - $margin)}]
+        set ratio [expr {$target > 0 ? $value / $target : ($value > 0 ? 1e30 : 0.0)}]
+        if {$ratio > $worst} {
+            set worst $ratio
+        }
+    }
+    return $worst
+}
+
+# Try the buffer candidates weakest first: each final buffer, then for each
+# the weakest pre-driver (none when `has_pre` is 0) that makes the pin fit.
+# `trial`, called with a final and a pre-driver cell, sizes them and returns
+# the measurement. Returns {met final_cell pre_cell measured}: the first pair
+# that fits or, with none, the pair closest to the limits (`shortfall`). A
+# stronger cell is not always faster, so that need not be the strongest pair;
+# the caller sizes it again.
+proc rb::macro_pins::choose {buffers has_pre kinds margins trial} {
+    set best {}
+    foreach final_cell $buffers {
+        foreach pre_cell [expr {$has_pre ? $buffers : [list ""]}] {
+            set measured [{*}$trial $final_cell $pre_cell]
+            if {[fits $measured $kinds $margins]} {
+                return [list 1 $final_cell $pre_cell $measured]
+            }
+            set score [shortfall $measured $kinds $margins]
+            if {$best eq "" || $score < [lindex $best 0]} {
+                set best [list $score $final_cell $pre_cell $measured]
+            }
+        }
+    }
+    return [list 0 {*}[lrange $best 1 end]]
+}
+
 # Re-estimate the placement parasitics of every net on `insts`, whose pins
 # moved with a master swap. A full `estimate_parasitics` per trial would cost
 # a design-wide estimate each time.
@@ -233,6 +220,26 @@ proc rb::macro_pins::reestimate {insts} {
             est::estimate_parasitic_net $net
         }
     }
+}
+
+# Size the final buffer to `final_cell`, moved within its fixed slot toward
+# the pin, and the pre-driver, if any, to `pre_cell`; return the pin's
+# measurement (from `measure`). Any pair keeps the placement legal, since both
+# cells were inserted and legalized at the widest candidate, and a repeat call
+# with the same pair leaves the cells where they are.
+proc rb::macro_pins::trial {pin final final_db pre sx sy width px pitch final_cell pre_cell} {
+    if {[[$final_db getMaster] getName] ne $final_cell} {
+        replace_cell $final $final_cell
+        # ODB refuses to move a FIRM instance.
+        $final_db setPlacementStatus PLACED
+        $final_db setLocation [slot_x $sx $width [[$final_db getMaster] getWidth] $px $pitch] $sy
+        $final_db setPlacementStatus FIRM
+    }
+    if {$pre ne ""} {
+        replace_cell $pre $pre_cell
+    }
+    reestimate [list $final $pre]
+    return [measure $pin]
 }
 
 proc rb::macro_pins::db_pin {inst io} {
@@ -413,40 +420,18 @@ proc rb::macro_pins::repair {buffers margin cap_margin pad_sites tag dpl_args} {
     detailed_placement {*}$dpl_args
     estimate_parasitics -placement
 
-    # Weakest first: the final buffer, then for each final buffer the weakest
-    # pre-driver that makes the pin fit. With none fitting, the last pair
-    # (the strongest) stays.
     set dont_touch {}
     set results {}
     foreach item $buffered {
         lassign $item pin io kinds before final pre nets slot
         lassign $slot sx sy px
-        set final_db [sta::sta_to_db_inst $final]
-        set met 0
-        foreach final_cell $buffers {
-            replace_cell $final $final_cell
-            # ODB refuses to move a FIRM instance.
-            $final_db setPlacementStatus PLACED
-            $final_db setLocation [slot_x $sx $width [[$final_db getMaster] getWidth] $px $pitch] $sy
-            $final_db setPlacementStatus FIRM
-            set pre_cells [expr {$pre eq "" ? [list ""] : $buffers}]
-            foreach pre_cell $pre_cells {
-                if {$pre ne ""} {
-                    replace_cell $pre $pre_cell
-                }
-                reestimate [list $final $pre]
-                set after [measure $pin]
-                if {[fits $after $kinds $margins]} {
-                    set met 1
-                    break
-                }
-            }
-            if {$met} {
-                break
-            }
-        }
+        set trial [list ::rb::macro_pins::trial $pin $final \
+            [sta::sta_to_db_inst $final] $pre $sx $sy $width $px $pitch]
+        lassign [choose $buffers [expr {$pre ne ""}] $kinds $margins $trial] \
+            met final_cell pre_cell after
         if {!$met} {
             incr unmet
+            set after [{*}$trial $final_cell $pre_cell]
         }
         lappend dont_touch $final {*}$nets
         if {$pre ne ""} {
@@ -464,7 +449,7 @@ proc rb::macro_pins::repair {buffers margin cap_margin pad_sites tag dpl_args} {
     foreach result $results {
         lassign $result pin io kinds before after final_cell pre_cell met
         set cells [expr {$pre_cell eq "" ? "buffer $final_cell" : "pre-driver $pre_cell, final $final_cell"}]
-        set verdict [expr {$met ? "" : "; over the limit less the margin with the strongest candidate"}]
+        set verdict [expr {$met ? "" : "; no candidate meets the limit less the margin, kept the closest"}]
         puts ">>>   [get_full_name $pin] ([string tolower $io]): [describe $before $kinds] -> [describe $after $kinds]; $cells$verdict"
     }
     puts "$tag buffered [llength $results] unmet $unmet"

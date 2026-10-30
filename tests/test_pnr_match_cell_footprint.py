@@ -76,6 +76,22 @@ def test_every_repair_of_the_flow_matches_footprints(tmp_path):
     ]
 
 
+def test_the_place_stage_options_come_before_the_flag(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    platform = _platform(
+        _pdk(tmp_path),
+        match_cell_footprint=True,
+        placement=PlacementFile(repair_design={"slew-margin": 20, "cap-margin": 10}),
+    )
+
+    repairs = _repairs(_render(tmp_path, platform))
+
+    assert repairs[1] == (
+        "repair_design -slew_margin 20 -cap_margin 10 -match_cell_footprint"
+    )
+
+
 def test_the_hold_only_global_route_repair_matches_footprints(tmp_path):
     text = _render(
         tmp_path,

@@ -41,6 +41,7 @@ PLACEMENT_ALL = {
     },
     "improve-placement": False,
     "optimize-mirroring": False,
+    "repair-design": {"slew-margin": 20, "cap-margin": 10, "max-wire-length": 500},
 }
 
 # Sized by core-margin; the second run sizes with die-area, core-area and core-cutouts instead.
@@ -423,12 +424,17 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
             "rotated-macro-footprint, macro-pin-limits, improve-placement, "
-            "optimize-mirroring",
+            "optimize-mirroring, repair-design",
         ),
         (
             "pnr run 'a': placement.macro-pin-limits",
             ("placement", "macro-pin-limits"),
             "buffers, margin, capacitance-margin",
+        ),
+        (
+            "pnr run 'a': placement.repair-design",
+            ("placement", "repair-design"),
+            "slew-margin, cap-margin, max-wire-length",
         ),
         ("pnr run 'a': blocks[1]", ("blocks", 1), "name, pnr, pnr-path"),
         ("pnr run 'a': routing-layers", ("routing-layers",), "signal, clock"),
@@ -764,7 +770,7 @@ cfg-pnr-platforms:
             "tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
             "rotated-macro-footprint, macro-pin-limits, improve-placement, "
-            "optimize-mirroring",
+            "optimize-mirroring, repair-design",
         ),
         (
             "pdk",
@@ -833,7 +839,7 @@ cfg-pnr-platforms:
             "tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
             "rotated-macro-footprint, macro-pin-limits, improve-placement, "
-            "optimize-mirroring",
+            "optimize-mirroring, repair-design",
         ),
         (
             "platform",

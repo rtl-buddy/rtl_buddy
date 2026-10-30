@@ -128,16 +128,22 @@ class RepairDesign:
     wire_rc: WireRc | None = None
     after_timing: bool = False
 
-    def options(self) -> str:
-        """The `repair_design` options, each with a leading space."""
-        return "".join(
-            f" -{name} {_fmt(value)}"
+    def option_values(self) -> dict[str, float]:
+        """The `repair_design` options that are set, by option name."""
+        return {
+            name: value
             for name, value in (
                 ("slew_margin", self.slew_margin),
                 ("cap_margin", self.cap_margin),
                 ("max_wire_length", self.max_wire_length),
             )
             if value is not None
+        }
+
+    def options(self) -> str:
+        """The `repair_design` options, each with a leading space."""
+        return "".join(
+            f" -{name} {_fmt(value)}" for name, value in self.option_values().items()
         )
 
 
@@ -319,6 +325,23 @@ def _read_repair_design(where: str, raw, keys: dict = _REPAIR_DESIGN_KEYS):
         else:
             layer[attr] = _number(where, key, value, low=0.0, high=100.0)
     return layer
+
+
+def read_placement_repair_design(where: str, raw):
+    """Return one level's `placement.repair-design` as a layer: `UNSET` when absent, `None` when `null` (clears a lower level's), else the keys it writes, validated as the other `repair-design` blocks are."""
+    if raw is UNSET:
+        return UNSET
+    return _read_repair_design(f"{where}: placement.repair-design", raw)
+
+
+def resolve_placement_repair_design(layers) -> RepairDesign:
+    """The place stage's `repair_design` options from `placement.repair-design` layers, lowest first: a later layer's keys win field by field and `None` drops the layers below it."""
+    merged: dict = {}
+    for layer in layers:
+        if layer is UNSET:
+            continue
+        merged = {} if layer is None else {**merged, **layer}
+    return RepairDesign(**merged)
 
 
 def _read_margins(
