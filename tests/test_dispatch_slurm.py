@@ -4598,6 +4598,39 @@ def test_shrink_pending_job_keeps_the_task_count_and_lowers_memory_per_cpu(
     ]
 
 
+def test_shrink_pending_job_brings_a_multi_node_job_to_one_node(monkeypatch):
+    """An ``sbatch-args`` node count is part of the reservation, so it goes to 1 first."""
+    calls = []
+    held = _held("NumNodes=2-2 NumCPUs=16 NumTasks=2 CPUs/Task=8 MinMemoryNode=16G")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, [held]))
+
+    assert slurm_module.shrink_pending_job(
+        "2000", cpus=1, mem="1G", current_cpus=8, current_mem="16G"
+    ) == (["nodes", "cpus", "mem"], None)
+    assert [argv[3:] for argv in _updates(calls)] == [
+        ["NumNodes=1"],
+        ["CPUsPerTask=1", "MinCPUsNode=1", "NumCPUs=2"],
+        ["MinMemoryNode=1024"],
+    ]
+
+
+def test_shrink_pending_job_leaves_a_multi_node_job_whose_node_change_is_refused(
+    monkeypatch,
+):
+    calls = []
+    results = [
+        _held("NumNodes=2 NumCPUs=16 NumTasks=2 CPUs/Task=8 MinMemoryNode=16G"),
+        SimpleNamespace(returncode=1, stdout="", stderr="Requested node config"),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, results))
+
+    changed, error = slurm_module.shrink_pending_job(
+        "2000", cpus=1, mem="1G", current_cpus=8, current_mem="16G"
+    )
+    assert changed == [] and "node config" in error
+    assert [argv[3:] for argv in _updates(calls)] == [["NumNodes=1"]]
+
+
 def test_shrink_pending_job_leaves_a_job_that_already_started(monkeypatch):
     calls = []
     running = SimpleNamespace(

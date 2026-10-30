@@ -3783,7 +3783,10 @@ class RtlBuddy:
                 with release_lock:
                     release_state["disabled"] = systemic
             with recorded_lock:
-                # The build half releases what this job could not.
+                # The build half releases what this job could not, and collection
+                # keeps a released job's gate open, so the mark goes to disk now: a
+                # crash before the final write must not lose it.
+                marked = False
                 for index, _name in members:
                     pairs = [
                         (cluster, job_id)
@@ -3794,6 +3797,9 @@ class RtlBuddy:
                         entry = recorded_entries.get(index)
                         if entry is not None:
                             entry["released"] = True
+                            marked = True
+                if marked:
+                    _write_partial_locked()
             if released:
                 # On the console, not just the job log: this line says a key stopped
                 # holding its tests, and INFO is invisible on a CI console.
@@ -3862,6 +3868,7 @@ class RtlBuddy:
                     logging.INFO,
                     "dispatch.build_job_shrunk",
                     job_id=build["job_id"],
+                    nodes=1 if "nodes" in changed else None,
                     cpus=IDLE_BUILD_JOB_CPUS if "cpus" in changed else None,
                     mem=IDLE_BUILD_JOB_MEM if "mem" in changed else None,
                 )
@@ -3982,36 +3989,40 @@ class RtlBuddy:
                 for index, (entry, ok) in entries.items():
                     recorded_entries[index] = entry
                     recorded_ok[index] = ok
-                if result_json_path is None:
-                    return None
-                ordered = sorted(recorded_entries)
-                snapshot = [recorded_entries[index] for index in ordered]
-                names = {
-                    index: recorded_entries[index].get("test") for index in ordered
-                }
-                try:
-                    # Under the lock, so two workers finishing together cannot
-                    # interleave a stale snapshot over a fresher one. tmp + os.replace
-                    # gives readers a whole file.
-                    write_build_result_json(
-                        result_json_path,
-                        built=[names[index] for index in ordered if recorded_ok[index]],
-                        failed=[
-                            names[index] for index in ordered if not recorded_ok[index]
-                        ],
-                        builds=snapshot,
-                        partial=True,
-                    )
-                except Exception as exc:  # noqa: BLE001 - never fatal here
-                    log_event(
-                        logger,
-                        logging.WARNING,
-                        "build_job.partial_result_failed",
-                        path=str(result_json_path),
-                        error=str(exc),
-                    )
-                    return str(exc)
+                return _write_partial_locked()
+
+        def _write_partial_locked():
+            """Rewrite the envelope, still ``partial``; ``None`` or why it failed.
+
+            Called under ``recorded_lock``, so two workers finishing together cannot
+            interleave a stale snapshot over a fresher one.
+            """
+            if result_json_path is None:
                 return None
+            ordered = sorted(recorded_entries)
+            snapshot = [recorded_entries[index] for index in ordered]
+            names = {index: recorded_entries[index].get("test") for index in ordered}
+            try:
+                # tmp + os.replace gives readers a whole file.
+                write_build_result_json(
+                    result_json_path,
+                    built=[names[index] for index in ordered if recorded_ok[index]],
+                    failed=[
+                        names[index] for index in ordered if not recorded_ok[index]
+                    ],
+                    builds=snapshot,
+                    partial=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - never fatal here
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "build_job.partial_result_failed",
+                    path=str(result_json_path),
+                    error=str(exc),
+                )
+                return str(exc)
+            return None
 
         def _follow_leader(index, name, group_dir, leader_row):
             """Take the leader's build for a follower that ran no PRE here, or ``None``.

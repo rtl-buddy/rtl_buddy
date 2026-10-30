@@ -1377,7 +1377,9 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "dispatch.build_job_shrunk":
             reserved = ", ".join(
-                f"{key}={fields[key]}" for key in ("cpus", "mem") if key in fields
+                f"{key}={fields[key]}"
+                for key in ("nodes", "cpus", "mem")
+                if fields.get(key) is not None
             )
             return (
                 "dispatch: every compile key was already built, so the build "

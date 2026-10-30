@@ -1479,14 +1479,70 @@ def stamp_fingerprint_sha(stamp_dir):
     )
 
 
+def _directory_files(dir_path, *, recursive):
+    """``[(name, path)]`` of the input files a directory listing covers, sorted.
+
+    ``name`` is relative to ``dir_path`` with ``/`` separators. See
+    :meth:`VlogSim._directory_listing` for what is skipped. Raises :class:`OSError`
+    for an unreadable directory.
+    """
+
+    def _reraise(error):
+        # os.walk swallows unopenable directories by default, which would yield an
+        # empty listing. Re-raise so the caller sees the failure.
+        raise error
+
+    entries = []
+    if recursive:
+        for walk_root, dir_names, file_names in os.walk(dir_path, onerror=_reraise):
+            # In place, because os.walk reads the list back; pruned names are never
+            # walked.
+            dir_names[:] = sorted(
+                name for name in dir_names if not _is_pruned_walk_dir(name)
+            )
+            for name in sorted(file_names):
+                if _is_non_input_file(name):
+                    continue
+                path = os.path.join(walk_root, name)
+                if not os.path.isfile(path):
+                    # A dangling symlink is not an input; a FIFO must not reach the
+                    # hasher's `open()`.
+                    continue
+                entries.append((os.path.relpath(path, dir_path), path))
+    else:
+        with os.scandir(dir_path) as scan:
+            # `is_file` follows symlinks and usually answers from the dirent.
+            names = sorted(
+                item.name
+                for item in scan
+                if item.is_file() and not _is_non_input_file(item.name)
+            )
+        entries = [(name, os.path.join(dir_path, name)) for name in names]
+    return [(name.replace(os.sep, "/"), path) for name, path in sorted(entries)]
+
+
+def _file_unchanged(stored, path, project_root):
+    """Does ``[name, size, mtime_ns, sha]`` still describe the file at ``path``?
+
+    By stat first, then by content where ``stored`` carries a hash, as
+    :func:`_entry_matches` decides for a simulation job.
+    """
+    if _stat_entry(path)[1:] == stored[1:3]:
+        return True
+    current = _hashed_stat_entry(path, project_root=project_root)
+    return _entry_matches(stored, [stored[0], *current[1:]])
+
+
 def settled_build_problem(stamp_dir, fingerprint_sha, project_root):
     """Why the build stamped in ``stamp_dir`` no longer stands, or ``None``.
 
     For a build another job recorded as ``fingerprint_sha``: the stamp must still be
-    that one, its executable must be the one it stamped, and every dependency it
-    recorded must be unchanged. This is the part of a simulation job's stamp check
-    that needs no compile plan, so a build that passes is one a gated job will accept
-    unless its compile line moved. Relative spellings re-anchor on ``project_root``.
+    that one, its executable must be the one it stamped, every dependency it recorded
+    must be unchanged, and every ``+incdir+``/``-y`` directory it listed must list the
+    same files now (by name where the stamp has dependencies, else by content too).
+    This is the part of a simulation job's stamp check that needs no compile plan, so
+    a build that passes is one a gated job will accept unless its compile line moved
+    or a file it names directly changed. Relative spellings re-anchor on ``project_root``.
     Never raises.
     """
 
@@ -1519,21 +1575,49 @@ def settled_build_problem(stamp_dir, fingerprint_sha, project_root):
     if "deps" not in stored:
         return "the stamp predates dependency tracking"
     deps = stored["deps"]
-    if deps is None:
-        return None
-    if not isinstance(deps, list) or stored.get("deps_format") != _DEPS_FORMAT:
-        return "the stamp's dependency list is unreadable"
-    for entry in deps:
-        if not (
-            isinstance(entry, list) and len(entry) == 4 and isinstance(entry[0], str)
-        ):
+    if deps is not None:
+        if not isinstance(deps, list) or stored.get("deps_format") != _DEPS_FORMAT:
             return "the stamp's dependency list is unreadable"
-        path = _abspath(entry[0])
-        if _stat_entry(path)[1:] == entry[1:3]:
+        for entry in deps:
+            if not (
+                isinstance(entry, list)
+                and len(entry) == 4
+                and isinstance(entry[0], str)
+            ):
+                return "the stamp's dependency list is unreadable"
+            if not _file_unchanged(entry, _abspath(entry[0]), project_root):
+                return f"a consumed input changed: {entry[0]}"
+    sources = inputs.get("sources")
+    if not isinstance(sources, list):
+        return "the stamp lists no sources"
+    for entry in sources:
+        if not _is_directory_entry(entry) or not isinstance(entry[0], str):
             continue
-        current = _hashed_stat_entry(path, project_root=project_root)
-        if not _entry_matches(entry, [entry[0], *current[1:]]):
-            return f"a consumed input changed: {entry[0]}"
+        match = _FILELIST_OPTION_RE.match(entry[0])
+        option = (match.group(1) or "").strip() if match else ""
+        entry_path = match.group(2) if match else entry[0]
+        if entry_path.startswith('"') and entry_path.endswith('"'):
+            try:
+                parsed = shlex.split(entry_path)
+            except ValueError:
+                parsed = []
+            if len(parsed) == 1:
+                entry_path = parsed[0]
+        directory = _abspath(entry_path)
+        try:
+            current = _directory_files(directory, recursive=option == _INCDIR_OPTION)
+        except OSError:
+            return f"a search directory is unreadable: {entry[0]}"
+        stored_listing = entry[-1]
+        if _listing_names(stored_listing) != [name for name, _ in current]:
+            return f"a search directory's files changed: {entry[0]}"
+        if deps is None and not all(
+            isinstance(item, list)
+            and len(item) == 4
+            and _file_unchanged(item, path, project_root)
+            for item, (_name, path) in zip(stored_listing, current, strict=True)
+        ):
+            return f"a file in a search directory changed: {entry[0]}"
     return None
 
 
@@ -2416,40 +2500,8 @@ class VlogSim:
         directory is empty and validate a reuse.
         """
 
-        def _reraise(error):
-            # os.walk swallows unopenable directories by default, which would yield an
-            # empty listing. Re-raise so the handler returns None.
-            raise error
-
-        entries = []
         try:
-            if recursive:
-                for walk_root, dir_names, file_names in os.walk(
-                    dir_path, onerror=_reraise
-                ):
-                    # In place, because os.walk reads the list back; pruned names are
-                    # never walked.
-                    dir_names[:] = sorted(
-                        name for name in dir_names if not _is_pruned_walk_dir(name)
-                    )
-                    for name in sorted(file_names):
-                        if _is_non_input_file(name):
-                            continue
-                        path = os.path.join(walk_root, name)
-                        if not os.path.isfile(path):
-                            # A dangling symlink is not an input; a FIFO must not reach
-                            # the hasher's `open()`.
-                            continue
-                        entries.append((os.path.relpath(path, dir_path), path))
-            else:
-                with os.scandir(dir_path) as scan:
-                    # `is_file` follows symlinks and usually answers from the dirent.
-                    names = sorted(
-                        item.name
-                        for item in scan
-                        if item.is_file() and not _is_non_input_file(item.name)
-                    )
-                entries = [(name, os.path.join(dir_path, name)) for name in names]
+            entries = _directory_files(dir_path, recursive=recursive)
         except OSError as e:
             log_event(
                 logger,
@@ -2460,10 +2512,7 @@ class VlogSim:
                 error=str(e),
             )
             return None
-        return [
-            [name.replace(os.sep, "/")] + self._tracked_entry(path)[1:]
-            for name, path in sorted(entries)
-        ]
+        return [[name] + self._tracked_entry(path)[1:] for name, path in entries]
 
     def _fingerprint_filelist_sources(self, filelist_path):
         """Per-entry ``(line, size, mtime_ns, sha)`` stamps for the generated run.f.

@@ -9440,3 +9440,49 @@ def test_a_settled_build_stands_until_its_executable_or_a_dependency_moves(
     assert "executable" in problem()
     simv.unlink()
     assert "executable" in problem()
+
+
+@pytest.mark.parametrize("family", ["verilator", "vcs"])
+def test_a_settled_build_falls_when_a_search_directory_gains_a_file(
+    tmp_path, monkeypatch, family
+):
+    """A file added under `+incdir+` or `-y` after the build moves the listing a
+    simulation job validates, so the build half must not settle the key either."""
+    _write_source(tmp_path)
+    header = _write_header(tmp_path)
+    _write_lib(tmp_path, "bar.sv")
+    calls = []
+    if family == "verilator":
+        _install_fake_builder(monkeypatch, calls, depends=["../../src/top.sv"])
+        kwargs = {}
+    else:
+        _install_fake_builder(monkeypatch, calls)
+        kwargs = {"exe": "vcs", "family": "vcs"}
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="test_a",
+        filelist=["src/top.sv", "+incdir+inc", "-y lib"],
+        **kwargs,
+    )
+    assert sim.compile() == 0
+    stamp = sim.last_build_stamp
+
+    def problem():
+        return vlog_sim_module.settled_build_problem(
+            stamp["build_dir"], stamp["fingerprint_sha"], sim._project_root
+        )
+
+    assert problem() is None
+    os.utime(header, ns=(1, 1))
+    assert problem() is None
+    if family == "vcs":
+        # No dependency list, so the listing decides content as well as names.
+        header.write_text("`define W 16\n")
+        assert "search directory changed" in problem()
+        header.write_text("`define W 8\n")
+    (tmp_path / "lib" / "baz.sv").write_text("module baz; endmodule\n")
+    assert "search directory's files changed" in problem()
+    (tmp_path / "lib" / "baz.sv").unlink()
+    (tmp_path / "inc" / "extra.svh").write_text("`define X 1\n")
+    assert "search directory's files changed" in problem()

@@ -391,9 +391,10 @@ def pending_reservation(
     """What the scheduler holds for ``job_id`` now, or ``None`` if it cannot say.
 
     Read with ``scontrol -o show job``, so ``sbatch-args`` overrides and anything the
-    site applied are included. Returns ``{"state", "num_cpus", "num_tasks",
-    "mem_node", "mem_cpu"}``; memory is in bytes and is ``None`` where the job does
-    not request it that way. Never raises.
+    site applied are included. Returns ``{"state", "num_nodes", "num_cpus",
+    "num_tasks", "mem_node", "mem_cpu"}``; ``num_nodes`` is the low end of the held
+    node range, and memory is in bytes and is ``None`` where the job does not request
+    it that way. Never raises.
     """
     cluster_argv = [] if cluster is None else ["-M", cluster]
     try:
@@ -412,10 +413,12 @@ def pending_reservation(
     try:
         num_cpus = int(fields["NumCPUs"])
         num_tasks = int(fields.get("NumTasks") or 1)
+        num_nodes = int((fields.get("NumNodes") or "1").split("-")[0])
     except (KeyError, ValueError):
         return None
     return {
         "state": fields.get("JobState"),
+        "num_nodes": max(1, num_nodes),
         "num_cpus": num_cpus,
         "num_tasks": max(1, num_tasks),
         "mem_node": mem_to_bytes(fields.get("MinMemoryNode")),
@@ -440,9 +443,10 @@ def shrink_pending_job(
     of what was submitted counts; ``current_cpus`` and ``current_mem`` are used only
     when that read fails. A job that is no longer pending is left alone.
 
-    Runs ``scontrol update JobId=<id>`` with ``CPUsPerTask``, ``MinCPUsNode`` and
-    ``NumCPUs``, then the memory in a second call, so a site that refuses the memory
-    change still keeps the cpu change. Memory requested per CPU is lowered per CPU.
+    Runs ``scontrol update JobId=<id>`` with ``NumNodes=1`` for a job held on several
+    nodes, then ``CPUsPerTask``, ``MinCPUsNode`` and ``NumCPUs``, then the memory, one
+    call each, so a site that refuses a later change keeps the earlier ones. A refused
+    node change stops there and leaves the job as it was. Memory requested per CPU is lowered per CPU.
     Only lowers: a field already at or below its target is left alone, since Slurm
     refuses an owner's increase. A reserved memory of 0 is a whole node's, above any
     target. Never raises; a job left as it was only starts later.
@@ -455,6 +459,8 @@ def shrink_pending_job(
     reserved_cpus = held["num_cpus"] if held is not None else current_cpus
     target_cpus = cpus * num_tasks
     updates = []
+    if held is not None and held["num_nodes"] > 1:
+        updates.append(("nodes", ["NumNodes=1"]))
     if reserved_cpus > target_cpus:
         updates.append(
             (

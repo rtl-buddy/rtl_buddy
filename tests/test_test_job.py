@@ -4047,6 +4047,53 @@ def test_a_verilate_job_whose_records_did_not_reach_disk_keeps_the_build_job(
     assert "build_job.build_records_failed" in events
 
 
+@pytest.mark.parametrize("parallel", ["1", "2"])
+def test_a_verilate_job_puts_each_release_on_disk_before_its_final_write(
+    minimal_project: Path,
+    stamped_runner: type[_StampedStubRunner],
+    monkeypatch: pytest.MonkeyPatch,
+    parallel: str,
+):
+    """A job that dies after releasing a key leaves a partial envelope that says so,
+    which is what keeps that key's gate open at collection.
+
+    The released key is the last one, so no later group's write carries the mark.
+    """
+    from rtl_buddy.runner.result_io import write_build_result_json
+
+    def no_final_write(path, *, built, failed, builds=None, partial=False):
+        if not partial:
+            raise OSError("node lost")
+        return write_build_result_json(
+            path, built=built, failed=failed, builds=builds, partial=partial
+        )
+
+    monkeypatch.setattr(rtl_buddy_module, "write_build_result_json", no_final_write)
+    stamped_runner.group_of = lambda name: f"obj_dir_{name}"
+    stamped_runner.canned = EarlyStopResults(name="b/results", desc="reused")
+    stamped_runner.build_stamp_of = lambda name: (
+        {"build_dir": "/b", "fingerprint_sha": "sha", "simv": None}
+        if name == "extra"
+        else None
+    )
+    _fake_release(monkeypatch)
+    _fake_shrink(monkeypatch)
+    gates = _gates_with_build_job(
+        minimal_project / "gates-1.json",
+        [(0, "basic", "1000_1"), (1, "extra", "1000_2")],
+    )
+
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, _verilate_job(["--parallel", parallel], gates))
+    assert result.exit_code == 0, result.output
+    envelope = load_build_result_json(minimal_project / "verilate-result-1.json")
+    assert envelope["partial"]
+    assert {e["test"]: e.get("released") for e in envelope["builds"]} == {
+        "basic": None,
+        "extra": True,
+    }
+
+
 def _stamp(project: Path, name: str) -> tuple[str, str]:
     """Write a stamp for ``name``; return its suite-relative dir and its digest."""
     from rtl_buddy.tools.vlog_sim import SHARED_BUILD_STAMP_NAME, stamp_fingerprint_sha
@@ -4476,6 +4523,10 @@ def test_the_shrink_and_follow_events_have_dedicated_human_messages():
         "dispatch.build_job_shrunk", {"job_id": "2000", "cpus": 1, "mem": "1G"}
     )
     assert "2000" in shrunk and "cpus=1" in shrunk and "mem=1G" in shrunk
+    assert "nodes" not in shrunk
+    assert "nodes=1" in _human_message(
+        "dispatch.build_job_shrunk", {"job_id": "2000", "nodes": 1, "cpus": 1}
+    )
     refused = _human_message(
         "dispatch.build_job_shrink_failed", {"job_id": "2000", "error": "denied"}
     )
