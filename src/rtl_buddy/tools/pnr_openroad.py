@@ -3203,11 +3203,37 @@ class OpenRoadPnr:
         return os.path.join(self.artefact_dir, "pnr.log")
 
     def _resolve_netlist_path(self) -> str:
-        """Return the path of the upstream synth run's tech-mapped netlist, or of its `--run-tag` copy."""
-        copy = self._synth_copy()
-        if copy is not None:
-            return os.path.join(copy, "synth_netlist.v")
-        return synth_netlist_path(self.pnr_cfg)
+        """Return the path of the upstream synth run's tech-mapped netlist, or of its `--run-tag` copy.
+
+        A tagged run never reads the synthesis's own netlist: with no copy this is a path that does not exist, and `run` fails at setup.
+        """
+        if self.tag_inputs is None:
+            return synth_netlist_path(self.pnr_cfg)
+        return os.path.join(self._synth_dir(), "synth_netlist.v")
+
+    def _missing_netlist_desc(self) -> str:
+        return (
+            f"no synthesis netlist at {synth_netlist_path(self.pnr_cfg)} to copy "
+            f"for --run-tag {self.run_tag} — run `rb synth "
+            f"{self.pnr_cfg.resolve_synth_cfg().get_name()} -c "
+            f"{self.pnr_cfg.get_synth_suite_path()}` first, or pass --synth"
+        )
+
+    def _tagged_netlist_failure(self) -> PnrFailResults | None:
+        """A tagged run's setup FAIL when its synthesis had no netlist to copy, else None."""
+        if self.tag_inputs is None or self._synth_copy() is not None:
+            return None
+        desc = self._missing_netlist_desc()
+        log_event(
+            logger,
+            logging.ERROR,
+            "pnr.no_netlist",
+            pnr=self.pnr_cfg.get_name(),
+            desc=desc,
+        )
+        return PnrFailResults(
+            name=self.name + "/results", desc=desc, fail_stage="setup"
+        )
 
     def _synth_copy(self) -> str | None:
         """The `--run-tag` copy of the upstream synthesis's netlist and filelist, or None."""
@@ -3219,11 +3245,16 @@ class OpenRoadPnr:
         )
 
     def _synth_dir(self) -> str:
-        """The directory the synthesis filelist is read from: the synthesis's own, or its `--run-tag` copy."""
+        """The directory the synthesis netlist and filelist are read from: the synthesis's own, or its `--run-tag` copy."""
+        name = self.pnr_cfg.resolve_synth_cfg().get_name()
+        if self.tag_inputs is None:
+            return os.path.join(
+                os.path.dirname(self.pnr_cfg.get_synth_suite_path()), "artefacts", name
+            )
         return self._synth_copy() or os.path.join(
-            os.path.dirname(self.pnr_cfg.get_synth_suite_path()),
-            "artefacts",
-            self.pnr_cfg.resolve_synth_cfg().get_name(),
+            self.tag_inputs.root,
+            pnr_tag_inputs.SYNTH_COPIES_DIRNAME,
+            f"{name}-missing",
         )
 
     def _threads(self) -> ThreadPlan:
@@ -5927,6 +5958,13 @@ class OpenRoadPnr:
         }
         return destination, instances
 
+    def _record_consumed_blocks(self) -> None:
+        """Under `--run-tag`, record the block copies this run reads, once its previous outputs are cleared."""
+        if self.run_tag is not None and self._blocks:
+            pnr_tag_inputs.write_consumed_blocks(
+                self.artefact_dir, self.run_tag, self._blocks
+            )
+
     def _blocks_fields(self) -> dict:
         """Return the `blocks` result field listing the abstracts this run consumed."""
         if not self._blocks:
@@ -6692,6 +6730,8 @@ class OpenRoadPnr:
             pnr=self.pnr_cfg.get_name(),
             tool=self.openroad_executable,
         )
+        if self.run_tag is not None:
+            pnr_tag_inputs.mark_attempt(self.artefact_dir)
 
         option_error = self._stage_option_error()
         # Before the clear removes `latest`.
@@ -7098,6 +7138,9 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
+        netlist_failure = self._tagged_netlist_failure()
+        if netlist_failure is not None:
+            return netlist_failure
         blocks_failure = self._resolve_blocks(
             platform,
             "this run's gds-mode: strict stream-out"
@@ -7106,10 +7149,8 @@ class OpenRoadPnr:
         )
         if blocks_failure is not None:
             return blocks_failure
-        if self.run_tag is not None and self._blocks:
-            pnr_tag_inputs.write_consumed_blocks(
-                self.artefact_dir, self.run_tag, self._blocks
-            )
+        if self.resume is None:
+            self._record_consumed_blocks()
         netlist_failure = self._prepare_netlist(write=self.resume is None)
         if netlist_failure is not None:
             return netlist_failure
@@ -7175,6 +7216,7 @@ class OpenRoadPnr:
                     fail_stage="resume",
                 )
             self._clear_stale_outputs(include_script=True)
+            self._record_consumed_blocks()
             self._restore_inherited_reports()
             netlist_failure = self._prepare_netlist()
             if netlist_failure is not None:

@@ -35,6 +35,8 @@ ABSTRACT_DIR_NAME = "abstract"
 #: OpenROAD writes the views here before `publish`; cleared by every run.
 ABSTRACT_STAGING_NAME = "abstract.partial"
 ABSTRACT_MANIFEST_NAME = "abstract.manifest.json"
+#: In a copy of an abstract (see `pnr_tag_inputs`): the abstract it was copied from, whose project root its manifest's relative paths are against.
+COPY_SOURCE_NAME = ".rb-copy-source.json"
 #: Bumped on an incompatible manifest change.
 ABSTRACT_MANIFEST_SCHEMA = 1
 #: Enters every config digest; bumped when the flow's own steps or defaults change what a hardened block's views hold, so every abstract hardened before goes stale.
@@ -742,6 +744,8 @@ class ResolvedBlock:
     #: The `--run-tag` whose block run published the abstract; None for the untagged one.
     run_tag: str | None = None
     manifest_sha256: str | None = None
+    #: For a copy, the published abstract it was copied from; None when `abstract_dir` is the published one.
+    source_dir: str | None = None
 
     @property
     def stale(self) -> bool:
@@ -871,7 +875,18 @@ def resolve_block(ref: BlockRef, *, source=None) -> ResolvedBlock:
         run_cfg=run_cfg,
         run_tag=run_tag,
         manifest_sha256=(file_fingerprint(manifest_path, None) or {}).get("sha256"),
+        source_dir=copy_source(directory),
     )
+
+
+def copy_source(directory: str) -> str | None:
+    """Return the published abstract `directory` is a copy of, or None when it is not a copy."""
+    try:
+        record = json.loads(Path(directory, COPY_SOURCE_NAME).read_text())
+    except (OSError, ValueError):
+        return None
+    source = record.get("abstract_dir") if isinstance(record, dict) else None
+    return source if isinstance(source, str) else None
 
 
 def one_or_many(paths: list[str]) -> str | list[str]:
@@ -926,7 +941,8 @@ def block_changes(block: ResolvedBlock, root_cfg) -> list[str]:
 
     Recorded inputs and the three published views are re-fingerprinted and compared by content, not timestamp. The block's configuration is rebuilt from its current `pnr.yaml` and platform and its digest compared.
     """
-    root = project_root_or_none(block.abstract_dir)
+    # A copy's manifest records paths against the project of the abstract it was copied from.
+    root = project_root_or_none(block.source_dir or block.abstract_dir)
     changes: list[str] = []
 
     def _compare(role: str, record: dict | None) -> None:

@@ -32,6 +32,8 @@ BLOCK_COPIES_DIRNAME = ".block-abstracts"
 SYNTH_COPIES_DIRNAME = ".synth"
 #: In a tagged P&R run's directory: the block abstracts the run consumed, which `rb pnr-export --run-tag` reads again.
 CONSUMED_BLOCKS_NAME = "blocks.consumed.json"
+#: In a tagged P&R run's directory: written when a P&R attempt starts, so a directory `rb pnr-export` alone created is not taken for a run.
+ATTEMPT_MARKER_NAME = ".rb-pnr-attempted"
 
 _SYNTH_NETLIST = "synth_netlist.v"
 _SYNTH_FILELIST = "synth.f"
@@ -75,6 +77,11 @@ def _absolute_filelist(text: str, base: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def mark_attempt(artefact_dir: str) -> None:
+    """Record that a P&R attempt of this tagged run started; see `TagInputs`."""
+    Path(artefact_dir, ATTEMPT_MARKER_NAME).touch()
+
+
 def read_consumed_blocks(artefact_dir: str) -> dict | None:
     """Return the block copies a saved tagged run consumed, by (pnr.yaml real path, run), or None without a record."""
     try:
@@ -113,8 +120,8 @@ def write_consumed_blocks(artefact_dir: str, run_tag: str, blocks) -> None:
 class TagInputs:
     """Where one `--run-tag` call finds its block abstracts and synthesis netlists.
 
-    A block run the tag has run is copied from the tag's tree; one it has never run is
-    copied from the untagged tree, with a `pnr.block_untagged_abstract` warning. Either
+    A block run the tag has attempted (its run directory holds `ATTEMPT_MARKER_NAME`) is
+    copied from the tag's tree; one it has never attempted is copied from the untagged tree, with a `pnr.block_untagged_abstract` warning. Either
     copy is taken while holding that tree's lock and checked against the abstract's
     manifest. `pinned` maps (pnr.yaml real path, run) to the record of a saved run, whose
     copy is read again instead of taking a new one. Each input is copied once per call,
@@ -156,7 +163,7 @@ class TagInputs:
     def _copy_abstract(self, ref, where: str) -> tuple[str, str | None]:
         suite_dir = os.path.dirname(ref.pnr_suite_path)
         tagged_root = run_artifact_root(suite_dir, self.run_tag)
-        if (tagged_root / ref.pnr_run).is_dir():
+        if (tagged_root / ref.pnr_run / ATTEMPT_MARKER_NAME).is_file():
             source_root, source_tag = tagged_root, self.run_tag
         else:
             source_root, source_tag = run_artifact_root(suite_dir), None
@@ -189,6 +196,9 @@ class TagInputs:
                 partial.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(source, partial)
                 self._check_copy(partial, manifest_bytes, source, where)
+                Path(partial, pnr_abstract.COPY_SOURCE_NAME).write_text(
+                    json.dumps({"abstract_dir": source}) + "\n"
+                )
                 os.replace(partial, dest)
         if source_tag is None:
             log_event(
@@ -229,11 +239,11 @@ class TagInputs:
     def synth_dir(self, synth_suite_path: str, synth_name: str) -> str | None:
         """Return the copy of a synthesis's netlist and filelist to read, or None when it has no netlist.
 
-        Taken under the synthesis tree's lock. The copied filelist names absolute paths.
+        Taken under the synthesis tree's lock. The copied filelist names absolute paths. A missing netlist is looked for again on the next call, so a synthesis this call runs later is still copied.
         """
         key = ("synth", os.path.realpath(synth_suite_path), synth_name)
         with self._mutex:
-            if key not in self._copies:
+            if self._copies.get(key) is None:
                 self._copies[key] = self._copy_synth(synth_suite_path, synth_name)
             return self._copies[key]
 

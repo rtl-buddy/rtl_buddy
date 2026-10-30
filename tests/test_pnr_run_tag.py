@@ -14,12 +14,17 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from dataclasses import replace
+
 from test_pnr_blocks import _block_platform, _block_suite, _ref, _write
+from test_pnr_checkpoints import _backend, _pnr_cfg
 from test_pnr_plan import _driver, _run, _suite, _synth_driver, _synth_run, _synth_yaml
+from test_pnr_stages import _refusal, _stopped_at_global_route
 from typer.testing import CliRunner
 
 from rtl_buddy import artifact_lock
 from rtl_buddy.artifact_lock import LOCK_FILENAME, ArtifactLocks
+from rtl_buddy.config.pnr import PnrSuiteConfig
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.runner.pnr_results import PnrPassResults
@@ -202,6 +207,7 @@ def _tag_abstract(tmp_path, tag):
     tagged = tmp_path / "blk/artefacts" / RUNS_DIRNAME / tag / "blk_pnr"
     tagged.parent.mkdir(parents=True)
     shutil.move(flat, tagged)
+    pnr_tag_inputs.mark_attempt(str(tagged))
     return tagged / "abstract"
 
 
@@ -271,6 +277,7 @@ def test_a_tag_that_ran_the_block_without_an_abstract_fails_naming_the_tag(
     suite = _block_suite(tmp_path)
     run_dir = tmp_path / "blk/artefacts" / RUNS_DIRNAME / "t" / "blk_pnr"
     run_dir.mkdir(parents=True)
+    pnr_tag_inputs.mark_attempt(str(run_dir))
     if state == "failed":
         (run_dir / "pnr.log").write_text("route failed\n")
 
@@ -278,6 +285,67 @@ def test_a_tag_that_ran_the_block_without_an_abstract_fails_naming_the_tag(
         resolve_block(_ref(suite), source=_source(tmp_path))
     assert str(run_dir / "abstract") in str(info.value)
     assert "--run-tag t" in str(info.value)
+
+
+def test_a_run_directory_only_rb_pnr_export_created_is_not_a_tagged_run(tmp_path):
+    suite = _block_suite(tmp_path)
+    (tmp_path / "blk/artefacts" / RUNS_DIRNAME / "t" / "blk_pnr").mkdir(parents=True)
+
+    block = resolve_block(_ref(suite), source=_source(tmp_path))
+
+    assert block.run_tag is None
+    assert (
+        Path(block.lef).read_text()
+        == (tmp_path / "blk/artefacts/blk_pnr/abstract/blk_top.lef").read_text()
+    )
+
+
+def test_only_rb_pnr_marks_a_tagged_run_attempted(tmp_path, monkeypatch):
+    """The backend `rb pnr-export` builds creates the run directory but no marker; `run` writes it, even when it fails at setup."""
+    from rtl_buddy.tools import pnr_openroad
+
+    backend, _ = _backend(
+        tmp_path, monkeypatch, stages=True, run_tag="t", stop_after="floorplan"
+    )
+    marker = Path(backend.artefact_dir, pnr_tag_inputs.ATTEMPT_MARKER_NAME)
+    assert marker.parent.is_dir() and not marker.exists()
+
+    res = backend.run().results
+    assert res["fail_stage"] == "setup" and "no synthesis netlist" in res["desc"]
+    assert marker.is_file()
+
+    _write(Path(pnr_openroad.synth_netlist_path(backend.pnr_cfg)), "module x;\n")
+    backend, _ = _backend(
+        tmp_path, monkeypatch, stages=True, run_tag="t", stop_after="floorplan"
+    )
+    res = backend.run().results
+    assert res["result"] == "PASS", res
+    assert marker.is_file()
+
+
+def test_a_copy_from_another_project_reads_its_inputs_against_that_project(tmp_path):
+    """A block in another project records its inputs relative to that project's root; its copy in the consumer's tree is not stale."""
+    suite = _block_suite(tmp_path)
+    (tmp_path / "blk/root_config.yaml").write_text("")
+    (tmp_path / "top").mkdir()
+    (tmp_path / "top/root_config.yaml").write_text("")
+    manifest = tmp_path / "blk/artefacts/blk_pnr/abstract/abstract.manifest.json"
+    record = json.loads(manifest.read_text())
+    record["inputs"]["sdc"]["path"] = "blk.sdc"
+    # The block's own project root enters its config.
+    [run_cfg] = PnrSuiteConfig(str(suite)).get_runs("blk_pnr")
+    config = pnr_abstract.abstract_config(run_cfg, _block_platform(tmp_path))
+    record["config"] = {**config, "sha256": pnr_abstract.config_digest(config)}
+    manifest.write_text(json.dumps(record))
+
+    block = resolve_block(_ref(suite), source=_source(tmp_path))
+
+    assert block.source_dir == str(tmp_path / "blk/artefacts/blk_pnr/abstract")
+    assert pnr_abstract.block_changes(block, _root_cfg(tmp_path)) == []
+    (tmp_path / "blk/blk.sdc").write_text("create_clock -period 5\n")
+    assert pnr_abstract.block_changes(block, _root_cfg(tmp_path)) == [
+        "sdc blk.sdc changed"
+    ]
 
 
 def test_a_missing_untagged_abstract_names_both_commands(tmp_path):
@@ -543,7 +611,9 @@ def test_an_untagged_run_reads_the_synthesis_netlist_in_place(tmp_path):
     assert backend._resolve_netlist_path() == str(out / "synth_netlist.v")
 
 
-def test_a_tagged_run_without_a_netlist_reads_the_synthesis_path(tmp_path):
+def test_a_tagged_run_without_a_netlist_fails_at_setup_and_never_reads_the_synthesis(
+    tmp_path,
+):
     out = _synth_tree(tmp_path)
     (out / "synth_netlist.v").unlink()
     [cfg] = _suite(tmp_path / "pnr.yaml", _run("a")).get_runs("a")
@@ -551,7 +621,55 @@ def test_a_tagged_run_without_a_netlist_reads_the_synthesis_path(tmp_path):
         name="a", pnr_cfg=cfg, suite_dir=str(tmp_path), root_cfg=None, run_tag="t"
     )
 
-    assert backend._resolve_netlist_path() == str(out / "synth_netlist.v")
+    failure = backend._tagged_netlist_failure()
+
+    assert failure.results["fail_stage"] == "setup"
+    assert "rb synth s -c" in failure.results["desc"]
+    tagged = run_artifact_root(tmp_path, "t")
+    for path in (backend._resolve_netlist_path(), backend._synth_dir()):
+        assert Path(path).is_relative_to(tagged) and not Path(path).exists()
+    untagged = OpenRoadPnr(
+        name="a", pnr_cfg=cfg, suite_dir=str(tmp_path), root_cfg=None
+    )
+    assert untagged._tagged_netlist_failure() is None
+    # A synthesis that this call runs later is still copied.
+    (out / "synth_netlist.v").write_text("module top; endmodule\n")
+    assert backend._tagged_netlist_failure() is None
+    assert Path(backend._resolve_netlist_path()).parent.parent == (
+        tagged / pnr_tag_inputs.SYNTH_COPIES_DIRNAME
+    )
+
+
+def test_only_an_accepted_resume_rewrites_the_consumed_blocks_record(
+    tmp_path, monkeypatch
+):
+    """A refused resume leaves the record of the run it refused to continue; an accepted one rewrites it after clearing."""
+    from rtl_buddy.tools import pnr_openroad
+
+    def _record(self):
+        Path(self.artefact_dir, pnr_tag_inputs.CONSUMED_BLOCKS_NAME).write_text(
+            f"{self.resume}\n"
+        )
+
+    monkeypatch.setattr(pnr_openroad.OpenRoadPnr, "_record_consumed_blocks", _record)
+    first = _stopped_at_global_route(tmp_path, monkeypatch)
+    record = first.parent.parent / pnr_tag_inputs.CONSUMED_BLOCKS_NAME
+    assert record.read_text() == "None\n"
+
+    cfg = _pnr_cfg(tmp_path, stages=True)
+    _refusal(
+        tmp_path,
+        monkeypatch,
+        first.name,
+        pnr_cfg=replace(cfg, floorplan=replace(cfg.floorplan, utilization=0.6)),
+    )
+    assert record.read_text() == "None\n"
+
+    backend, _ = _backend(
+        tmp_path, monkeypatch, resume=first.name, resume_from="detailed_route"
+    )
+    assert backend.run().results["result"] == "PASS"
+    assert record.read_text() == f"{first.name}\n"
 
 
 def test_tagged_synth_copies_the_netlist_before_releasing_the_synthesis_lock(
