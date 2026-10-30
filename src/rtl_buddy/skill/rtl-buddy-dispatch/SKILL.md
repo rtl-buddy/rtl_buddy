@@ -17,8 +17,8 @@ Dispatch implies shared builds. A failed build fails its dependent tests. Exit 0
 
 ## Size builds and arrays
 
-- Each suite compiles distinct builds `compile.parallel` at a time (default 1). Suite `compile:` overrides root defaults. Above 1, all preprocessing runs before compilation; hooks must not change another config's inputs.
-- Slurm splits Verilator work into verilation (`compile.verilate`) and C++ compilation (`compile`). Set `compile.split-verilate: false` for one job. `compile.build_phase_fallback` means correct but unsplit compilation because emitted sources are unavailable or unusable.
+- Each suite compiles distinct builds `compile.parallel` at a time (default 1). Suite `compile:` overrides root defaults. Above 1, builds compile while later configs preprocess; hooks must not change another config's inputs.
+- Slurm splits Verilator work into verilation (`compile.verilate`) and C++ compilation (`compile`). Set `compile.split-verilate: false` for one job. `compile.build_phase_fallback` means correct but unsplit compilation because emitted sources are unavailable or unusable. The verilate job releases simulations of builds it finds already built; `dispatch.build_job_shrunk` means nothing was left to compile.
 - `parallel` and `split-verilate` are valid only in root or suite `compile:`, never testbench or mode blocks.
 - Size suite `compile.mem` for concurrent builds and `time` for the whole batch. Only per-testbench blocks are aggregated automatically. Keep `parallel` within the distinct build count and VCS license pool.
 - Each test with a `preproc` hook counts as a build unless `preproc-sets-plusdefines: false` declares otherwise. Use that declaration for stimulus-only hooks. `build_job.preproc_changed_compile_key` means the hook violated it and reservations may be short.
