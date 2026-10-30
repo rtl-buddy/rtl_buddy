@@ -6071,6 +6071,7 @@ class OpenRoadPnr:
                 self.run_tag,
                 self._blocks,
                 project_root_or_none(self.suite_dir),
+                self.tag_inputs.root,
             )
 
     def _blocks_fields(self) -> dict:

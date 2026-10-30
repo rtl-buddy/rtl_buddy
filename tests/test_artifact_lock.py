@@ -769,3 +769,68 @@ def test_acquire_in_order_waits_for_a_busy_tree_and_keeps_only_its_own(
     locks().acquire(other, command="pnr")
     with pytest.raises(ArtifactLockContended):
         locks().acquire(own, command="pnr")
+
+
+def test_a_copy_whose_record_is_written_late_is_still_waited_out(tmp_path, monkeypatch):
+    """A copier slow to write its record after it locks is not taken for a command holder."""
+    monkeypatch.setattr(artifact_lock_module, "TREE_LOCK_POLL_SEC", 0.05)
+    root = tmp_path / "artefacts"
+    root.mkdir()
+    lock = root / LOCK_FILENAME
+    copier = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(f"""\
+                import fcntl, json, os, socket, time
+                f = open({str(lock)!r}, "a+")
+                fcntl.flock(f, fcntl.LOCK_EX)
+                print("held", flush=True)
+                time.sleep(1.0)
+                f.truncate(0)
+                f.write(json.dumps({{"pid": os.getpid(), "command": "pnr",
+                                     "started": "now", "copying": True}}))
+                f.flush()
+                time.sleep(0.5)
+            """),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert copier.stdout.readline().strip() == "held"
+        started = time.monotonic()
+        locks = ArtifactLocks()
+        locks.acquire(root, command="pnr", wait_for_copying=True)
+        waited = time.monotonic() - started
+        locks.release_all()
+    finally:
+        copier.wait(timeout=10)
+
+    assert waited >= 1.0
+
+
+def test_a_record_naming_no_holder_is_given_up_on_after_a_bound(tmp_path, monkeypatch):
+    monkeypatch.setattr(artifact_lock_module, "HOLDER_RECORD_TIMEOUT_SEC", 0.5)
+    root = tmp_path / "artefacts"
+    root.mkdir()
+    lock = root / LOCK_FILENAME
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            f"import fcntl, time\nf = open({str(lock)!r}, 'a')\n"
+            "fcntl.flock(f, fcntl.LOCK_EX)\nprint('held', flush=True)\ntime.sleep(30)\n",
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        started = time.monotonic()
+        with pytest.raises(ArtifactLockContended):
+            ArtifactLocks().acquire(root, command="pnr", wait_for_copying=True)
+        assert 0.5 <= time.monotonic() - started < 5
+    finally:
+        holder.kill()
+        holder.wait(timeout=10)

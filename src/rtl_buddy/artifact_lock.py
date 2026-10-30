@@ -44,6 +44,8 @@ BUILD_LOCK_ANNOUNCE_SEC = 300.0
 TREE_LOCK_POLL_SEC = 1.0
 # How long a holder's record may lag its lock before a waiter reads it again.
 HOLDER_RECORD_SETTLE_SEC = 0.2
+# How long a waiter reads again a record that names no live holder before it gives up.
+HOLDER_RECORD_TIMEOUT_SEC = 10.0
 TREE_LOCK_ANNOUNCE_SEC = 300.0
 
 # Lock files this process holds through any ArtifactLocks, and one mutex per tree for `tree_lock`.
@@ -110,7 +112,9 @@ class ArtifactLocks:
         and :class:`FatalRtlBuddyError` when the filesystem cannot lock. ``copying`` records
         the hold as a copy (:meth:`acquire_waiting`); ``wait_for_copying`` waits out such a
         holder instead of failing. A holder writes its record just after it locks, so a
-        record that does not say ``copying`` is read again once before failing.
+        record that names a live holder without ``copying`` is read again once before
+        failing, and one that names no live holder (empty, partial, or left by a dead
+        process) is read again until ``HOLDER_RECORD_TIMEOUT_SEC`` has passed.
         """
         artifact_root = Path(artifact_root)
         lock_path = artifact_root / LOCK_FILENAME
@@ -121,6 +125,7 @@ class ArtifactLocks:
         started = time.monotonic()
         announced = None
         looked_again = False
+        unknown_since = None
         while True:
             fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
             try:
@@ -145,12 +150,19 @@ class ArtifactLocks:
                 if wait_for_copying and exc.errno in _CONTENTION_ERRNOS:
                     if holder.get("copying"):
                         looked_again = False
+                        unknown_since = None
                         announced = _announce_wait(
                             artifact_root, holder, started, announced
                         )
                         time.sleep(TREE_LOCK_POLL_SEC)
                         continue
-                    if not looked_again:
+                    if not _names_a_live_holder(holder):
+                        now = time.monotonic()
+                        unknown_since = unknown_since or now
+                        if now - unknown_since < HOLDER_RECORD_TIMEOUT_SEC:
+                            time.sleep(HOLDER_RECORD_SETTLE_SEC)
+                            continue
+                    elif not looked_again:
                         looked_again = True
                         time.sleep(HOLDER_RECORD_SETTLE_SEC)
                         continue
@@ -495,6 +507,18 @@ def _process_start_token(pid: int) -> str | None:
         return None
     token = proc.stdout.strip()
     return token or None
+
+
+def _names_a_live_holder(holder: dict) -> bool:
+    """Whether the record is a complete one of a process that is not known to be dead."""
+    pid = holder.get("pid")
+    return (
+        isinstance(pid, int)
+        and not isinstance(pid, bool)
+        and pid > 0
+        and bool(holder.get("started"))
+        and not _holder_is_stale(holder)
+    )
 
 
 def _holder_is_stale(holder: dict) -> bool:

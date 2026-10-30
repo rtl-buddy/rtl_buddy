@@ -103,7 +103,7 @@ def mark_attempt(artefact_dir: str) -> None:
 def read_consumed_blocks(artefact_dir: str, project_root: str | None) -> dict | None:
     """Return the block copies a saved tagged run consumed, by (pnr.yaml real path, run), or None without a record.
 
-    Relative paths are against `project_root`, the project of the run's suite. Raises `BlockResolutionError` for a malformed record, and for one naming a copy outside that project, as an absolute path does once the project has moved.
+    Relative paths are against `project_root`, the project of the run's suite. Raises `BlockResolutionError` for a malformed record, and for one naming a copy outside that project and outside the tree the record says the copies were taken into, as an absolute path does once the project has moved.
     """
     record = Path(artefact_dir, CONSUMED_BLOCKS_NAME)
     try:
@@ -111,6 +111,14 @@ def read_consumed_blocks(artefact_dir: str, project_root: str | None) -> dict | 
     except (OSError, ValueError):
         return None
     rerun = f"re-run the P&R run under --run-tag {data.get('run_tag')}"
+
+    def _here(path: str) -> str:
+        if os.path.isabs(path) or project_root is None:
+            return path
+        return os.path.normpath(os.path.join(project_root, path))
+
+    copies_in = data.get("copies_in")
+    copies_in = _here(copies_in) if isinstance(copies_in, str) and copies_in else None
     blocks = {}
     for index, b in enumerate(data.get("blocks") or []):
         paths = {}
@@ -128,8 +136,11 @@ def read_consumed_blocks(artefact_dir: str, project_root: str | None) -> dict | 
                     )
                 path = os.path.normpath(os.path.join(project_root, path))
             paths[key] = path
-        if project_root is not None and not Path(paths["abstract_dir"]).is_relative_to(
-            os.path.normpath(project_root)
+        where = Path(paths["abstract_dir"])
+        if (
+            project_root is not None
+            and not where.is_relative_to(os.path.normpath(project_root))
+            and not (copies_in and where.is_relative_to(copies_in))
         ):
             raise pnr_abstract.BlockResolutionError(
                 f"{record} names the copy of block {b.get('name')!r} at "
@@ -141,11 +152,15 @@ def read_consumed_blocks(artefact_dir: str, project_root: str | None) -> dict | 
 
 
 def write_consumed_blocks(
-    artefact_dir: str, run_tag: str, blocks, project_root: str | None
+    artefact_dir: str,
+    run_tag: str,
+    blocks,
+    project_root: str | None,
+    copies_in: str | None = None,
 ) -> None:
     """Record `blocks` (`ResolvedBlock`s) in the run directory for a later `rb pnr-export --run-tag`.
 
-    Paths are relative to `project_root`, the project of the run's suite, so the record still reads after the project moves.
+    Paths are relative to `project_root`, the project of the run's suite, so the record still reads after the project moves. `copies_in` is the tagged tree the copies were taken into, which for a run pulled in from another project is in the calling project.
     """
 
     def _portable(path: str) -> str:
@@ -155,6 +170,7 @@ def write_consumed_blocks(
         json.dumps(
             {
                 "run_tag": run_tag,
+                **({"copies_in": _portable(copies_in)} if copies_in else {}),
                 "blocks": [
                     {
                         **b.manifest_entry(),

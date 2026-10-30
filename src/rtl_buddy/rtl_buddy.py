@@ -12245,11 +12245,13 @@ class RtlBuddy:
             if not selected(planned.cfg):
                 continue
             consumed = list(planned.cfg.get_blocks())
-            try:
-                consumed += planned.cfg.resolve_synth_cfg().get_blocks()
-            except FatalRtlBuddyError:
-                # The run fails on its synthesis configuration where it reads it.
-                pass
+            # Synthesis reads its blocks under --synth; a hardening run's parameter probe reads them too.
+            if run_synth or planned.cfg.get_harden():
+                try:
+                    consumed += planned.cfg.resolve_synth_cfg().get_blocks()
+                except FatalRtlBuddyError:
+                    # The run fails on its synthesis configuration where it reads it.
+                    pass
             for ref in consumed:
                 tree = run_artifact_root(
                     Path(ref.pnr_suite_path).resolve().parent, run_tag

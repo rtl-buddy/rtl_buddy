@@ -1039,10 +1039,11 @@ def _project_with_a_tagged_consumer(project, *, copier="top", scratch=None):
     _synth_yaml(project / "top/synth.yaml", "s")
     run_dir = run_artifact_root(project / "top", "t") / "top_pnr"
     run_dir.mkdir(parents=True)
-    consumed = resolve_block(
-        _ref(suite), source=TagInputs.for_suite(project / copier, "t")
+    source = TagInputs.for_suite(project / copier, "t")
+    consumed = resolve_block(_ref(suite), source=source)
+    pnr_tag_inputs.write_consumed_blocks(
+        str(run_dir), "t", [consumed], str(project), source.root
     )
-    pnr_tag_inputs.write_consumed_blocks(str(run_dir), "t", [consumed], str(project))
     return consumed
 
 
@@ -1399,3 +1400,56 @@ def test_waiting_for_another_suites_tree_is_in_the_calls_log(
     blk_tree = run_artifact_root(minimal_project / "blk", "t")
     assert f"to release {blk_tree}" in log, log
     assert log.count("has not run pnr run blk_pnr") == 1
+
+
+def test_without_synth_the_synthesis_blocks_are_neither_locked_nor_copied(
+    minimal_project, monkeypatch
+):
+    """P&R reads a netlist already made; the blocks its synthesis lists matter only to a re-synthesis."""
+    _top_consuming_an_untagged_block(minimal_project)
+    _suite(minimal_project / "pnr.yaml", _run("top"))
+    _synth_yaml(
+        minimal_project / "synth.yaml",
+        "s",
+        blocks={"s": [("blk_top", "blk_pnr", "blk/pnr.yaml")]},
+    )
+    monkeypatch.setattr("rtl_buddy.rtl_buddy.PnrRunner", _ResolvingRunner)
+    holder = _hold(
+        run_artifact_root(minimal_project / "blk", "t") / LOCK_FILENAME,
+        "time.sleep(60)\n",
+        mkdir=True,
+    )
+    try:
+        started = time.monotonic()
+        result = _rb("pnr", "top", "--run-tag", "t")
+        took = time.monotonic() - started
+    finally:
+        holder.kill()
+        holder.wait(timeout=10)
+
+    assert result.exit_code == 0, result.output
+    assert took < 30
+    assert not (run_artifact_root(minimal_project, "t") / BLOCK_COPIES_DIRNAME).exists()
+
+
+def test_a_run_pulled_in_from_another_project_exports_with_the_callers_copies(
+    tmp_path, monkeypatch
+):
+    """A call in one project pulled in this run; the copies it read are in the caller's tree, outside this project."""
+    caller = tmp_path / "caller"
+    _write(caller / "root_config.yaml", "")
+    project = tmp_path / "proj"
+    consumed = _project_with_a_tagged_consumer(project, copier=caller / "a")
+    assert Path(consumed.abstract_dir).is_relative_to(caller)
+
+    [block] = _export_blocks(project, monkeypatch)
+    assert block.abstract_dir == consumed.abstract_dir
+
+    record = (
+        run_artifact_root(project / "top", "t") / "top_pnr" / "blocks.consumed.json"
+    )
+    data = json.loads(record.read_text())
+    del data["copies_in"]
+    record.write_text(json.dumps(data))
+    res = _export_blocks(project, monkeypatch).results
+    assert "outside the project" in res["desc"]
