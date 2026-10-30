@@ -254,7 +254,7 @@ def test_supplies_are_connected_before_dont_touch_in_the_documented_order(tmp_pa
         body.index("\n    ::rb::global_connect\n"),
         body.index("\n    detailed_placement {*}$dpl_args\n"),
         body.rindex(estimate),
-        body.index("replace_cell $final $final_cell"),
+        body.index("lassign [choose $buffers"),
         body.rindex("\n    ::rb::global_connect\n"),
         body.index("set_dont_touch $dont_touch"),
     ]
@@ -378,6 +378,68 @@ def test_fits_judges_inputs_on_slew_and_outputs_on_slew_and_capacitance():
         "[rb::macro_pins::fits {0.5 0.01 0.0276 0.02} {slew capacitance} {0.05 0.3}]]"
     )
     assert out == "1 0 1 1 0"
+
+
+def test_shortfall_is_the_worst_counted_ratio_to_the_limit_less_the_margin():
+    out = _run(
+        "set result [list "
+        "[rb::macro_pins::shortfall {0.04 0.042 {} {}} slew {0.0 0.0}] "
+        "[rb::macro_pins::shortfall {0.04 0.036 {} {}} slew {0.1 0.1}] "
+        # An input ignores the capacitance check; an output takes the worse of two.
+        "[rb::macro_pins::shortfall {0.04 0.02 0.01 0.03} slew {0.0 0.0}] "
+        "[rb::macro_pins::shortfall {0.04 0.02 0.01 0.03} {slew capacitance} "
+        "{0.0 0.5}]]"
+    )
+    assert [round(float(v), 6) for v in out.split()] == [1.05, 1.0, 0.5, 6.0]
+
+
+# A fake `trial`: the slew at the macro pin for each final/pre-driver pair, with
+# the trials made logged in `tried`.
+_TRIAL = """set tried {}
+proc fake_trial {slews final pre} {
+    global tried
+    lappend tried $final/$pre
+    return [list 0.04 [dict get $slews $final/$pre] {} {}]
+}
+"""
+
+
+def _choose(slews: dict, buffers: str, has_pre: int, margin: str) -> str:
+    pairs = " ".join(f"{k} {v}" for k, v in slews.items())
+    return _run(
+        _TRIAL
+        + f"set c [rb::macro_pins::choose {{{buffers}}} {has_pre} slew "
+        + f"{{{margin} {margin}}} [list fake_trial {{{pairs}}}]]\n"
+        + 'set result "$c | $tried"'
+    )
+
+
+def test_choose_takes_the_first_pair_that_fits_weakest_first():
+    slews = {"B2/B2": 0.05, "B2/B4": 0.037, "B4/B2": 0.03, "B4/B4": 0.03}
+    assert _choose(slews, "B2 B4", 1, "0.05") == (
+        "1 B2 B4 {0.04 0.037 {} {}} | B2/B2 B2/B4"
+    )
+
+
+def test_choose_keeps_the_lowest_slew_pair_when_none_fits():
+    """The strongest pair is not always the fastest: with none meeting the target, the
+    pair with the lowest slew stays, not the last tried."""
+    slews = {
+        "B12/B12": 0.038,
+        "B12/B16": 0.0375,
+        "B16/B12": 0.041,
+        "B16/B16": 0.042,
+    }
+    assert _choose(slews, "B12 B16", 1, "0.1") == (
+        "0 B12 B16 {0.04 0.0375 {} {}} | B12/B12 B12/B16 B16/B12 B16/B16"
+    )
+
+
+def test_choose_without_a_pre_driver_sizes_the_final_buffer_alone():
+    slews = {"B2/": 0.05, "B4/": 0.045, "B8/": 0.047}
+    assert _choose(slews, "B2 B4 B8", 0, "0.05") == (
+        "0 B4 {} {0.04 0.045 {} {}} | B2/ B4/ B8/"
+    )
 
 
 # One row 0..10000 DBU high 0..100, site pitch 10; the target sits on the row.

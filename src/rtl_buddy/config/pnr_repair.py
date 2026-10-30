@@ -321,6 +321,23 @@ def _read_repair_design(where: str, raw, keys: dict = _REPAIR_DESIGN_KEYS):
     return layer
 
 
+def read_placement_repair_design(where: str, raw):
+    """Return one level's `placement.repair-design` as a layer: `UNSET` when absent, `None` when `null` (clears a lower level's), else the keys it writes, validated as the other `repair-design` blocks are."""
+    if raw is UNSET:
+        return UNSET
+    return _read_repair_design(f"{where}: placement.repair-design", raw)
+
+
+def resolve_placement_repair_design(layers) -> RepairDesign:
+    """The place stage's `repair_design` options from `placement.repair-design` layers, lowest first: a later layer's keys win field by field and `None` drops the layers below it."""
+    merged: dict = {}
+    for layer in layers:
+        if layer is UNSET:
+            continue
+        merged = {} if layer is None else {**merged, **layer}
+    return RepairDesign(**merged)
+
+
 def _read_margins(
     where: str, block: dict, design_keys: dict = _REPAIR_DESIGN_KEYS
 ) -> dict:

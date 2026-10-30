@@ -3228,6 +3228,24 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "pnr.signoff_failed":
             return f"pnr {fields.get('pnr')}: {fields.get('desc')}"
+        case "pnr.electrical_round_unseen":
+            violators = fields.get("violators") or []
+            shown = [
+                f"{v.get('pin')} ({v.get('check')} {v.get('extracted')} extracted, "
+                f"{v.get('estimated')} estimated, limit {v.get('limit')})"
+                for v in violators[:3]
+            ]
+            more = int(fields.get("count") or 0) - len(shown)
+            tail = f" and {more} more" if more > 0 else ""
+            return (
+                f"pnr {fields.get('pnr')}: post-route electrical round "
+                f"{fields.get('round')} left {fields.get('count')} violator(s) "
+                "that are within their limit less electrical-repair's margin on "
+                "the placement estimate its repair_design buffers on: "
+                f"{'; '.join(shown)}{tail}; raise post-route-repair.repair-design."
+                "wire-rc toward the extracted RC, or bound the wire earlier with "
+                f"placement.repair-design.max-wire-length; see {fields.get('docs')}"
+            )
         case "pnr.electrical_violators":
             verdict = (
                 "the run fails (the electrical gate is on)"
@@ -3246,8 +3264,9 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f"pnr {fields.get('pnr')}: {fields.get('unmet')} macro pin(s) stayed "
                 "over their max-slew or max-capacitance limit less the "
-                "placement.macro-pin-limits margin with the strongest buffer "
-                "candidate (or had no free row site); add a stronger buffer, "
+                "placement.macro-pin-limits margin with every buffer candidate, "
+                "each keeping the candidate closest to it (or had no free row "
+                "site); add a stronger buffer, "
                 "lower placement.macro-cell-halo, or check the routed result in "
                 f"electrical.rpt; see the '>>> Macro pin limits' lines in {fields.get('log')}"
             )
