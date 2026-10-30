@@ -128,10 +128,10 @@ proc rb_fanout_nets {count} {
     if {[llength $top] >= $count && $bound < [lindex $top end 0]} break
     set fanout 0
     foreach it [$net getITerms] {
-      if {[$it getIoType] in {INPUT INOUT}} { incr fanout }
+      if {[$it getIoType] ne "OUTPUT"} { incr fanout }
     }
     foreach bt [$net getBTerms] {
-      if {[$bt getIoType] in {OUTPUT INOUT}} { incr fanout }
+      if {[$bt getIoType] ne "INPUT"} { incr fanout }
     }
     if {$fanout == 0} continue
     lappend top [list $fanout [$net getName] $net]
