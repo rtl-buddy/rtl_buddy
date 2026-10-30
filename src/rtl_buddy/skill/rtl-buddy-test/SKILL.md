@@ -19,6 +19,7 @@ Report `rb --version` at the top of every run summary. Use `rb --machine` and re
 ## Interpret verdicts
 
 - UVM uses report thresholds; cocotb uses `cocotb_results.xml`. Other simulations need a line beginning `PASS` or `FAIL` in `test.log`. Follow `FAIL` with `ERR:` or `FAT:` to supply the reason.
+- A nonzero simulator exit fails the test even after a `PASS` line; `desc` names the exit status and `first_error` the first error line. End passing tests with `$finish`, not `$stop`.
 - `payload.results[*].result` and `desc` are authoritative. `NA` needs investigation; it proves no pass.
 - Negative controls need `xfail_strict: true` and `xfail_match: '<regex>'`. Matching checks the first `ERR:`/`FAT:` line, then `desc`; another failure, including a watchdog, stays `FAIL`.
 - Exit 0: no real failure, including `XFAIL` or intentional early-stop `NA` (`early_stop: true`, from `-E pre|comp|sim`). Exit 1: real `FAIL`, unknown `NA`, or strict `XPASS`. Exit 2: fatal configuration or environment error.

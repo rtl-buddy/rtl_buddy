@@ -66,6 +66,15 @@ For a plain SystemVerilog testbench, `toplevel:` becomes Verilator `--top-module
 - Without `toplevel:`, the top is chosen from filelist order, not the testbench `name`.
 - A top pinned in the builder's `compile-time` opts overrides `toplevel:`. When they differ, the run warns `compile.toplevel_conflict` and uses the pinned top.
 
+## An error after `PASS` fails the test only through the exit status
+
+A test whose transcript prints `PASS` and then reports an error fails because the simulator exits nonzero. When the simulator exits 0 after the error, the test stays `PASS`:
+
+- VCS exits 0 after `$error`, `$fatal` and failed assertions.
+- Verilator exits 0 when `+verilator+error+limit+<n>` lets the simulation continue past the error.
+
+Set `assertions: true` so Verilator and xezim assertion failures fail the test, or have the testbench print `FAIL` when its own checks fire.
+
 ## Narrow VCS access flags suppress cocotb defaults
 
 For cocotb, rtl_buddy adds VPI access unless a configured compile option already starts with `-debug_access` or `+acc`. A narrower flag suppresses the full default and can block signal writes. Remove it, or configure sufficient access such as `-debug_access+all` and `+acc+rw`.
