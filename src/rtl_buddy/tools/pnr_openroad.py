@@ -2329,7 +2329,7 @@ def run_post_route_repair(
 
     With `judged` in the plan (a multi-corner run that sets `signoff:`), the rounds judge each side's worst slack only over the corners it names for that side (`_judged_timing`): which sides are met, which round is the best and when they stop. Each round's event keeps every corner's timing and adds the judged worst slack as `signoff_timing`.
 
-    Rounds count those violators only on a run that gates on electrical violators (`gate_electrical` in the plan) or sets `electrical-repair`; a gated run's stop reason also names the kept round's violators. With `electrical-repair` (`electrical` in the plan) one more round runs after the others when the best round has such violators: rb links the best round's checkpoint and SPEF as `POST_ROUTE_ELECTRICAL_SOURCE`, and the round's `repair_design` runs on them. It is timed and compared as any round; `electrical_round` in the done event says whether it was kept, not kept, skipped or failed, and why.
+    Rounds count those violators only on a run that gates on electrical violators (`gate_electrical` in the plan) or sets `electrical-repair`; a gated run's stop reason also names the kept round's violators. With `electrical-repair` (`electrical` in the plan) one more round runs after the others when the best round has such violators: rb links the best round's checkpoint and SPEF as `POST_ROUTE_ELECTRICAL_SOURCE`, and the round's `repair_design` runs on them. It is timed and compared as any round; `electrical_round` in the done event says whether it was kept, not kept, skipped or failed, and why, and lists in `unseen` the violators its extraction found within limits on the placement estimate (`_unseen_tcl`), which rb also warns about.
 
     A failed session of round k from 1 is set aside: rb warns, notes it after the session's part of the log, whose `[ERROR` lines then do not fail the run (`_error_lines`), and the stage keeps the best round. A repair session whose `stage-end` hook failed fails the stage instead. Round 0's extraction failing fails the stage, as does a failed stage report: a `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint the stage kept.
     """
@@ -5761,7 +5761,7 @@ class OpenRoadPnr:
         return {"blocks": [b.result_row() for b in self._blocks]}
 
     def _post_route_fields(self) -> dict:
-        """Return the `post_route_repair` result field when this run ran that stage: the round whose database it kept, how many rounds repaired, the rounds configured, why the rounds stopped (`stop` and `reason`), the round with better timing whose DRC violations kept it from being kept (`passed_over_round`, else None) and, with `electrical-repair`, the electrical round's number, the round it repaired, its `status` (`kept`, `not_kept`, `skipped` or `failed`) and `reason` (`electrical_round`)."""
+        """Return the `post_route_repair` result field when this run ran that stage: the round whose database it kept, how many rounds repaired, the rounds configured, why the rounds stopped (`stop` and `reason`), the round with better timing whose DRC violations kept it from being kept (`passed_over_round`, else None) and, with `electrical-repair`, the electrical round's number, the round it repaired, its `status` (`kept`, `not_kept`, `skipped` or `failed`), `reason` and any `unseen` violators (`electrical_round`)."""
         if self._ckpt_run_dir is None:
             return {}
         done = [
