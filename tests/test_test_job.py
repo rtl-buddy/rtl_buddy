@@ -4017,8 +4017,8 @@ def test_the_build_half_runs_no_pre_for_a_key_the_verilate_job_built(
             {
                 "test": name,
                 "builder": "stub-builder",
-                "duration_sec": 0.0,
-                "reused": True,
+                "duration_sec": 30.0,
+                "reused": name == "basic",
                 "group": f"obj_dir_{name}",
                 "fingerprint_sha": f"sha-{name}",
                 "inputs_sha": f"sha-{name}",
@@ -4040,6 +4040,10 @@ def test_the_build_half_runs_no_pre_for_a_key_the_verilate_job_built(
     assert {e["test"]: e["fingerprint_sha"] for e in envelope["builds"]} == {
         "basic": "sha-basic",
         "extra": "sha-extra",
+    }
+    # Recorded as a reuse: the build job's own work is what right-sizing reads.
+    assert {(e["reused"], e["duration_sec"]) for e in envelope["builds"]} == {
+        (True, 0.0)
     }
     (done,) = [
         r

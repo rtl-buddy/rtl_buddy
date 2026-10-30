@@ -4238,8 +4238,14 @@ class RtlBuddy:
             nonlocal unprepared
             cfg = configs[index]
             if index in settled:
+                entry = dict(settled[index])
+                for half in ("verilate_sec", "build_sec"):
+                    entry.pop(half, None)
+                # What a stamp reuse here would have recorded: this job built nothing,
+                # and right-sizing must not count the verilate job's work as its own.
+                entry.update(duration_sec=0.0, reused=True)
                 with recorded_lock:
-                    recorded_entries[index] = dict(settled[index])
+                    recorded_entries[index] = entry
                     recorded_ok[index] = True
                 return (index, cfg.get_name(), True, None, None, None), None, None
             leader_group = (
