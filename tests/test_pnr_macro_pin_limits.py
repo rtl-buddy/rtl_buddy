@@ -261,10 +261,22 @@ def test_supplies_are_connected_before_dont_touch_in_the_documented_order(tmp_pa
     assert order == sorted(order)
     assert "setPlacementStatus FIRM" in body
     # The macro's checks come from the timer, in the macro library's thresholds.
-    assert "report_check_types -max_slew -max_capacitance -net $net" in _block(
-        tmp_path, _on(tmp_path)
-    )
+    block = _block(tmp_path, _on(tmp_path))
+    assert "report_check_types -max_slew -max_capacitance" in block
+    assert "::rb::checks::report -net [get_nets -of_objects $pin]" in block
     assert "sta::is_clock $pin" in body
+
+
+def test_both_buffers_are_inserted_and_legalized_at_the_widest_candidate(tmp_path):
+    """Sizing then swaps cells within the legalized footprint, so whichever pair it
+    keeps, the closest when none meets the limit, leaves the placement legal.
+    """
+    body = _repair_body(_block(tmp_path, _on(tmp_path)))
+    assert body.count("insert_buffer ") == 3
+    assert body.count("-buffer_cell ") == body.count("-buffer_cell $widest_name") == 3
+    assert body.rindex("insert_buffer ") < body.index(
+        "\n    detailed_placement {*}$dpl_args\n"
+    )
 
 
 def test_the_rendered_block_has_no_template_placeholder(tmp_path):
@@ -295,7 +307,10 @@ u_inner/u_hist_mem/u_sram/dout1[13]     0.027560    0.080000   -0.052440 (VIOLAT
 
 
 def _run(body: str) -> str:
-    source = files("rtl_buddy.pnr").joinpath("macro_pin_limits.tcl").read_text()
+    source = "".join(
+        files("rtl_buddy.pnr").joinpath(name).read_text()
+        for name in ("check_reports.tcl", "macro_pin_limits.tcl")
+    )
     return _tcl_eval(source + "\n" + body + "\n")
 
 
@@ -313,10 +328,8 @@ _ROWS_OUT = (
 )
 
 
-def test_parse_checks_reads_both_tables_in_report_units():
-    out = _run(
-        f"set c [rb::macro_pins::parse_checks {_tcl_braced(_REPORT)}]\n" + _ROWS_OUT
-    )
+def test_the_check_parser_reads_both_tables_in_report_units():
+    out = _run(f"set c [rb::checks::parse {_tcl_braced(_REPORT)}]\n" + _ROWS_OUT)
     assert out.splitlines() == [
         "slew u_inner/u_hist_mem/u_sram/addr0[2] 0.040000 0.143900",
         "slew u_inner/u_hist_mem/wire145/X 1.506500 0.107900",
@@ -325,28 +338,26 @@ def test_parse_checks_reads_both_tables_in_report_units():
     ]
 
 
-def test_parse_checks_tolerates_a_scene_column():
+def test_the_check_parser_tolerates_a_scene_column():
     report = (
         "max slew\n\nPin   Corner   Limit   Slew   Slack\n------\n"
         "u_sram/addr0[0]   ss   0.04   0.05   -0.01 (VIOLATED)\n"
     )
-    out = _run(
-        f"set c [rb::macro_pins::parse_checks {_tcl_braced(report)}]\n" + _ROWS_OUT
-    )
+    out = _run(f"set c [rb::checks::parse {_tcl_braced(report)}]\n" + _ROWS_OUT)
     assert out.splitlines() == ["slew u_sram/addr0[0] 0.04 0.05"]
 
 
-def test_pin_check_takes_the_named_pin_worst_headroom():
+def test_the_worst_check_is_the_named_pin_s_smallest_headroom():
     report = _REPORT + (
         "max slew\n\n"
         "u_inner/u_hist_mem/u_sram/addr0[2]      0.050000    0.149000   "
         "-0.099000 (VIOLATED)\n"
     )
     out = _run(
-        f"set c [rb::macro_pins::parse_checks {_tcl_braced(report)}]\n"
+        f"set c [rb::checks::parse {_tcl_braced(report)}]\n"
         "set result [list "
-        "[rb::macro_pins::pin_check $c slew {u_inner/u_hist_mem/u_sram/addr0[2]}] "
-        "[rb::macro_pins::pin_check $c capacitance {u_inner/u_hist_mem/u_sram/addr0[2]}]]"
+        "[rb::checks::worst $c slew {u_inner/u_hist_mem/u_sram/addr0[2]}] "
+        "[rb::checks::worst $c capacitance {u_inner/u_hist_mem/u_sram/addr0[2]}]]"
     )
     assert out == "{0.040000 0.143900} {}"
 

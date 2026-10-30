@@ -82,6 +82,8 @@ _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
 _TEMPLATE_FILE = "flow.tcl.template"
 # The macro pin-limit procedures, substituted only when `placement.macro-pin-limits` is set.
 _MACRO_PIN_LIMITS_FILE = "macro_pin_limits.tcl"
+# Reads the timer's max-slew and max-capacitance checks; sourced before the macro pin-limit and unseen-violator procedures.
+_CHECK_REPORTS_FILE = "check_reports.tcl"
 # Cuts the rows under hard placement blockages before tap insertion; see `_blockages_block`.
 _CUT_ROWS_FILE = "cut_rows.tcl"
 # `rb::keepouts::check`, run after macro placement when the floorplan has hard blockages or cut-outs.
@@ -591,7 +593,10 @@ def _macro_pin_limits_tcl(platform, dpl_options: str = "") -> str:
     limits = platform.get_placement_macro_pin_limits()
     if not isinstance(limits, MacroPinLimitsFile):
         return ""
-    procs = files(_TEMPLATE_PACKAGE).joinpath(_MACRO_PIN_LIMITS_FILE).read_text()
+    procs = "".join(
+        files(_TEMPLATE_PACKAGE).joinpath(name).read_text()
+        for name in (_CHECK_REPORTS_FILE, _MACRO_PIN_LIMITS_FILE)
+    )
     return (
         'puts ">>> Macro pin limits"\n'
         f"{procs}"
@@ -2329,7 +2334,7 @@ def run_post_route_repair(
 
     With `judged` in the plan (a multi-corner run that sets `signoff:`), the rounds judge each side's worst slack only over the corners it names for that side (`_judged_timing`): which sides are met, which round is the best and when they stop. Each round's event keeps every corner's timing and adds the judged worst slack as `signoff_timing`.
 
-    Rounds count those violators only on a run that gates on electrical violators (`gate_electrical` in the plan) or sets `electrical-repair`; a gated run's stop reason also names the kept round's violators. With `electrical-repair` (`electrical` in the plan) one more round runs after the others when the best round has such violators: rb links the best round's checkpoint and SPEF as `POST_ROUTE_ELECTRICAL_SOURCE`, and the round's `repair_design` runs on them. It is timed and compared as any round; `electrical_round` in the done event says whether it was kept, not kept, skipped or failed, and why, and lists in `unseen` the violators its extraction found within limits on the placement estimate (`_unseen_tcl`), which rb also warns about.
+    Rounds count those violators only on a run that gates on electrical violators (`gate_electrical` in the plan) or sets `electrical-repair`; a gated run's stop reason also names the kept round's violators. With `electrical-repair` (`electrical` in the plan) one more round runs after the others when the best round has such violators: rb links the best round's checkpoint and SPEF as `POST_ROUTE_ELECTRICAL_SOURCE`, and the round's `repair_design` runs on them. It is timed and compared as any round; `electrical_round` in the done event says whether it was kept, not kept, skipped or failed, and why. When the round is kept, `unseen` lists the violators its extraction found within limits on the placement estimate (`_unseen_tcl`), which rb also warns about.
 
     A failed session of round k from 1 is set aside: rb warns, notes it after the session's part of the log, whose `[ERROR` lines then do not fail the run (`_error_lines`), and the stage keeps the best round. A repair session whose `stage-end` hook failed fails the stage instead. Round 0's extraction failing fails the stage, as does a failed stage report: a `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint the stage kept.
     """
@@ -2615,6 +2620,8 @@ def run_post_route_repair(
                         else:
                             why += f" and does not improve on round {source}"
                     _record(e, drcs, timing, view)
+        if status != "kept":
+            unseen = []
         electrical_round = {
             "round": e,
             "source_round": source,
@@ -3784,7 +3791,7 @@ class OpenRoadPnr:
         )
 
     def _unseen_tcl(self) -> str:
-        """The end of the electrical round's extraction: print each max-slew and max-capacitance violator left on the extracted parasitics that is within its limit less the round's margin on the placement estimate at the round's signal wire RC (`electrical_unseen.tcl`).
+        """The end of the electrical round's extraction: print each max-slew and max-capacitance violator left on the extracted parasitics that is within its limit less the round's margin on the placement estimate at the round's signal wire RC (`electrical_unseen.tcl`). It leaves out the violators `repair_design` skips whatever the parasitics: ports, and pins on clock, dont_touch, special or abutment nets.
 
         `repair_design` finds violators on the SPEF but sizes its buffering on Steiner trees at that RC, so it leaves such a net as it is. Moving the round to detailed-routing parasitics instead would build buffer trees from global routes rebuilt from the guides (RSZ-0074). It runs last, since it replaces the session's parasitics with the estimate, and a failure only prints a line.
         """
@@ -3792,7 +3799,10 @@ class OpenRoadPnr:
         margins = " ".join(
             _fmt_number(m or 0.0) for m in (design.slew_margin, design.cap_margin)
         )
-        parts = [files(_TEMPLATE_PACKAGE).joinpath(_ELECTRICAL_UNSEEN_FILE).read_text()]
+        parts = [
+            files(_TEMPLATE_PACKAGE).joinpath(name).read_text()
+            for name in (_CHECK_REPORTS_FILE, _ELECTRICAL_UNSEEN_FILE)
+        ]
         apply = ""
         if design.wire_rc is not None:
             parts.append(files(_TEMPLATE_PACKAGE).joinpath(_WIRE_RC_FILE).read_text())
@@ -5761,7 +5771,7 @@ class OpenRoadPnr:
         return {"blocks": [b.result_row() for b in self._blocks]}
 
     def _post_route_fields(self) -> dict:
-        """Return the `post_route_repair` result field when this run ran that stage: the round whose database it kept, how many rounds repaired, the rounds configured, why the rounds stopped (`stop` and `reason`), the round with better timing whose DRC violations kept it from being kept (`passed_over_round`, else None) and, with `electrical-repair`, the electrical round's number, the round it repaired, its `status` (`kept`, `not_kept`, `skipped` or `failed`), `reason` and any `unseen` violators (`electrical_round`)."""
+        """Return the `post_route_repair` result field when this run ran that stage: the round whose database it kept, how many rounds repaired, the rounds configured, why the rounds stopped (`stop` and `reason`), the round with better timing whose DRC violations kept it from being kept (`passed_over_round`, else None) and, with `electrical-repair`, the electrical round's number, the round it repaired, its `status` (`kept`, `not_kept`, `skipped` or `failed`), `reason` and, when kept, any `unseen` violators (`electrical_round`)."""
         if self._ckpt_run_dir is None:
             return {}
         done = [

@@ -13,59 +13,13 @@
 # output's loads tens of microns, so checks read on the unlegalised placement
 # miss output pins that end up over their capacitance limit.
 #
-# The helpers before `repair` take and return plain numbers and strings, so
-# tests/test_pnr_macro_pin_limits.py runs them under a bare Tcl interpreter.
+# It reads the timer's checks with `check_reports.tcl`, which the flow sources
+# before it. The helpers before `repair` take and return plain numbers and
+# strings, so tests/test_pnr_macro_pin_limits.py runs them under a bare Tcl
+# interpreter.
 # Geometry is in integral database units.
 
 namespace eval rb::macro_pins {}
-
-# The checks of one `report_check_types -max_slew -max_capacitance` report, as
-# a dict: `slew` and `capacitance`, each a list of {pin limit value}. Values
-# are in the report's units, which are the load library's thresholds.
-proc rb::macro_pins::parse_checks {text} {
-    set checks [dict create slew {} capacitance {}]
-    set kind ""
-    set number {-?[0-9]+(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?}
-    foreach line [split $text "\n"] {
-        if {[regexp {^\s*max slew\s*$} $line]} {
-            set kind slew
-            continue
-        }
-        if {[regexp {^\s*max capacitance\s*$} $line]} {
-            set kind capacitance
-            continue
-        }
-        if {[regexp {^\s*max fanout\s*$} $line]} {
-            set kind ""
-            continue
-        }
-        if {$kind eq ""} {
-            continue
-        }
-        # Pin, an optional scene name, limit, value, slack, verdict.
-        set row "^(\\S+)(?:\\s+\[A-Za-z_\]\\S*)?\\s+($number)\\s+($number)\\s+($number)\\s+\\((?:VIOLATED|MET)\\)"
-        if {[regexp $row $line -> pin limit value slack]} {
-            dict lappend checks $kind [list $pin $limit $value]
-        }
-    }
-    return $checks
-}
-
-# The worst {limit value} of `pin` in `checks` for `kind`, by the smallest
-# headroom, or an empty list when the report has no such check.
-proc rb::macro_pins::pin_check {checks kind pin} {
-    set worst {}
-    foreach row [dict get $checks $kind] {
-        lassign $row name limit value
-        if {$name ne $pin} {
-            continue
-        }
-        if {$worst eq "" || $limit - $value < [lindex $worst 0] - [lindex $worst 1]} {
-            set worst [list $limit $value]
-        }
-    }
-    return $worst
-}
 
 # Whether `value` is over `limit` less a `margin` fraction of it.
 proc rb::macro_pins::over {value limit margin} {
@@ -175,27 +129,14 @@ proc rb::macro_pins::slot_x {x0 slot_width width px pitch} {
 # ---------------------------------------------------------------------------
 # OpenROAD side.
 
-# The parsed max-slew and max-capacitance checks of every pin on `net`.
-proc rb::macro_pins::net_checks {net} {
-    sta::redirect_string_begin
-    set failed [catch {
-        report_check_types -max_slew -max_capacitance -net $net -max_count 100000 -digits 6
-    } err]
-    set text [sta::redirect_string_end]
-    if {$failed} {
-        error $err
-    }
-    return [parse_checks $text]
-}
-
 # The macro pin's checks against its own limits: {slew_limit slew cap_limit
 # cap}, an empty string for a check the report does not carry.
 proc rb::macro_pins::measure {pin} {
-    set checks [net_checks [get_nets -of_objects $pin]]
+    set checks [::rb::checks::report -net [get_nets -of_objects $pin]]
     set name [get_full_name $pin]
     set result {}
     foreach kind {slew capacitance} {
-        set check [pin_check $checks $kind $name]
+        set check [::rb::checks::worst $checks $kind $name]
         if {[llength $check] == 2} {
             lappend result {*}$check
         } else {
@@ -283,7 +224,9 @@ proc rb::macro_pins::reestimate {insts} {
 
 # Size the final buffer to `final_cell`, moved within its fixed slot toward
 # the pin, and the pre-driver, if any, to `pre_cell`; return the pin's
-# measurement (from `measure`).
+# measurement (from `measure`). Any pair keeps the placement legal, since both
+# cells were inserted and legalized at the widest candidate, and a repeat call
+# with the same pair leaves the cells where they are.
 proc rb::macro_pins::trial {pin final final_db pre sx sy width px pitch final_cell pre_cell} {
     if {[[$final_db getMaster] getName] ne $final_cell} {
         replace_cell $final $final_cell

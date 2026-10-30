@@ -519,16 +519,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
             ),
             **(
                 {"repair_design": options}
-                if (
-                    options := {
-                        k: v
-                        for k, v in asdict(
-                            platform.get_placement_repair_design()
-                        ).items()
-                        if k in ("slew_margin", "cap_margin", "max_wire_length")
-                        and v is not None
-                    }
-                )
+                if (options := platform.get_placement_repair_design().option_values())
                 else {}
             ),
         },

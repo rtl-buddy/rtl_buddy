@@ -128,16 +128,22 @@ class RepairDesign:
     wire_rc: WireRc | None = None
     after_timing: bool = False
 
-    def options(self) -> str:
-        """The `repair_design` options, each with a leading space."""
-        return "".join(
-            f" -{name} {_fmt(value)}"
+    def option_values(self) -> dict[str, float]:
+        """The `repair_design` options that are set, by option name."""
+        return {
+            name: value
             for name, value in (
                 ("slew_margin", self.slew_margin),
                 ("cap_margin", self.cap_margin),
                 ("max_wire_length", self.max_wire_length),
             )
             if value is not None
+        }
+
+    def options(self) -> str:
+        """The `repair_design` options, each with a leading space."""
+        return "".join(
+            f" -{name} {_fmt(value)}" for name, value in self.option_values().items()
         )
 
 
