@@ -27,6 +27,7 @@ from rtl_buddy.artifact_lock import (
     BUILD_LOCK_FILENAME,
     BUILD_LOCK_POLL_SEC,
     LOCK_FILENAME,
+    ArtifactLockContended,
     ArtifactLocks,
     build_dir_lock,
 )
@@ -70,6 +71,31 @@ def test_contended_acquire_fails_loud_naming_holder(tmp_path, locks):
     assert str(root) in msg
     assert f"pid {os.getpid()}" in msg
     assert "rb regression" in msg
+
+
+def test_a_copy_hold_is_waited_out_only_when_asked(tmp_path, locks, monkeypatch):
+    """`tree_lock` holds a tree briefly to copy out of it; a `--run-tag` command waits that out instead of failing."""
+    monkeypatch.setattr(artifact_lock_module, "TREE_LOCK_POLL_SEC", 0.05)
+    root = tmp_path / "artefacts"
+    copier = locks()
+    copier.acquire(root, command="pnr", copying=True)
+    assert json.loads((root / LOCK_FILENAME).read_text())["copying"] is True
+    with pytest.raises(ArtifactLockContended):
+        locks().acquire(root, command="pnr")
+
+    threading.Timer(0.3, copier.release_all).start()
+    started = time.monotonic()
+    locks().acquire(root, command="pnr", wait_for_copying=True)
+
+    assert time.monotonic() - started >= 0.2
+    assert "copying" not in json.loads((root / LOCK_FILENAME).read_text())
+
+
+def test_a_command_holding_the_tree_is_not_waited_for(tmp_path, locks):
+    root = tmp_path / "artefacts"
+    locks().acquire(root, command="pnr")
+    with pytest.raises(ArtifactLockContended):
+        locks().acquire(root, command="pnr", wait_for_copying=True)
 
 
 def test_reacquire_same_root_is_idempotent(tmp_path, locks):
@@ -649,8 +675,8 @@ def test_acquirer_that_loses_the_path_to_a_reclaimer_stands_down(tmp_path, monke
 
     real_write = artifact_lock._write_holder
 
-    def write_then_lose_the_path(fd, command):
-        real_write(fd, command)
+    def write_then_lose_the_path(fd, command, **kw):
+        real_write(fd, command, **kw)
         # Simulates a concurrent reclaimer's ``os.replace``.
         usurper = tmp_path / "usurper"
         usurper.write_text("{}")

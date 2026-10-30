@@ -3311,7 +3311,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"miss hold they never repaired; set the PDK's layer-rc-tcl, "
                 f"see {fields.get('docs')}"
             )
-        case "pnr.signoff_failed" | "pnr.no_netlist" | "pnr_export.blocks_dropped":
+        case (
+            "pnr.signoff_failed"
+            | "pnr.no_netlist"
+            | "pnr.synth_copy_changed"
+            | "pnr_export.blocks_dropped"
+        ):
             return f"pnr {fields.get('pnr')}: {fields.get('desc')}"
         case "pnr.electrical_round_unseen":
             violators = fields.get("violators") or []

@@ -898,13 +898,21 @@ def _hardening_run_cfg(ref: BlockRef, where: str):
 
 
 def copy_source(directory: str) -> str | None:
-    """Return the published abstract `directory` is a copy of, or None when it is not a copy."""
+    """Return the published abstract `directory` is a copy of, or None when it is not a copy.
+
+    A source in the copy's own project is recorded project-relative and found in the project the copy is in now.
+    """
     try:
         record = json.loads(Path(directory, COPY_SOURCE_NAME).read_text())
     except (OSError, ValueError):
         return None
     source = record.get("abstract_dir") if isinstance(record, dict) else None
-    return source if isinstance(source, str) else None
+    if not isinstance(source, str):
+        return None
+    if os.path.isabs(source):
+        return source
+    root = project_root_or_none(directory)
+    return os.path.join(root, source) if root else None
 
 
 def one_or_many(paths: list[str]) -> str | list[str]:

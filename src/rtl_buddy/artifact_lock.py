@@ -3,7 +3,8 @@
 Each command takes an exclusive non-blocking ``flock(2)`` on
 ``<artifact_root>/.rtl-buddy.lock`` and fails fast if another process holds it.
 A lock whose recorded holder is dead on this host is reclaimed.
-:func:`tree_lock` holds another tree's lock for a short read or write, waiting for it.
+:func:`tree_lock` holds another tree's lock for a short read or write, waiting for it;
+a ``--run-tag`` command waits out such a hold of its own tree instead of failing.
 :func:`build_dir_lock` is the narrower, blocking lock around a shared compile.
 """
 
@@ -98,11 +99,15 @@ class ArtifactLocks:
         *,
         command: str | None = None,
         log_contention: bool = True,
+        copying: bool = False,
+        wait_for_copying: bool = False,
     ) -> None:
         """Take the exclusive lock for ``artifact_root``, creating it if needed.
 
         Raises :class:`ArtifactLockContended` naming the holder when another process has it,
-        and :class:`FatalRtlBuddyError` when the filesystem cannot lock.
+        and :class:`FatalRtlBuddyError` when the filesystem cannot lock. ``copying`` records
+        the hold as a :func:`tree_lock` copy; ``wait_for_copying`` waits out such a holder
+        instead of failing, since a copy holds no other lock it waits for.
         """
         artifact_root = Path(artifact_root)
         lock_path = artifact_root / LOCK_FILENAME
@@ -110,14 +115,39 @@ class ArtifactLocks:
             return
 
         artifact_root.mkdir(parents=True, exist_ok=True)
-        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            holder = _read_holder(fd)
-            os.close(fd)
-            fd = _reclaim_if_stale(artifact_root, lock_path, holder)
-            if fd is None:
+        started = time.monotonic()
+        announced = None
+        while True:
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                holder = _read_holder(fd)
+                os.close(fd)
+                fd = _reclaim_if_stale(artifact_root, lock_path, holder)
+                if fd is not None:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "artifact_lock.reclaimed",
+                        path=str(artifact_root),
+                        holder_pid=holder.get("pid"),
+                        holder_command=holder.get("command"),
+                        holder_started=holder.get("started"),
+                        holder_host=holder.get("host"),
+                    )
+                    break
+                if (
+                    wait_for_copying
+                    and holder.get("copying")
+                    and exc.errno in _CONTENTION_ERRNOS
+                ):
+                    announced = _announce_wait(
+                        artifact_root, holder, started, announced
+                    )
+                    time.sleep(TREE_LOCK_POLL_SEC)
+                    continue
                 log_event(
                     logger,
                     logging.ERROR if log_contention else logging.DEBUG,
@@ -142,18 +172,8 @@ class ArtifactLocks:
                     "it to finish or kill it",
                     holder,
                 ) from exc
-            log_event(
-                logger,
-                logging.WARNING,
-                "artifact_lock.reclaimed",
-                path=str(artifact_root),
-                holder_pid=holder.get("pid"),
-                holder_command=holder.get("command"),
-                holder_started=holder.get("started"),
-                holder_host=holder.get("host"),
-            )
 
-        _write_holder(fd, command)
+        _write_holder(fd, command, copying=copying)
         if not _still_owns_lock_path(artifact_root, lock_path, fd):
             # A reclaimer replaced the file between our flock and our write; we hold an unlinked inode.
             os.close(fd)
@@ -208,22 +228,14 @@ def tree_lock(artifact_root: Path, *, command: str | None = None) -> Iterator[No
         announced = None
         while True:
             try:
-                locks.acquire(artifact_root, command=command, log_contention=False)
+                locks.acquire(
+                    artifact_root, command=command, log_contention=False, copying=True
+                )
                 break
             except ArtifactLockContended as exc:
-                waited = time.monotonic() - started
-                if announced is None or waited - announced >= TREE_LOCK_ANNOUNCE_SEC:
-                    log_console_event(
-                        logger,
-                        logging.INFO,
-                        "artifact_lock.wait",
-                        path=str(artifact_root),
-                        waited_sec=round(waited),
-                        holder_pid=exc.holder.get("pid"),
-                        holder_command=exc.holder.get("command"),
-                        holder_started=exc.holder.get("started"),
-                    )
-                    announced = waited
+                announced = _announce_wait(
+                    artifact_root, exc.holder, started, announced
+                )
                 time.sleep(TREE_LOCK_POLL_SEC)
         try:
             yield
@@ -328,10 +340,30 @@ def _wait_for_lock(fd: int, fields: dict) -> None:
             return
 
 
-def _write_holder(fd: int, command: str | None) -> None:
+def _announce_wait(
+    artifact_root: Path, holder: dict, started: float, announced: float | None
+) -> float | None:
+    """Log ``artifact_lock.wait`` every ``TREE_LOCK_ANNOUNCE_SEC`` of a wait; return when it last did."""
+    waited = time.monotonic() - started
+    if announced is not None and waited - announced < TREE_LOCK_ANNOUNCE_SEC:
+        return announced
+    log_console_event(
+        logger,
+        logging.INFO,
+        "artifact_lock.wait",
+        path=str(artifact_root),
+        waited_sec=round(waited),
+        holder_pid=holder.get("pid"),
+        holder_command=holder.get("command"),
+        holder_started=holder.get("started"),
+    )
+    return waited
+
+
+def _write_holder(fd: int, command: str | None, *, copying: bool = False) -> None:
     """Write this process's pid, command, host and start token into the locked file.
 
-    A record without ``host`` is never reclaimed.
+    A record without ``host`` is never reclaimed. ``copying`` marks a :func:`tree_lock` hold.
     """
     os.ftruncate(fd, 0)
     os.write(
@@ -343,6 +375,7 @@ def _write_holder(fd: int, command: str | None) -> None:
                 "started": datetime.now().isoformat(timespec="seconds"),
                 "host": _this_host(),
                 "start_token": _process_start_token(os.getpid()),
+                **({"copying": True} if copying else {}),
             }
         ).encode(),
     )

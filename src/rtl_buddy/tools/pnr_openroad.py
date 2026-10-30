@@ -3224,14 +3224,19 @@ class OpenRoadPnr:
         )
 
     def _tagged_netlist_failure(self) -> PnrFailResults | None:
-        """A tagged run's setup FAIL when its synthesis had no netlist to copy, else None."""
-        if self.tag_inputs is None or self._synth_copy() is not None:
+        """A tagged run's setup FAIL when its synthesis had no netlist to copy or its copy has changed, else None."""
+        if self.tag_inputs is None:
             return None
-        desc = self._missing_netlist_desc()
+        try:
+            if self._take_synth_copy() is not None:
+                return None
+            event, desc = "pnr.no_netlist", self._missing_netlist_desc()
+        except pnr_tag_inputs.SynthCopyChanged as e:
+            event, desc = "pnr.synth_copy_changed", str(e)
         log_event(
             logger,
             logging.ERROR,
-            "pnr.no_netlist",
+            event,
             pnr=self.pnr_cfg.get_name(),
             desc=desc,
         )
@@ -3239,14 +3244,20 @@ class OpenRoadPnr:
             name=self.name + "/results", desc=desc, fail_stage="setup"
         )
 
-    def _synth_copy(self) -> str | None:
-        """The `--run-tag` copy of the upstream synthesis's netlist and filelist, or None."""
-        if self.tag_inputs is None:
-            return None
+    def _take_synth_copy(self) -> str | None:
         return self.tag_inputs.synth_dir(
             self.pnr_cfg.get_synth_suite_path(),
             self.pnr_cfg.resolve_synth_cfg().get_name(),
         )
+
+    def _synth_copy(self) -> str | None:
+        """The `--run-tag` copy of the upstream synthesis's netlist and filelist, or None, also when that copy has changed."""
+        if self.tag_inputs is None:
+            return None
+        try:
+            return self._take_synth_copy()
+        except pnr_tag_inputs.SynthCopyChanged:
+            return None
 
     def _synth_dir(self) -> str:
         """The directory the synthesis netlist and filelist are read from: the synthesis's own, or its `--run-tag` copy."""
@@ -5362,12 +5373,25 @@ class OpenRoadPnr:
                 )
         if self.run_tag is not None:
             # The block copies the saved run consumed, not the abstracts current now; a checkpoint keeps those of the invocation that wrote it.
-            pinned = (
-                pnr_tag_inputs.read_consumed_blocks(
-                    ckpt.run_dir if ckpt is not None else self.artefact_dir
+            try:
+                pinned = (
+                    pnr_tag_inputs.read_consumed_blocks(
+                        ckpt.run_dir if ckpt is not None else self.artefact_dir,
+                        self.tag_inputs.root,
+                    )
+                    or {}
                 )
-                or {}
-            )
+            except pnr_abstract.BlockResolutionError as e:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr.block_unresolved",
+                    pnr=self.pnr_cfg.get_name(),
+                    reason=str(e),
+                )
+                return PnrFailResults(
+                    name=self.name + "/results", desc=str(e), fail_stage="setup"
+                )
             dropped = self._dropped_blocks(pinned)
             if dropped:
                 desc = (
