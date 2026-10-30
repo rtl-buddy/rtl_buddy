@@ -6,7 +6,7 @@ from typing import Any
 from serde import serde, field
 
 from ..errors import FatalRtlBuddyError
-from .pnr_repair import UNSET
+from .pnr_repair import UNSET, RepairDesignFile, read_placement_repair_design
 from .unknown_keys import KeySpec
 
 logger = logging.getLogger(__name__)
@@ -109,11 +109,16 @@ class PlacementFile:
     # `improve_placement` and `optimize_mirroring` after the placement stage's legalization, as ORFS runs them; `None` inherits, unset means on.
     improve_placement: bool | None = field(rename="improve-placement", default=None)
     optimize_mirroring: bool | None = field(rename="optimize-mirroring", default=None)
+    # The place stage's `repair_design` options, read by `read_placement_repair_design`: `UNSET` inherits, `null` clears a lower level's, and a mapping overrides it field by field.
+    repair_design: Any = field(rename="repair-design", default=UNSET)
 
 
 PLACEMENT_SPEC = KeySpec(
     PlacementFile,
-    {"macro-pin-limits": KeySpec(MacroPinLimitsFile)},
+    {
+        "macro-pin-limits": KeySpec(MacroPinLimitsFile),
+        "repair-design": KeySpec(RepairDesignFile),
+    },
     removed={
         "macro-halo": "set placement.macro-channel to twice the halo "
         "(macro-halo: 20 is macro-channel: 40), RTL-MP's minimum channel "
@@ -251,6 +256,7 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
         optimize_mirroring=_optional_bool(
             placement.optimize_mirroring, f"{where}: placement.optimize-mirroring"
         ),
+        repair_design=read_placement_repair_design(where, placement.repair_design),
     )
 
 
@@ -518,6 +524,10 @@ class PdkConfig:
     def get_placement_optimize_mirroring(self) -> bool | None:
         """Configured `placement.optimize-mirroring`, or `None` when unset."""
         return self._placement.optimize_mirroring
+
+    def get_placement_repair_design(self) -> Any:
+        """Configured `placement.repair-design` as a layer (see `read_placement_repair_design`), or `UNSET`."""
+        return self._placement.repair_design
 
     def get_dont_use_cells(self) -> list[str]:
         return list(self._dont_use_cells)
