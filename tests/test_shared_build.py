@@ -9350,3 +9350,139 @@ def test_pruning_retires_the_record(tmp_path, monkeypatch):
 
 def test_the_record_is_never_a_compile_input():
     assert vlog_sim_module._is_non_input_file(_RECORD)
+
+
+def _write_verilate_envelope(tmp_path, *, builds):
+    from rtl_buddy.runner.result_io import write_build_result_json
+
+    return write_build_result_json(
+        tmp_path / "artefacts" / ".dispatch" / "verilate-result-1.json",
+        built=[entry["test"] for entry in builds],
+        failed=[],
+        builds=builds,
+        partial=True,
+    )
+
+
+def test_a_job_the_verilate_job_released_reads_its_verdict_from_that_job(
+    tmp_path, monkeypatch
+):
+    """Released by the verilate job before the build job wrote anything, a gated job takes that job's stamped build as `built`."""
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    sim.expect_prebuilt = True
+    sim.build_result_json = tmp_path / "artefacts" / ".dispatch" / "build-result-1.json"
+    record = {"test": "test_a", "fingerprint_sha": "sha", "group": "g"}
+    sim.verilate_result_json = _write_verilate_envelope(tmp_path, builds=[record])
+
+    assert sim._gated_build_verdict() == ("built", record)
+
+    # A verilation alone is not a build.
+    _write_verilate_envelope(tmp_path, builds=[{"test": "test_a", "group": "g"}])
+    assert sim._gated_build_verdict() == (None, None)
+
+
+def test_the_build_envelope_outranks_the_verilate_job_s(tmp_path, monkeypatch):
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    sim.expect_prebuilt = True
+    sim.verilate_result_json = _write_verilate_envelope(
+        tmp_path, builds=[{"test": "test_a", "fingerprint_sha": "sha"}]
+    )
+    failure = {"test": "test_a", "returncode": 2}
+    sim.build_result_json = _write_build_envelope(
+        tmp_path, failed=["test_a"], builds=[failure]
+    )
+    assert sim._gated_build_verdict() == ("failed", failure)
+
+    # A build envelope that does not name the test defers to the verilate job's.
+    sim.build_result_json = _write_build_envelope(tmp_path, failed=[], built=[])
+    assert sim._gated_build_verdict()[0] == "built"
+
+    # Without the head naming the verilate envelope, there is nothing to defer to.
+    sim.verilate_result_json = None
+    assert sim._gated_build_verdict() == (None, None)
+
+
+def test_a_settled_build_stands_until_its_executable_or_a_dependency_moves(
+    tmp_path, monkeypatch
+):
+    """The build half's re-check of a build the verilate job recorded: the stamp's
+    inputs, its executable, and the content of what the build consumed."""
+    source = _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, depends=["../../src/top.sv"])
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
+    stamp = sim.last_build_stamp
+    root = sim._project_root
+
+    def problem():
+        return vlog_sim_module.settled_build_problem(
+            stamp["build_dir"], stamp["fingerprint_sha"], root
+        )
+
+    assert problem() is None
+    assert "other inputs" in vlog_sim_module.settled_build_problem(
+        stamp["build_dir"], "another digest", root
+    )
+    stored = json.loads(
+        (Path(stamp["build_dir"]) / vlog_sim_module.SHARED_BUILD_STAMP_NAME).read_text()
+    )
+    assert stored.get("deps"), "the fake builder records what it consumed"
+    # Rewritten with the same bytes: content decides, as for a sim job.
+    os.utime(source, ns=(1, 1))
+    assert problem() is None
+    source.write_text("module top; wire w; endmodule\n")
+    assert "consumed input" in problem()
+    source.write_text("module top; endmodule\n")
+    assert problem() is None
+    simv = Path(sim._get_simv_path())
+    simv.write_bytes(simv.read_bytes() + b"\n# rebuilt by a neighbour\n")
+    assert "executable" in problem()
+    simv.unlink()
+    assert "executable" in problem()
+
+
+@pytest.mark.parametrize("family", ["verilator", "vcs"])
+def test_a_settled_build_falls_when_a_search_directory_gains_a_file(
+    tmp_path, monkeypatch, family
+):
+    """A file added under `+incdir+` or `-y` after the build moves the listing a
+    simulation job validates, so the build half must not settle the key either."""
+    _write_source(tmp_path)
+    header = _write_header(tmp_path)
+    _write_lib(tmp_path, "bar.sv")
+    calls = []
+    if family == "verilator":
+        _install_fake_builder(monkeypatch, calls, depends=["../../src/top.sv"])
+        kwargs = {}
+    else:
+        _install_fake_builder(monkeypatch, calls)
+        kwargs = {"exe": "vcs", "family": "vcs"}
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="test_a",
+        filelist=["src/top.sv", "+incdir+inc", "-y lib"],
+        **kwargs,
+    )
+    assert sim.compile() == 0
+    stamp = sim.last_build_stamp
+
+    def problem():
+        return vlog_sim_module.settled_build_problem(
+            stamp["build_dir"], stamp["fingerprint_sha"], sim._project_root
+        )
+
+    assert problem() is None
+    os.utime(header, ns=(1, 1))
+    assert problem() is None
+    if family == "vcs":
+        # No dependency list, so the listing decides content as well as names.
+        header.write_text("`define W 16\n")
+        assert "search directory changed" in problem()
+        header.write_text("`define W 8\n")
+    (tmp_path / "lib" / "baz.sv").write_text("module baz; endmodule\n")
+    assert "search directory's files changed" in problem()
+    (tmp_path / "lib" / "baz.sv").unlink()
+    (tmp_path / "inc" / "extra.svh").write_text("`define X 1\n")
+    assert "search directory's files changed" in problem()

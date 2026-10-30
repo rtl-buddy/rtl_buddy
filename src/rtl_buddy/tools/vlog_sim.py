@@ -1450,6 +1450,192 @@ def _first_entry_mismatch(stored, current, *, listing_names_only: bool = False):
     return "(no mismatch)"
 
 
+def _build_record_of(envelope, test_name):
+    """``test_name``'s per-config record in a build envelope, or ``None``."""
+    return next(
+        (
+            entry
+            for entry in envelope.get("builds") or ()
+            if entry.get("test") == test_name
+        ),
+        None,
+    )
+
+
+def stamp_fingerprint_sha(stamp_dir):
+    """Digest of the inputs the stamp in ``stamp_dir`` vouches for, or ``None``.
+
+    Comparable with a build record's ``fingerprint_sha``. ``None`` when there is no
+    readable stamp. Never raises.
+    """
+    try:
+        stored = json.loads((Path(stamp_dir) / SHARED_BUILD_STAMP_NAME).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(stored, dict):
+        return None
+    return _fingerprint_sha(
+        {key: value for key, value in stored.items() if key not in _STAMP_META}
+    )
+
+
+def _directory_files(dir_path, *, recursive):
+    """``[(name, path)]`` of the input files a directory listing covers, sorted.
+
+    ``name`` is relative to ``dir_path`` with ``/`` separators. See
+    :meth:`VlogSim._directory_listing` for what is skipped. Raises :class:`OSError`
+    for an unreadable directory.
+    """
+
+    def _reraise(error):
+        # os.walk swallows unopenable directories by default, which would yield an
+        # empty listing. Re-raise so the caller sees the failure.
+        raise error
+
+    entries = []
+    if recursive:
+        for walk_root, dir_names, file_names in os.walk(dir_path, onerror=_reraise):
+            # In place, because os.walk reads the list back; pruned names are never
+            # walked.
+            dir_names[:] = sorted(
+                name for name in dir_names if not _is_pruned_walk_dir(name)
+            )
+            for name in sorted(file_names):
+                if _is_non_input_file(name):
+                    continue
+                path = os.path.join(walk_root, name)
+                if not os.path.isfile(path):
+                    # A dangling symlink is not an input; a FIFO must not reach the
+                    # hasher's `open()`.
+                    continue
+                entries.append((os.path.relpath(path, dir_path), path))
+    else:
+        with os.scandir(dir_path) as scan:
+            # `is_file` follows symlinks and usually answers from the dirent.
+            names = sorted(
+                item.name
+                for item in scan
+                if item.is_file() and not _is_non_input_file(item.name)
+            )
+        entries = [(name, os.path.join(dir_path, name)) for name in names]
+    return [(name.replace(os.sep, "/"), path) for name, path in sorted(entries)]
+
+
+def _file_unchanged(stored, path, project_root):
+    """Does ``[name, size, mtime_ns, sha]`` still describe the file at ``path``?
+
+    By stat first, then by content where ``stored`` carries a hash, as
+    :func:`_entry_matches` decides for a simulation job.
+    """
+    if _stat_entry(path)[1:] == stored[1:3]:
+        return True
+    current = _hashed_stat_entry(path, project_root=project_root)
+    return _entry_matches(stored, [stored[0], *current[1:]])
+
+
+def settled_build_problem(stamp_dir, fingerprint_sha, project_root):
+    """Why the build stamped in ``stamp_dir`` no longer stands, or ``None``.
+
+    For a build another job recorded as ``fingerprint_sha``: the stamp must still be
+    that one, its executable must be the one it stamped, every dependency it recorded
+    must be unchanged, and every ``+incdir+``/``-y`` directory it listed must list the
+    same files now (by name where the stamp has dependencies, else by content too).
+    This is the part of a simulation job's stamp check that needs no compile plan, so
+    a build that passes is one a gated job will accept unless its compile line moved
+    or a file it names directly changed. Relative spellings re-anchor on ``project_root``.
+    Never raises.
+    """
+
+    def _abspath(path):
+        return (
+            path
+            if os.path.isabs(path)
+            else os.path.normpath(os.path.join(project_root, path))
+        )
+
+    try:
+        stored = json.loads((Path(stamp_dir) / SHARED_BUILD_STAMP_NAME).read_text())
+    except (OSError, ValueError):
+        return "no readable stamp"
+    if not isinstance(stored, dict):
+        return "no readable stamp"
+    inputs = {key: value for key, value in stored.items() if key not in _STAMP_META}
+    if _fingerprint_sha(inputs) != fingerprint_sha:
+        return "the stamp now vouches for other inputs"
+    simv = stored.get("simv")
+    if not (
+        isinstance(simv, list)
+        and len(simv) == 3
+        and isinstance(simv[0], str)
+        and simv[1] is not None
+    ):
+        return "the stamp names no executable"
+    if _stat_entry(_abspath(simv[0]))[1:] != simv[1:]:
+        return f"the executable is missing or changed: {simv[0]}"
+    if "deps" not in stored:
+        return "the stamp predates dependency tracking"
+    deps = stored["deps"]
+    if deps is not None:
+        if not isinstance(deps, list) or stored.get("deps_format") != _DEPS_FORMAT:
+            return "the stamp's dependency list is unreadable"
+        for entry in deps:
+            if not (
+                isinstance(entry, list)
+                and len(entry) == 4
+                and isinstance(entry[0], str)
+            ):
+                return "the stamp's dependency list is unreadable"
+            if not _file_unchanged(entry, _abspath(entry[0]), project_root):
+                return f"a consumed input changed: {entry[0]}"
+    sources = inputs.get("sources")
+    if not isinstance(sources, list):
+        return "the stamp lists no sources"
+    for entry in sources:
+        if not _is_directory_entry(entry) or not isinstance(entry[0], str):
+            continue
+        match = _FILELIST_OPTION_RE.match(entry[0])
+        option = (match.group(1) or "").strip() if match else ""
+        entry_path = match.group(2) if match else entry[0]
+        if entry_path.startswith('"') and entry_path.endswith('"'):
+            try:
+                parsed = shlex.split(entry_path)
+            except ValueError:
+                parsed = []
+            if len(parsed) == 1:
+                entry_path = parsed[0]
+        directory = _abspath(entry_path)
+        try:
+            current = _directory_files(directory, recursive=option == _INCDIR_OPTION)
+        except OSError:
+            return f"a search directory is unreadable: {entry[0]}"
+        stored_listing = entry[-1]
+        if _listing_names(stored_listing) != [name for name, _ in current]:
+            return f"a search directory's files changed: {entry[0]}"
+        if deps is None and not all(
+            isinstance(item, list)
+            and len(item) == 4
+            and _file_unchanged(item, path, project_root)
+            for item, (_name, path) in zip(stored_listing, current, strict=True)
+        ):
+            return f"a file in a search directory changed: {entry[0]}"
+    return None
+
+
+def _stat_view(entries):
+    """``[path, size, mtime_ns]`` of each tracked entry, listings included.
+
+    Unlike the content hash, this moves when a file is rewritten with the same bytes,
+    which is what a reader racing the writer can see.
+    """
+    view = []
+    for entry in entries or ():
+        if _is_directory_entry(entry):
+            view.append([entry[0], _stat_view(entry[-1])])
+        elif isinstance(entry, list):
+            view.append(entry[:3])
+    return view
+
+
 def _entry_identity(entry):
     """The part of a tracked-input entry that decides :func:`_entry_matches`.
 
@@ -1552,6 +1738,7 @@ class VlogSim:
         expect_prebuilt=False,
         rebuild=False,
         build_result_json=None,
+        verilate_result_json=None,
         build_phase=BUILD_PHASE_FULL,
         run_tag=None,
     ):
@@ -1636,6 +1823,8 @@ class VlogSim:
         # compile failed for this test (retrying only burns the sim reservation) from a
         # stamp that is absent or stale (retry). None for local runs.
         self.build_result_json = build_result_json
+        # ...and the verilate job's, where the compile was split.
+        self.verilate_result_json = verilate_result_json
         # {returncode, transcript} of the last failed compile, read by a dispatched
         # build job for its envelope. None until a compile fails; reset by each
         # compile().
@@ -2311,40 +2500,8 @@ class VlogSim:
         directory is empty and validate a reuse.
         """
 
-        def _reraise(error):
-            # os.walk swallows unopenable directories by default, which would yield an
-            # empty listing. Re-raise so the handler returns None.
-            raise error
-
-        entries = []
         try:
-            if recursive:
-                for walk_root, dir_names, file_names in os.walk(
-                    dir_path, onerror=_reraise
-                ):
-                    # In place, because os.walk reads the list back; pruned names are
-                    # never walked.
-                    dir_names[:] = sorted(
-                        name for name in dir_names if not _is_pruned_walk_dir(name)
-                    )
-                    for name in sorted(file_names):
-                        if _is_non_input_file(name):
-                            continue
-                        path = os.path.join(walk_root, name)
-                        if not os.path.isfile(path):
-                            # A dangling symlink is not an input; a FIFO must not reach
-                            # the hasher's `open()`.
-                            continue
-                        entries.append((os.path.relpath(path, dir_path), path))
-            else:
-                with os.scandir(dir_path) as scan:
-                    # `is_file` follows symlinks and usually answers from the dirent.
-                    names = sorted(
-                        item.name
-                        for item in scan
-                        if item.is_file() and not _is_non_input_file(item.name)
-                    )
-                entries = [(name, os.path.join(dir_path, name)) for name in names]
+            entries = _directory_files(dir_path, recursive=recursive)
         except OSError as e:
             log_event(
                 logger,
@@ -2355,10 +2512,7 @@ class VlogSim:
                 error=str(e),
             )
             return None
-        return [
-            [name.replace(os.sep, "/")] + self._tracked_entry(path)[1:]
-            for name, path in sorted(entries)
-        ]
+        return [[name] + self._tracked_entry(path)[1:] for name, path in entries]
 
     def _fingerprint_filelist_sources(self, filelist_path):
         """Per-entry ``(line, size, mtime_ns, sha)`` stamps for the generated run.f.
@@ -3562,6 +3716,10 @@ class VlogSim:
           envelope, config never reached, or inputs moved). The retry runs and writes
           ``compile.retry.log``.
 
+        A job the verilate job released may run before the build job has written
+        anything; where the build envelope says nothing about this test, a stamped
+        build in the verilate job's envelope counts as ``built``.
+
         Best-effort: an unreadable envelope falls back to the retry.
         """
         if not self.expect_prebuilt or self.build_result_json is None:
@@ -3571,19 +3729,12 @@ class VlogSim:
         except Exception:  # noqa: BLE001 - advisory; never costs a run
             return None, None
         if not envelope:
-            return None, None
-        record = next(
-            (
-                entry
-                for entry in envelope.get("builds") or ()
-                if entry.get("test") == self.test_name
-            ),
-            None,
-        )
+            return self._verilate_job_verdict()
+        record = _build_record_of(envelope, self.test_name)
         if self.test_name not in set(envelope.get("failed") or ()):
             if self.test_name in set(envelope.get("built") or ()):
                 return "built", (record or {})
-            return None, None
+            return self._verilate_job_verdict()
         # Compiler evidence or nothing: no record, or one without a returncode,
         # describes a failure that never reached a builder.
         if record is None or record.get("returncode") is None:
@@ -3605,6 +3756,25 @@ class VlogSim:
                 )
                 return None, None
         return "failed", record
+
+    def _verilate_job_verdict(self):
+        """``("built", record)`` if the verilate job left this test built and stamped.
+
+        Only a stamped build counts: the verilate job releases nothing else, and a
+        verilation alone is not a build. ``(None, None)`` otherwise.
+        """
+        if self.verilate_result_json is None:
+            return None, None
+        try:
+            envelope = load_build_result_json(self.verilate_result_json)
+        except Exception:  # noqa: BLE001 - advisory; never costs a run
+            return None, None
+        if not envelope or self.test_name not in set(envelope.get("built") or ()):
+            return None, None
+        record = _build_record_of(envelope, self.test_name)
+        if record is None or record.get("fingerprint_sha") is None:
+            return None, None
+        return "built", record
 
     def _decline_gated_recompile(self, record, fingerprint, build_dir):
         """Fail a gated job whose build job built this test.
@@ -3672,6 +3842,65 @@ class VlogSim:
         if self._compile_plan_cache is None:
             self._compile_plan_cache = self._build_compile_plan()
         return self._compile_plan_cache
+
+    def compile_inputs_sha(self):
+        """Digest of this test's compile inputs, as :func:`_fingerprint_sha` gives it.
+
+        Equal for configs whose builds are interchangeable. Raises
+        :class:`FilelistError` as :meth:`compile` does.
+        """
+        return _fingerprint_sha(self._compile_plan().fingerprint)
+
+    def compile_input_snapshot(self):
+        """Sizes and mtimes of the inputs the next compile reads, for a later compare.
+
+        Covers the filelist's files and the listings of its include and library
+        directories. Taken right before a compile that may overlap another config's
+        ``preproc``; see :meth:`compile_inputs_moved`. Raises :class:`FilelistError`
+        as :meth:`compile` does.
+        """
+        plan = self._compile_plan()
+        return {
+            "filelist": plan.filelist_path,
+            "stat": _stat_view(self._fingerprint_filelist_sources(plan.filelist_path)),
+            "dirs": [
+                str(path)
+                for path in (
+                    self._shared_build_dir or plan.compile_work_dir,
+                    plan.verilation_dir,
+                )
+                if path is not None
+            ],
+        }
+
+    def compile_inputs_moved(self, snapshot):
+        """Was an input in ``snapshot`` written since it was taken?
+
+        A rewrite counts even when the bytes are the same: a compile reading the file
+        while it was truncated saw something else.
+        """
+        try:
+            current = self._fingerprint_filelist_sources(snapshot["filelist"])
+        except OSError:
+            return True
+        return _stat_view(current) != snapshot["stat"]
+
+    def discard_build(self, snapshot):
+        """Remove what the last compile left to be reused: stamp, verilate marker and
+        verilation record in the directories ``snapshot`` names.
+
+        The next compile of this config then runs in full. Never raises.
+        """
+        for directory in snapshot["dirs"]:
+            with contextlib.suppress(OSError):
+                (Path(directory) / SHARED_BUILD_STAMP_NAME).unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                self._verilate_marker_path(directory).unlink(missing_ok=True)
+            self._clear_verilation_record(directory)
+        self._compile_plan_cache = None
+        self.last_build_stamp = None
+        self.last_compile_failure = None
+        self.stamp_write_failed = False
 
     def compile_group_dir(self):
         """The directory this test's compile will write into.

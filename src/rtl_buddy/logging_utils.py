@@ -422,6 +422,9 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 )
             if isinstance(unprepared, int) and unprepared > 0:
                 notes.append(f"{unprepared} failed preparation")
+            settled = fields.get("settled")
+            if isinstance(settled, int) and settled > 0:
+                notes.append(f"{settled} already built by the verilate job")
             if notes:
                 msg += f" ({'; '.join(notes)})"
             if isinstance(requested, int) and isinstance(parallel, int):
@@ -1360,12 +1363,58 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "dispatch.key_released":
             tests = fields.get("tests") or []
             job_ids = fields.get("job_ids") or []
+            waited_for = (
+                "the build job"
+                if fields.get("phase") == "verilate"
+                else "the rest of the build job"
+            )
             return (
                 f"dispatch: compile key {fields.get('group')} is built — "
                 f"released {len(job_ids)} simulation job(s) for "
                 f"{', '.join(str(name) for name in tests)} "
                 f"({', '.join(str(job_id) for job_id in job_ids)}); they start "
-                "now instead of waiting for the rest of the build job"
+                f"now instead of waiting for {waited_for}"
+            )
+        case "dispatch.build_job_shrunk":
+            reserved = ", ".join(
+                f"{key}={fields[key]}"
+                for key in ("nodes", "cpus", "mem")
+                if fields.get(key) is not None
+            )
+            return (
+                "dispatch: every compile key was already built, so the build "
+                f"job {fields.get('job_id')} has nothing to compile; lowered its "
+                f"reservation to {reserved} so it does not queue for compile "
+                "resources"
+            )
+        case "dispatch.build_job_shrink_failed":
+            return (
+                "dispatch: every compile key was already built, but the build "
+                f"job {fields.get('job_id')} could not be lowered to an idle "
+                f"reservation ({fields.get('error')}). Its simulations are "
+                "released already; the run ends once that job has queued and "
+                "run."
+            )
+        case "build_job.verilate_result_unusable":
+            return (
+                "build job: no usable verilate job record at "
+                f"{fields.get('path')}, so every config runs preproc and "
+                "compiles here"
+            )
+        case "build_job.settled_build_changed":
+            return (
+                f"build job: the build the verilate job recorded for "
+                f"{fields.get('test')} is gone or changed ({fields.get('reason')}; "
+                f"stamp in {fields.get('stamp_dir')}), so it compiles here, with "
+                "this job's reservation, which is 1 CPU if the verilate job "
+                "lowered it"
+            )
+        case "build_job.compile_inputs_moved":
+            return (
+                f"build job: an input of {fields.get('test')} was rewritten while "
+                "it compiled, most likely by another config's preproc; that build "
+                "is discarded and compiles again once every preproc has run. Make "
+                "the hook skip writes that change nothing."
             )
         case "build_job.partial_result_failed":
             return (

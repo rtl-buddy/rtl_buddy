@@ -269,6 +269,7 @@ def write_build_result_json(path, *, built, failed, builds=None, partial=False):
 
     ``builds`` is an optional per-config record list in plan order, ``{test, builder, duration_sec, reused, group}``.
     A failed build's record also has ``returncode``, ``error_tail`` (see :data:`COMPILE_ERROR_TAIL_LINES`) and a suite-relative ``transcript``.
+    ``fingerprint_sha`` is on a record whose build is stamped, and ``inputs_sha`` on any record whose compile inputs were resolved; both are the same digest of those inputs.
     The schema version does not change for these keys, and readers must tolerate their absence.
 
     ``partial`` marks an envelope the build job is still rewriting after each group.
