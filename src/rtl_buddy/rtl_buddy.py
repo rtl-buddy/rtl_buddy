@@ -11573,7 +11573,8 @@ class RtlBuddy:
                 help="namespace this invocation's P&R output under "
                 "artefacts/.runs/<tag>/ with its own tree lock and log, so "
                 "concurrent rb pnr calls on one pnr.yaml do not collide; "
-                "blocks: read the tag's abstract first, then the untagged one",
+                "blocks: read the tag's abstract, or a copy of the untagged one "
+                "when the tag never ran the block",
             ),
         ] = None,
     ):
