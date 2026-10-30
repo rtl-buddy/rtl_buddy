@@ -570,8 +570,10 @@ def test_shim_split_compile_submits_a_verilate_job_then_a_build_job(split_shim_r
     verilate, build = wrapped
     assert "--phase verilate" in verilate, verilate
     assert "--job-name=rb-verilate-" in verilate, verilate
-    # No gates manifest: there is no build for a released simulation yet.
-    assert "--gates" not in verilate, verilate
+    # The same gates manifest as the build job: the verilate job releases a key it
+    # finds already built.
+    gates = verilate.split("--gates ")[1].split()[0]
+    assert f"--gates {gates}" in build, build
     assert "--phase build" in build, build
     assert "--job-name=rb-build-" in build, build
     # The chain, with Slurm owning cleanup if verilation fails.
@@ -631,6 +633,12 @@ def test_shim_split_compile_reports_both_halves_in_one_compile_record(
         ), entry
 
 
+def _reserve_a_wide_build_job(project: Path) -> None:
+    """Give the build job more than an idle reservation, so there is something to lower."""
+    root = project / "root_config.yaml"
+    root.write_text(root.read_text() + "  compile:\n    cpus: 4\n    mem: 4G\n")
+
+
 @pytest.fixture(scope="module")
 def warm_split_shim_run(tmp_path_factory):
     """A split regression run twice: cold, then warm with `scontrol` and deferred jobs.
@@ -638,7 +646,9 @@ def warm_split_shim_run(tmp_path_factory):
     On the warm run the verilate job finds both keys built, so it releases their simulations and lowers the build job, which then copies its records without running a preproc.
     """
     work = tmp_path_factory.mktemp("dispatch_warm_split")
-    proc, _envelope, project, diag = _run_regression(work)
+    proc, _envelope, project, diag = _run_regression(
+        work, prepare_project=_reserve_a_wide_build_job
+    )
     assert proc.returncode == 0, diag
     scontrol_log = work / "scontrol.txt"
     proc, envelope, project, diag = _rerun_regression(

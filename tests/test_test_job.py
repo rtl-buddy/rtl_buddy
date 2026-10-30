@@ -2057,10 +2057,14 @@ def _set_assertions(cfg):
     ],
     ids=["plusdefines", "builder", "model", "assertions", "unchanged"],
 )
+@pytest.mark.parametrize("phase", ["full", "verilate"])
 def test_a_build_job_flags_a_hook_that_broke_its_compile_key_declaration(
-    minimal_project: Path, stub_runner: type[_StubTestRunner], hook, changed
+    minimal_project: Path, stub_runner: type[_StubTestRunner], hook, changed, phase
 ):
-    """`preproc-sets-plusdefines: false` sized the reservation; a hook that changes any part of the compile key anyway is warned about."""
+    """`preproc-sets-plusdefines: false` sized the reservation; a hook that changes any part of the compile key anyway is warned about.
+
+    A split compile's verilate job runs every config's PRE, so it is the job that warns.
+    """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
     (minimal_project / "pre.py").write_text("pass\n")
@@ -2088,7 +2092,8 @@ def test_a_build_job_flags_a_hook_that_broke_its_compile_key_declaration(
     stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
     runner, rb = _runner()
     result = runner.invoke(
-        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+        rb.app,
+        ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--phase", phase],
     )
     assert result.exit_code == 0, result.output
 
