@@ -1216,6 +1216,7 @@ def test_protected_names_are_outputs_a_flow_really_writes():
             "cdc_vivado.py",
             "power_openroad.py",
             "pnr_openroad.py",
+            "pnr_tag_inputs.py",
             "synth_yosys.py",
             "synth_openroad.py",
             "axi_profile_rtl_buddy.py",

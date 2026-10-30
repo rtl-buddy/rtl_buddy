@@ -21,12 +21,11 @@ Use `rb --machine`. Field definitions: `rb --machine docs show reference/yaml#pn
 ## Run loop
 
 ```bash
-rb --machine pnr <run> -c <pnr.yaml>  # one run
+rb --machine pnr <run> -c <pnr.yaml> [--run-tag <tag>]  # one run; tag concurrent calls
 rb --machine pnr -c <pnr.yaml> --synth -j 4  # whole suite, blocks first, synthesis included
 rb --machine pnr <run> -c <pnr.yaml> --stop-after global_route
 rb --machine pnr <run> -c <pnr.yaml> --resume latest --from detailed_route
 rb --machine pnr <run> -c <pnr.yaml> --dispatch slurm  # one Slurm job per stage
-rb --machine pnr <run> -c <pnr.yaml> --run-tag <tag> &
 rb --machine pnr-export <run> -c <pnr.yaml> --png  # GDS/PNG from a saved result
 ```
 

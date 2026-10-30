@@ -760,9 +760,10 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 │                                               under artefacts/.runs/<tag>/ with its  │
 │                                               own tree lock and log, so concurrent   │
 │                                               rb pnr calls on one pnr.yaml do not    │
-│                                               collide; blocks: read the tag's        │
-│                                               abstract, or a copy of the untagged    │
-│                                               one when the tag never ran the block   │
+│                                               collide; block abstracts (the tag's,   │
+│                                               else the untagged ones) and the        │
+│                                               synthesis netlist are read from copies │
+│                                               taken into that tree                   │
 │ --help                                        Show this message and exit.            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -812,7 +813,8 @@ Usage: rtl-buddy pnr-export [OPTIONS] [PNR_NAME]
 │                                         reports the cells                            │
 │                                         [default: (each run's gds-mode (preview))]   │
 │ --run-tag             TEXT              export the result an rb pnr --run-tag <tag>  │
-│                                         wrote under artefacts/.runs/<tag>/           │
+│                                         wrote under artefacts/.runs/<tag>/, with the │
+│                                         block copies that run read                   │
 │ --help                                  Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
