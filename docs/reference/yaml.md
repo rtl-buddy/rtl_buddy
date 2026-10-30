@@ -902,6 +902,7 @@ runs:
 | `fail-on-electrical` | `false` | `true` fails a routed run with any max-slew, max-capacitance or max-fanout violator, and post-route repair counts each round's max-slew and max-capacitance violators, so a round that ties on timing and DRCs wins with fewer. It adds `electrical` to `signoff.fail-on` |
 | `threads` | OpenROAD's | Positive integer, or `auto` for the CPUs of the current allocation. Unset passes none, and OpenROAD picks its own. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `detailed-route-verbose` | 1 | `detailed_route -verbose` level; 0 silences the iteration log |
+| `report-fanout-nets` | 10 | Positive integer: the signal nets `fanout.rpt` lists, highest fanout first. See [Find the critical path and loaded nets in the RTL](../concepts/pnr.md#find-the-critical-path-and-loaded-nets-in-the-rtl) |
 | `checkpoints` | `false` | `true`, a stage, or a list of `floorplan`, `place`, `cts`, `global_route`, `detailed_route`, `post_route_repair`. `[]` writes only the progress log. See [Keep stage checkpoints](../concepts/pnr.md#keep-stage-checkpoints) |
 | `stages` | `false` | `true` runs each stage in its own session. A `checkpoints` list may then leave out only `post_route_repair`. See [Run stages as separate sessions](../concepts/pnr.md#run-stages-as-separate-sessions) |
 | `resources` | — | `cpus`, `mem`, quoted `time`, and `stages: {<stage>: {...}}`, for `--dispatch slurm` only. See [Dispatch the stages to Slurm](../concepts/pnr.md#dispatch-the-stages-to-slurm) |
