@@ -761,7 +761,8 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 │                                               own tree lock and log, so concurrent   │
 │                                               rb pnr calls on one pnr.yaml do not    │
 │                                               collide; blocks: read the tag's        │
-│                                               abstract first, then the untagged one  │
+│                                               abstract, or a copy of the untagged    │
+│                                               one when the tag never ran the block   │
 │ --help                                        Show this message and exit.            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
