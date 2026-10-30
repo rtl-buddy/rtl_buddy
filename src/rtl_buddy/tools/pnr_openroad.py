@@ -683,18 +683,18 @@ def _wire_rc_spec(wire_rc: WireRc) -> str:
     )
 
 
-def _match_footprint_option(platform) -> str:
-    """Return ` -match_cell_footprint` for every `repair_design` and `repair_timing` when `match-cell-footprint` is set, as ORFS passes it for `MATCH_CELL_FOOTPRINT`, else `""`."""
-    return (
-        " -match_cell_footprint" if platform.get_match_cell_footprint() is True else ""
-    )
+def _repair_command(command: str, platform) -> str:
+    """Return `command`, a `repair_design` or `repair_timing` with its own options, followed by the options every repair of `platform` takes: `-match_cell_footprint` with `match-cell-footprint`, as ORFS passes it for `MATCH_CELL_FOOTPRINT`. `None` adds none."""
+    if platform is not None and platform.get_match_cell_footprint() is True:
+        return f"{command} -match_cell_footprint"
+    return command
 
 
 def _repair_design_tcl(
-    title: str, design: RepairDesign, when: str = "", footprint: str = ""
+    title: str, design: RepairDesign, when: str = "", platform=None
 ) -> list[str]:
-    """`repair_design` after a log line naming it; with `wire-rc`, at that signal wire RC, the session's restored after it. `when` follows the command in the log line; `footprint` is `_match_footprint_option`."""
-    command = f"repair_design{design.options()}{footprint}"
+    """`repair_design` after a log line naming it; with `wire-rc`, at that signal wire RC, the session's restored after it. `when` follows the command in the log line; `platform` adds its repair options (`_repair_command`)."""
+    command = _repair_command(f"repair_design{design.options()}", platform)
     if design.wire_rc is None:
         return [f'puts ">>> {title}: {command}{when}"', command]
     return [
@@ -714,9 +714,9 @@ def _repair_steps_tcl(
     hold_ns: float | None,
     ps_per_unit: float | None,
     legalize: str | None,
-    footprint: str = "",
+    platform=None,
 ) -> str:
-    """Return `repair_design`, then setup and hold `repair_timing`, each after a log line naming it, each with `footprint` (`_match_footprint_option`).
+    """Return `repair_design`, then setup and hold `repair_timing`, each after a log line naming it, each with `platform`'s repair options (`_repair_command`).
 
     Margins are given in ns and passed in the Liberty time unit (`ps_per_unit` picoseconds), which is what `repair_timing` reads; the log line gives both. A zero margin is the tool's default and passes no option. The hold repair also passes a set setup margin, as ORFS's `repair_timing_helper` does, so it keeps that much setup slack on the paths it delays.
 
@@ -726,7 +726,7 @@ def _repair_steps_tcl(
     """
     lines = []
     if design is not None:
-        lines += _repair_design_tcl(title, design, footprint=footprint)
+        lines += _repair_design_tcl(title, design, platform=platform)
         if legalize is not None and (setup_ns is not None or hold_ns is not None):
             lines += [
                 f'puts ">>> {title}: legalize after repair_design"',
@@ -748,8 +748,8 @@ def _repair_steps_tcl(
         options = [_option(kind, margin)]
         if kind == "hold" and setup_ns is not None:
             options.append(_option("setup", setup_ns))
-        command = (
-            f"repair_timing -{kind}" + "".join(opt for opt, _ in options) + footprint
+        command = _repair_command(
+            f"repair_timing -{kind}" + "".join(opt for opt, _ in options), platform
         )
         note = ", ".join(n for _, n in options)
         if any(opt for opt, _ in options):
@@ -758,7 +758,7 @@ def _repair_steps_tcl(
             note += ", signal wire RC [rb::rc::describe] for the nets it changes"
         lines += [f'puts ">>> {title}: {command} ({note})"', command]
     if design is not None and design.after_timing:
-        lines += _repair_design_tcl(title, design, " after timing repair", footprint)
+        lines += _repair_design_tcl(title, design, " after timing repair", platform)
     return "".join(f"{line}\n" for line in lines)
 
 
@@ -769,16 +769,15 @@ def _post_cts_repair_tcl(platform, mode: PnrMode) -> str:
     """
     if mode is PnrMode.PROBE:
         return '\nputs ">>> Post-CTS timing repair: skipped (mode: probe)"\n'
-    footprint = _match_footprint_option(platform)
     setup = (
-        f"repair_timing -setup{footprint}\n"
+        _repair_command("repair_timing -setup", platform) + "\n"
         if platform.get_post_cts_setup_repair()
         else ""
     )
     return (
         '\nputs ">>> Post-CTS timing repair"\n'
         "estimate_parasitics -placement\n"
-        f"{setup}repair_timing -hold{footprint}\n"
+        f"{setup}{_repair_command('repair_timing -hold', platform)}\n"
     )
 
 
@@ -790,8 +789,12 @@ def _floorplan_setup_repair_tcl(platform, mode: PnrMode) -> str:
         return 'puts ">>> Floorplan setup repair: skipped (mode: probe)"\n'
     return (
         'puts ">>> Floorplan setup repair"\n'
-        'repair_timing -setup -sequence "unbuffer,sizeup,swap,vt_swap" '
-        f"-skip_last_gasp{_match_footprint_option(platform)}\n"
+        + _repair_command(
+            'repair_timing -setup -sequence "unbuffer,sizeup,swap,vt_swap" '
+            "-skip_last_gasp",
+            platform,
+        )
+        + "\n"
     )
 
 
@@ -873,9 +876,9 @@ def _global_route_repair_tcl(
     dpl_options: str = "",
     gr: GlobalRoute = GlobalRoute(),
     timing: bool = False,
-    footprint: str = "",
+    platform=None,
 ) -> str:
-    """Return the repair on global-route parasitics, as ORFS runs it, or `""` when the platform and run leave it off. Each repair command takes `footprint` (`_match_footprint_option`). A probe skips it. With `timing` (checkpoints armed) the repair starts by timing the router's result, the stage's `before_repair` event.
+    """Return the repair on global-route parasitics, as ORFS runs it, or `""` when the platform and run leave it off. Each repair command takes `platform`'s repair options (`_repair_command`). A probe skips it. With `timing` (checkpoints armed) the repair starts by timing the router's result, the stage's `before_repair` event.
 
     The global-route estimate includes the wires that post-CTS repair (on placement parasitics) could not see. The resizer reroutes the nets it changes; the cells it adds are legalized, then `reroute: incremental` reroutes their nets incrementally and `full` runs the flow's global route again. The closing route is `-verbose`, so the log repeats the congestion table after the repair. `dpl_options` follows its `detailed_placement`, as it does the flow's others.
 
@@ -892,7 +895,8 @@ def _global_route_repair_tcl(
         return (
             before + 'puts ">>> Post-global-route hold repair"\n'
             "estimate_parasitics -global_routing\n"
-            f"repair_timing -hold{footprint}\n"
+            + _repair_command("repair_timing -hold", platform)
+            + "\n"
             + _start_incremental_cmd(gr)
             + f"detailed_placement{dpl_options}\n"
             + _end_incremental_cmd(gr)
@@ -907,7 +911,7 @@ def _global_route_repair_tcl(
         repair.hold_margin,
         ps_per_unit,
         legalize,
-        footprint,
+        platform,
     )
     head = (
         before + f'puts ">>> {title} (reroute {repair.reroute.value})"\n'
@@ -3508,7 +3512,7 @@ class OpenRoadPnr:
             "place_repair_design_options": (
                 platform.get_placement_repair_design().options()
             ),
-            "match_cell_footprint": _match_footprint_option(platform),
+            "match_cell_footprint": _repair_command("", platform),
             "detailed_placement_optimization": _detailed_placement_optimization_tcl(
                 platform
             ),
@@ -3532,7 +3536,7 @@ class OpenRoadPnr:
                 gp_blocks.dpl_options,
                 platform.get_global_route(),
                 timing=self._arms_checkpoints(),
-                footprint=_match_footprint_option(platform),
+                platform=platform,
             ),
             "gp_blockages_create": gp_blocks.create,
             "gp_blockages_destroy": gp_blocks.destroy,
@@ -3869,7 +3873,6 @@ class OpenRoadPnr:
         setup, hold = repair.margins(round_)
         title = self._round_title(round_)
         gr = self._platform.get_global_route()
-        footprint = _match_footprint_option(self._platform)
         if round_ == self._electrical_round():
             # Only `repair_design`, on the best round's database (`run_post_route_repair`).
             design = repair.electrical_design()
@@ -3898,13 +3901,19 @@ class OpenRoadPnr:
                 "estimate_parasitics -global_routing\n",
                 spef,
                 _repair_steps_tcl(
-                    title, design, setup, hold, self._ps_per_unit, legalize, footprint
+                    title,
+                    design,
+                    setup,
+                    hold,
+                    self._ps_per_unit,
+                    legalize,
+                    self._platform,
                 ),
                 legalize,
             ]
         else:
             steps = _repair_steps_tcl(
-                title, design, setup, hold, self._ps_per_unit, None, footprint
+                title, design, setup, hold, self._ps_per_unit, None, self._platform
             )
             parts += [
                 files(_TEMPLATE_PACKAGE).joinpath(_ECO_REPAIR_FILE).read_text(),
@@ -6800,6 +6809,33 @@ class OpenRoadPnr:
                         "cts-obstruction-aware: false needs a clock_tree_synthesis "
                         "with -no_obstruction_aware; OpenROAD "
                         f"{version or self.openroad_executable} has none"
+                    ),
+                    fail_stage="setup",
+                )
+
+        if platform.get_match_cell_footprint() is True:
+            missing = [
+                command
+                for command in ("repair_design", "repair_timing")
+                if not self._has_command_option(command, "-match_cell_footprint")
+            ]
+            if missing:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr.match_cell_footprint_unsupported",
+                    pnr=self.pnr_cfg.get_name(),
+                    exe=self.openroad_executable,
+                    version=version,
+                    commands=missing,
+                )
+                return PnrFailResults(
+                    name=self.name + "/results",
+                    desc=(
+                        "match-cell-footprint: true needs repair_design and "
+                        "repair_timing with -match_cell_footprint; OpenROAD "
+                        f"{version or self.openroad_executable} has none on "
+                        + " and ".join(missing)
                     ),
                     fail_stage="setup",
                 )

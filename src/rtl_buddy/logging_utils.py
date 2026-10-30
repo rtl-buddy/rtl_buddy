@@ -2102,6 +2102,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('version') or fields.get('exe')} does not take; "
                 "unset the key or use a newer OpenROAD"
             )
+        case "pnr.match_cell_footprint_unsupported":
+            return (
+                f'P&R "{fields.get("pnr")}": match-cell-footprint: true needs '
+                "-match_cell_footprint on repair_design and repair_timing, which "
+                f"OpenROAD {fields.get('version') or fields.get('exe')} does not "
+                f"take on {' and '.join(fields.get('commands') or [])}; unset the "
+                "key or use a newer OpenROAD"
+            )
         case "pnr.harden_multi_corner":
             return (
                 f'P&R "{fields.get("pnr")}": harden: needs a single-corner '

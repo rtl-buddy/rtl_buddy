@@ -102,14 +102,15 @@ def test_the_hold_only_global_route_repair_matches_footprints(tmp_path):
     assert _repairs(text)[-1] == "repair_timing -hold -match_cell_footprint"
 
 
-def test_repair_steps_put_the_flag_on_every_repair():
+def test_repair_steps_put_the_flag_on_every_repair(tmp_path):
     """`after-timing` and `wire-rc` repairs included; the log lines name the command run."""
     from rtl_buddy.config.pnr_repair import RepairDesign, WireRc
 
     design = RepairDesign(
         slew_margin=20.0, wire_rc=WireRc(layer="metal5"), after_timing=True
     )
-    steps = pnr_openroad._repair_steps_tcl("T", design, 0.1, 0.05, 1.0, None, _FLAG)
+    platform = _platform(_pdk(tmp_path), match_cell_footprint=True)
+    steps = pnr_openroad._repair_steps_tcl("T", design, 0.1, 0.05, 1.0, None, platform)
 
     repairs = _repairs(steps)
     assert repairs == [
@@ -149,8 +150,22 @@ def test_every_script_differs_only_by_the_flag_on_its_repairs(
             env={**_ROUNDS_ENV, "RB_STUB_SLEW": "3 2 1 0", "RB_STUB_CAP": "0 0 0 0"},
             platform=platform,
         )
+        asked = []
+        monkeypatch.setattr(
+            backend,
+            "_has_command_option",
+            lambda command, option: asked.append((command, option)) or True,
+        )
         assert isinstance(backend.run(), PnrPassResults)
         scripts[name] = _scripts(artefacts)
+        assert asked == (
+            [
+                ("repair_design", "-match_cell_footprint"),
+                ("repair_timing", "-match_cell_footprint"),
+            ]
+            if platform
+            else []
+        )
 
     electrical = "06_post_route_repair.r3.repair.tcl"
     assert electrical in scripts["set"]
@@ -164,6 +179,38 @@ def test_every_script_differs_only_by_the_flag_on_its_repairs(
         "repair_design -slew_margin 10 -match_cell_footprint"
     ]
     assert len(_repairs(scripts["set"]["06_post_route_repair.r1.repair.tcl"])) == 3
+
+
+@pytest.mark.parametrize(
+    "missing", [("repair_timing",), ("repair_design", "repair_timing")]
+)
+def test_an_openroad_without_the_flag_fails_setup_naming_the_key(
+    tmp_path, monkeypatch, missing
+):
+    backend, _artefacts = _run_backend(
+        tmp_path, monkeypatch, {}, platform={"match_cell_footprint": True}
+    )
+    monkeypatch.setattr(
+        backend, "_has_command_option", lambda command, _o: command not in missing
+    )
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "setup"
+    desc = res.results["desc"]
+    assert desc.startswith("match-cell-footprint: true needs repair_design and")
+    assert desc.endswith(" has none on " + " and ".join(missing))
+
+
+def test_the_unsupported_message_names_the_key_and_the_commands():
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message(
+        "pnr.match_cell_footprint_unsupported",
+        {"pnr": "r", "version": "25Q1", "commands": ["repair_timing"]},
+    )
+    assert "match-cell-footprint: true" in message
+    assert "OpenROAD 25Q1 does not take on repair_timing" in message
 
 
 # -- configuration digest ------------------------------------------------------------
