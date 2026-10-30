@@ -100,7 +100,7 @@ Each point and driver is given by its RTL name where the synthesis netlist keeps
 
 A name made up by Yosys (`_123_`, a name with `$`) is not one of the netlist's own. A driver that P&R inserted is traced back through buffers and inverters to the first driver that resolves, and the file says how many it is behind, and `inverted` when an odd number of them are inverters. A name that does not resolve stays as OpenROAD prints it, marked `(unresolved)`, and the file gives the raw name and `src` beside every resolved one. `worst_path_resolved` is `false` unless both ends of the worst path resolve. If the reports cannot be written, `pnr.path_report_failed` warns and their fields are left out; the run's verdict does not change.
 
-A value that cannot be computed, because a report's commands failed or found nothing, is left out of the result and is `unavailable` in its file, with the reason, never 0. The reports add about 0.2 s to a routed design of 1,500 instances.
+A value that cannot be computed, because a report's commands failed or found nothing, is left out of the result and is `unavailable` in its file, with the reason, never 0. After the timing the final reports already run, the reports take about 0.4 s on a routed design of 373,000 instances and 60,000 nets: the fanout scan grows with the net count and the path search with the number of path groups.
 
 ## Inspect artefacts
 
