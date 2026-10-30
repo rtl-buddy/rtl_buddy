@@ -19,7 +19,7 @@ cfg-synth-efforts:
       abc-script: "strash; dretime; map {D}"
 ```
 
-- rtl_buddy keeps `-liberty` and `-dont_use`. With an SDC clock it also passes `-D <period_ps>`, the shortest SDC period in picoseconds, on both backends; `tool: yosys` also appends `stime -p`, whose report gives the run's WNS. Write `{D}` where a mapping command should take the delay target. An SDC that yields no period warns `synth.sdc_no_clock`, and says so when the script uses `{D}`, which is then empty and ABC maps with no delay target. Without an SDC, `{D}` is empty and nothing is logged.
+- rtl_buddy keeps `-liberty` and `-dont_use`. With an SDC clock it also passes `-D <period_ps>`, the shortest SDC period in picoseconds, on both backends; `tool: yosys` also appends `stime -p`, whose report gives the run's WNS. Write `{D}` where a mapping command should take the delay target. An SDC that yields no period warns `synth.sdc_no_clock`, and says so when the script uses `{D}`, which is then empty and ABC maps with no delay target. Without an SDC, `{D}` is empty and nothing is logged. To map with no delay target, as Yosys does without `-D` and OpenROAD-flow-scripts does, write a script without `{D}`.
 - Write the script on one line, with commands separated by `;` and no double quotes. A multi-line value or a double quote is a configuration error. Yosys replaces commas with spaces.
 - `strash; dretime; map {D}` is the script of `abc -fast`. It maps a large flat design much faster than the default, at some cost in quality.
 - `abc-args` applies only to unmapped `tool: yosys` runs, as `abc <abc-args>`. A mapped run ignores it and warns `synth.abc_args_ignored`.
