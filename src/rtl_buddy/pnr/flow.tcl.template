@@ -220,7 +220,7 @@ foreach rb_check {slew capacitance fanout} {
 if {[catch {
   report_check_types -max_slew -max_capacitance -max_fanout -violators > $OUT_DIR/electrical.rpt
 } rb_err]} { puts "rb: electrical.rpt unavailable: $rb_err" }
-{{ hook_after_reports_block }}
+{{ path_fanout_reports }}{{ hook_after_reports_block }}
 # Again for cells a before-reports hook added.
 rb::global_connect
 {{ hook_stage_end_finish_block }}puts ">>> Write outputs"

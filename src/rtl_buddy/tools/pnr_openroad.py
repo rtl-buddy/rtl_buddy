@@ -66,6 +66,7 @@ from . import (
     pnr_abstract,
     pnr_checkpoints,
     pnr_dispatch,
+    pnr_path_report,
     pnr_placement_check,
     pnr_stages,
     pnr_supply_order,
@@ -118,6 +119,9 @@ _FLOW_OUTPUT_NAMES = (
     "route.drc.rpt",
     "timing.rpt",
     "electrical.rpt",
+    # Written by rb from the final reports; see `pnr_path_report`.
+    pnr_path_report.WORST_PATHS_REPORT,
+    pnr_path_report.FANOUT_REPORT,
     "grt_antennas.rpt",
     "drt_antennas.rpt",
     "{design}.def",
@@ -3463,6 +3467,9 @@ class OpenRoadPnr:
             "detailed_route_verbose": str(self.pnr_cfg.get_detailed_route_verbose()),
             "cell_count_tag": _CELL_COUNT_TAG,
             "electrical_tag": _ELECTRICAL_TAG,
+            "path_fanout_reports": pnr_path_report.report_tcl(
+                list(corner_libs), self.pnr_cfg.get_report_fanout_nets()
+            ),
             "buffer_ports_block": _buffer_ports_tcl(
                 self.pnr_cfg.get_port_buffers(), platform.get_port_buffer()
             ),
@@ -4096,6 +4103,16 @@ class OpenRoadPnr:
         for m in _ELECTRICAL_RE.finditer(log_text):
             fields[_ELECTRICAL_FIELDS[m.group(1)][0]] = int(m.group(2))
         return fields
+
+    def _path_fanout_fields(self, final: str) -> dict:
+        """Write `worst_paths.rpt` and `fanout.rpt` from the final reports and return their result fields; see `pnr_path_report`."""
+        return pnr_path_report.write_reports(
+            self.artefact_dir,
+            pnr_path_report.parse(final),
+            self._openroad_netlist or self._resolve_netlist_path(),
+            self.pnr_cfg.resolve_synth_cfg().get_top(),
+            self.pnr_cfg.get_report_fanout_nets(),
+        )
 
     def _macro_pin_limits_fields(self, log_text: str) -> dict:
         """Return the macro pin-limit step's counts as result fields, or `{}` when the step did not run; warn `pnr.macro_pin_limits_unmet` when a pin is unmet.
@@ -7229,6 +7246,7 @@ class OpenRoadPnr:
             "tns_hold_ps": tns_hold * ps_per_unit if tns_hold is not None else None,
             "drc_count": drcs,
             **self._parse_electrical(final),
+            **self._path_fanout_fields(final),
             **self._allow_congestion_fields(platform, log_text),
             **self._macro_pin_limits_fields(log_text),
         }
