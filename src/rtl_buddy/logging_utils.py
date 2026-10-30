@@ -1399,6 +1399,20 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('path')}, so every config runs preproc and "
                 "compiles here"
             )
+        case "build_job.settled_build_changed":
+            return (
+                f"build job: the build the verilate job recorded for "
+                f"{fields.get('test')} is gone or changed (stamp in "
+                f"{fields.get('stamp_dir')}), so it compiles here, with this "
+                "job's reservation, which is 1 CPU if the verilate job lowered it"
+            )
+        case "build_job.compile_inputs_moved":
+            return (
+                f"build job: an input of {fields.get('test')} was rewritten while "
+                "it compiled, most likely by another config's preproc; that build "
+                "is discarded and compiles again once every preproc has run. Make "
+                "the hook skip writes that change nothing."
+            )
         case "build_job.partial_result_failed":
             return (
                 f"build job: could not update {fields.get('path')} with the "

@@ -70,7 +70,6 @@ from ..logging_utils import (
     log_event,
     task_status,
 )
-from ..dispatch.argv import verilate_result_path
 from ..runner.result_io import build_compile_fail_desc, load_build_result_json
 from ..process_utils import run_managed_process
 from .vcs_license import VcsLicenseQueueMonitor, has_license_queue_marker
@@ -1451,6 +1450,50 @@ def _first_entry_mismatch(stored, current, *, listing_names_only: bool = False):
     return "(no mismatch)"
 
 
+def _build_record_of(envelope, test_name):
+    """``test_name``'s per-config record in a build envelope, or ``None``."""
+    return next(
+        (
+            entry
+            for entry in envelope.get("builds") or ()
+            if entry.get("test") == test_name
+        ),
+        None,
+    )
+
+
+def stamp_fingerprint_sha(stamp_dir):
+    """Digest of the inputs the stamp in ``stamp_dir`` vouches for, or ``None``.
+
+    Comparable with a build record's ``fingerprint_sha``. ``None`` when there is no
+    readable stamp. Never raises.
+    """
+    try:
+        stored = json.loads((Path(stamp_dir) / SHARED_BUILD_STAMP_NAME).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(stored, dict):
+        return None
+    return _fingerprint_sha(
+        {key: value for key, value in stored.items() if key not in _STAMP_META}
+    )
+
+
+def _stat_view(entries):
+    """``[path, size, mtime_ns]`` of each tracked entry, listings included.
+
+    Unlike the content hash, this moves when a file is rewritten with the same bytes,
+    which is what a reader racing the writer can see.
+    """
+    view = []
+    for entry in entries or ():
+        if _is_directory_entry(entry):
+            view.append([entry[0], _stat_view(entry[-1])])
+        elif isinstance(entry, list):
+            view.append(entry[:3])
+    return view
+
+
 def _entry_identity(entry):
     """The part of a tracked-input entry that decides :func:`_entry_matches`.
 
@@ -1553,6 +1596,7 @@ class VlogSim:
         expect_prebuilt=False,
         rebuild=False,
         build_result_json=None,
+        verilate_result_json=None,
         build_phase=BUILD_PHASE_FULL,
         run_tag=None,
     ):
@@ -1637,6 +1681,8 @@ class VlogSim:
         # compile failed for this test (retrying only burns the sim reservation) from a
         # stamp that is absent or stale (retry). None for local runs.
         self.build_result_json = build_result_json
+        # ...and the verilate job's, where the compile was split.
+        self.verilate_result_json = verilate_result_json
         # {returncode, transcript} of the last failed compile, read by a dispatched
         # build job for its envelope. None until a compile fails; reset by each
         # compile().
@@ -3565,7 +3611,7 @@ class VlogSim:
 
         A job the verilate job released may run before the build job has written
         anything; where the build envelope says nothing about this test, a stamped
-        build in the verilate job's envelope beside it counts as ``built``.
+        build in the verilate job's envelope counts as ``built``.
 
         Best-effort: an unreadable envelope falls back to the retry.
         """
@@ -3577,14 +3623,7 @@ class VlogSim:
             return None, None
         if not envelope:
             return self._verilate_job_verdict()
-        record = next(
-            (
-                entry
-                for entry in envelope.get("builds") or ()
-                if entry.get("test") == self.test_name
-            ),
-            None,
-        )
+        record = _build_record_of(envelope, self.test_name)
         if self.test_name not in set(envelope.get("failed") or ()):
             if self.test_name in set(envelope.get("built") or ()):
                 return "built", (record or {})
@@ -3617,23 +3656,15 @@ class VlogSim:
         Only a stamped build counts: the verilate job releases nothing else, and a
         verilation alone is not a build. ``(None, None)`` otherwise.
         """
-        verilate_json = verilate_result_path(self.build_result_json)
-        if verilate_json is None:
+        if self.verilate_result_json is None:
             return None, None
         try:
-            envelope = load_build_result_json(verilate_json)
+            envelope = load_build_result_json(self.verilate_result_json)
         except Exception:  # noqa: BLE001 - advisory; never costs a run
             return None, None
         if not envelope or self.test_name not in set(envelope.get("built") or ()):
             return None, None
-        record = next(
-            (
-                entry
-                for entry in envelope.get("builds") or ()
-                if entry.get("test") == self.test_name
-            ),
-            None,
-        )
+        record = _build_record_of(envelope, self.test_name)
         if record is None or record.get("fingerprint_sha") is None:
             return None, None
         return "built", record
@@ -3712,6 +3743,57 @@ class VlogSim:
         :class:`FilelistError` as :meth:`compile` does.
         """
         return _fingerprint_sha(self._compile_plan().fingerprint)
+
+    def compile_input_snapshot(self):
+        """Sizes and mtimes of the inputs the next compile reads, for a later compare.
+
+        Covers the filelist's files and the listings of its include and library
+        directories. Taken right before a compile that may overlap another config's
+        ``preproc``; see :meth:`compile_inputs_moved`. Raises :class:`FilelistError`
+        as :meth:`compile` does.
+        """
+        plan = self._compile_plan()
+        return {
+            "filelist": plan.filelist_path,
+            "stat": _stat_view(self._fingerprint_filelist_sources(plan.filelist_path)),
+            "dirs": [
+                str(path)
+                for path in (
+                    self._shared_build_dir or plan.compile_work_dir,
+                    plan.verilation_dir,
+                )
+                if path is not None
+            ],
+        }
+
+    def compile_inputs_moved(self, snapshot):
+        """Was an input in ``snapshot`` written since it was taken?
+
+        A rewrite counts even when the bytes are the same: a compile reading the file
+        while it was truncated saw something else.
+        """
+        try:
+            current = self._fingerprint_filelist_sources(snapshot["filelist"])
+        except OSError:
+            return True
+        return _stat_view(current) != snapshot["stat"]
+
+    def discard_build(self, snapshot):
+        """Remove what the last compile left to be reused: stamp, verilate marker and
+        verilation record in the directories ``snapshot`` names.
+
+        The next compile of this config then runs in full. Never raises.
+        """
+        for directory in snapshot["dirs"]:
+            with contextlib.suppress(OSError):
+                (Path(directory) / SHARED_BUILD_STAMP_NAME).unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                self._verilate_marker_path(directory).unlink(missing_ok=True)
+            self._clear_verilation_record(directory)
+        self._compile_plan_cache = None
+        self.last_build_stamp = None
+        self.last_compile_failure = None
+        self.stamp_write_failed = False
 
     def compile_group_dir(self):
         """The directory this test's compile will write into.

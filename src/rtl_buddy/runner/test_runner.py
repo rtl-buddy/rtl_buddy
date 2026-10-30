@@ -47,6 +47,7 @@ class TestRunner:
         expect_prebuilt=False,
         rebuild=False,
         build_result_json=None,
+        verilate_result_json=None,
         build_phase=None,
         run_tag=None,
     ):
@@ -76,6 +77,7 @@ class TestRunner:
         # `--rebuild`: compile even when the stamp says the build is warm.
         self.rebuild = rebuild
         self.build_result_json = build_result_json
+        self.verilate_result_json = verilate_result_json
         # Which half of a split compile COMPILE performs; ``None`` means all of it.
         self.build_phase = build_phase
         # The `--run-tag` artefact namespace, decided by the head.
@@ -109,6 +111,7 @@ class TestRunner:
             expect_prebuilt=self.expect_prebuilt,
             rebuild=self.rebuild,
             build_result_json=self.build_result_json,
+            verilate_result_json=self.verilate_result_json,
             run_tag=self.run_tag,
             **(
                 {"build_phase": self.build_phase}
@@ -236,6 +239,27 @@ class TestRunner:
             return self._vlog_sim.compile_inputs_sha()
         except Exception:  # noqa: BLE001 - telemetry must never raise
             return None
+
+    def compile_input_snapshot(self):
+        """Return the prepared sim's input snapshot, or ``None`` if it cannot be taken; see :meth:`VlogSim.compile_input_snapshot`."""
+        try:
+            return self._vlog_sim.compile_input_snapshot()
+        except Exception:  # noqa: BLE001 - an unwatched compile is the old behaviour
+            return None
+
+    def compile_inputs_moved(self, snapshot):
+        """Return whether an input in ``snapshot`` was written since; never raises."""
+        try:
+            return self._vlog_sim.compile_inputs_moved(snapshot)
+        except Exception:  # noqa: BLE001 - see compile_input_snapshot
+            return False
+
+    def discard_build(self, snapshot):
+        """Make the next compile of the prepared sim run in full; see :meth:`VlogSim.discard_build`. Never raises."""
+        try:
+            self._vlog_sim.discard_build(snapshot)
+        except Exception:  # noqa: BLE001 - the recompile still runs, unstamped or not
+            pass
 
     def compile_group_dir(self):
         """Return ``(group_dir, None)`` or ``(None, Results)`` for the prepared sim.

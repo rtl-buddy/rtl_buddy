@@ -312,10 +312,13 @@ def test_plusarg_is_not_a_build_job_flag():
     assert "--plusarg" not in build_job_argv(_build_spec())
 
 
-def test_the_verilate_envelope_sits_beside_the_build_envelope():
-    from rtl_buddy.dispatch.argv import verilate_result_path
-
-    assert verilate_result_path("/s/.dispatch/build-result-12-ab.json") == Path(
-        "/s/.dispatch/verilate-result-12-ab.json"
-    )
-    assert verilate_result_path("/s/.dispatch/result-0001.json") is None
+def test_the_verilate_envelope_path_is_forwarded_as_given():
+    """Both the build half and its gated sims read the verilate envelope the head
+    named, never one derived from another file name."""
+    path = Path("/s/.dispatch/verilate-result-12-ab.json")
+    build = build_job_argv(_build_spec(verilate_result_json=path))
+    assert _flag_value(build, "--verilate-result-json") == str(path)
+    sim = sim_job_argv(_test_spec(verilate_result_json=path))
+    assert _flag_value(sim, "--verilate-result-json") == str(path)
+    assert "--verilate-result-json" not in build_job_argv(_build_spec())
+    assert "--verilate-result-json" not in sim_job_argv(_test_spec())

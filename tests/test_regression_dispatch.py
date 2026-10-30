@@ -19,7 +19,6 @@ from typer.testing import CliRunner
 
 import rtl_buddy.rtl_buddy as rtl_buddy_module
 from rtl_buddy.config.dispatch import mem_to_bytes, time_to_seconds
-from rtl_buddy.dispatch.argv import verilate_result_path
 from rtl_buddy.dispatch.gates import build_job_of, load_gates
 from rtl_buddy.dispatch.base import DispatchBackend, JobHandle
 
@@ -7423,8 +7422,11 @@ def test_the_verilate_job_owns_its_own_envelope_log_and_gate(
     assert Path(build.result_json).name.startswith("build-result-")
     assert build.gates_json is not None
     assert verilate.gates_json == build.gates_json
-    # The build job finds the verilate job's envelope by name.
-    assert Path(verilate.result_json) == verilate_result_path(build.result_json)
+    # The build job and every gated sim are handed the verilate job's envelope.
+    assert build.verilate_result_json == verilate.result_json
+    sims = [spec for spec in backend.submitted if isinstance(spec, SimJobSpec)]
+    assert sims
+    assert {spec.verilate_result_json for spec in sims} == {verilate.result_json}
     # ...and the verilate job finds the build job, to shrink it, in the manifest.
     payload, _reason = load_gates(build.gates_json)
     record = build_job_of(payload)

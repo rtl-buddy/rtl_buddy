@@ -61,6 +61,9 @@ class BuildJobSpec:
     # build job can release a compile key's sims early. Set only for backends that
     # can release a pending job (Slurm).
     gates_json: Path | None = None
+    # The verilate job's envelope, for the build half of a split compile: the configs it
+    # already built, and the inputs of the ones it verilated.
+    verilate_result_json: Path | None = None
     # The shared-build cache root the head resolved. Tri-state: a path enables the
     # cache, "" means the head was told not to cache, None leaves the job to resolve it.
     shared_build_root: str | None = None
@@ -105,6 +108,9 @@ class TestJobSpec:
     # The gating build job's result envelope. A compile that failed for this test is
     # not retried under the sim's reservation; an absent or stale stamp is.
     build_result_json: Path | None = None
+    # The verilate job's envelope, where the compile was split: it can release this job
+    # before the build job has recorded anything.
+    verilate_result_json: Path | None = None
     # The cache root the build job was given, tri-state as on :class:`BuildJobSpec`.
     shared_build_root: str | None = None
     log_path: Path | None = None

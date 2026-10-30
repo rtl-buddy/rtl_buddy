@@ -117,7 +117,7 @@ from .dispatch import (
     create_dispatch_backend,
     validate_backend_name,
 )
-from .dispatch.argv import job_log_path, verilate_result_path
+from .dispatch.argv import job_log_path
 from .dispatch.base import (
     BUILD_PHASE_BUILD,
     BUILD_PHASE_FULL,
@@ -268,6 +268,7 @@ from .tools.spec_trace import (
 from .tools.verible import Verible
 from .tools.vlog_filelist import VlogFilelist, apply_exclude_globs
 from .tools.vlog_sim import (
+    stamp_fingerprint_sha,
     SHARED_BUILD_ROOT_ENV,
     VlogSim,
     resolve_shared_build_root,
@@ -407,6 +408,21 @@ def _explain_coverage_lines(entry: dict | None, run: dict | None) -> list[str]:
     if manifest:
         lines.append(f"  from:   {manifest}")
     return lines
+
+
+def _as_reuse(entry, **fields):
+    """A copy of a build record that says this job built nothing for it.
+
+    What a stamp reuse records: ``reused`` true, no duration and no phase split, so
+    build-job right-sizing never counts another job's compile as this one's. The
+    source job's release mark stays with the source job.
+    """
+    copy = {key: value for key, value in entry.items() if key not in _NOT_REUSED}
+    copy.update(fields, duration_sec=0.0, reused=True)
+    return copy
+
+
+_NOT_REUSED = ("verilate_sec", "build_sec", "released")
 
 
 def _summarize_compile_work(build_entries) -> dict:
@@ -1049,6 +1065,7 @@ class RtlBuddy:
         # finish before its own tail writes `cov_dir/` (`_sweep_coverage_orphans`).
         self._coverage_orphans: list = []
         self.build_result_json = None
+        self.verilate_result_json = None
         self.machine = False
         self.invocation_cwd: Path = Path.cwd()
         self.exec_ctx: ExecutionContext | None = None
@@ -2957,6 +2974,15 @@ class RtlBuddy:
                 "records as failed is reported without recompiling here",
             ),
         ] = None,
+        verilate_result_json: Annotated[
+            str | None,
+            typer.Option(
+                "--verilate-result-json",
+                hidden=True,
+                help="the verilate job's result envelope, where the compile was "
+                "split; read when that job released this one",
+            ),
+        ] = None,
         plusarg: Annotated[
             list[str] | None,
             typer.Option(
@@ -2993,6 +3019,11 @@ class RtlBuddy:
         self.build_result_json = (
             self._abs_invocation_path(build_result_json)
             if build_result_json is not None
+            else None
+        )
+        self.verilate_result_json = (
+            self._abs_invocation_path(verilate_result_json)
+            if verilate_result_json is not None
             else None
         )
         # Resolved before entering the command context so a relative --result-json lands
@@ -3388,6 +3419,15 @@ class RtlBuddy:
                 "simulation jobs as soon as that key is built",
             ),
         ] = None,
+        verilate_result_json: Annotated[
+            str | None,
+            typer.Option(
+                "--verilate-result-json",
+                hidden=True,
+                help="the verilate job's envelope, for the build half of a split "
+                "compile",
+            ),
+        ] = None,
         phase: Annotated[
             str,
             typer.Option(
@@ -3465,6 +3505,11 @@ class RtlBuddy:
         )
         # Likewise the gates manifest: a head path, not the compute node's cwd.
         gates_path = self._abs_invocation_path(gates) if gates is not None else None
+        verilate_result_path = (
+            self._abs_invocation_path(verilate_result_json)
+            if verilate_result_json is not None
+            else None
+        )
         ctx = self._enter_command_context(
             primary_config=test_config,
             log_path=(
@@ -3708,6 +3753,7 @@ class RtlBuddy:
             # One call per cluster: an array id is unique only on the controller that
             # accepted it.
             released, failures, skipped, systemic = [], [], [], None
+            released_pairs = set()
             # One deadline for the whole key, shared by its clusters, not one per batch.
             deadline = time.monotonic() + RELEASE_BUDGET_S
             for position, (cluster, job_ids) in enumerate(batches):
@@ -3722,6 +3768,7 @@ class RtlBuddy:
                     job_ids, cluster=cluster, cwd=suite_dir, budget_s=remaining
                 )
                 released.extend(outcome.released)
+                released_pairs.update((cluster, job_id) for job_id in outcome.released)
                 failures.extend(outcome.failures)
                 skipped.extend(outcome.skipped)
                 if outcome.systemic is not None:
@@ -3735,6 +3782,18 @@ class RtlBuddy:
             if systemic is not None:
                 with release_lock:
                     release_state["disabled"] = systemic
+            with recorded_lock:
+                # The build half releases what this job could not.
+                for index, _name in members:
+                    pairs = [
+                        (cluster, job_id)
+                        for cluster, ids in release_batches(payload, [index])
+                        for job_id in ids
+                    ]
+                    if pairs and released_pairs.issuperset(pairs):
+                        entry = recorded_entries.get(index)
+                        if entry is not None:
+                            entry["released"] = True
             if released:
                 # On the console, not just the job log: this line says a key stopped
                 # holding its tests, and INFO is invisible on a CI console.
@@ -3856,6 +3915,11 @@ class RtlBuddy:
                 # validate the stamp compares its fingerprint against this, and declines
                 # to recompile either way.
                 build_entry["fingerprint_sha"] = stamp["fingerprint_sha"]
+                if stamp.get("build_dir"):
+                    # Where the build half re-reads the stamp before trusting it.
+                    build_entry["stamp_dir"] = os.path.relpath(
+                        stamp["build_dir"], suite_dir
+                    )
             if ok and getattr(runner, "stamp_write_failed", False):
                 # Built, but with nothing on disk to say so. Gated sim jobs read this as
                 # "built" and get a reason naming the write. Absent means "stamped".
@@ -3905,7 +3969,7 @@ class RtlBuddy:
                     (
                         _build_entry(name, ok, worker_error, runner, group_dir)
                         if runner is not None
-                        else followed_entries[index]
+                        else copied_entries[index]
                     ),
                     ok,
                 )
@@ -3967,16 +4031,17 @@ class RtlBuddy:
                 or getattr(leader_runner, "stamp_write_failed", False)
             ):
                 return None
-            entry = _build_entry(leader_row[1], True, None, leader_runner, group_dir)
-            for half in ("verilate_sec", "build_sec"):
-                entry.pop(half, None)
+            leader_index = leader_row[0]
+            if leader_index not in leader_entries:
+                leader_entries[leader_index] = _build_entry(
+                    leader_row[1], True, None, leader_runner, group_dir
+                )
             # Recorded like an adoption: this config cost no build of its own.
-            entry.update(test=name, duration_sec=0.0, reused=True)
-            followed_entries[index] = entry
+            copied_entries[index] = _as_reuse(leader_entries[leader_index], test=name)
             inputs_shas[index] = followers[index][1]
             return (index, name, True, None, None, group_dir)
 
-        def _compile_members(group_dir, members):
+        def _compile_members(group_dir, members, *, deferred=None):
             """Compile one group's configs serially; return rows for the caller.
 
             The first member compiles; the rest adopt what it built. Members share one
@@ -4003,9 +4068,14 @@ class RtlBuddy:
 
             A member with no runner is a follower (:func:`_follow_leader`). One that
             cannot follow produces no row and joins ``refollow``.
+
+            ``deferred`` is set while PRE may still run on the main thread. A compile
+            whose inputs were rewritten meanwhile read them mid-write, so its build is
+            discarded, and it and the members after it go to ``deferred`` to compile
+            again once PRE is done.
             """
             rows = []
-            for index, name, runner in members:
+            for position, (index, name, runner) in enumerate(members):
                 if runner is None:
                     leader = followers[index][0]
                     row = _follow_leader(
@@ -4089,6 +4159,8 @@ class RtlBuddy:
                         leader=failed_name,
                         reason=detail,
                     )
+                watch = getattr(runner, "compile_input_snapshot", None)
+                snapshot = watch() if deferred is not None and callable(watch) else None
                 try:
                     res = runner.compile_prepared()
                 except Exception as exc:  # noqa: BLE001 - see exit-0 contract
@@ -4097,6 +4169,19 @@ class RtlBuddy:
                     # members still get their attempt.
                     rows.append((index, name, False, str(exc), runner, group_dir))
                     continue
+                if snapshot is not None and runner.compile_inputs_moved(snapshot):
+                    # Neither its build nor its failure says anything about the inputs
+                    # once PRE has settled them.
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "build_job.compile_inputs_moved",
+                        test=name,
+                        group=group_dir,
+                    )
+                    runner.discard_build(snapshot)
+                    deferred.extend(members[position:])
+                    break
                 built = isinstance(res, EarlyStopResults)
                 if built:
                     # This member's build is what the rest of the group adopts, but only
@@ -4161,22 +4246,17 @@ class RtlBuddy:
             return rows
 
         # ---- what the verilate job settled (the build half of a split compile).
-        # A config it left built and stamped is recorded as it is, with no PRE. Of the
-        # configs it verilated, the first of each key leads: it runs PRE and the make,
-        # and the rest follow without PRE when their recorded inputs match its build.
-        # Anything else, and every config when the envelope is unusable, goes the
-        # full way. The verilate job ran every PRE, so it is the one that reports
-        # `build_job.preproc_changed_compile_key`.
+        # A config it left built and stamped is recorded with no PRE, once its stamp is
+        # confirmed still on disk. Of the configs it verilated, the first of each key
+        # leads: it runs PRE and the make, and the rest follow without PRE when their
+        # recorded inputs match its build. Anything else, and every config when the
+        # envelope is unusable, goes the full way. The verilate job ran every PRE, so it
+        # is the one that reports `build_job.preproc_changed_compile_key`.
         settled = {}  # plan index -> the verilate job's record
         followers = {}  # plan index -> (leader plan index, recorded inputs sha)
         verilate_envelope = None
-        if phase == BUILD_PHASE_BUILD and result_json_path is not None:
-            verilate_json = verilate_result_path(result_json_path)
-            verilate_envelope = (
-                load_build_result_json(verilate_json)
-                if verilate_json is not None
-                else None
-            )
+        if phase == BUILD_PHASE_BUILD and verilate_result_path is not None:
+            verilate_envelope = load_build_result_json(verilate_result_path)
             if verilate_envelope is not None and verilate_envelope["partial"]:
                 verilate_envelope = None
             if verilate_envelope is None:
@@ -4184,7 +4264,7 @@ class RtlBuddy:
                     logger,
                     logging.INFO,
                     "build_job.verilate_result_unusable",
-                    path=str(verilate_json) if verilate_json is not None else None,
+                    path=str(verilate_result_path),
                 )
         if verilate_envelope is not None:
             verilated = set(verilate_envelope["built"])
@@ -4199,7 +4279,21 @@ class RtlBuddy:
                 if record is None:
                     continue
                 if record.get("fingerprint_sha") is not None:
-                    settled[index] = record
+                    stamp_dir = record.get("stamp_dir")
+                    if stamp_dir is not None and stamp_fingerprint_sha(
+                        Path(suite_dir) / stamp_dir
+                    ) == record.get("fingerprint_sha"):
+                        settled[index] = record
+                        continue
+                    # Evicted, cleaned or rebuilt since the verilate job: compile it
+                    # here, under whatever reservation this job still has.
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "build_job.settled_build_changed",
+                        test=cfg.get_name(),
+                        stamp_dir=stamp_dir,
+                    )
                 elif record.get("inputs_sha") is not None and record.get("group"):
                     leader = leaders.setdefault(record["group"], index)
                     if leader != index:
@@ -4207,10 +4301,33 @@ class RtlBuddy:
 
         # Per-config state the passes below share with the workers.
         inputs_shas = {}  # plan index -> compile inputs digest, once probed
-        followed_entries = {}  # plan index -> envelope record of a follower
+        copied_entries = {}  # plan index -> envelope record of a row with no runner
+        leader_entries = {}  # leader plan index -> its envelope record, for followers
         member_rows = {}  # plan index -> outcome row, once its group has it
         prepared_groups = {}  # plan index -> group dir, for a prepared config
         refollow = []  # followers that could not follow; they go the full way
+        outcomes = []
+
+        if settled:
+            # Recorded first and released second, as a group is: the verilate job
+            # released these unless its release failed, and a job still gated on this
+            # one must not wait for the keys left to compile.
+            settled_rows = []
+            for index, record in settled.items():
+                copied_entries[index] = _as_reuse(record)
+                settled_rows.append(
+                    (index, configs[index].get_name(), True, None, None, None)
+                )
+            outcomes.extend(settled_rows)
+            verdict_error = _record_group(settled_rows)
+            unreleased = {}
+            for index, name, *_ in settled_rows:
+                if not settled[index].get("released"):
+                    unreleased.setdefault(settled[index].get("group"), []).append(
+                        (index, name)
+                    )
+            for group, members in unreleased.items():
+                _release_group(group, members, verdict_error=verdict_error)
 
         # ---- PRE and compile.
         # PRE stays on the main thread whatever --parallel says: hook execution is
@@ -4226,7 +4343,6 @@ class RtlBuddy:
         # see docs/known-issues.md.
         streaming = min(parallel, len(configs)) <= 1
         pool_size = max(1, min(parallel, len(configs)))
-        outcomes = []
         groups = {}
         unprepared = 0
 
@@ -4237,17 +4353,6 @@ class RtlBuddy:
             """
             nonlocal unprepared
             cfg = configs[index]
-            if index in settled:
-                entry = dict(settled[index])
-                for half in ("verilate_sec", "build_sec"):
-                    entry.pop(half, None)
-                # What a stamp reuse here would have recorded: this job built nothing,
-                # and right-sizing must not count the verilate job's work as its own.
-                entry.update(duration_sec=0.0, reused=True)
-                with recorded_lock:
-                    recorded_entries[index] = entry
-                    recorded_ok[index] = True
-                return (index, cfg.get_name(), True, None, None, None), None, None
             leader_group = (
                 prepared_groups.get(followers[index][0])
                 if follow and index in followers
@@ -4295,6 +4400,17 @@ class RtlBuddy:
                 state = queues[group_dir]
                 while True:
                     with pipeline_lock:
+                        watched = not pre_done
+                        if state["after_pre"]:
+                            # A compile raced PRE: the group waits for PRE to finish,
+                            # in order, rather than build on what it has now.
+                            state["after_pre"].extend(state["queue"])
+                            state["queue"].clear()
+                            if not watched:
+                                state["queue"], state["after_pre"] = (
+                                    state["after_pre"],
+                                    [],
+                                )
                         batch = list(state["queue"])
                         state["queue"].clear()
                         if not batch:
@@ -4303,7 +4419,13 @@ class RtlBuddy:
                             if settle:
                                 state["settled"] = True
                             break
-                    state["rows"].extend(_compile_members(group_dir, batch))
+                    deferred = [] if watched else None
+                    state["rows"].extend(
+                        _compile_members(group_dir, batch, deferred=deferred)
+                    )
+                    if deferred:
+                        with pipeline_lock:
+                            state["after_pre"][:0] = deferred
                 if settle:
                     _settle_group(group_dir, state["rows"])
 
@@ -4322,6 +4444,7 @@ class RtlBuddy:
                                 "active": False,
                                 "settled": False,
                                 "rows": [],
+                                "after_pre": [],
                             },
                         )
                         state["queue"].append(member)
@@ -4349,6 +4472,15 @@ class RtlBuddy:
             if refollow:
                 # Followers whose leader failed or built other inputs: PRE and compile
                 # them as any other config, after the first pass settled their group.
+                # They leave the group they joined as followers, so each config is
+                # counted in one group.
+                again = set(refollow)
+                for group_dir in list(groups):
+                    groups[group_dir] = [
+                        member for member in groups[group_dir] if member[0] not in again
+                    ]
+                    if not groups[group_dir]:
+                        del groups[group_dir]
                 _run_pass(sorted(refollow), follow=False)
 
         if streaming:
@@ -4469,8 +4601,13 @@ class RtlBuddy:
             # The build half's configs that ran no PRE: built by the verilate job, or
             # following a same-key leader's build.
             settled=len(settled) if phase == BUILD_PHASE_BUILD else None,
-            followed=len(followed_entries) if phase == BUILD_PHASE_BUILD else None,
+            followed=(
+                len(copied_entries) - len(settled)
+                if phase == BUILD_PHASE_BUILD
+                else None
+            ),
         )
+        records_written = False
         if result_json_path is not None:
             # Persist the outcome so the head can map a compile failure to a CompileFail
             # row (parity with the in-process path).
@@ -4478,6 +4615,7 @@ class RtlBuddy:
                 write_build_result_json(
                     result_json_path, built=built, failed=failed, builds=builds
                 )
+                records_written = True
             except Exception as exc:  # noqa: BLE001 - telemetry is never fatal
                 # Compile records are additive telemetry; built/failed is what maps a
                 # failure to a CompileFail row. On an unserialisable record, drop the
@@ -4508,14 +4646,15 @@ class RtlBuddy:
         if (
             phase == BUILD_PHASE_VERILATE
             and gates_path is not None
+            and records_written
             and builds
             and not failed
             and all(entry.get("fingerprint_sha") is not None for entry in builds)
             and not cancellation_has_started()
         ):
-            # Every config is built and stamped, so the build job will only copy these
-            # records. Its compile-sized reservation would hold the end of the run in
-            # the queue for nothing.
+            # Every config is built and stamped and the records that say so are on
+            # disk, so the build job will only copy them. Its compile-sized reservation
+            # would hold the end of the run in the queue for nothing.
             _shrink_build_job()
         if self.machine:
             # Reporting only, so it must not change the exit status: a non-zero build
@@ -4634,6 +4773,7 @@ class RtlBuddy:
             expect_prebuilt=self.expect_prebuilt,
             rebuild=self.rebuild,
             build_result_json=self.build_result_json,
+            verilate_result_json=self.verilate_result_json,
             run_tag=self._run_tag,
         )
 
@@ -6283,6 +6423,11 @@ class RtlBuddy:
                         verilate_handle.job_id if verilate_handle is not None else None
                     ),
                     gates_json=gates_json,
+                    verilate_result_json=(
+                        verilate_handle.spec.result_json
+                        if verilate_handle is not None
+                        else None
+                    ),
                 )
             except BaseException:
                 # A verilate job with no build job behind it would verilate and never be
@@ -6437,6 +6582,12 @@ class RtlBuddy:
                     build_result_json=(
                         build_handle.spec.result_json
                         if build_handle is not None
+                        else None
+                    ),
+                    # ...and the verilate job's, which can release this job first.
+                    verilate_result_json=(
+                        verilate_handle.spec.result_json
+                        if build_handle is not None and verilate_handle is not None
                         else None
                     ),
                     # Named after the backend that writes it: `slurm-*` from sbatch
@@ -6746,6 +6897,7 @@ class RtlBuddy:
         phase=BUILD_PHASE_FULL,
         dependency=None,
         gates_json=None,
+        verilate_result_json=None,
     ):
         """Submit the suite's compile as a Slurm build job on a compute node.
         - ``phase`` is which half of the compile this job runs, and ``dependency`` the
@@ -6767,7 +6919,8 @@ class RtlBuddy:
           travels as ``parallel_configured``, the one a reader can find in a config
           file.
         - ``gates_json`` is the suite's gates manifest (see :meth:`_suite_gates_path`),
-          shared by both halves of a split compile.
+          shared by both halves of a split compile. ``verilate_result_json`` is the
+          verilate job's envelope, which the build half reads.
         """
         dispatch_root = Path(dispatch_root)
         dispatch_root.mkdir(parents=True, exist_ok=True)
@@ -6817,6 +6970,7 @@ class RtlBuddy:
             # ...and where the head records which sim job waits on which planned config,
             # so the job can release a compile key's sims once built.
             gates_json=gates_json,
+            verilate_result_json=verilate_result_json,
             # The head's artefact namespace. The shared build it populates stays keyed
             # on the compile fingerprint; the tag only moves this job's per-test outputs
             # and transcripts.

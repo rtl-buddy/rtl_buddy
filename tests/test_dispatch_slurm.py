@@ -4524,6 +4524,7 @@ def test_shrink_pending_job_lowers_cpus_then_memory(monkeypatch):
             "JobId=2000",
             "CPUsPerTask=1",
             "MinCPUsNode=1",
+            "NumCPUs=1",
         ],
         ["scontrol", "-M", "hpc", "update", "JobId=2000", "MinMemoryNode=1024"],
     ]
@@ -4540,6 +4541,17 @@ def test_shrink_pending_job_never_raises_a_reservation(monkeypatch):
         "2000", cpus=1, mem="1G", current_cpus=1, current_mem="512M"
     ) == ([], None)
     assert calls == []
+
+
+def test_shrink_pending_job_lowers_a_whole_node_memory_request(monkeypatch):
+    """``--mem=0`` asks for all of a node's memory, which is more than any target."""
+    calls = []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, []))
+
+    assert slurm_module.shrink_pending_job(
+        "2000", cpus=1, mem="1G", current_cpus=1, current_mem="0"
+    ) == (["mem"], None)
+    assert [call["argv"][-1] for call in calls] == ["MinMemoryNode=1024"]
 
 
 def test_shrink_pending_job_reports_a_refusal_and_keeps_what_changed(monkeypatch):

@@ -397,19 +397,27 @@ def shrink_pending_job(
 ) -> tuple[list[str], str | None]:
     """Lower a pending job's reservation; return ``(fields changed, error)``.
 
-    Runs ``scontrol update JobId=<id>`` with ``CPUsPerTask`` and ``MinCPUsNode``, then
-    ``MinMemoryNode`` in a second call, so a site that refuses the memory change still
-    keeps the cpu change. Only lowers: a field already at or below its target is left
-    alone, since Slurm refuses an owner's increase. Never raises; a job left as it was
-    only starts later.
+    Runs ``scontrol update JobId=<id>`` with ``CPUsPerTask``, ``MinCPUsNode`` and
+    ``NumCPUs``, then ``MinMemoryNode`` in a second call, so a site that refuses the
+    memory change still keeps the cpu change. Only lowers: a field already at or below
+    its target is left alone, since Slurm refuses an owner's increase. A reserved
+    memory of 0 is a whole node's, above any target. Never raises; a job left as it
+    was only starts later.
     """
     cluster_argv = [] if cluster is None else ["-M", cluster]
     updates = []
     if current_cpus > cpus:
-        updates.append(("cpus", [f"CPUsPerTask={cpus}", f"MinCPUsNode={cpus}"]))
+        updates.append(
+            (
+                "cpus",
+                [f"CPUsPerTask={cpus}", f"MinCPUsNode={cpus}", f"NumCPUs={cpus}"],
+            )
+        )
     target_mem = mem_to_bytes(mem)
     reserved_mem = mem_to_bytes(current_mem)
-    if target_mem is not None and (reserved_mem is None or reserved_mem > target_mem):
+    if target_mem is not None and (
+        reserved_mem is None or reserved_mem == 0 or reserved_mem > target_mem
+    ):
         updates.append(("mem", [f"MinMemoryNode={math.ceil(target_mem / 2**20)}"]))
     changed: list[str] = []
     for field, assignments in updates:

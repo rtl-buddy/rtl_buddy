@@ -9372,7 +9372,7 @@ def test_a_job_the_verilate_job_released_reads_its_verdict_from_that_job(
     sim.expect_prebuilt = True
     sim.build_result_json = tmp_path / "artefacts" / ".dispatch" / "build-result-1.json"
     record = {"test": "test_a", "fingerprint_sha": "sha", "group": "g"}
-    _write_verilate_envelope(tmp_path, builds=[record])
+    sim.verilate_result_json = _write_verilate_envelope(tmp_path, builds=[record])
 
     assert sim._gated_build_verdict() == ("built", record)
 
@@ -9384,7 +9384,7 @@ def test_a_job_the_verilate_job_released_reads_its_verdict_from_that_job(
 def test_the_build_envelope_outranks_the_verilate_job_s(tmp_path, monkeypatch):
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
     sim.expect_prebuilt = True
-    _write_verilate_envelope(
+    sim.verilate_result_json = _write_verilate_envelope(
         tmp_path, builds=[{"test": "test_a", "fingerprint_sha": "sha"}]
     )
     failure = {"test": "test_a", "returncode": 2}
@@ -9396,3 +9396,7 @@ def test_the_build_envelope_outranks_the_verilate_job_s(tmp_path, monkeypatch):
     # A build envelope that does not name the test defers to the verilate job's.
     sim.build_result_json = _write_build_envelope(tmp_path, failed=[], built=[])
     assert sim._gated_build_verdict()[0] == "built"
+
+    # Without the head naming the verilate envelope, there is nothing to defer to.
+    sim.verilate_result_json = None
+    assert sim._gated_build_verdict() == (None, None)
