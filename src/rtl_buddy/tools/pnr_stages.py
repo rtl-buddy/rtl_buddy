@@ -17,6 +17,8 @@ _MARKER_RE = re.compile(r"\{\{ @(/?\w+) \}\}")
 
 #: Template pieces a staged prelude repeats.
 PIECES = ("load", "session", "design", "clocks", "layers")
+#: The last line of the head's flow variables.
+_VARIABLES_END = "file mkdir $OUT_DIR\n"
 
 #: The stages the flow template marks: every stage but `post_route_repair`.
 TEMPLATE_STAGES = tuple(s for s in PNR_STAGES if s != POST_ROUTE_REPAIR_STAGE)
@@ -58,6 +60,12 @@ class FlowTemplate:
     def head(self) -> str:
         """Everything before the netlist is read: variables, threads, checkpoints, platform Tcl, hook procs, Liberty and LEF."""
         return self.segments[0].text
+
+    def variables(self) -> str:
+        """The head's flow variables, through the line that creates `$OUT_DIR`: what a `session` hook can read."""
+        head = self.head()
+        end = head.index(_VARIABLES_END) + len(_VARIABLES_END)
+        return head[:end]
 
     def piece(self, name: str) -> str:
         """The text of piece `name`, up to the next marker."""

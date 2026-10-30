@@ -12,7 +12,7 @@ Use `rb --machine`. Field definitions: `rb --machine docs show reference/yaml#pn
 ## Set up a run
 
 - A `pnr.yaml` run needs `name`, `desc`, `synth` + `synth-path` (that synthesis must have written its netlist), `constraints` (SDC) and `platform` (a `cfg-pnr-platforms` entry in `root_config.yaml`). Paths are relative to `pnr.yaml`.
-- Process files and defaults live on the `cfg-pdks` entry (`pdn-config`, `rcx-rules`, `layer-rc-tcl`, `placement.*`, `dont-use-cells`); the platform picks `corner` or `corners` and overrides knobs; the run overrides `placement:`, the repair blocks and the routing, CTS and tap-cell knobs.
+- Process files and defaults live on the `cfg-pdks` entry (`pdn-config`, `rcx-rules`, `layer-rc-tcl`, `placement.*`, `dont-use-cells`, `match-cell-footprint`); the platform picks `corner` or `corners` and overrides knobs; the run overrides `placement:`, the repair blocks and the routing, CTS and tap-cell knobs.
 - Copy an existing run in the project before writing one from scratch. Find names with `rb --machine pnr --list -c <pnr.yaml>`.
 - Put extra Tcl in `hooks:` (fixed flow points) or `pin-constraints`, never in an edited `pnr.tcl` or the SDC.
 - List files a hook or the SDC `source`s under `inputs:`, so `--resume` and hardened-block staleness see edits to them.
@@ -42,7 +42,7 @@ rb --machine pnr-export <run> -c <pnr.yaml> --png        # GDS/PNG from a saved 
 - `PASS` means the flow finished, not that the design closed. Report `wns_setup_ps`, `wns_hold_ps`, `tns_ps`, `tns_hold_ps`, `drc_count` and the three `max_*_violation_count` fields separately from the verdict.
 - Compare experiments on `routed_cell_count`, not `cell_count` (the input netlist).
 - `routed: false` (probe, `--stop-after`) means the numbers are a stage estimate; never report them as routed results.
-- Read qualifiers in `desc`: `pnr.no_wire_rc` (timing before routing had no wire RC; set the PDK's `layer-rc-tcl`, which `RSZ-0089` failures need), electrical violators, a passed-over or failed post-route repair round, `GDS incomplete`, accepted stale abstracts.
+- Read qualifiers in `desc`: `pnr.no_wire_rc` (no pre-route wire RC; set it in `layer-rc-tcl` or a `session` hook; `RSZ-0089` needs it), electrical violators, a passed-over or failed post-route repair round, `GDS incomplete`, accepted stale abstracts.
 - Multi-corner: WNS fields are the worst over corners; `worst_setup_corner`, `worst_hold_corner` and `corners` give the breakdown. `max_fanout_violation_count` counts a pin once per corner. `<top>.<corner>.routed.sdc` is each corner's SDC for signoff STA.
 - To make the verdict judge timing, DRCs or electrical violators, set a `signoff:` block on the platform or run (`rb --machine docs show concepts/pnr#gate-signoff`); `signoff` in the result gives each gate's values and verdict. A gate that cannot be measured (setup unconstrained, no DRC report, an electrical count missing) fails.
 - `post_route_repair.kept_round`, `stop` and `reason` say what the repair rounds achieved.

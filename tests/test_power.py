@@ -3821,8 +3821,10 @@ def test_a_missing_routed_odb_names_a_probe_run(tmp_path, mode, words):
         backend._write_script()
 
 
-def _with_session_hooks(backend, tmp_path, *texts, inputs=()):
-    """Give a `netlist-source: pnr` backend's P&R run one `session` hook per text, and `inputs`."""
+def _with_session_hooks(backend, tmp_path, monkeypatch, *texts, inputs=()):
+    """Give a `netlist-source: pnr` backend's P&R run one `session` hook per text, and `inputs`; the P&R prelude is a stub naming its arguments. Returns the hook paths and the prelude calls."""
+    from rtl_buddy.tools import power_openroad
+
     hooks = []
     for i, text in enumerate(texts):
         path = tmp_path / "pnr" / f"session{i}.tcl"
@@ -3835,13 +3837,25 @@ def _with_session_hooks(backend, tmp_path, *texts, inputs=()):
         "session_hooks": hooks,
         "hook_inputs": [str(p) for p in inputs],
     }
-    return hooks
+    pnr_cfg = object()
+    backend.power_cfg.resolve_pnr_cfg = lambda: pnr_cfg
+    calls = []
+
+    def _prelude(cfg, platform, pnr_dir, out_dir):
+        calls.append((cfg, platform, pnr_dir, out_dir))
+        return f"# prelude {pnr_dir} {out_dir}\n"
+
+    monkeypatch.setattr(power_openroad, "session_hooks_prelude", _prelude)
+    monkeypatch.setattr(
+        power_openroad, "run_platform", lambda cfg, root: ("platform", cfg)
+    )
+    return hooks, calls
 
 
-def test_an_estimating_pnr_power_run_runs_the_pnr_session_hooks_before_the_estimate(
-    tmp_path,
+def test_an_estimating_pnr_power_run_runs_the_pnr_session_prelude_before_the_estimate(
+    tmp_path, monkeypatch
 ):
-    """A `session` hook's `set_wire_rc` is session state P&R estimated with; it follows the layer RC, as in each P&R session."""
+    """The P&R run's session prelude follows the layer RC, as in each P&R session, in the P&R run's directory with this run's `$OUT_DIR`."""
     backend, _routed = _make_pnr_power_backend(
         tmp_path, "create_clock -period 3 [get_ports clk]\n"
     )
@@ -3849,61 +3863,56 @@ def test_an_estimating_pnr_power_run_runs_the_pnr_session_hooks_before_the_estim
     backend._resolve_platform = lambda: _FakePlatform(
         pdk=_FakePdk("/pdk/fake/tech.lef", layer_rc_tcl=str(rc))
     )
-    first, second = _with_session_hooks(
-        backend, tmp_path, "set_wire_rc -signal -layer m3\n", "# second\n"
+    _hooks, calls = _with_session_hooks(
+        backend, tmp_path, monkeypatch, "set_wire_rc -signal -layer m3\n"
     )
 
     lines = Path(backend._write_script()).read_text().splitlines()
 
+    ((cfg, platform, pnr_dir, out_dir),) = calls
+    assert platform == ("platform", cfg)
+    assert pnr_dir == os.path.dirname(backend._resolve_inputs()["odb"])
+    assert out_dir == os.path.abspath(backend.artefact_dir)
     source = lines.index(f'source "{rc}"')
-    runs = [
-        lines.index(f'rb::hook::run session "{first}"'),
-        lines.index(f'rb::hook::run session "{second}"'),
-    ]
+    prelude = lines.index(f"# prelude {pnr_dir} {out_dir}")
     estimate = lines.index("estimate_parasitics -global_routing")
-    assert source < runs[0] < runs[1] < estimate
-    assert "proc rb::hook::run {point path} {" in lines
+    assert source < prelude < estimate
 
 
-def test_session_hooks_run_in_the_pnr_run_directory_with_this_run_s_out_dir(tmp_path):
-    """Relative paths resolve as in P&R; `$OUT_DIR` is this run's, and the directory is restored after."""
-    import subprocess
+def test_a_spef_timed_pnr_power_run_runs_the_session_prelude_before_the_spef(
+    tmp_path, monkeypatch
+):
+    """A hook can set analysis state power reads with a SPEF too (`set_case_analysis`, `set_load`)."""
+    backend, spef = _make_spef_power_backend(tmp_path)
+    _with_session_hooks(backend, tmp_path, monkeypatch, "set_case_analysis 0 rst\n")
 
-    backend, _routed = _make_pnr_power_backend(
-        tmp_path, "create_clock -period 3 [get_ports clk]\n"
-    )
-    (hook,) = _with_session_hooks(
-        backend, tmp_path, 'puts "HOOK [pwd] $OUT_DIR $DESIGN [info level]"\n'
-    )
-    text = Path(backend._write_script()).read_text()
-    block = text[text.index("set DESIGN") : text.index("cd $rb_power_cwd")]
-    snippet = tmp_path / "snippet.tcl"
-    snippet.write_text(block + 'cd $rb_power_cwd\nputs "AFTER [pwd]"\n')
+    lines = Path(backend._write_script()).read_text().splitlines()
 
-    out = subprocess.run(
-        ["tclsh", str(snippet)],
-        cwd=backend.artefact_dir,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-
-    pnr_dir = Path(backend._resolve_inputs()["odb"]).parent.resolve()
-    artefact = os.path.abspath(backend.artefact_dir)
-    assert f"HOOK {pnr_dir} {artefact} demo_top 0\n" in out
-    assert out.endswith(f"AFTER {Path(artefact).resolve()}\n")
+    prelude = next(i for i, ln in enumerate(lines) if ln.startswith("# prelude "))
+    assert prelude < lines.index(f"read_spef {spef}")
+    assert backend._upstream_identity()["session_hooks_sha256"]
 
 
-def test_an_estimating_pnr_power_run_digests_its_session_hooks_and_inputs(tmp_path):
-    """Editing a session hook or a file it sources changes the estimate, so it is a new experiment."""
-    backend, _ = _make_pnr_power_backend(
-        tmp_path, "create_clock -period 3 [get_ports clk]\n"
-    )
+@pytest.mark.parametrize("spef", [False, True], ids=["estimate", "spef"])
+def test_a_pnr_power_run_digests_its_session_hooks_and_inputs(
+    tmp_path, monkeypatch, spef
+):
+    """Editing a session hook or a file it sources is a new experiment, on either path."""
+    if spef:
+        backend, _ = _make_spef_power_backend(tmp_path)
+    else:
+        backend, _ = _make_pnr_power_backend(
+            tmp_path, "create_clock -period 3 [get_ports clk]\n"
+        )
     window = tmp_path / "pnr" / "window.tcl"
     window.parent.mkdir(parents=True, exist_ok=True)
     window.write_text("set w 1\n")
-    (hook,) = _with_session_hooks(
-        backend, tmp_path, "set_wire_rc -signal -layer m3\n", inputs=[window]
+    (hook,), _calls = _with_session_hooks(
+        backend,
+        tmp_path,
+        monkeypatch,
+        "set_wire_rc -signal -layer m3\n",
+        inputs=[window],
     )
 
     def _identity():
@@ -3916,36 +3925,26 @@ def test_an_estimating_pnr_power_run_digests_its_session_hooks_and_inputs(tmp_pa
     window.write_text("set w 2\n")
     third = _identity()
 
+    assert first.get("parasitics") == ("spef" if spef else None)
     assert first["session_hooks_sha256"] != second["session_hooks_sha256"]
     assert second["hook_inputs_sha256"] != third["hook_inputs_sha256"]
     assert second["session_hooks_sha256"] == third["session_hooks_sha256"]
 
 
 def test_a_pnr_power_run_without_session_hooks_keeps_its_script_and_digest_keys(
-    tmp_path,
+    tmp_path, monkeypatch
 ):
     backend, _ = _make_pnr_power_backend(
         tmp_path, "create_clock -period 3 [get_ports clk]\n"
     )
     before = Path(backend._write_script()).read_text()
-    _with_session_hooks(backend, tmp_path)
+    _hooks, calls = _with_session_hooks(backend, tmp_path, monkeypatch)
 
     assert Path(backend._write_script()).read_text() == before
-    assert "rb::hook" not in before
+    assert not calls
     identity = backend._upstream_identity()
     assert "session_hooks_sha256" not in identity
     assert "hook_inputs_sha256" not in identity
-
-
-def test_a_spef_timed_power_run_does_not_run_the_session_hooks(tmp_path):
-    """With a trusted SPEF no estimate reads the wire RC the hooks set."""
-    backend, _spef = _make_spef_power_backend(tmp_path)
-    _with_session_hooks(backend, tmp_path, "set_wire_rc -signal -layer m3\n")
-
-    text = Path(backend._write_script()).read_text()
-
-    assert "rb::hook" not in text
-    assert "session_hooks_sha256" not in backend._upstream_identity()
 
 
 def test_a_missing_session_hook_fails_an_estimating_run_at_setup(tmp_path, monkeypatch):

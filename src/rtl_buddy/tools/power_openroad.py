@@ -39,13 +39,14 @@ from ..phys.publish import (
     withdrawal_failure_desc,
 )
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
-from . import block_params, openroad_corners, pnr_abstract, pnr_checkpoints
+from . import block_params, openroad_corners, pnr_abstract
 from .artifact_paths import clear_stale_artefacts
 from .pnr_openroad import (
     PNR_SCRIPT_NAME,
     ROUTED_SPEF_SUFFIX,
     max_fanout_cmd,
-    session_hooks_tcl,
+    run_platform,
+    session_hooks_prelude,
     tcl_source,
 )
 from .power_base import BasePower
@@ -850,10 +851,12 @@ class OpenRoadPower(BasePower):
                 lines.append(tcl_source(layer_rc_tcl))
                 if spef is None:
                     self._layer_rc_sha256 = sha256_of(layer_rc_tcl)
+            prelude = self._session_hooks_prelude(inputs)
+            if prelude:
+                lines.append(prelude.rstrip("\n"))
             if spef is not None:
                 lines.append(f"read_spef {spef}")
             else:
-                lines.extend(self._session_hooks_lines(inputs, top))
                 lines.append("estimate_parasitics -global_routing")
         else:
             lines.extend(
@@ -887,14 +890,14 @@ class OpenRoadPower(BasePower):
         Path(script_path).write_text("\n".join(lines))
         return script_path
 
-    def _session_hooks_lines(self, inputs: dict, top: str) -> list[str]:
-        """Return the lines that run the P&R run's `session` hooks before the estimate, as each P&R session runs them after its layer RC, or none without hooks. Records their sha256 and the P&R run's `inputs:` for the digest.
+    def _session_hooks_prelude(self, inputs: dict) -> str:
+        """Return what the P&R run's sessions set up around their `session` hooks (`session_hooks_prelude`), or `""` without hooks. Records the hooks' sha256 and the P&R run's `inputs:` for the digest.
 
-        A hook's `set_wire_rc` is session state the database does not keep, and P&R timed and repaired with it. The hooks run at Tcl global scope in the P&R run's directory, as in P&R, so their relative paths resolve as there; `$DESIGN` is the top and `$OUT_DIR` this run's directory, so what a hook writes there stays with this run. A hook file missing from disk fails the run at setup.
+        A hook can set session state the database does not keep and power depends on: wire RC for the estimate, or analysis settings such as `set_case_analysis` and `set_load` for either path. `$OUT_DIR` is this run's directory, so a power run writes nothing into the P&R run. A hook file missing from disk fails the run at setup.
         """
         hooks = list(inputs.get("session_hooks") or [])
         if not hooks:
-            return []
+            return ""
         for path in hooks:
             if not os.path.isfile(path):
                 log_event(
@@ -910,16 +913,13 @@ class OpenRoadPower(BasePower):
         self._hook_inputs_sha256 = [
             sha256_of(path) for path in inputs.get("hook_inputs") or []
         ]
-        quote = pnr_checkpoints._tcl_quote
-        pnr_dir = os.path.abspath(os.path.dirname(inputs["odb"]))
-        return [
-            f"set DESIGN {quote(top)}",
-            f"set OUT_DIR {quote(os.path.abspath(self.artefact_dir))}",
-            "set rb_power_cwd [pwd]",
-            f"cd {quote(pnr_dir)}",
-            session_hooks_tcl(hooks).rstrip("\n"),
-            "cd $rb_power_cwd",
-        ]
+        pnr_cfg = self.power_cfg.resolve_pnr_cfg()
+        return session_hooks_prelude(
+            pnr_cfg,
+            run_platform(pnr_cfg, self.root_cfg),
+            os.path.dirname(inputs["odb"]),
+            os.path.abspath(self.artefact_dir),
+        )
 
     def _choose_parasitics(self, inputs: dict) -> str | None:
         """Return the routed SPEF to read, or `None` to estimate, and log which.

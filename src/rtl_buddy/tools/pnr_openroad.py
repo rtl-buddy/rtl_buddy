@@ -408,11 +408,131 @@ def _run_hook_lines(point: str, paths, indent: str = "") -> str:
     )
 
 
-def session_hooks_tcl(paths) -> str:
-    """Return the Tcl that defines `rb::hook::run` and runs the `session` hook files `paths` with it, as a P&R session does; `rb power` estimates a P&R run's database with them."""
-    return files(_TEMPLATE_PACKAGE).joinpath(_HOOKS_FILE).read_text() + (
-        _run_hook_lines("session", paths)
+#: Printed after a run's `session` hooks when the PDK has no `layer-rc-tcl`: whether every scene ended up with non-zero signal and clock wire capacitance (1 or 0), or `unknown`; see `_wire_rc_probe_tcl`.
+_WIRE_RC_TAG = "RB-WIRE-RC:"
+
+
+def _wire_rc_probe_tcl() -> str:
+    """Tcl that prints `_WIRE_RC_TAG` with 1 when every scene has non-zero signal and clock wire capacitance, 0 when one does not, and `unknown` on an OpenROAD without `sta::scenes` and `est::`."""
+    return (
+        "if {[catch {\n"
+        "  set rb_wire_c {}\n"
+        "  foreach rb_scene [sta::scenes] {\n"
+        "    lappend rb_wire_c [est::wire_signal_capacitance $rb_scene] "
+        "[est::wire_clk_capacitance $rb_scene]\n"
+        "  }\n"
+        f'  puts "{_WIRE_RC_TAG} [expr {{[llength $rb_wire_c] > 0 '
+        '&& [::tcl::mathfunc::min {*}$rb_wire_c] > 0}]"\n'
+        f'}}]}} {{ puts "{_WIRE_RC_TAG} unknown" }}\n'
     )
+
+
+def _session_hook_block(platform, hooks: dict) -> str:
+    """Return the `session` hook lines of every session, or `""` without them. On a PDK without `layer-rc-tcl` they end with `_wire_rc_probe_tcl`, so the `pnr.no_wire_rc` qualifier knows whether the hooks set wire RC."""
+    block = _run_hook_block("session", hooks)
+    if block and not platform.get_pdk().get_layer_rc_tcl():
+        block += _wire_rc_probe_tcl()
+    return block
+
+
+def _dont_use_block(platform) -> str:
+    """Return `set_dont_use` of the platform's `dont-use-cells`, or `""` without them."""
+    cells = platform.get_dont_use_cells()
+    if not cells:
+        return ""
+    return f'\nputs ">>> Don\'t-use cells"\nset_dont_use [list {" ".join(cells)}]\n'
+
+
+def _header_substitutions(pnr_cfg, platform, netlist: str, out_dir: str) -> dict:
+    """The substitutions of the flow's header variables (`FlowTemplate.variables`), which every session sets and a hook can read."""
+    pdk = platform.get_pdk()
+    fp = pnr_cfg.get_floorplan()
+    corners = platform.get_sta_corners()
+    sdc = pnr_cfg.constraints_by_corner(corners)[corners[0]]
+    cts_buffers = platform.get_cts_buffers()
+    cts_buf = (
+        cts_buffers[0] if len(cts_buffers) == 1 else "{" + " ".join(cts_buffers) + "}"
+    )
+    return {
+        "design": pnr_cfg.resolve_synth_cfg().get_top(),
+        "netlist": netlist,
+        "sdc": _tcl_path_word(sdc),
+        "liberty": platform.get_sta_lib_paths()[0],
+        "tech_lef": pdk.get_tech_lef(),
+        # The template reads the first; `extra_libs_lefs` reads the rest, in order.
+        "macro_lef": next(iter(pdk.get_macro_lef_paths()), ""),
+        "site": pdk.get_site(),
+        "util_pct": (
+            f"{fp.utilization * 100:.2f}" if fp.utilization is not None else "{}"
+        ),
+        "aspect": f"{fp.aspect:.2f}",
+        "core_margin": f"{fp.core_margin:.2f}",
+        "tie_hi": pdk.get_tie_hi() or "{}",
+        "tie_lo": pdk.get_tie_lo() or "{}",
+        "cts_buf": cts_buf,
+        "macro_cell_halo": f"{platform.get_placement_macro_cell_halo():g}",
+        "signal_layers": platform.get_signal_layers() or "{}",
+        "clock_layers": platform.get_clock_layers() or "{}",
+        "pin_layer_horizontal": pdk.get_pin_layer_horizontal(),
+        "pin_layer_vertical": pdk.get_pin_layer_vertical(),
+        "fill_cells": " ".join(pdk.get_fill_cells()),
+        "out_dir": out_dir,
+    }
+
+
+def synth_netlist_path(pnr_cfg) -> str:
+    """Return the path of a P&R run's upstream synth netlist."""
+    synth_cfg = pnr_cfg.resolve_synth_cfg()
+    suite_dir = os.path.dirname(pnr_cfg.get_synth_suite_path())
+    return os.path.join(suite_dir, "artefacts", synth_cfg.get_name(), "synth_netlist.v")
+
+
+def run_platform(pnr_cfg, root_cfg):
+    """Return a P&R run's platform with the run's `placement:`, repair blocks and overrides applied, as `rb pnr` resolves it."""
+    platform = root_cfg.get_pnr_platform_cfg(pnr_cfg.get_platform())
+    platform = platform.with_run_placement(pnr_cfg.get_placement(), pnr_cfg.get_name())
+    platform = platform.with_run_repairs(
+        pnr_cfg.global_route_repair, pnr_cfg.post_route_repair, pnr_cfg.get_name()
+    )
+    return platform.with_run_overrides(pnr_cfg.get_overrides())
+
+
+def session_hooks_prelude(pnr_cfg, platform, pnr_dir: str, out_dir: str) -> str:
+    """Return what a P&R session sets up before and around its `session` hooks, for another session that opens the run's database, or `""` when the run has none.
+
+    That is the flow's header variables with `$OUT_DIR` set to `out_dir`, the hook procedures, then the flow's `session` piece without its max fanout and layer RC, which the caller sets itself: don't-use cells, `keep-sizing-vt` and the hooks. `platform` is the run's (`run_platform`). The hooks run in `pnr_dir`, the P&R run's directory, as in P&R; the session returns to its own directory after them.
+    """
+    hooks = pnr_cfg.get_hooks()
+    if not hooks.get("session"):
+        return ""
+    flow = pnr_stages.FlowTemplate(
+        files(_TEMPLATE_PACKAGE).joinpath(_TEMPLATE_FILE).read_text()
+    )
+    substitutions = {
+        **_header_substitutions(
+            pnr_cfg, platform, synth_netlist_path(pnr_cfg), out_dir
+        ),
+        "hook_procs_block": _hook_procs_block(hooks, pnr_cfg.get_mode()),
+        "max_fanout_block": "",
+        "layer_rc_block": "",
+        "dont_use_block": _dont_use_block(platform),
+        "keep_sizing_vt_block": _keep_sizing_vt_tcl(platform),
+        "hook_session_block": (
+            "\nset rb_session_cwd [pwd]\n"
+            f"cd {pnr_checkpoints._tcl_quote(os.path.abspath(pnr_dir))}"
+            + _session_hook_block(platform, hooks)
+            + "cd $rb_session_cwd\n"
+        ),
+    }
+    text = flow.variables() + "{{ hook_procs_block }}\n" + flow.piece("session")
+    for key, value in substitutions.items():
+        text = text.replace("{{ " + key + " }}", str(value))
+    leftover = re.findall(r"\{\{\s*@?/?[\w]+\s*\}\}", text)
+    if leftover:
+        raise RuntimeError(
+            f"session prelude has unsubstituted placeholders: {leftover}"
+        )
+    return text
 
 
 def _run_hook_block(point: str, hooks: dict) -> str:
@@ -3072,11 +3192,7 @@ class OpenRoadPnr:
 
     def _resolve_netlist_path(self) -> str:
         """Return the path of the upstream synth run's tech-mapped netlist."""
-        synth_cfg = self.pnr_cfg.resolve_synth_cfg()
-        suite_dir = os.path.dirname(self.pnr_cfg.get_synth_suite_path())
-        return os.path.join(
-            suite_dir, "artefacts", synth_cfg.get_name(), "synth_netlist.v"
-        )
+        return synth_netlist_path(self.pnr_cfg)
 
     def _threads(self) -> ThreadPlan:
         """Return this run's OpenROAD thread plan, resolved once against the current allocation.
@@ -3200,9 +3316,6 @@ class OpenRoadPnr:
             )
         corners = platform.get_sta_corners()
         sdc_by_corner = self.pnr_cfg.constraints_by_corner(corners)
-        sdc = sdc_by_corner[corners[0]]
-
-        fill_cells = " ".join(pdk.get_fill_cells())
 
         multi_corner = platform.is_multi_corner()
         modes = multi_corner and self._sta_modes
@@ -3263,11 +3376,6 @@ class OpenRoadPnr:
         self._mode_corners = tuple(corners) if modes else ()
 
         cts_buffers = platform.get_cts_buffers()
-        cts_buf = (
-            cts_buffers[0]
-            if len(cts_buffers) == 1
-            else "{" + " ".join(cts_buffers) + "}"
-        )
         # Unset, CTS infers them: the root from the buffer list, the list from the libraries.
         root_buffer = platform.get_cts_root_buffer()
         cts_buffer_options = (
@@ -3275,12 +3383,7 @@ class OpenRoadPnr:
         ) + ("    -buf_list $CTS_BUF \\\n" if cts_buffers else "")
 
         dont_use_cells = platform.get_dont_use_cells()
-        dont_use_block = (
-            '\nputs ">>> Don\'t-use cells"\n'
-            f"set_dont_use [list {' '.join(dont_use_cells)}]\n"
-            if dont_use_cells
-            else ""
-        )
+        dont_use_block = _dont_use_block(platform)
         dont_use_check_block = _dont_use_check_tcl(dont_use_cells)
         cts_dont_use_block, cts_dont_use_restore_block = _cts_dont_use_tcl(platform)
 
@@ -3391,37 +3494,21 @@ class OpenRoadPnr:
             "pin_constraints_tcl": pin_constraints_tcl,
             "floorplan_pins_block": _floorplan_pins_block(fp),
             "place_pins_block": _place_pins_block(fp),
-            "design": self.pnr_cfg.resolve_synth_cfg().get_top(),
-            "netlist": netlist,
-            "sdc": _tcl_path_word(sdc),
-            "liberty": platform.get_sta_lib_paths()[0],
+            **_header_substitutions(self.pnr_cfg, platform, netlist, self.artefact_dir),
             "read_liberty": read_liberty,
             "scenes_block": scenes_block,
             "read_sdc": read_sdc,
             "propagated_clocks": propagated_clocks,
             "routed_corner_sdcs": routed_corner_sdcs,
             "corner_reports": corner_reports,
-            "tech_lef": pdk.get_tech_lef(),
-            # The template reads the first; `extra_libs_lefs` reads the rest, in order.
-            "macro_lef": next(iter(pdk.get_macro_lef_paths()), ""),
-            "site": pdk.get_site(),
-            "util_pct": (
-                f"{fp.utilization * 100:.2f}" if fp.utilization is not None else "{}"
-            ),
-            "aspect": f"{fp.aspect:.2f}",
-            "core_margin": f"{fp.core_margin:.2f}",
-            "tie_hi": pdk.get_tie_hi() or "{}",
-            "tie_lo": pdk.get_tie_lo() or "{}",
             "tie_cells_block": tie_cells_block,
             "tie_fanout_block": tie_fanout_block,
-            "cts_buf": cts_buf,
             "cts_buffer_options": cts_buffer_options,
             "place_density": f"{platform.get_placement_density():g}",
             "place_padding": str(platform.get_placement_padding()),
             "reference_hpwl_option": _reference_hpwl_option(platform),
             "routability_options": _routability_options(platform),
             "timing_driven_option": _timing_driven_option(platform),
-            "macro_cell_halo": f"{platform.get_placement_macro_cell_halo():g}",
             "macro_directives_block": _macro_directives_block(fp),
             "initialize_floorplan": _initialize_floorplan_tcl(fp),
             # A `macro-placement` hook replaces RTL-MP inside the macro branch.
@@ -3456,7 +3543,7 @@ class OpenRoadPnr:
             ),
             "threads_block": threads_block,
             "hook_procs_block": _hook_procs_block(hooks, self._mode),
-            "hook_session_block": _run_hook_block("session", hooks),
+            "hook_session_block": _session_hook_block(platform, hooks),
             "hook_after_floorplan_block": _run_hook_block("after-floorplan", hooks),
             "hook_after_pdn_block": _run_hook_block("after-pdn", hooks),
             "hook_after_pins_block": _run_hook_block("after-pins", hooks),
@@ -3564,13 +3651,7 @@ class OpenRoadPnr:
             ),
             "cts_repair_clock_nets": _cts_repair_clock_nets_tcl(platform),
             "max_fanout_block": max_fanout_block,
-            "signal_layers": platform.get_signal_layers() or "{}",
-            "clock_layers": platform.get_clock_layers() or "{}",
             "routing_layers": _routing_layers_tcl(platform),
-            "pin_layer_horizontal": pdk.get_pin_layer_horizontal(),
-            "pin_layer_vertical": pdk.get_pin_layer_vertical(),
-            "fill_cells": fill_cells,
-            "out_dir": self.artefact_dir,
             "extra_libs_lefs": extra_libs_lefs,
         }
         self._flow = pnr_stages.FlowTemplate(self._load_template())
@@ -5357,12 +5438,16 @@ class OpenRoadPnr:
     def _no_wire_rc_qualifier(self, platform, log_text: str) -> str:
         """Warn when CTS, placement parasitics and hold repair ran with zero wire R/C, and return the result qualifier, or `""`.
 
-        Without a PDK `layer-rc-tcl` the technology LEF's layer RC is all the pre-route steps see, which is zero on most open PDKs. The run still passes, but CTS balances and hold repair fixes paths whose wires are not there yet, so the final extracted timing can fail hold that repair never saw. Either cause is enough: no `layer-rc-tcl`, or OpenROAD's own warning that the RC it has is zero. A run with `session` hooks may set the wire RC there, so without `layer-rc-tcl` only OpenROAD's warning is.
+        Without a PDK `layer-rc-tcl` the technology LEF's layer RC is all the pre-route steps see, which is zero on most open PDKs. The run still passes, but CTS balances and hold repair fixes paths whose wires are not there yet, so the final extracted timing can fail hold that repair never saw. Either cause is enough: no `layer-rc-tcl`, or OpenROAD's own warning that the RC it has is zero. Without `layer-rc-tcl`, `session` hooks may set the wire RC instead: the first cause holds unless every session's `_wire_rc_probe_tcl` found non-zero wire capacitance after them.
         """
-        no_layer_rc = not platform.get_pdk().get_layer_rc_tcl()
+        layer_rc = bool(platform.get_pdk().get_layer_rc_tcl())
+        probes = re.findall(
+            rf"^{re.escape(_WIRE_RC_TAG)} (\S+)$", log_text, re.MULTILINE
+        )
+        hooks_set_rc = bool(probes) and all(probe == "1" for probe in probes)
+        no_layer_rc = not layer_rc and not hooks_set_rc
         codes = [code for code in _NO_WIRE_RC_CODES if f"[WARNING {code}]" in log_text]
-        session = bool(self.pnr_cfg.get_hooks().get("session"))
-        if not codes and (not no_layer_rc or session):
+        if not codes and not no_layer_rc:
             return ""
         causes = (["no layer-rc-tcl"] if no_layer_rc else []) + codes
         log_event(
@@ -5370,7 +5455,7 @@ class OpenRoadPnr:
             logging.WARNING,
             "pnr.no_wire_rc",
             pnr=self.pnr_cfg.get_name(),
-            layer_rc_tcl=not no_layer_rc,
+            layer_rc_tcl=layer_rc,
             codes=codes,
             docs=_NO_WIRE_RC_DOCS,
             log=self._log_path(),

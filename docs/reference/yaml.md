@@ -191,7 +191,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `match-cell-footprint` | PDK, platform | `true` adds `-match_cell_footprint` to every `repair_design` and `repair_timing` of `rb pnr`, so resizing keeps each cell's footprint, as ORFS does for a platform that sets `MATCH_CELL_FOOTPRINT` (sky130hd, ihp-sg13g2). The platform's value replaces the PDK's. Default `false` |
 | `pdn-config` | PDK | Tcl that declares the power grid; the flow calls `pdngen`. Unset means no grid |
 | `rcx-rules` | PDK | OpenRCX rules. Enables extraction, `<top>.routed.spef` and `post-route-repair` |
-| `layer-rc-tcl` | PDK | `set_layer_rc` / `set_wire_rc` script, sourced after `read_sdc` by `rb pnr`, a `netlist-source: pnr` power run and a synthesis effort with `openroad.repair`. Unset warns `pnr.no_wire_rc`, unless the run has `session` hooks |
+| `layer-rc-tcl` | PDK | `set_layer_rc` / `set_wire_rc` script, sourced after `read_sdc` by `rb pnr`, a `netlist-source: pnr` power run and a synthesis effort with `openroad.repair`. Unset warns `pnr.no_wire_rc`, unless the run's `session` hooks set wire RC in every corner |
 | `platform-tcl` | PDK | Sourced before the Liberty reads of `rb pnr` and `rb power` |
 | `tracks-tcl` | PDK | `make_tracks` script, replacing the bare `make_tracks` |
 | `tapcell-tcl` | PDK, platform, run | Tap and endcap insertion, after macro placement. Unset runs `cut_rows`, which cuts the rows 2 µm around each placed macro, as ORFS does |
