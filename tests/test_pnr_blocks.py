@@ -507,6 +507,36 @@ def test_every_kind_of_change_makes_a_block_stale(tmp_path, mutate, expected):
     assert any(expected in c for c in changes), changes
 
 
+def test_a_per_corner_sdc_edit_makes_a_block_stale(tmp_path):
+    """A single-corner block with `constraints: {typ: blk.sdc}` records the SDC's digest, so editing it is a change."""
+    suite = _block_suite(tmp_path)
+    abstract = tmp_path / "blk/artefacts/blk_pnr/abstract"
+    old = json.loads((abstract / "abstract.manifest.json").read_text())
+    sdc = tmp_path / "blk/blk.sdc"
+    pnr_abstract.write_manifest(
+        str(abstract),
+        artefact_dir=str(abstract.parent),
+        design="blk_top",
+        run="blk_pnr",
+        platform="p",
+        pdk="p",
+        openroad={},
+        technology={},
+        inputs={"sdc": {"typ": str(sdc)}},
+        config={k: v for k, v in old["config"].items() if k != "sha256"},
+    )
+    written = json.loads((abstract / "abstract.manifest.json").read_text())
+    assert written["inputs"]["sdc"]["typ"]["sha256"] == _sha("create_clock\n")
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = _block_platform(tmp_path)
+    block = resolve_block(_ref(suite))
+    assert pnr_abstract.block_changes(block, root_cfg) == []
+
+    sdc.write_text("create_clock -period 5\n")
+
+    assert pnr_abstract.block_changes(block, root_cfg) == [f"sdc {sdc} changed"]
+
+
 def test_a_block_hardened_by_an_earlier_flow_generation_is_stale(tmp_path, monkeypatch):
     """A block hardened before the flow's own steps or defaults changed is stale, whatever its config says."""
     suite = _block_suite(tmp_path)

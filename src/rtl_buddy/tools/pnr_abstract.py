@@ -29,12 +29,14 @@ from ..config.pnr import (
     PnrAbstract,
     PortBuffers,
 )
-from .artifact_paths import project_relative, project_root_or_none
+from .artifact_paths import project_relative, project_root_or_none, run_artifact_root
 
 ABSTRACT_DIR_NAME = "abstract"
 #: OpenROAD writes the views here before `publish`; cleared by every run.
 ABSTRACT_STAGING_NAME = "abstract.partial"
 ABSTRACT_MANIFEST_NAME = "abstract.manifest.json"
+#: In a copy of an abstract (see `pnr_tag_inputs`): the abstract it was copied from, whose project root its manifest's relative paths are against.
+COPY_SOURCE_NAME = ".rb-copy-source.json"
 #: Bumped on an incompatible manifest change.
 ABSTRACT_MANIFEST_SCHEMA = 1
 #: Enters every config digest; bumped when the flow's own steps or defaults change what a hardened block's views hold, so every abstract hardened before goes stale.
@@ -659,10 +661,11 @@ def write_manifest(
     inputs: dict,
     config: dict,
     gds: bool = True,
+    blocks: list | None = None,
 ) -> str:
     """Write `abstract.manifest.json` into the staging directory and return its path.
 
-    `inputs` maps a role to an absolute path, a list of paths, or None. `technology` names the technology LEF and corner Liberty a parent must share; it is fingerprinted the same way. Output paths are recorded at their published location, not the staging one. Without `gds` the GDS output is recorded as null.
+    `inputs` maps a role to an absolute path, a list of paths, or None. `technology` names the technology LEF and corner Liberty a parent must share; it is fingerprinted the same way. Output paths are recorded at their published location, not the staging one. Without `gds` the GDS output is recorded as null. `blocks` are the `ResolvedBlock`s the run consumed; each is recorded with the tag its abstract came from and the abstract manifest's digest.
     """
     root = project_root_or_none(artefact_dir)
     published = abstract_dir(artefact_dir)
@@ -670,6 +673,11 @@ def write_manifest(
     def _fp(value):
         if isinstance(value, list):
             return [_fp(v) for v in value]
+        if isinstance(value, dict):
+            # A fingerprinted record (the netlist) as is; a per-corner `constraints:` mapping corner by corner.
+            if "sha256" in value:
+                return value
+            return {key: _fp(v) for key, v in value.items()}
         return file_fingerprint(value, root)
 
     outputs = {}
@@ -702,6 +710,7 @@ def write_manifest(
         "inputs": {role: _fp(value) for role, value in inputs.items()},
         "config": {**config, "sha256": config_digest(config)},
         "outputs": outputs,
+        **({"blocks": [b.manifest_entry() for b in blocks]} if blocks else {}),
     }
     path = os.path.join(staging, ABSTRACT_MANIFEST_NAME)
     Path(path).write_text(json.dumps(document, indent=2) + "\n")
@@ -735,10 +744,27 @@ class ResolvedBlock:
     gds: str | None
     run_cfg: object = None
     changes: tuple[str, ...] = ()
+    #: The `--run-tag` whose block run published the abstract; None for the untagged one.
+    run_tag: str | None = None
+    manifest_sha256: str | None = None
+    #: For a copy, the published abstract it was copied from; None when `abstract_dir` is the published one.
+    source_dir: str | None = None
 
     @property
     def stale(self) -> bool:
         return bool(self.changes)
+
+    def rerun_hint(self) -> str:
+        return rerun_command(self.ref, self.run_tag)
+
+    def manifest_entry(self) -> dict:
+        """Return this block's entry in the consuming run's own abstract manifest."""
+        return {
+            "name": self.ref.name,
+            "pnr": self.ref.pnr_run,
+            "run_tag": self.run_tag,
+            "manifest_sha256": self.manifest_sha256,
+        }
 
     def result_row(self) -> dict:
         """Return the machine-output row for this block: abstract location, view fingerprints and staleness."""
@@ -754,6 +780,8 @@ class ResolvedBlock:
             },
             "stale": self.stale,
             "changes": list(self.changes),
+            "run_tag": self.run_tag,
+            "manifest_sha256": self.manifest_sha256,
         }
 
 
@@ -778,37 +806,45 @@ def has_gds(manifest: dict) -> bool:
     return not ("gds" in outputs and outputs["gds"] is None)
 
 
-def resolve_block(ref: BlockRef) -> ResolvedBlock:
+def rerun_command(ref: BlockRef, run_tag: str | None = None) -> str:
+    """The `rb pnr` command that (re)publishes `ref`'s abstract, under `run_tag` when given."""
+    tag = f" --run-tag {run_tag}" if run_tag else ""
+    return f"`rb pnr {ref.pnr_run} -c {ref.pnr_suite_path}{tag}`"
+
+
+def resolve_block(ref: BlockRef, *, source=None) -> ResolvedBlock:
     """Resolve one `blocks:` entry to its published abstract, or raise BlockResolutionError.
 
-    Nothing is re-run; a missing abstract is reported with the `rb pnr` command that produces it.
+    Nothing is re-run; a missing abstract is reported with the `rb pnr` command that produces it. With a `source` (`pnr_tag_inputs.TagInputs`), the abstract read is the one it returns; for a saved run's export, the copy it records, whether or not the block run is still defined.
     """
-    from ..config.pnr import PnrSuiteConfig
-    from ..errors import FatalRtlBuddyError
-
     where = f"block {ref.name!r} (pnr run {ref.pnr_run!r} in {ref.pnr_suite_path})"
-    if not os.path.isfile(ref.pnr_suite_path):
-        raise BlockResolutionError(f"{where}: pnr-path does not exist")
+    pinned = source.pinned_abstract(ref, where) if source is not None else None
     try:
-        suite = PnrSuiteConfig(ref.pnr_suite_path)
-    except FatalRtlBuddyError as e:
-        raise BlockResolutionError(f"{where}: {e}") from None
-    if ref.pnr_run not in suite.get_run_names():
-        raise BlockResolutionError(f"{where}: no such run in that pnr.yaml")
-    run_cfg = suite.get_runs(ref.pnr_run)[0]
-    if not run_cfg.get_harden():
-        raise BlockResolutionError(
-            f"{where}: that run does not set harden: true, so it publishes no abstract"
+        run_cfg = _hardening_run_cfg(ref, where)
+    except BlockResolutionError:
+        # A saved run's copy needs no block run to define it now; only its staleness check does.
+        if pinned is None:
+            raise
+        run_cfg = None
+    if pinned is not None:
+        directory, run_tag = pinned
+    elif source is None:
+        directory, run_tag = (
+            abstract_dir(
+                str(
+                    run_artifact_root(os.path.dirname(ref.pnr_suite_path)) / ref.pnr_run
+                )
+            ),
+            None,
         )
-    directory = abstract_dir(
-        os.path.join(os.path.dirname(ref.pnr_suite_path), "artefacts", ref.pnr_run)
-    )
+    else:
+        directory, run_tag = source.abstract_dir(ref, where)
     manifest_path = os.path.join(directory, ABSTRACT_MANIFEST_NAME)
     manifest = read_manifest(directory)
     if manifest is None:
         raise BlockResolutionError(
             f"{where}: no abstract at {directory} — run "
-            f"`rb pnr {ref.pnr_run} -c {ref.pnr_suite_path}` first"
+            f"{rerun_command(ref, run_tag)} first"
         )
     if manifest.get("block") != ref.name:
         raise BlockResolutionError(
@@ -834,7 +870,41 @@ def resolve_block(ref: BlockRef) -> ResolvedBlock:
         lib=views["lib"],
         gds=views.get("gds"),
         run_cfg=run_cfg,
+        run_tag=run_tag,
+        manifest_sha256=(file_fingerprint(manifest_path, None) or {}).get("sha256"),
+        source_dir=copy_source(directory),
     )
+
+
+def _hardening_run_cfg(ref: BlockRef, where: str):
+    """Return the run config `ref` names, or raise BlockResolutionError when it is not a hardening run."""
+    from ..config.pnr import PnrSuiteConfig
+    from ..errors import FatalRtlBuddyError
+
+    if not os.path.isfile(ref.pnr_suite_path):
+        raise BlockResolutionError(f"{where}: pnr-path does not exist")
+    try:
+        suite = PnrSuiteConfig(ref.pnr_suite_path)
+    except FatalRtlBuddyError as e:
+        raise BlockResolutionError(f"{where}: {e}") from None
+    if ref.pnr_run not in suite.get_run_names():
+        raise BlockResolutionError(f"{where}: no such run in that pnr.yaml")
+    run_cfg = suite.get_runs(ref.pnr_run)[0]
+    if not run_cfg.get_harden():
+        raise BlockResolutionError(
+            f"{where}: that run does not set harden: true, so it publishes no abstract"
+        )
+    return run_cfg
+
+
+def copy_source(directory: str) -> str | None:
+    """Return the published abstract `directory` is a copy of, or None when it is not a copy."""
+    try:
+        record = json.loads(Path(directory, COPY_SOURCE_NAME).read_text())
+    except (OSError, ValueError):
+        return None
+    source = record.get("abstract_dir") if isinstance(record, dict) else None
+    return source if isinstance(source, str) else None
 
 
 def one_or_many(paths: list[str]) -> str | list[str]:
@@ -861,7 +931,7 @@ def check_technology(
         if not expected or None in expected:
             raise BlockResolutionError(
                 f"block {block.ref.name!r}: its abstract records no {what} — "
-                f"re-run `rb pnr {block.ref.pnr_run} -c {block.ref.pnr_suite_path}`"
+                f"re-run {block.rerun_hint()}"
             )
         actual = [(file_fingerprint(p, None) or {}).get("sha256") for p in paths]
         if actual != expected:
@@ -873,15 +943,19 @@ def check_technology(
             )
 
 
-def resolve_blocks(refs: list[BlockRef]) -> list[ResolvedBlock]:
-    return [resolve_block(ref) for ref in refs]
+def resolve_blocks(refs: list[BlockRef], *, source=None) -> list[ResolvedBlock]:
+    return [resolve_block(ref, source=source) for ref in refs]
 
 
 def _records(value):
-    """Normalise a manifest input entry (one record, a list, or None) to a list."""
+    """Normalise a manifest input entry (one record, a list, a per-corner mapping of either, or None) to a list of records."""
     if value is None:
         return []
-    return value if isinstance(value, list) else [value]
+    if isinstance(value, list):
+        return [r for v in value for r in _records(v)]
+    if isinstance(value, dict) and "path" not in value:
+        return [r for v in value.values() for r in _records(v)]
+    return [value]
 
 
 def block_changes(block: ResolvedBlock, root_cfg) -> list[str]:
@@ -889,7 +963,8 @@ def block_changes(block: ResolvedBlock, root_cfg) -> list[str]:
 
     Recorded inputs and the three published views are re-fingerprinted and compared by content, not timestamp. The block's configuration is rebuilt from its current `pnr.yaml` and platform and its digest compared.
     """
-    root = project_root_or_none(block.abstract_dir)
+    # A copy's manifest records paths against the project of the abstract it was copied from.
+    root = project_root_or_none(block.source_dir or block.abstract_dir)
     changes: list[str] = []
 
     def _compare(role: str, record: dict | None) -> None:
@@ -899,6 +974,7 @@ def block_changes(block: ResolvedBlock, root_cfg) -> list[str]:
         on_disk = (
             path if os.path.isabs(path) or root is None else os.path.join(root, path)
         )
+        path = record.get("shown", path)
         now = (file_fingerprint(on_disk, None) or {}).get("sha256")
         if now is None:
             changes.append(f"{role} {path} is gone")
@@ -908,10 +984,21 @@ def block_changes(block: ResolvedBlock, root_cfg) -> list[str]:
     for role, value in (block.manifest.get("inputs") or {}).items():
         for record in _records(value):
             _compare(role, record)
+    design = block.manifest.get("block")
     for view, record in (block.manifest.get("outputs") or {}).items():
+        if record and record.get("path"):
+            # The views read, which for a `BlockSource` copy are not at the recorded path.
+            record = {
+                **record,
+                "path": view_path(block.abstract_dir, design, view),
+                "shown": record["path"],
+            }
         _compare(f"abstract {view}", record)
 
     recorded = block.manifest.get("config") or {}
+    if block.run_cfg is None:
+        # A saved run's copy whose block run is gone from its pnr.yaml: no config to compare.
+        return changes
     try:
         platform = root_cfg.get_pnr_platform_cfg(block.run_cfg.get_platform())
         current = abstract_config(block.run_cfg, platform)
@@ -943,8 +1030,7 @@ def assess_blocks(
         more = f" (and {len(stale) - 1} more stale block(s))" if len(stale) > 1 else ""
         raise BlockResolutionError(
             f"block {first.ref.name!r} is stale: {describe_changes(list(first.changes))}"
-            f"{more} — re-run `rb pnr {first.ref.pnr_run} -c "
-            f"{first.ref.pnr_suite_path}`, or pass --accept-stale"
+            f"{more} — re-run {first.rerun_hint()}, or pass --accept-stale"
         )
     return assessed
 

@@ -1879,8 +1879,13 @@ def _probe_value(value) -> str:
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _probe_lib_paths(synth_cfg, root_cfg, sources: list[str]) -> list[str]:
-    """Return the Liberty files the block's synthesis reads, so the probe knows the cells and sub-blocks its top instances."""
+def _probe_lib_paths(
+    synth_cfg, root_cfg, sources: list[str], tag_inputs=None
+) -> list[str]:
+    """Return the Liberty files the block's synthesis reads, so the probe knows the cells and sub-blocks its top instances.
+
+    Sub-blocks resolve through `tag_inputs` (a `pnr_tag_inputs.TagInputs`), as the hardening run's own do.
+    """
     libs = list(getattr(synth_cfg, "get_lib_paths", lambda: [])())
     platform = getattr(synth_cfg, "get_platform", lambda: None)()
     if platform:
@@ -1894,14 +1899,16 @@ def _probe_lib_paths(synth_cfg, root_cfg, sources: list[str]) -> list[str]:
         from .pnr_abstract import BlockResolutionError, resolve_blocks
 
         try:
-            nested = resolve_blocks(refs)
+            nested = resolve_blocks(refs, source=tag_inputs)
         except BlockResolutionError:
             nested = []
         libs += [b.lib for b in nested]
     return yosys_read_lib_paths(libs, nested, sources, synth_cfg.get_top())
 
 
-def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
+def probe_block_parameters(
+    synth_cfg, root_cfg, synth_dir: str, out_dir: str, tag_inputs=None
+):
     """Elaborate a block's top in Yosys and return its parameter values as a `block_params.ParamRecord`.
 
     Run when the block is hardened, so a parent's instance overrides can be compared with every value the block was built with. The top is wrapped in an instance carrying the synthesis's `params:`, in the synthesis's frontend, reading the sources and defines of its `synth.f`:
@@ -1931,7 +1938,7 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
     overrides_json = os.path.join(out_dir, "param_probe_overrides.json")
     cmds = [
         f"read_liberty -lib {shlex.quote(lib)}"
-        for lib in _probe_lib_paths(synth_cfg, root_cfg, sources)
+        for lib in _probe_lib_paths(synth_cfg, root_cfg, sources, tag_inputs)
     ]
     cmds += emit_frontend_read_cmds(
         opts=opts,

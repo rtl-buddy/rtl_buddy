@@ -379,6 +379,21 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f"Another rtl-buddy run is already using {fields.get('path')}{holder}"
             )
+        case "artifact_lock.wait":
+            from .artifact_lock import _describe_holder
+
+            holder = _describe_holder(
+                {
+                    "pid": fields.get("holder_pid"),
+                    "command": fields.get("holder_command"),
+                    "started": fields.get("holder_started"),
+                }
+            )
+            waited = fields.get("waited_sec") or 0
+            return (
+                f"Waiting for another rtl-buddy run{holder} to release "
+                f"{fields.get('path')}" + (f" ({waited}s so far)" if waited else "")
+            )
         case "command.test":
             return f"Running test {fields.get('test')}"
         case "command.randtest":
@@ -2234,6 +2249,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{', '.join(fields.get('layers') or [])} appear in no obstruction "
                 "of the block; check the layer names against the technology LEF"
             )
+        case "pnr.block_untagged_abstract":
+            return (
+                f"block {fields.get('block')}: --run-tag {fields.get('run_tag')} has "
+                f"not run pnr run {fields.get('pnr_run')}, so this run reads a copy "
+                f"of its untagged abstract ({fields.get('source')})"
+            )
         case "pnr.block_stale_accepted" | "synth.block_stale_accepted":
             flow = "P&R" if event.startswith("pnr") else "synthesis"
             run = fields.get("pnr") or fields.get("synth")
@@ -3290,7 +3311,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"miss hold they never repaired; set the PDK's layer-rc-tcl, "
                 f"see {fields.get('docs')}"
             )
-        case "pnr.signoff_failed":
+        case "pnr.signoff_failed" | "pnr.no_netlist" | "pnr_export.blocks_dropped":
             return f"pnr {fields.get('pnr')}: {fields.get('desc')}"
         case "pnr.electrical_round_unseen":
             violators = fields.get("violators") or []

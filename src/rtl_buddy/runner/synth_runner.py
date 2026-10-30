@@ -21,8 +21,11 @@ class SynthRunner:
         suite_dir: str,
         effort_override: str | None = None,
         accept_stale: bool = False,
+        tag_inputs=None,
     ):
         self.name = name
+        # `rb pnr --run-tag --synth`: a `pnr_tag_inputs.TagInputs` that `blocks:` abstracts are read through; None reads them in place.
+        self.tag_inputs = tag_inputs
         # `--accept-stale` for `blocks:` abstracts.
         self.accept_stale = accept_stale
         self._blocks: list[pnr_abstract.ResolvedBlock] = []
@@ -113,7 +116,7 @@ class SynthRunner:
             else None
         )
         try:
-            resolved = pnr_abstract.resolve_blocks(refs)
+            resolved = pnr_abstract.resolve_blocks(refs, source=self.tag_inputs)
             for block in resolved:
                 pnr_abstract.check_technology(block, liberty=liberty, tech_lef=None)
             resolved = pnr_abstract.assess_blocks(

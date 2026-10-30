@@ -21,15 +21,15 @@ Use `rb --machine`. Field definitions: `rb --machine docs show reference/yaml#pn
 ## Run loop
 
 ```bash
-rb --machine pnr <run> -c <pnr.yaml>                     # one run
-rb --machine pnr -c <pnr.yaml> --synth -j 4              # whole suite, blocks first, synthesis included
+rb --machine pnr <run> -c <pnr.yaml> [--run-tag <tag>]  # one run; tag concurrent calls
+rb --machine pnr -c <pnr.yaml> --synth -j 4  # whole suite, blocks first, with synthesis
 rb --machine pnr <run> -c <pnr.yaml> --stop-after global_route
 rb --machine pnr <run> -c <pnr.yaml> --resume latest --from detailed_route
-rb --machine pnr <run> -c <pnr.yaml> --dispatch slurm    # one Slurm job per stage
-rb --machine pnr-export <run> -c <pnr.yaml> --png        # GDS/PNG from a saved result
+rb --machine pnr <run> -c <pnr.yaml> --dispatch slurm  # one Slurm job per stage
+rb --machine pnr-export <run> -c <pnr.yaml> --png [--run-tag <tag>]  # GDS/PNG of a saved run
 ```
 
-- Explore a floorplan with `mode: probe` (no timing repair, stops after global route) before full closure runs.
+- Explore a floorplan with `mode: probe` (no timing repair, stops after global route) before closure runs.
 - For long runs set `checkpoints: true`, or `stages: true` to make the run resumable. `--resume` reuses earlier stages only if their scripts, inputs and OpenROAD version are unchanged; it is refused otherwise (`fail_stage: resume`).
 - Without `threads:` OpenROAD picks its thread count (26Q4: every host thread); set a count or `auto` (the allocation's CPUs). `openroad_threads.effective` is null when unset.
 - `--dispatch slurm` sizes each stage from the run's `resources:` (`stages.<stage>` overrides). `rb pnr` blocks until the chain ends; Ctrl-C cancels its jobs.

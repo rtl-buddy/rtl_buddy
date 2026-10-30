@@ -132,6 +132,8 @@ SIBLING_OUTPUT_NAMES = (
     "def2stream.report.json",
     # rb pnr's copy of the synth netlist without `blocks:` parameter overrides, as read by OpenROAD.
     "pnr_netlist.v",
+    # rb pnr --run-tag: the block abstract copies the run consumed, read again by rb pnr-export.
+    "blocks.consumed.json",
     # rb synth (tools/synth_yosys.py, tools/synth_openroad.py)
     "synth_netlist.v",
     "synth.rtlil",
