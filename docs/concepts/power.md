@@ -31,7 +31,7 @@ The contents of `layer-rc-tcl` when the run estimates, the `session` hooks and t
 
 The SPEF is used only if its `pnr.tcl` contains `write_spef` and the SPEF is no older than that `pnr.tcl`. Otherwise the run logs a `power.spef_rejected` warning naming the reason and uses the estimate. The `parasitics` result field (`spef` or `estimated`) and the summary's Parasitics column show which was used, and one ODB measured both ways counts as two experiments.
 
-Extraction usually raises switching power and lowers slack compared with the estimate.
+Extraction and the estimate can differ in either direction: switching power and slack move with the wire capacitance each one gives.
 
 ## Define power runs
 
