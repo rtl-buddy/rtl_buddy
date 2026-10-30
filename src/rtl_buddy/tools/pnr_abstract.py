@@ -517,6 +517,11 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 )
                 else {}
             ),
+            **(
+                {"repair_design": options}
+                if (options := platform.get_placement_repair_design().option_values())
+                else {}
+            ),
         },
         "routing": {
             "signal_layers": platform.get_signal_layers(),
