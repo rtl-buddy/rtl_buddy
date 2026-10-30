@@ -4334,7 +4334,7 @@ def test_the_build_half_compiles_a_settled_key_whose_stamp_changed(
     (changed,) = [
         r for r in records if r.get("event") == "build_job.settled_build_changed"
     ]
-    assert (changed["test"], changed["levelname"]) == ("extra", "WARNING")
+    assert (changed["test"], changed["level"]) == ("extra", "WARNING")
 
 
 def test_a_compile_that_raced_a_preproc_is_rebuilt_after_pre(

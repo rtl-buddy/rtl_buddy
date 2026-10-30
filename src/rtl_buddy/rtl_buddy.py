@@ -4468,7 +4468,10 @@ class RtlBuddy:
                 outcomes.extend(state["rows"])
 
         def _run_passes():
-            _run_pass(range(len(configs)), follow=True)
+            _run_pass(
+                [index for index in range(len(configs)) if index not in settled],
+                follow=True,
+            )
             if refollow:
                 # Followers whose leader failed or built other inputs: PRE and compile
                 # them as any other config, after the first pass settled their group.
