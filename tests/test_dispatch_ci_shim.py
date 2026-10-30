@@ -629,3 +629,65 @@ def test_shim_split_compile_reports_both_halves_in_one_compile_record(
         assert entry["duration_sec"] == pytest.approx(
             entry["verilate_sec"] + entry["build_sec"], abs=0.02
         ), entry
+
+
+@pytest.fixture(scope="module")
+def warm_split_shim_run(tmp_path_factory):
+    """A split regression run twice: cold, then warm with `scontrol` and deferred jobs.
+
+    On the warm run the verilate job finds both keys built, so it releases their simulations and lowers the build job, which then copies its records without running a preproc.
+    """
+    work = tmp_path_factory.mktemp("dispatch_warm_split")
+    proc, _envelope, project, diag = _run_regression(work)
+    assert proc.returncode == 0, diag
+    scontrol_log = work / "scontrol.txt"
+    proc, envelope, project, diag = _rerun_regression(
+        project,
+        work,
+        extra_path_dirs=(_SCONTROL_SHIM,),
+        extra_env={
+            "RB_SHIM_DEFER_DIR": str(work / "deferred"),
+            "RB_SHIM_SCONTROL_LOG": str(scontrol_log),
+        },
+    )
+    return proc, envelope, project, diag, scontrol_log
+
+
+def _newest_job_events(project: Path, pattern: str) -> list[dict]:
+    """Events of the newest job log matching ``pattern``: the warm run's, not the cold one's."""
+    logs = list(project.glob(f"verif/*/artefacts/.dispatch/{pattern}"))
+    assert logs, pattern
+    newest = max(logs, key=lambda log: log.stat().st_mtime_ns)
+    return [
+        json.loads(line)
+        for line in newest.read_text().splitlines()
+        if line.strip().startswith("{")
+    ]
+
+
+def test_shim_warm_split_run_releases_from_the_verilate_job(warm_split_shim_run):
+    proc, envelope, project, diag, scontrol_log = warm_split_shim_run
+    assert proc.returncode == 0, diag
+    results = {r["name"]: r["result"] for r in envelope["payload"]["results"]}
+    assert results == {"alpha": "PASS", "beta": "PASS"}, diag
+
+    updates = scontrol_log.read_text().splitlines()
+    cleared = [line for line in updates if line.endswith("Dependency=")]
+    assert len(cleared) == 2, updates
+    assert any("CPUsPerTask=1" in line for line in updates), updates
+
+    verilate = _newest_job_events(project, "verilate-rtl_buddy-*.log")
+    released = [e for e in verilate if e.get("event") == "dispatch.key_released"]
+    assert {name for e in released for name in e["tests"]} == {"alpha", "beta"}
+    assert {e["phase"] for e in released} == {"verilate"}
+    assert [e for e in verilate if e.get("event") == "dispatch.build_job_shrunk"]
+
+
+def test_shim_warm_split_build_job_runs_no_preproc(warm_split_shim_run):
+    proc, _envelope, project, diag, _scontrol_log = warm_split_shim_run
+    assert proc.returncode == 0, diag
+    build = _newest_job_events(project, "build-rtl_buddy-*.log")
+    (done,) = [e for e in build if e.get("event") == "build_job.done"]
+    assert done["settled"] == 2, done
+    events = {e.get("event") for e in build}
+    assert "compile.start" not in events, diag
