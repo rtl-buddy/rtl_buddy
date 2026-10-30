@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 import re
@@ -7,7 +8,7 @@ import pprint
 
 
 from serde import serde, field
-from .yaml_loader import config_from_yaml, load_yaml
+from .yaml_loader import config_from_data, load_yaml
 from typing import Literal
 
 from .dispatch import (
@@ -410,61 +411,104 @@ def _reject_unknown_elaboration_resources_keys(raw, path) -> None:
     reject_unknown_keys(found, path=path)
 
 
+def _validate_models(models: list["ModelConfig"], path: str) -> None:
+    seen: dict[str, int] = {}
+    for idx, model in enumerate(models):
+        model.path = path
+        # Validate the name first: downstream code treats it as a path segment.
+        validate_model_name(model.name, path)
+        if model.top is not None:
+            validate_model_top(model.top, model.name, path)
+        if model.name in seen:
+            log_event(
+                logger,
+                logging.ERROR,
+                "model_config.duplicate_model",
+                path=path,
+                name=model.name,
+                first_index=seen[model.name],
+                second_index=idx,
+            )
+            raise FatalRtlBuddyError(f"{path}: duplicate model name {model.name!r}")
+        seen[model.name] = idx
+        seen_profiles: dict[str, int] = {}
+        for profile_idx, profile in enumerate(model.elaborations):
+            _validate_elaboration_profile(profile, model, path)
+            profile_key = profile.name.casefold()
+            if profile_key in seen_profiles:
+                raise FatalRtlBuddyError(
+                    f"{path}: model {model.name!r} has duplicate elaboration "
+                    f"profile {profile.name!r}"
+                )
+            seen_profiles[profile_key] = profile_idx
+
+
+# Validated models by absolute path, with the file stamp they were read at.
+_MODEL_CACHE: dict[str, tuple[tuple[int, int, int], list["ModelConfig"]]] = {}
+
+
+def _file_stamp(path: str) -> tuple[int, int, int] | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def _read_models(path: str) -> list["ModelConfig"]:
+    """The validated models of ``path``, parsed once per file version.
+
+    The returned list is shared by every caller: copy a model before keeping or changing it.
+    """
+    key = os.path.abspath(path)
+    stamp = _file_stamp(path)
+    cached = _MODEL_CACHE.get(key)
+    if cached is not None and stamp is not None and cached[0] == stamp:
+        return cached[1]
+
+    try:
+        with open(path, "r") as file:
+            text = file.read()
+        raw = load_yaml(text, path, fast=True)
+        _reject_unknown_elaboration_resources_keys(raw, path)
+        models = config_from_data(ModelConfigFile, raw).models
+    except Exception as e:
+        log_event(logger, logging.ERROR, "model_config.load_failed", path=path, error=e)
+        raise FatalRtlBuddyError(f'failed to load "{path}"') from e
+    _validate_models(models, path)
+    if stamp is not None and _file_stamp(path) == stamp:
+        _MODEL_CACHE[key] = (stamp, models)
+    return models
+
+
 # TODO: Raise errors instead of killing things here
 class ModelConfigLoader:
-    """Loads and validates the models in one ``models.yaml``, reading the file once."""
+    """Loads and validates the models in one ``models.yaml``.
+
+    A file is parsed once per version (mtime, size, inode) in a process. Each loader hands out its own copies of the models, with ``path`` as the loader was given it.
+    """
 
     def __init__(self, path: str) -> None:
         self.path = path
-        self.models = []
+        self._shared = _read_models(path)
+        self._own: dict[str, ModelConfig] = {}
 
-        try:
-            with open(self.path, "r") as file:
-                text = file.read()
-            _reject_unknown_elaboration_resources_keys(load_yaml(text, path), path)
-            data = config_from_yaml(ModelConfigFile, text, path)
-            self.models = data.models
-        except Exception as e:
-            log_event(
-                logger, logging.ERROR, "model_config.load_failed", path=path, error=e
-            )
-            raise FatalRtlBuddyError(f'failed to load "{path}"') from e
+    def _copy(self, model: "ModelConfig") -> "ModelConfig":
+        if model.name not in self._own:
+            own = copy.deepcopy(model)
+            own.path = self.path
+            self._own[model.name] = own
+        return self._own[model.name]
 
-        seen: dict[str, int] = {}
-        for idx, model in enumerate(self.models):
-            model.path = self.path
-            # Validate the name first: downstream code treats it as a path segment.
-            validate_model_name(model.name, path)
-            if model.top is not None:
-                validate_model_top(model.top, model.name, path)
-            if model.name in seen:
-                log_event(
-                    logger,
-                    logging.ERROR,
-                    "model_config.duplicate_model",
-                    path=path,
-                    name=model.name,
-                    first_index=seen[model.name],
-                    second_index=idx,
-                )
-                raise FatalRtlBuddyError(f"{path}: duplicate model name {model.name!r}")
-            seen[model.name] = idx
-            seen_profiles: dict[str, int] = {}
-            for profile_idx, profile in enumerate(model.elaborations):
-                _validate_elaboration_profile(profile, model, path)
-                profile_key = profile.name.casefold()
-                if profile_key in seen_profiles:
-                    raise FatalRtlBuddyError(
-                        f"{path}: model {model.name!r} has duplicate elaboration "
-                        f"profile {profile.name!r}"
-                    )
-                seen_profiles[profile_key] = profile_idx
+    @property
+    def models(self) -> list["ModelConfig"]:
+        return [self._copy(m) for m in self._shared]
 
     def get_model(self, model_name: str) -> ModelConfig:
         """The :class:`ModelConfig` named ``model_name``; raises ``FatalRtlBuddyError`` if absent."""
-        for model in self.models:
+        for model in self._shared:
             if model.name == model_name:
-                return model
+                return self._copy(model)
 
         log_event(
             logger,
