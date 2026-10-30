@@ -174,9 +174,9 @@ def test_an_unset_block_renders_every_script_as_the_bare_command_did(tmp_path, s
     platform = _real_platform(tmp_path)
     template = OpenRoadPnr("x", MagicMock(), str(tmp_path), MagicMock())
     template = template._load_template()
-    placeholder = "repair_design{{ place_repair_design_options }}\n"
+    placeholder = "{{ place_repair_design_options }}{{ match_cell_footprint }}\n"
     assert template.count(placeholder) == 1
-    base = template.replace(placeholder, "repair_design\n")
+    base = template.replace(placeholder, "{{ match_cell_footprint }}\n")
 
     now = _scripts(tmp_path, platform, stages=stages)
     before = _scripts(tmp_path, platform, stages=stages, template=base)

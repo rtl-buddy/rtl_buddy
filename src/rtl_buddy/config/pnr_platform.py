@@ -370,6 +370,10 @@ class PnrPlatformConfigFile:
     cts_dont_use_cells: Any = field(rename="cts-dont-use-cells", default_factory=list)
     # `set_opt_config -keep_sizing_vt true`: sizing keeps each cell's threshold voltage.
     keep_sizing_vt: bool = field(rename="keep-sizing-vt", default=False)
+    # Overrides the PDK's `match-cell-footprint`; `None` inherits.
+    match_cell_footprint: bool | None = field(
+        rename="match-cell-footprint", default=None
+    )
     # Replaces the PDK's `tapcell-tcl`; relative to the root config.
     tapcell_tcl: str | None = field(rename="tapcell-tcl", default=None)
     # `global_route` options; a run overrides them field by field. Read by `pnr_global_route`.
@@ -469,6 +473,10 @@ class PnrPlatformConfig:
             cfg.cts_dont_use_cells, f"pnr platform '{self._name}'"
         )
         self._keep_sizing_vt = cfg.keep_sizing_vt
+        match = cfg.match_cell_footprint
+        if match is None:
+            match = self._pdk.get_match_cell_footprint()
+        self._match_cell_footprint = match is True
 
         self._platform_placement = validate_placement(
             cfg.placement, f"pnr platform '{self._name}'"
@@ -844,6 +852,10 @@ class PnrPlatformConfig:
     def get_keep_sizing_vt(self) -> bool:
         """Whether sizing keeps each cell's threshold voltage (`set_opt_config -keep_sizing_vt`), run over platform."""
         return self._keep_sizing_vt
+
+    def get_match_cell_footprint(self) -> bool:
+        """Whether every `repair_design` and `repair_timing` resizes only to cells of the same footprint (`-match_cell_footprint`), platform over PDK, default `False`."""
+        return self._match_cell_footprint
 
     def get_cts_sink_clustering(self) -> bool:
         """Whether CTS clusters sinks (`-sink_clustering_enable`)."""
