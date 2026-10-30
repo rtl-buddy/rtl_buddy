@@ -1,6 +1,6 @@
 """Tests for compile-only early stops and exit-code grading.
 
-A successful early stop reports ``EarlyStopResults`` (``NA``, ``early_stop: true``) and exits 0, while an ``NA`` without the marker, ``FAIL`` and strict ``XPASS`` exit 1. A nonzero simulator exit with no verdict is re-graded to ``FAIL``."""
+A successful early stop reports ``EarlyStopResults`` (``NA``, ``early_stop: true``) and exits 0, while an ``NA`` without the marker, ``FAIL`` and strict ``XPASS`` exit 1. A nonzero simulator exit with no verdict, or after a ``PASS``, is re-graded to ``FAIL``."""
 
 from __future__ import annotations
 
@@ -23,7 +23,11 @@ from rtl_buddy.runner.test_results import (
     is_run_failure,
 )
 from rtl_buddy.runner.test_runner import RunDepth, TestRunner as RtlBuddyTestRunner
-from rtl_buddy.tools.vlog_post import VlogPost, grade_unknown_sim_exit
+from rtl_buddy.tools.vlog_post import (
+    VlogPost,
+    grade_sim_exit,
+    grade_unknown_sim_exit,
+)
 from rtl_buddy.tools.vlog_sim import VlogSim
 
 
@@ -224,10 +228,14 @@ class _AbortingSim:
         return self._returncode
 
     def post(self, run_id=None, sim_returncode=None):
-        # Mirrors ``VlogSim.post``: parse the transcript, then grade an unknown verdict against the exit status.
+        # Mirrors ``VlogSim.post``: parse the transcript, then grade the verdict against the exit status.
         results = VlogPost(name="basic", path=str(self._log)).get_results()
-        grade_unknown_sim_exit(
-            results.results, sim_returncode, test="basic", run_id=run_id
+        grade_sim_exit(
+            results.results,
+            sim_returncode,
+            test="basic",
+            run_id=run_id,
+            transcripts=(str(self._log),),
         )
         return results
 
@@ -252,7 +260,7 @@ def _runner_with(sim, monkeypatch, *, run_id=None):
 
 
 class TestNonzeroSimExitWithoutVerdict:
-    """A simulator that aborts (nonzero exit, no PASS/FAIL banner) fails; a transcript that states a verdict keeps it."""
+    """A simulator that aborts (nonzero exit, no PASS/FAIL banner) fails; so does one that exits nonzero after a PASS banner."""
 
     def test_unmarked_abort_is_graded_fail(self, tmp_path: Path, monkeypatch):
         setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
@@ -357,13 +365,36 @@ class TestNonzeroSimExitWithoutVerdict:
             2,
         ]
 
-    def test_pass_banner_with_nonzero_exit_stays_pass(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_pass_banner_with_nonzero_exit_fails(self, tmp_path: Path, monkeypatch):
         setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
         sim = _AbortingSim(tmp_path, returncode=3, transcript="PASS smoke completed\n")
         result = _runner_with(sim, monkeypatch).run()
+        assert result.results["result"] == "FAIL"
+        assert result.results["desc"] == (
+            "Sim exited 3 after a PASS verdict (was PASS: smoke completed)"
+        )
+        rb = RtlBuddy(name="test_pass_banner_with_nonzero_exit")
+        assert rb._exit_code_from_results([{"results": result}]) == 1
+
+    def test_pass_banner_with_a_clean_exit_stays_pass(
+        self, tmp_path: Path, monkeypatch
+    ):
+        setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+        sim = _AbortingSim(tmp_path, returncode=0, transcript="PASS smoke completed\n")
+        result = _runner_with(sim, monkeypatch).run()
         assert result.results["result"] == "PASS"
+        assert result.results["desc"] == "smoke completed"
+
+    def test_timeout_with_a_pass_banner_is_still_a_timeout(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The timeout sentinel returns before post-processing, so it is not graded as an error after PASS."""
+        setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+        sim = _AbortingSim(
+            tmp_path, returncode=4444, transcript="PASS smoke completed\n"
+        )
+        result = _runner_with(sim, monkeypatch).run()
+        assert isinstance(result, SimTimeoutResults)
 
     def test_clean_exit_without_markers_stays_na(self, tmp_path: Path, monkeypatch):
         """A simulator that exits 0 with no markers stays NA and fails the run through the exit-code rule."""
@@ -469,16 +500,32 @@ class TestPostprocCompletedCarriesTheFinalVerdict:
         completed = [e for e in events if e.get("event") == "postproc.completed"]
         assert completed[0]["result"] == "NA"
 
-    def test_a_pass_banner_is_never_regraded(self, tmp_path: Path):
+    def test_a_pass_banner_with_a_clean_exit_is_not_regraded(self, tmp_path: Path):
+        log_path = tmp_path / "rtl_buddy.log"
+        setup_logging(color=False, machine=True, log_path=log_path)
+        results = self._sim(tmp_path, "PASS smoke completed\n").post(sim_returncode=0)
+
+        assert results.results["result"] == "PASS"
+        events = _events(log_path)
+        assert "sim.error_after_pass" not in [e.get("event") for e in events]
+        completed = [e for e in events if e.get("event") == "postproc.completed"]
+        assert completed[0]["result"] == "PASS"
+
+    def test_a_pass_banner_with_a_nonzero_exit_completes_as_fail(self, tmp_path: Path):
         log_path = tmp_path / "rtl_buddy.log"
         setup_logging(color=False, machine=True, log_path=log_path)
         results = self._sim(tmp_path, "PASS smoke completed\n").post(sim_returncode=3)
 
-        assert results.results["result"] == "PASS"
+        assert results.results["result"] == "FAIL"
+        names = [e.get("event") for e in _events(log_path)]
+        assert names.index("sim.error_after_pass") < names.index("postproc.completed")
         completed = [
             e for e in _events(log_path) if e.get("event") == "postproc.completed"
         ]
-        assert completed[0]["result"] == "PASS"
+        assert completed[0]["result"] == "FAIL"
+        assert completed[0]["desc"] == (
+            "Sim exited 3 after a PASS verdict (was PASS: smoke completed)"
+        )
 
     def test_no_returncode_offered_grades_nothing(self, tmp_path: Path):
         """Callers that keep the ``None`` default get no re-grading."""

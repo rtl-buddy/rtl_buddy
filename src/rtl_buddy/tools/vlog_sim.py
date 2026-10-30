@@ -33,7 +33,7 @@ from ..config.rtl import expand_compile_opts
 from .vlog_filelist import VlogFilelist
 from .vlog_post import VlogPost
 from .vlog_post import UvmVlogPost
-from .vlog_post import grade_unknown_sim_exit
+from .vlog_post import grade_sim_exit
 from .vlog_cov import coverage_collector_for
 from .artifact_paths import (
     ARTIFACT_DIRNAME,
@@ -5952,9 +5952,9 @@ class VlogSim:
     def post(self, run_id=None, sim_returncode=None):
         """Post-process the test output into a TestResult.
 
-        ``sim_returncode`` is the simulation's exit status. When given, an unknown
-        verdict is graded against it before ``postproc.completed`` is logged.
-        ``None`` grades nothing.
+        ``sim_returncode`` is the simulation's exit status. When given, the verdict
+        is graded against it (:func:`grade_sim_exit`) before ``postproc.completed``
+        is logged. ``None`` grades nothing.
         """
 
         run_id = self.run_id if run_id is None else run_id
@@ -5984,8 +5984,12 @@ class VlogSim:
         # Before the coverage overlay and postproc.completed: that event's result/desc
         # are the authoritative record for JSONL consumers, so the verdict must be
         # final.
-        grade_unknown_sim_exit(
-            results.results, sim_returncode, test=self.test_name, run_id=run_id
+        grade_sim_exit(
+            results.results,
+            sim_returncode,
+            test=self.test_name,
+            run_id=run_id,
+            transcripts=(log_path, err_path),
         )
         if self._coverage_enabled():
             cov = coverage_collector_for(

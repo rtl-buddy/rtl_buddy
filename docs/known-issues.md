@@ -66,6 +66,15 @@ For a plain SystemVerilog testbench, `toplevel:` becomes Verilator `--top-module
 - Without `toplevel:`, the top is chosen from filelist order, not the testbench `name`.
 - A top pinned in the builder's `compile-time` opts overrides `toplevel:`. When they differ, the run warns `compile.toplevel_conflict` and uses the pinned top.
 
+## An error after `PASS` fails the test only through the exit status
+
+A test whose transcript prints `PASS` and then reports an error fails because the simulator exits nonzero. When the simulator exits 0 after the error, the test stays `PASS`:
+
+- VCS exits 0 after `$error`, `$fatal` and failed assertions.
+- Verilator exits 0 when `+verilator+error+limit+<n>` lets the simulation continue past the error.
+
+Set `assertions: true` so Verilator and xezim assertion failures fail the test, or have the testbench print `FAIL` when its own checks fire.
+
 ## Narrow VCS access flags suppress cocotb defaults
 
 For cocotb, rtl_buddy adds VPI access unless a configured compile option already starts with `-debug_access` or `+acc`. A narrower flag suppresses the full default and can block signal writes. Remove it, or configure sufficient access such as `-debug_access+all` and `+acc+rw`.
@@ -278,6 +287,12 @@ Each post-route repair round runs in fresh sessions and orders its steps to avoi
 - On a routed database, `repair_timing` switches to detailed-routing parasitics and builds buffer trees from global routes that a fresh session rebuilds incompletely, failing with `RSZ-0074` (OpenROAD#11852). An `eco` round therefore replaces OpenROAD's `design_is_routed` with one that answers 0 during its repairs, keeping them on placement parasitics. When `repair_timing` does not call that procedure, rb warns `pnr.post_route_eco_unguarded`; if the round then fails `RSZ-0074`, it is set aside and the result names the fix, `post-route-repair.reroute: full`.
 - `global_route -start_incremental` around a resizer command that reroutes by itself delivers each netlist change twice, and a later rip-up fails with `GRT-0229` and `usage=65535` (OpenROAD#11851). A `full` round and the global-route repair run their repairs first and open the incremental route around the legalization only, as ORFS does. An `eco` round, whose repairs do not reroute, opens it before the repairs.
 - `repair_timing` on global-route parasitics fails `RSZ-0074` on nets `repair_design` split until they are rerouted, so a repair that runs both legalizes and reroutes between them.
+
+## Post-route `repair_design` sizes its buffering on the placement estimate
+
+A post-route round's `repair_design`, the electrical round's included, finds max-slew and max-capacitance violators on the extracted SPEF, but on OpenROAD 26Q4 it sizes the buffers that repair them on Steiner trees at the placement wire RC. A net whose extraction is far above that estimate is left as it is when the estimate is within the limit less the margin, so a larger margin does not help. It can resize a driver that has a stronger variant, which the timer judges on the SPEF, so a driver at its strongest size, such as a `buf_16` driving a long chain, is the usual case. Running the repair on detailed-routing parasitics instead would build its buffer trees from the global routes, which a fresh session rebuilds incompletely (`RSZ-0074`, see [Post-route repair works around OpenROAD routing failures](#post-route-repair-works-around-openroad-routing-failures)).
+
+When the electrical round is kept, its extraction lists each violator still on its SPEF that the estimate judges within the limit less `electrical-repair`'s margin, each at the scene where its extracted violation is worst; rb warns `pnr.electrical_round_unseen` and records them in `post_route_repair.electrical_round.unseen`. The list leaves out the violators `repair_design` does not repair on any parasitics: ports, and pins on constant-driven, clock, dont_touch, special or abutment nets. Raise `post-route-repair.repair-design.wire-rc` toward the RC the extraction shows, or keep such nets short from the start with `placement.repair-design.max-wire-length`. See [Repair electrical violators after routing](concepts/pnr.md#repair-electrical-violators-after-routing).
 
 ## Corners share one SDC mode on an OpenROAD without modes
 
