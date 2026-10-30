@@ -1331,7 +1331,7 @@ A configured `postproc` script is accepted but not executed; built-in post-proce
 
 ## Namespace concurrent runs
 
-`rb test`, `rb randtest`, `rb regression` and `rb graph results` accept `--run-tag <name>`, which moves that invocation's whole artefact tree under `artefacts/.runs/<tag>/`. Use it to run the same suite twice at once, for example one run per simulator:
+`rb test`, `rb randtest`, `rb regression`, `rb pnr`, `rb pnr-export` and `rb graph results` accept `--run-tag <name>`, which moves that invocation's whole artefact tree under `artefacts/.runs/<tag>/`. Use it to run the same suite twice at once, for example one run per simulator, or one P&R variant per tag (see [P&R](pnr.md#run-several-pr-calls-at-once)):
 
 ```bash
 rb -B verilator regression --run-tag verilator &
@@ -1359,13 +1359,14 @@ rb graph results --run-tag icarus
 
 ## Handle an artefact lock
 
-Every artefact-writing command takes a non-blocking advisory lock on `<artifact_root>/.rtl-buddy.lock`. A second writer to the same tree fails immediately and reports the holder's PID, command, start time and host. Listing commands do not lock, and neither do `rb verible`, `rb filelist` and `rb saif`. They run alongside each other and alongside a run that holds the tree. A `rb filelist`, `rb saif` or `rb verible filelist -o` whose output lies inside the artefact tree does lock, since a run holding the tree may be reading that file.
+Every artefact-writing command takes a non-blocking advisory lock on `<artifact_root>/.rtl-buddy.lock`. A second writer to the same tree fails immediately and reports the holder's PID, command, start time and host. It takes the lock before opening its `rtl_buddy.log`, so a refused call leaves the holder's log untouched. Listing commands do not lock, and neither do `rb verible`, `rb filelist` and `rb saif`. They run alongside each other and alongside a run that holds the tree. A `rb filelist`, `rb saif` or `rb verible filelist -o` whose output lies inside the artefact tree does lock, since a run holding the tree may be reading that file.
 
 - Wait for the first process to finish, or terminate it if it is stale.
 - The lock is released on a clean exit, a tool failure and `Ctrl-C` (exit 130). The kernel also releases it on crash or kill, so the metadata file never needs removal.
 - A lock naming this host and a dead process, or a PID since reused by another process, is reclaimed by the next run, which logs `artifact_lock.reclaimed`.
 - A lock recorded on another host is never judged by PID. On a shared filesystem, clear a cross-machine lock deliberately.
 - The lock covers the whole artefact tree, so different commands anchored to the same directory contend even when they write different subdirectories. Runs with different artefact roots do not, which is what [`--run-tag`](#namespace-concurrent-runs) provides. Two runs naming the same tag still contend.
+- A tagged `rb pnr` that copies a block abstract or synthesis netlist out of another tree, or runs `--synth` into an untagged tree, holds that tree's lock only for that step, and waits for it rather than failing, logging `artifact_lock.wait`. See [P&R](pnr.md#run-several-pr-calls-at-once).
 - The lock is host-local. Do not run the same suite from several machines on a shared filesystem without your own coordination.
 
 ## Find the log
@@ -2870,6 +2871,28 @@ rb pnr alu_pnr -c pnr/alu/pnr.yaml --png    # also stream out GDS and render a P
 ```
 
 Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previous run's outputs first, except a refused `--resume`, which stops before that and leaves them in place. With no run name, `rb pnr` runs every entry whose `reglvl` is within `-l`, hardened blocks before the runs that use them.
+
+## Run several P&R calls at once
+
+`rb pnr` locks the suite's whole `artefacts/` tree, so a second untagged `rb pnr` on the same `pnr.yaml` is refused, even for a different run. Give each concurrent call its own `--run-tag`, for example to sweep one block's settings:
+
+```bash
+rb pnr alu_pnr -c pnr/alu/pnr.yaml --run-tag util55 &
+rb pnr alu_pnr -c pnr/alu/pnr.yaml --run-tag util60 &
+wait
+rb pnr-export alu_pnr -c pnr/alu/pnr.yaml --run-tag util60 --png
+```
+
+- A tagged call writes each run under `artefacts/.runs/<tag>/<run>/`, with its own tree lock and `rtl_buddy.log` in `artefacts/.runs/<tag>/`. Tag rules are in [Namespace concurrent runs](execution-context.md#namespace-concurrent-runs).
+- Two calls under the same tag, or two untagged, contend for one lock: the second is refused. Calls under different tags run side by side, and so do a tagged call and an untagged one, except while the tagged call copies an input from the untagged tree (below). It then waits for that tree's lock, logging `artifact_lock.wait` every five minutes.
+- A tagged call reads nothing in place from a tree it does not own. It copies each block abstract and the upstream synthesis netlist and filelist into its own tree while holding the lock of the tree they are in, checks a block copy's views against the abstract's manifest whenever it reads the copy, and reads only the copies. Synthesis and P&R in one call read the same copies. Besides its own tree, it holds one other tree's lock at a time, so a tagged `--synth` copies its synthesis's block abstracts before it locks the synthesis tree. A tagged run whose synthesis has no netlist to copy fails at setup. A block copy's manifest paths are checked against the project the block came from.
+- A run's `blocks:` are copied from the abstract their block run published under the same tag. Only when `rb pnr` under the tag has never started that block run (checked under the lock of the tag's tree, so a block run that is starting is waited for) is the untagged abstract copied instead, with the warning `pnr.block_untagged_abstract`. A block run that the tag ran but that failed, was cleared, or was skipped by `reglvl` in a whole-suite call fails its consumers.
+- Copies live in `artefacts/.runs/<tag>/.block-abstracts/` and `artefacts/.runs/<tag>/.synth/`, one directory per source and content digest, and are never overwritten. They take disk space until you remove the tag's tree (`rm -r artefacts/.runs/<tag>`), which also removes the results that read them.
+- Each result's `blocks` entries, and a hardened block's `abstract.manifest.json` `blocks`, record the `run_tag` the consumed abstract was published under (null for untagged) and its `manifest_sha256`. A tagged run also writes them to `blocks.consumed.json` in its directory. Fix-it commands in block errors carry `--run-tag <tag>` when the abstract they name is a tagged one.
+- With no run name, the tag also applies to runs pulled in from another `pnr.yaml`: they write and lock that suite's `artefacts/.runs/<tag>/`.
+- Synthesis is not namespaced: it writes the untagged `artefacts/<synth>/`. Untagged, `--synth` locks the synthesis suite's tree for the whole call. Tagged, it locks it while each synthesis runs and its netlist is copied. When `synth.yaml` shares the directory of `pnr.yaml`, that tree is the untagged P&R tree, so a tagged `--synth` waits for any untagged call there to end before synthesizing.
+- `--resume latest` and `--dispatch slurm` work inside the tag's tree: checkpoints, stage jobs and orphan checks are per tag.
+- `rb pnr-export --run-tag <tag>` exports a tagged result with the block copies that run consumed, recorded in its `blocks.consumed.json`, and fails when `blocks:` no longer lists one of them. It needs only those copies, so the block's `pnr.yaml` may have changed or gone since. Each checkpoint run directory keeps the record of the call that wrote it, which `--checkpoint` reads. `rb power` and other readers read the untagged `artefacts/<run>/` only; see [`--run-tag` readers](../known-issues.md#--run-tag-covers-the-test-and-pr-flows-not-every-reader).
 
 ## Interpret results
 
@@ -6432,11 +6455,12 @@ Artifact-writing commands take `<artifact_root>/.rtl-buddy.lock` and fail at onc
 
 Give concurrent runs of one suite a [`--run-tag`](concepts/execution-context.md#namespace-concurrent-runs) so each locks its own tree.
 
-## `--run-tag` covers the test flows, not every reader
+## `--run-tag` covers the test and P&R flows, not every reader
 
-`--run-tag` is accepted by `rb test`, `rb randtest`, `rb regression`, the dispatch job commands and `rb graph results`. Other commands do not see tagged runs:
+`--run-tag` is accepted by `rb test`, `rb randtest`, `rb regression`, `rb pnr`, `rb pnr-export`, the dispatch job commands and `rb graph results`. Other commands do not see tagged runs:
 
 - `rb wave`, `rb cov`, `rb phys` and other flow commands read the flat `artefacts/<test>/`. Open a tagged trace by path: `artefacts/.runs/<tag>/<test>/dump.fst`.
+- `rb power` reads a P&R run's untagged `artefacts/<run>/`, and `rb synth` has no tag, so a tagged `rb pnr` reads the untagged synthesis netlist.
 - The hub, the MCP server and `rb graph query` read the untagged `artefacts/graph/results-overlay.json`. Publish a tagged run there with `rb graph results --run-tag <name> -o artefacts/graph`.
 - A relative path in `compile-time` builder opts resolves one directory deeper under a tag. Write `${RTL_BUDDY_PROJECT_ROOT}/...`.
 - Merged coverage is not namespaced: `--coverage-merge*` writes `<command_root>/cov_dir/` whatever the tag, so merge in only one concurrent run.
@@ -7817,6 +7841,14 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 │                                               stage ends; Ctrl-C, SIGTERM or SIGHUP  │
 │                                               cancels the jobs. local runs here      │
 │                                               [default: (local)]                     │
+│ --run-tag               TEXT                  namespace this invocation's P&R output │
+│                                               under artefacts/.runs/<tag>/ with its  │
+│                                               own tree lock and log, so concurrent   │
+│                                               rb pnr calls on one pnr.yaml do not    │
+│                                               collide; block abstracts (the tag's,   │
+│                                               else the untagged ones) and the        │
+│                                               synthesis netlist are read from copies │
+│                                               taken into that tree                   │
 │ --help                                        Show this message and exit.            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -7865,6 +7897,9 @@ Usage: rtl-buddy pnr-export [OPTIONS] [PNR_NAME]
 │                                         preview keeps the incomplete layout and      │
 │                                         reports the cells                            │
 │                                         [default: (each run's gds-mode (preview))]   │
+│ --run-tag             TEXT              export the result an rb pnr --run-tag <tag>  │
+│                                         wrote under artefacts/.runs/<tag>/, with the │
+│                                         block copies that run read                   │
 │ --help                                  Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

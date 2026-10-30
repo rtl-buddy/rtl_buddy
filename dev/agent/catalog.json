@@ -1139,6 +1139,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/run-pr-on-a-block.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-several-pr-calls-at-once",
+          "slug": "run-several-pr-calls-at-once",
+          "title": "Run several P&R calls at once",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/run-several-pr-calls-at-once.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#interpret-results",
           "slug": "interpret-results",
           "title": "Interpret results",
@@ -2537,10 +2543,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/artifact-locking-is-per-tree-and-per-host.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#run-tag-covers-the-test-flows-not-every-reader",
-          "slug": "run-tag-covers-the-test-flows-not-every-reader",
-          "title": "`--run-tag` covers the test flows, not every reader",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/run-tag-covers-the-test-flows-not-every-reader.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#run-tag-covers-the-test-and-pr-flows-not-every-reader",
+          "slug": "run-tag-covers-the-test-and-pr-flows-not-every-reader",
+          "title": "`--run-tag` covers the test and P&R flows, not every reader",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/run-tag-covers-the-test-and-pr-flows-not-every-reader.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#tool-flows-delete-their-previous-outputs-before-running",
