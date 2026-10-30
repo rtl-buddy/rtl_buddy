@@ -812,26 +812,20 @@ def rerun_command(ref: BlockRef, run_tag: str | None = None) -> str:
 def resolve_block(ref: BlockRef, *, source=None) -> ResolvedBlock:
     """Resolve one `blocks:` entry to its published abstract, or raise BlockResolutionError.
 
-    Nothing is re-run; a missing abstract is reported with the `rb pnr` command that produces it. With a `source` (`pnr_tag_inputs.TagInputs`), the abstract read is the one it returns.
+    Nothing is re-run; a missing abstract is reported with the `rb pnr` command that produces it. With a `source` (`pnr_tag_inputs.TagInputs`), the abstract read is the one it returns; for a saved run's export, the copy it records, whether or not the block run is still defined.
     """
-    from ..config.pnr import PnrSuiteConfig
-    from ..errors import FatalRtlBuddyError
-
     where = f"block {ref.name!r} (pnr run {ref.pnr_run!r} in {ref.pnr_suite_path})"
-    if not os.path.isfile(ref.pnr_suite_path):
-        raise BlockResolutionError(f"{where}: pnr-path does not exist")
+    pinned = source.pinned_abstract(ref, where) if source is not None else None
     try:
-        suite = PnrSuiteConfig(ref.pnr_suite_path)
-    except FatalRtlBuddyError as e:
-        raise BlockResolutionError(f"{where}: {e}") from None
-    if ref.pnr_run not in suite.get_run_names():
-        raise BlockResolutionError(f"{where}: no such run in that pnr.yaml")
-    run_cfg = suite.get_runs(ref.pnr_run)[0]
-    if not run_cfg.get_harden():
-        raise BlockResolutionError(
-            f"{where}: that run does not set harden: true, so it publishes no abstract"
-        )
-    if source is None:
+        run_cfg = _hardening_run_cfg(ref, where)
+    except BlockResolutionError:
+        # A saved run's copy needs no block run to define it now; only its staleness check does.
+        if pinned is None:
+            raise
+        run_cfg = None
+    if pinned is not None:
+        directory, run_tag = pinned
+    elif source is None:
         directory, run_tag = (
             abstract_dir(
                 str(
@@ -877,6 +871,27 @@ def resolve_block(ref: BlockRef, *, source=None) -> ResolvedBlock:
         manifest_sha256=(file_fingerprint(manifest_path, None) or {}).get("sha256"),
         source_dir=copy_source(directory),
     )
+
+
+def _hardening_run_cfg(ref: BlockRef, where: str):
+    """Return the run config `ref` names, or raise BlockResolutionError when it is not a hardening run."""
+    from ..config.pnr import PnrSuiteConfig
+    from ..errors import FatalRtlBuddyError
+
+    if not os.path.isfile(ref.pnr_suite_path):
+        raise BlockResolutionError(f"{where}: pnr-path does not exist")
+    try:
+        suite = PnrSuiteConfig(ref.pnr_suite_path)
+    except FatalRtlBuddyError as e:
+        raise BlockResolutionError(f"{where}: {e}") from None
+    if ref.pnr_run not in suite.get_run_names():
+        raise BlockResolutionError(f"{where}: no such run in that pnr.yaml")
+    run_cfg = suite.get_runs(ref.pnr_run)[0]
+    if not run_cfg.get_harden():
+        raise BlockResolutionError(
+            f"{where}: that run does not set harden: true, so it publishes no abstract"
+        )
+    return run_cfg
 
 
 def copy_source(directory: str) -> str | None:
@@ -974,6 +989,9 @@ def block_changes(block: ResolvedBlock, root_cfg) -> list[str]:
         _compare(f"abstract {view}", record)
 
     recorded = block.manifest.get("config") or {}
+    if block.run_cfg is None:
+        # A saved run's copy whose block run is gone from its pnr.yaml: no config to compare.
+        return changes
     try:
         platform = root_cfg.get_pnr_platform_cfg(block.run_cfg.get_platform())
         current = abstract_config(block.run_cfg, platform)

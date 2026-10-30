@@ -5311,9 +5311,31 @@ class OpenRoadPnr:
                 desc=f"cannot resolve the design name from the synth entry: {e}",
                 fail_stage="setup",
             )
+        ckpt = None
+        if checkpoint is not None:
+            ckpt = pnr_checkpoints.resolve_checkpoint(self.artefact_dir, checkpoint)
+            if isinstance(ckpt, str):
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr_export.no_checkpoint",
+                    pnr=self.pnr_cfg.get_name(),
+                    checkpoint=checkpoint,
+                    reason=ckpt,
+                )
+                return PnrFailResults(
+                    name=self.name + "/results",
+                    desc=f"checkpoint unusable: {ckpt}",
+                    fail_stage="setup",
+                )
         if self.run_tag is not None:
-            # The block copies the saved run consumed, not the abstracts current now.
-            pinned = pnr_tag_inputs.read_consumed_blocks(self.artefact_dir) or {}
+            # The block copies the saved run consumed, not the abstracts current now; a checkpoint keeps those of the invocation that wrote it.
+            pinned = (
+                pnr_tag_inputs.read_consumed_blocks(
+                    ckpt.run_dir if ckpt is not None else self.artefact_dir
+                )
+                or {}
+            )
             dropped = self._dropped_blocks(pinned)
             if dropped:
                 desc = (
@@ -5343,23 +5365,7 @@ class OpenRoadPnr:
         )
         if blocks_failure is not None:
             return blocks_failure
-        ckpt = None
-        if checkpoint is not None:
-            ckpt = pnr_checkpoints.resolve_checkpoint(self.artefact_dir, checkpoint)
-            if isinstance(ckpt, str):
-                log_event(
-                    logger,
-                    logging.ERROR,
-                    "pnr_export.no_checkpoint",
-                    pnr=self.pnr_cfg.get_name(),
-                    checkpoint=checkpoint,
-                    reason=ckpt,
-                )
-                return PnrFailResults(
-                    name=self.name + "/results",
-                    desc=f"checkpoint unusable: {ckpt}",
-                    fail_stage="setup",
-                )
+        if ckpt is not None:
             self.artefact_dir = ckpt.export_dir()
             os.makedirs(self.artefact_dir, exist_ok=True)
             def_path = ckpt.def_path
@@ -5630,6 +5636,7 @@ class OpenRoadPnr:
         try:
             if allocated:
                 run_dir = pnr_checkpoints.allocate_run_dir(self.artefact_dir)
+                self._record_consumed_blocks(run_dir)
             files = pnr_checkpoints.keep_failed_global_route(
                 self.artefact_dir, run_dir, design=design
             )
@@ -5987,11 +5994,11 @@ class OpenRoadPnr:
             if key not in current
         )
 
-    def _record_consumed_blocks(self) -> None:
-        """Under `--run-tag`, record the block copies this run reads, once its previous outputs are cleared."""
+    def _record_consumed_blocks(self, directory: str | None = None) -> None:
+        """Under `--run-tag`, record the block copies this run reads in its directory, once its previous outputs are cleared, or in its checkpoint run `directory`."""
         if self.run_tag is not None and self._blocks:
             pnr_tag_inputs.write_consumed_blocks(
-                self.artefact_dir, self.run_tag, self._blocks
+                directory or self.artefact_dir, self.run_tag, self._blocks
             )
 
     def _blocks_fields(self) -> dict:
@@ -7253,6 +7260,7 @@ class OpenRoadPnr:
         if self._arms_checkpoints():
             try:
                 self._ckpt_run_dir = pnr_checkpoints.allocate_run_dir(self.artefact_dir)
+                self._record_consumed_blocks(self._ckpt_run_dir)
             except (OSError, RuntimeError) as e:
                 log_event(
                     logger,

@@ -173,6 +173,14 @@ class TagInputs:
             raise result
         return result
 
+    def pinned_abstract(self, ref, where: str) -> tuple[str, str | None] | None:
+        """For a saved run's export, the copy it consumed and the tag it was published under; None when this call takes new copies."""
+        if self.pinned is None:
+            return None
+        return self._pinned(
+            ref, (os.path.realpath(ref.pnr_suite_path), ref.pnr_run), where
+        )
+
     def prefetch(self, refs) -> None:
         """Resolve `refs` now, so a later resolution under another tree's lock waits for no block tree."""
         for ref in refs:

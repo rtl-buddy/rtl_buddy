@@ -1286,38 +1286,41 @@ class RtlBuddy:
             )
 
         ctx.command_root.mkdir(parents=True, exist_ok=True)
-        if log_path is not None:
-            log_path = Path(log_path)
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            attach_file_log(log_path)
-        elif not list_only and writes_artifacts:
-            # Under `--run-tag` the log directory does not exist yet; the tree lock
-            # below creates it.
-            ctx.log_path.parent.mkdir(parents=True, exist_ok=True)
-            attach_file_log(ctx.log_path)
         self.exec_ctx = ctx
-
-        if list_only:
-            return ctx
 
         # Fail loud if another process uses this artefact tree; held until exit.
         # `--list` paths and commands that write no artefacts stay lock-free.
         # Dispatched `_test-job` processes share the head's tree and must not take the
         # lock.
-        # `ctx.artifact_root` carries the `--run-tag`, so the lock is per tag.
-        if writes_artifacts and getattr(
-            self, "_pending_invoked_subcommand", None
-        ) not in (
-            "_test-job",
-            "_build-job",
-            "_elab-job",
-            "_cov-job",
-            "_pnr-stage-job",
+        # `ctx.artifact_root` carries the `--run-tag`, so the lock is per tag. Taken
+        # before the file log is opened, so a refused call leaves the holder's log whole.
+        if (
+            not list_only
+            and writes_artifacts
+            and getattr(self, "_pending_invoked_subcommand", None)
+            not in (
+                "_test-job",
+                "_build-job",
+                "_elab-job",
+                "_cov-job",
+                "_pnr-stage-job",
+            )
         ):
             self._artifact_locks.acquire(
                 ctx.artifact_root,
                 command=getattr(self, "_pending_invoked_subcommand", None),
             )
+
+        if log_path is not None:
+            log_path = Path(log_path)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            attach_file_log(log_path)
+        elif not list_only and writes_artifacts:
+            ctx.log_path.parent.mkdir(parents=True, exist_ok=True)
+            attach_file_log(ctx.log_path)
+
+        if list_only:
+            return ctx
 
         # Rebuild root_cfg only when the command root resolves to a different
         # root_config.yaml, so multi-root regressions get each suite's defaults.

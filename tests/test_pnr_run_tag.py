@@ -142,6 +142,21 @@ def test_different_runs_under_different_tags_complete_and_a_colliding_tag_is_ref
     assert not (pnr_project / "artefacts/.runs/sweep-a/a").exists()
 
 
+@pytest.mark.parametrize("command", ["pnr", "pnr-export"])
+def test_a_call_refused_by_a_busy_tag_leaves_the_holders_log_whole(
+    pnr_project, locks, command
+):
+    tagged = run_artifact_root(pnr_project, "busy")
+    locks(tagged)
+    log = tagged / "rtl_buddy.log"
+    log.write_text("the running call's log\n")
+
+    clash = _rb(command, "a", "--run-tag", "busy")
+
+    assert "another rtl-buddy run" in str(clash.exception)
+    assert log.read_text() == "the running call's log\n"
+
+
 def test_an_invalid_run_tag_is_refused_before_anything_is_written(pnr_project):
     result = _rb("pnr", "a", "--run-tag", "../escape")
     assert result.exit_code != 0
@@ -433,6 +448,71 @@ def test_a_saved_tagged_run_is_exported_with_the_copy_it_consumed(tmp_path):
         resolve_block(_ref(suite), source=_source(tmp_path, pinned=pinned))
     with pytest.raises(BlockResolutionError, match="records no abstract"):
         resolve_block(_ref(suite), source=_source(tmp_path, pinned={}))
+
+
+@pytest.mark.parametrize("edit", ["deleted", "renamed", "not hardened"])
+def test_a_saved_tagged_run_is_exported_whatever_became_of_the_block_run(
+    tmp_path, edit
+):
+    """The recorded copy is all the export needs; the live block run only feeds the staleness check."""
+    suite = _block_suite(tmp_path)
+    run_dir = tmp_path / "top/artefacts" / RUNS_DIRNAME / "t" / "top_pnr"
+    run_dir.mkdir(parents=True)
+    consumed = resolve_block(_ref(suite), source=_source(tmp_path))
+    pnr_tag_inputs.write_consumed_blocks(str(run_dir), "t", [consumed])
+    if edit == "deleted":
+        suite.unlink()
+    elif edit == "renamed":
+        suite.write_text(suite.read_text().replace("name: blk_pnr", "name: other"))
+    else:
+        suite.write_text(suite.read_text().replace("harden: true", "harden: false"))
+    pinned = pnr_tag_inputs.read_consumed_blocks(str(run_dir))
+
+    exported = resolve_block(_ref(suite), source=_source(tmp_path, pinned=pinned))
+
+    assert exported.abstract_dir == consumed.abstract_dir
+    assert exported.run_cfg is None
+    assert pnr_abstract.block_changes(exported, _root_cfg(tmp_path)) == []
+    with pytest.raises(BlockResolutionError):
+        resolve_block(_ref(suite), source=_source(tmp_path))
+
+
+def test_a_tagged_checkpoint_is_exported_with_the_blocks_its_invocation_consumed(
+    tmp_path, monkeypatch
+):
+    """Each checkpoint run directory keeps its own record, which `--checkpoint` reads instead of the run's latest."""
+    from rtl_buddy.tools import pnr_openroad
+
+    recorded = []
+    monkeypatch.setattr(
+        OpenRoadPnr,
+        "_record_consumed_blocks",
+        lambda self, directory=None: recorded.append(directory),
+    )
+    backend, _ = _backend(
+        tmp_path, monkeypatch, stages=True, run_tag="t", stop_after="floorplan"
+    )
+    _write(Path(pnr_openroad.synth_netlist_path(backend.pnr_cfg)), "module x;\n")
+    assert backend.run().results["result"] == "PASS"
+    [ckpt_run] = sorted(
+        p
+        for p in Path(backend.artefact_dir, "checkpoints").iterdir()
+        if p.is_dir() and not p.is_symlink()
+    )
+    assert recorded == [None, str(ckpt_run)]
+
+    read = []
+
+    def _read(directory):
+        read.append(directory)
+        raise RuntimeError("read")
+
+    monkeypatch.setattr(pnr_tag_inputs, "read_consumed_blocks", _read)
+    for checkpoint in (f"{ckpt_run.name}/floorplan", None):
+        backend, _ = _backend(tmp_path, monkeypatch, stages=True, run_tag="t")
+        with pytest.raises(RuntimeError, match="read"):
+            backend.export_only(checkpoint=checkpoint)
+    assert read == [str(ckpt_run), backend.artefact_dir]
 
 
 def test_a_copy_that_does_not_match_its_manifest_is_refused(tmp_path):
@@ -753,10 +833,11 @@ def test_only_an_accepted_resume_rewrites_the_consumed_blocks_record(
     """A refused resume leaves the record of the run it refused to continue; an accepted one rewrites it after clearing."""
     from rtl_buddy.tools import pnr_openroad
 
-    def _record(self):
-        Path(self.artefact_dir, pnr_tag_inputs.CONSUMED_BLOCKS_NAME).write_text(
-            f"{self.resume}\n"
-        )
+    def _record(self, directory=None):
+        if directory is None:
+            Path(self.artefact_dir, pnr_tag_inputs.CONSUMED_BLOCKS_NAME).write_text(
+                f"{self.resume}\n"
+            )
 
     monkeypatch.setattr(pnr_openroad.OpenRoadPnr, "_record_consumed_blocks", _record)
     first = _stopped_at_global_route(tmp_path, monkeypatch)
