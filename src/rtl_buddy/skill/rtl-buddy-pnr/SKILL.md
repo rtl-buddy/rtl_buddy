@@ -39,9 +39,9 @@ rb --machine pnr-export <run> -c <pnr.yaml> --png [--run-tag <tag>]  # GDS/PNG o
 ## Read results
 
 - `pnr` and `pnr-export` exit 0 when every result counts as successful (`PASS`, `SKIP`, `XFAIL`, non-strict `XPASS`), 1 for any `FAIL` or strict `XPASS`, and 2 for a fatal configuration or environment error.
-- `PASS` means the flow finished, not that the design closed. Report `wns_setup_ps`, `wns_hold_ps`, `tns_ps`, `tns_hold_ps`, `drc_count` and the three `max_*_violation_count` fields separately from the verdict.
+- `PASS` means the flow finished, not that the design closed. Report `wns_*`, `tns_*`, `drc_count`, `max_*_violation_count` apart from it; `worst_paths.rpt`, `fanout.rpt` (`worst_path_*`, `max_net_fanout`) name the RTL.
 - Compare experiments on `routed_cell_count`, not `cell_count` (the input netlist).
-- `routed: false` (probe, `--stop-after`) means the numbers are a stage estimate; never report them as routed results.
+- `routed: false` (probe, `--stop-after`) means the numbers are a stage estimate; never report them as routed.
 - Read qualifiers in `desc`: `pnr.no_wire_rc` (no pre-route wire RC; set it in `layer-rc-tcl` or a `session` hook; `RSZ-0089` needs it), electrical violators, a passed-over or failed post-route repair round, `GDS incomplete`, accepted stale abstracts.
 - Multi-corner: WNS fields are the worst over corners; `worst_setup_corner`, `worst_hold_corner` and `corners` give the breakdown. `max_fanout_violation_count` counts a pin once per corner. `<top>.<corner>.routed.sdc` is each corner's SDC for signoff STA.
 - To make the verdict judge timing, DRCs or electrical violators, set a `signoff:` block on the platform or run (`rb --machine docs show concepts/pnr#gate-signoff`); `signoff` in the result gives each gate's values and verdict. A gate that cannot be measured (setup unconstrained, no DRC report, an electrical count missing) fails.

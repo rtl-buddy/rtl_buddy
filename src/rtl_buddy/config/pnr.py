@@ -878,6 +878,22 @@ def _validate_detailed_route_verbose(run: str, value) -> int:
     )
 
 
+#: Signal nets `fanout.rpt` lists when a run sets no `report-fanout-nets`.
+DEFAULT_REPORT_FANOUT_NETS = 10
+
+
+def _validate_report_fanout_nets(run: str, value) -> int:
+    """Return `report-fanout-nets`, default `DEFAULT_REPORT_FANOUT_NETS`, or raise FatalRtlBuddyError."""
+    if value is None:
+        return DEFAULT_REPORT_FANOUT_NETS
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    raise FatalRtlBuddyError(
+        f"pnr run '{run}': 'report-fanout-nets' must be a positive integer "
+        f"(the signal nets fanout.rpt lists), got {value!r}"
+    )
+
+
 @serde
 class PnrPdnRingFile:
     # [horizontal, vertical] routing layers.
@@ -1372,6 +1388,10 @@ class PnrConfigFile:
     detailed_route_verbose: int | float | str | None = field(
         rename="detailed-route-verbose", default=None
     )
+    # Signal nets `fanout.rpt` lists; unset means 10. Typed loosely so `initialise` names a bad value.
+    report_fanout_nets: int | float | str | None = field(
+        rename="report-fanout-nets", default=None
+    )
     # Either flag marks the run expected-to-fail; `xfail_strict` fails on an unexpected pass. See docs/concepts/expected-failures.md.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
@@ -1409,6 +1429,9 @@ class PnrConfigFile:
         resources = _load_resources(self.name, self.resources)
         detailed_route_verbose = _validate_detailed_route_verbose(
             self.name, self.detailed_route_verbose
+        )
+        report_fanout_nets = _validate_report_fanout_nets(
+            self.name, self.report_fanout_nets
         )
 
         hooks = _normalise_hooks(self.name, self.hooks, config_dir)
@@ -1593,6 +1616,7 @@ class PnrConfigFile:
             threads=threads,
             resources=resources,
             detailed_route_verbose=detailed_route_verbose,
+            report_fanout_nets=report_fanout_nets,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
             xfail_match=self.xfail_match,
@@ -1667,6 +1691,7 @@ class PnrConfig:
     # The validated `resources:` block; None when unset.
     resources: PnrResources | None = None
     detailed_route_verbose: int = DEFAULT_DETAILED_ROUTE_VERBOSE
+    report_fanout_nets: int = DEFAULT_REPORT_FANOUT_NETS
     checkpoints: tuple[str, ...] | None = None
     stages: bool = False
     # Absolute paths by flow point, in flow order; only points with a file.
@@ -1806,6 +1831,10 @@ class PnrConfig:
     def get_detailed_route_verbose(self) -> int:
         """Validated `detailed-route-verbose:`, the `detailed_route -verbose` level."""
         return self.detailed_route_verbose
+
+    def get_report_fanout_nets(self) -> int:
+        """Validated `report-fanout-nets:`, the signal nets `fanout.rpt` lists."""
+        return self.report_fanout_nets
 
     def get_checkpoints(self) -> tuple[str, ...] | None:
         """The stages to checkpoint, in flow order; ``None`` when off."""

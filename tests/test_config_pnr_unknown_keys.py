@@ -205,6 +205,7 @@ RUN_SIZED = {
         },
     },
     "detailed-route-verbose": 1,
+    "report-fanout-nets": 5,
     "xfail": True,
     "xfail_strict": False,
     "xfail_match": "boom",
@@ -371,7 +372,8 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "detailed-route-antenna-repair, global-route-hold-repair, "
             "port-buffer, tapcell-tcl, cts-dont-use-cells, keep-sizing-vt, "
             "cts-clock-nets, global-route, mode, signoff, reglvl, tool_overrides, "
-            "threads, resources, detailed-route-verbose, xfail, xfail_strict, "
+            "threads, resources, detailed-route-verbose, report-fanout-nets, xfail, "
+            "xfail_strict, "
             "xfail_match",
         ),
         (

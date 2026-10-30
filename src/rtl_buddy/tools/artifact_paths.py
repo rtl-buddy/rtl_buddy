@@ -125,6 +125,8 @@ SIBLING_OUTPUT_NAMES = (
     "congestion.rpt",
     "timing.rpt",
     "electrical.rpt",
+    "worst_paths.rpt",
+    "fanout.rpt",
     # rb pnr-export: provenance of the exported layout; nothing regenerates it.
     "export.provenance.json",
     # Stream-out input manifest and KLayout completeness report; a strict re-render reads the report.

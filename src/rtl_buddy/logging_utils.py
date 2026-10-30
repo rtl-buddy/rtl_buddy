@@ -3345,6 +3345,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('max_fanout_violation_count')} max-fanout violator(s); "
                 f"{verdict}; see {fields.get('report')}"
             )
+        case "pnr.path_report_failed":
+            return (
+                f"pnr {fields.get('pnr')}: worst_paths.rpt and fanout.rpt could not be "
+                f"written ({fields.get('error')}); their result fields are left out"
+            )
         case "pnr.macro_pin_limits_unmet":
             return (
                 f"pnr {fields.get('pnr')}: {fields.get('unmet')} macro pin(s) stayed "
