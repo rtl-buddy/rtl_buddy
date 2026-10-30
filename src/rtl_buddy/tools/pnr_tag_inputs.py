@@ -77,6 +77,19 @@ def _absolute_filelist(text: str, base: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _view_mismatch(copy: Path, manifest_bytes: bytes) -> str | None:
+    """Return the first view of the abstract in `copy` that differs from its manifest's digest, or None."""
+    manifest = json.loads(manifest_bytes)
+    design = manifest.get("block")
+    for view, record in (manifest.get("outputs") or {}).items():
+        if not record:
+            continue
+        path = pnr_abstract.view_path(str(copy), design, view)
+        if not os.path.isfile(path) or _sha256(path) != record.get("sha256"):
+            return view
+    return None
+
+
 def mark_attempt(artefact_dir: str) -> None:
     """Record that a P&R attempt of this tagged run started; see `TagInputs`."""
     Path(artefact_dir, ATTEMPT_MARKER_NAME).touch()
@@ -203,16 +216,23 @@ class TagInputs:
                 f"{where}: the abstract copy the saved run consumed is gone from "
                 f"{directory} — re-run the P&R run under --run-tag {self.run_tag}"
             )
+        changed = _view_mismatch(Path(directory), manifest.read_bytes())
+        if changed is not None:
+            raise pnr_abstract.BlockResolutionError(
+                f"{where}: the {changed} of the abstract copy the saved run consumed "
+                f"in {directory} has changed since — re-run the P&R run under "
+                f"--run-tag {self.run_tag}"
+            )
         return directory, record.get("run_tag")
 
     def _copy_abstract(self, ref, where: str) -> tuple[str, str | None]:
         suite_dir = os.path.dirname(ref.pnr_suite_path)
         tagged_root = run_artifact_root(suite_dir, self.run_tag)
-        if tagged_root.is_dir():
-            # A same-tag block run holding its tree has marked it or ended by the time the lock is ours.
-            with tree_lock(tagged_root, command="pnr"):
-                if (tagged_root / ref.pnr_run / ATTEMPT_MARKER_NAME).is_file():
-                    return self._copy_from(ref, where, tagged_root, self.run_tag)
+        # Locked even when absent (the lock creates it): a same-tag block run that has
+        # started holds its tree, and has marked it or ended by the time the lock is ours.
+        with tree_lock(tagged_root, command="pnr"):
+            if (tagged_root / ref.pnr_run / ATTEMPT_MARKER_NAME).is_file():
+                return self._copy_from(ref, where, tagged_root, self.run_tag)
         return self._copy_from(ref, where, run_artifact_root(suite_dir), None)
 
     def _copy_from(
@@ -251,6 +271,13 @@ class TagInputs:
                     json.dumps({"abstract_dir": source}) + "\n"
                 )
                 os.replace(partial, dest)
+            else:
+                changed = _view_mismatch(dest, manifest_bytes)
+                if changed is not None:
+                    raise pnr_abstract.BlockResolutionError(
+                        f"{where}: the {changed} of the copy {dest} no longer matches "
+                        f"its manifest — remove {dest} to have it copied again"
+                    )
         if source_tag is None:
             log_event(
                 logger,
@@ -274,18 +301,12 @@ class TagInputs:
             raise pnr_abstract.BlockResolutionError(
                 f"{where}: the copy of {source} does not match it"
             )
-        manifest = json.loads(manifest_bytes)
-        design = manifest.get("block")
-        for view, record in (manifest.get("outputs") or {}).items():
-            if not record:
-                continue
-            path = pnr_abstract.view_path(str(copy), design, view)
-            if not os.path.isfile(path) or _sha256(path) != record.get("sha256"):
-                shutil.rmtree(copy, ignore_errors=True)
-                raise pnr_abstract.BlockResolutionError(
-                    f"{where}: the copy of {source} does not match its manifest "
-                    f"({view})"
-                )
+        view = _view_mismatch(copy, manifest_bytes)
+        if view is not None:
+            shutil.rmtree(copy, ignore_errors=True)
+            raise pnr_abstract.BlockResolutionError(
+                f"{where}: the copy of {source} does not match its manifest ({view})"
+            )
 
     def synth_dir(self, synth_suite_path: str, synth_name: str) -> str | None:
         """Return the copy of a synthesis's netlist and filelist to read, or None when it has no netlist.

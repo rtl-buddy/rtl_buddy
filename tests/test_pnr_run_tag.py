@@ -562,14 +562,19 @@ def test_the_copy_is_taken_under_the_block_trees_lock(tmp_path, monkeypatch, tre
     assert block.run_tag == (None if tree == "untagged" else "t")
 
 
-def _hold(lock: Path, then: str = "") -> subprocess.Popen:
-    """A process that holds `lock`, says `held`, then runs `then`."""
+def _hold(lock: Path, then: str = "", *, mkdir: bool = False) -> subprocess.Popen:
+    """A process that holds `lock` (creating its directory with `mkdir`), says `held`, then runs `then`."""
     holder = subprocess.Popen(
         [
             sys.executable,
             "-c",
             "import fcntl, pathlib, sys, time\n"
-            f"f = open({str(lock)!r}, 'a')\n"
+            + (
+                f"pathlib.Path({str(lock.parent)!r}).mkdir(parents=True)\n"
+                if mkdir
+                else ""
+            )
+            + f"f = open({str(lock)!r}, 'a')\n"
             "fcntl.flock(f, fcntl.LOCK_EX)\n"
             "print('held', flush=True)\n" + then,
         ],
@@ -599,6 +604,59 @@ def test_a_same_tag_block_run_holding_its_tree_is_waited_for_before_the_marker_i
         holder.wait(timeout=10)
 
     assert block.run_tag == "t"
+
+
+def test_a_same_tag_block_run_that_creates_its_tree_meanwhile_is_waited_for(
+    tmp_path, monkeypatch
+):
+    """The block's tagged tree is absent when the consumer starts; a same-tag block run creates and locks it before the consumer's first lock, and is waited for."""
+    monkeypatch.setattr(artifact_lock, "TREE_LOCK_POLL_SEC", 0.05)
+    suite = _block_suite(tmp_path)
+    tagged_root = run_artifact_root(tmp_path / "blk", "t")
+    assert not tagged_root.exists()
+    flat = tmp_path / "blk/artefacts/blk_pnr"
+    tagged = tagged_root / "blk_pnr"
+    holders = []
+    real = pnr_tag_inputs.tree_lock
+
+    def _block_run_starts_first(root, **kw):
+        if not holders:
+            holders.append(
+                _hold(
+                    tagged_root / LOCK_FILENAME,
+                    "time.sleep(1)\n"
+                    f"import shutil; shutil.copytree({str(flat)!r}, {str(tagged)!r})\n"
+                    f"pathlib.Path({str(tagged / pnr_tag_inputs.ATTEMPT_MARKER_NAME)!r}).touch()\n",
+                    mkdir=True,
+                )
+            )
+        return real(root, **kw)
+
+    monkeypatch.setattr(pnr_tag_inputs, "tree_lock", _block_run_starts_first)
+    try:
+        block = resolve_block(_ref(suite), source=_source(tmp_path))
+    finally:
+        for holder in holders:
+            holder.wait(timeout=10)
+
+    assert block.run_tag == "t"
+
+
+@pytest.mark.parametrize("pinned", [True, False])
+def test_a_copy_whose_view_was_edited_in_place_is_refused(tmp_path, pinned):
+    suite = _block_suite(tmp_path)
+    run_dir = tmp_path / "top/artefacts" / RUNS_DIRNAME / "t" / "top_pnr"
+    run_dir.mkdir(parents=True)
+    consumed = resolve_block(_ref(suite), source=_source(tmp_path))
+    pnr_tag_inputs.write_consumed_blocks(str(run_dir), "t", [consumed])
+    Path(consumed.gds).write_text("another layout\n")
+    source = _source(
+        tmp_path,
+        pinned=pnr_tag_inputs.read_consumed_blocks(str(run_dir)) if pinned else None,
+    )
+
+    with pytest.raises(BlockResolutionError, match="gds"):
+        resolve_block(_ref(suite), source=source)
 
 
 def test_a_tagged_synth_copies_its_blocks_before_locking_the_synthesis_tree(
