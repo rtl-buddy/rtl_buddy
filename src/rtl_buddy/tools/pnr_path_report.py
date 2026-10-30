@@ -249,11 +249,11 @@ def report_tcl(corners: list[str], fanout_nets: int, modes: bool = False) -> str
         search = (
             "set rb_was_mode [sta::cmd_mode_name]\n"
             "set_mode $rb_path_corner\n"
-            "try {\n"
+            "set rb_failed [catch {\n"
             + "".join(f"  {line}\n" for line in search.splitlines())
-            + "} finally {\n"
-            "  set_mode $rb_was_mode\n"
-            "}"
+            + "} rb_search_err]\n"
+            "set_mode $rb_was_mode\n"
+            "if {$rb_failed} { error $rb_search_err }"
         )
     search = "".join(f"  {line}\n" for line in search.splitlines())
     return (

@@ -193,6 +193,15 @@ def test_path_groups_are_listed_and_searched_in_the_critical_corners_mode():
     out = subprocess.run([_tclsh()], input=script, capture_output=True, text=True)
     lines = out.stdout.splitlines()
     assert lines == ["PATH clk ss end_ss", "PATH io ss end_ss", "MODE tt"], out
+    # A search that fails still restores the mode.
+    failing = script.replace(
+        'return [list "end_$::mode"]', 'error "no paths in $::mode"'
+    )
+    out = subprocess.run([_tclsh()], input=failing, capture_output=True, text=True)
+    assert out.stdout.splitlines() == [
+        "rb: worst path report unavailable: no paths in ss",
+        "MODE tt",
+    ], out
 
 
 def test_a_reset_net_first_met_past_the_hop_limit_is_still_found_directly():
