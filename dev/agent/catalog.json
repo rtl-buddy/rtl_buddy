@@ -2501,6 +2501,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/toplevel-must-name-the-testbench-in-a-plain-systemverilog-test.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#an-error-after-pass-fails-the-test-only-through-the-exit-status",
+          "slug": "an-error-after-pass-fails-the-test-only-through-the-exit-status",
+          "title": "An error after `PASS` fails the test only through the exit status",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/an-error-after-pass-fails-the-test-only-through-the-exit-status.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#narrow-vcs-access-flags-suppress-cocotb-defaults",
           "slug": "narrow-vcs-access-flags-suppress-cocotb-defaults",
           "title": "Narrow VCS access flags suppress cocotb defaults",

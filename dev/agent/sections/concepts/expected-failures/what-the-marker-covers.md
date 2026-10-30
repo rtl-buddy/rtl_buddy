@@ -9,4 +9,6 @@ A marker excuses only a verdict the flow's own tool reported at its end: a simul
 | `cdc`, `lint` | the analyzer failing before it produced a count |
 | `synth`, `pnr`, `power`, `fpga` | setup failures: a missing tool, an unresolvable platform or PDK, a filelist or script-generation error |
 
+A simulator that printed `PASS` and then exited nonzero reported its own error, so a marker covers that `FAIL`; name the expected error with `xfail_match`.
+
 In `synth`, `pnr`, `power` and `fpga`, a failure the tool itself reports is that flow's verdict, so a marker still covers a synthesis the tool rejected.

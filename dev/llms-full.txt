@@ -1407,7 +1407,7 @@ A negative control fails in two ways when the check it exists for regresses: the
 
 - The regex is searched, not anchored, with Python `re` syntax. Quote it in YAML.
 - It is searched in the first error/fatal line the grader recorded, then in the result desc. A matching `FAIL` becomes `XFAIL`.
-- The first error/fatal line is the sim log's first `ERR:`/`FAT:` line; under `uvm:`, the first `UVM_ERROR`/`UVM_FATAL` report; for a failure from fired SVA assertions, the first `Assertion failed` line. The result carries it as `first_error`. Other flows and graders use the desc alone.
+- The first error/fatal line is the sim log's first `ERR:`/`FAT:` line; under `uvm:`, the first `UVM_ERROR`/`UVM_FATAL` report; for a failure from fired SVA assertions, the first `Assertion failed` line; for a simulator that exited nonzero after `PASS`, the first assertion failure or Verilator `%Error`/`%Fatal` line. The result carries it as `first_error`. Other flows and graders use the desc alone.
 - A `FAIL` that does not match stays `FAIL`, with desc `xfail: failed for a different reason (expected /ECP-1017/): <desc>`, and the `*_suite.xfail` event reports `excused: false` with that reason.
 - A pass is graded as without `xfail_match`: `XPASS`, a failure only under `xfail_strict`.
 - It is accepted on every flow that takes a marker. Without `xfail` or `xfail_strict`, or with an invalid regex, configuration loading fails.
@@ -1422,6 +1422,8 @@ A marker excuses only a verdict the flow's own tool reported at its end: a simul
 | `fpv` | sby reporting `UNKNOWN`, a solver timeout, or an error instead of `PASS`/`FAIL`; a `prove` whose base case passed and induction step failed is a verdict, not a tool failure |
 | `cdc`, `lint` | the analyzer failing before it produced a count |
 | `synth`, `pnr`, `power`, `fpga` | setup failures: a missing tool, an unresolvable platform or PDK, a filelist or script-generation error |
+
+A simulator that printed `PASS` and then exited nonzero reported its own error, so a marker covers that `FAIL`; name the expected error with `xfail_match`.
 
 In `synth`, `pnr`, `power` and `fpga`, a failure the tool itself reports is that flow's verdict, so a marker still covers a synthesis the tool rejected.
 
@@ -4196,7 +4198,7 @@ Use Verilator by default. Use Icarus Verilog for lightweight smoke tests, or whe
 
 Verilator compiles a cycle-based `simv` binary. Icarus compiles a `.vvp` snapshot and runs it with `vvp`; RTL Buddy generates a `simv` wrapper so the rest of the flow is the same.
 
-xezim parses, elaborates and simulates in one invocation. The compile runs `xezim --compile`, which stops after elaboration, so syntax and elaboration errors fail the compile as with the other backends. RTL Buddy then writes a `simv` wrapper that reruns the same command line without `--compile`. Both point `--cache-dir` at the build directory, so runs reuse the elaborated design. The wrapper also adds `--error-exit`: without it xezim exits 0 after `$error` or a failed assertion, and a test with no PASS/FAIL marker could not be graded. Failed assertions print `** Error: Assertion error.`, which `assertions: true` counts. Note that:
+xezim parses, elaborates and simulates in one invocation. The compile runs `xezim --compile`, which stops after elaboration, so syntax and elaboration errors fail the compile as with the other backends. RTL Buddy then writes a `simv` wrapper that reruns the same command line without `--compile`. Both point `--cache-dir` at the build directory, so runs reuse the elaborated design. The wrapper also adds `--error-exit`: without it xezim exits 0 after `$error` or a failed assertion, so the exit status could not fail a test, with or without a PASS/FAIL marker. Failed assertions print `** Error: Assertion error.`, which `assertions: true` counts. Note that:
 
 - `$dumpfile`/`$dumpvars` do nothing without `--wave`. Put `--wave`, or `--fst dump.fst`, in the builder's `compile-time` options for the modes that need waves.
 - xezim stops at `--max-time`, 100 ms of simulated time by default. Raise it in `compile-time` for longer tests.
@@ -4942,6 +4944,7 @@ end
 - `ERR:` or `FAT:` lines after `FAIL` put the reason in the summary.
 - If both markers appear, `FAIL` wins and a warning is logged.
 - If neither appears, the result is `NA` and the run exits 1. A nonzero simulator exit with no marker is an abort and reports `FAIL`.
+- A simulator that exits nonzero or is killed by a signal fails the test even after a `PASS` line. The simulator reported an error the marker does not cover, such as a `final`-block assertion, `$stop` or an abort. The desc names the exit status and the first assertion failure or Verilator `%Error`/`%Fatal` line, which the result also carries as `first_error`. End a passing test with `$finish`: Verilator treats `$stop` as an error and exits 1.
 - UVM tests are judged by thresholds on the UVM Report Summary; a missing or malformed summary fails the test.
 - cocotb tests are judged from `cocotb_results.xml`. Do not print markers.
 
@@ -6371,6 +6374,15 @@ For a plain SystemVerilog testbench, `toplevel:` becomes Verilator `--top-module
 - A `toplevel:` naming the DUT compiles, then the simulation exits at once and the test ends `NA` with `no PASS/FAIL markers found in .../test.log; result is NA`. Nothing in that output names `toplevel:`. A DUT with unconnected interface ports fails with `%Error-UNSUPPORTED: Interfaced port on top level module` instead.
 - Without `toplevel:`, the top is chosen from filelist order, not the testbench `name`.
 - A top pinned in the builder's `compile-time` opts overrides `toplevel:`. When they differ, the run warns `compile.toplevel_conflict` and uses the pinned top.
+
+## An error after `PASS` fails the test only through the exit status
+
+A test whose transcript prints `PASS` and then reports an error fails because the simulator exits nonzero. When the simulator exits 0 after the error, the test stays `PASS`:
+
+- VCS exits 0 after `$error`, `$fatal` and failed assertions.
+- Verilator exits 0 when `+verilator+error+limit+<n>` lets the simulation continue past the error.
+
+Set `assertions: true` so Verilator and xezim assertion failures fail the test, or have the testbench print `FAIL` when its own checks fire.
 
 ## Narrow VCS access flags suppress cocotb defaults
 

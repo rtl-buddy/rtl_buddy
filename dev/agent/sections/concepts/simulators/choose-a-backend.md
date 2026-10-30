@@ -11,7 +11,7 @@
 
 Verilator compiles a cycle-based `simv` binary. Icarus compiles a `.vvp` snapshot and runs it with `vvp`; RTL Buddy generates a `simv` wrapper so the rest of the flow is the same.
 
-xezim parses, elaborates and simulates in one invocation. The compile runs `xezim --compile`, which stops after elaboration, so syntax and elaboration errors fail the compile as with the other backends. RTL Buddy then writes a `simv` wrapper that reruns the same command line without `--compile`. Both point `--cache-dir` at the build directory, so runs reuse the elaborated design. The wrapper also adds `--error-exit`: without it xezim exits 0 after `$error` or a failed assertion, and a test with no PASS/FAIL marker could not be graded. Failed assertions print `** Error: Assertion error.`, which `assertions: true` counts. Note that:
+xezim parses, elaborates and simulates in one invocation. The compile runs `xezim --compile`, which stops after elaboration, so syntax and elaboration errors fail the compile as with the other backends. RTL Buddy then writes a `simv` wrapper that reruns the same command line without `--compile`. Both point `--cache-dir` at the build directory, so runs reuse the elaborated design. The wrapper also adds `--error-exit`: without it xezim exits 0 after `$error` or a failed assertion, so the exit status could not fail a test, with or without a PASS/FAIL marker. Failed assertions print `** Error: Assertion error.`, which `assertions: true` counts. Note that:
 
 - `$dumpfile`/`$dumpvars` do nothing without `--wave`. Put `--wave`, or `--fst dump.fst`, in the builder's `compile-time` options for the modes that need waves.
 - xezim stops at `--max-time`, 100 ms of simulated time by default. Raise it in `compile-time` for longer tests.
