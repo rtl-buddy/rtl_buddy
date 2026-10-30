@@ -642,6 +642,18 @@ def test_a_same_tag_block_run_that_creates_its_tree_meanwhile_is_waited_for(
     assert block.run_tag == "t"
 
 
+def test_a_reused_copy_whose_manifest_was_edited_is_refused(tmp_path):
+    suite = _block_suite(tmp_path)
+    copy = Path(resolve_block(_ref(suite), source=_source(tmp_path)).abstract_dir)
+    manifest = copy / pnr_abstract.ABSTRACT_MANIFEST_NAME
+    record = json.loads(manifest.read_text())
+    record["technology"] = {}
+    manifest.write_text(json.dumps(record))
+
+    with pytest.raises(BlockResolutionError, match="abstract.manifest.json"):
+        resolve_block(_ref(suite), source=_source(tmp_path))
+
+
 @pytest.mark.parametrize("pinned", [True, False])
 def test_a_copy_whose_view_was_edited_in_place_is_refused(tmp_path, pinned):
     suite = _block_suite(tmp_path)

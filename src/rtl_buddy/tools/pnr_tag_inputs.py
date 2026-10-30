@@ -272,11 +272,16 @@ class TagInputs:
                 )
                 os.replace(partial, dest)
             else:
-                changed = _view_mismatch(dest, manifest_bytes)
+                copied = dest / pnr_abstract.ABSTRACT_MANIFEST_NAME
+                changed = (
+                    pnr_abstract.ABSTRACT_MANIFEST_NAME
+                    if not copied.is_file() or _sha256(copied) != digest
+                    else _view_mismatch(dest, manifest_bytes)
+                )
                 if changed is not None:
                     raise pnr_abstract.BlockResolutionError(
-                        f"{where}: the {changed} of the copy {dest} no longer matches "
-                        f"its manifest — remove {dest} to have it copied again"
+                        f"{where}: the {changed} of the copy {dest} has changed "
+                        f"since it was copied — remove {dest} to have it copied again"
                     )
         if source_tag is None:
             log_event(

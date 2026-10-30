@@ -674,7 +674,10 @@ def write_manifest(
         if isinstance(value, list):
             return [_fp(v) for v in value]
         if isinstance(value, dict):
-            return value
+            # A fingerprinted record (the netlist) as is; a per-corner `constraints:` mapping corner by corner.
+            if "sha256" in value:
+                return value
+            return {key: _fp(v) for key, v in value.items()}
         return file_fingerprint(value, root)
 
     outputs = {}
@@ -945,10 +948,14 @@ def resolve_blocks(refs: list[BlockRef], *, source=None) -> list[ResolvedBlock]:
 
 
 def _records(value):
-    """Normalise a manifest input entry (one record, a list, or None) to a list."""
+    """Normalise a manifest input entry (one record, a list, a per-corner mapping of either, or None) to a list of records."""
     if value is None:
         return []
-    return value if isinstance(value, list) else [value]
+    if isinstance(value, list):
+        return [r for v in value for r in _records(v)]
+    if isinstance(value, dict) and "path" not in value:
+        return [r for v in value.values() for r in _records(v)]
+    return [value]
 
 
 def block_changes(block: ResolvedBlock, root_cfg) -> list[str]:
