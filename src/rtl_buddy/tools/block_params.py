@@ -650,6 +650,112 @@ class _Index:
         return widths
 
 
+_SRC_ATTR_RE = re.compile(r'\bsrc\s*=\s*"((?:\\.|[^"\\])*)"')
+
+
+@dataclass(frozen=True)
+class NetlistCell:
+    """One instance in a netlist, read by `NetlistReader.cells`."""
+
+    #: The module that holds it.
+    module: str
+    cell_type: str
+    name: str
+    #: Its Yosys `src` attribute, or None.
+    src: str | None
+
+
+class NetlistReader:
+    """Reads the instances and declarations a structural netlist names, without tokenising more than the statements asked about.
+
+    It shares the masking and statement reading of the block-instance scan, so escaped identifiers and a `#(...)` override list spanning lines read the same way.
+    """
+
+    def __init__(self, text: str):
+        self._index = _Index(text)
+        self._spans: dict[str, tuple[int, int]] = {}
+        for span in self._index._modules:
+            toks = self._index.statement(span[0])
+            n = 1 if toks and toks[0].text in _LIFETIMES else 0
+            if n < len(toks) and toks[n].kind in ("id", "escid"):
+                self._spans.setdefault(toks[n].name, span)
+
+    def declared(self, module: str) -> set[str]:
+        """The names `module` declares as ports, wires or regs; empty when the netlist has no such module."""
+        span = self._spans.get(module)
+        return set(self._index.widths(span)) if span else set()
+
+    def cells(self, names: set[str]) -> list[NetlistCell]:
+        """Every instance named one of `names`, in any module, with its master and `src` attribute."""
+        index = self._index
+        text = index.text
+        found: list[NetlistCell] = []
+        positions = []
+        plain = sorted(n for n in names if _SIMPLE_ID_RE.match(n))
+        if plain:
+            pattern = re.compile(
+                r"(?<![\w$\\.])(" + "|".join(map(re.escape, plain)) + r")(?![\w$])"
+            )
+            positions += [
+                m.start() for m in pattern.finditer(text) if not index.hidden(m.start())
+            ]
+        positions += [
+            s
+            for s, e in index.escids
+            if not index.masked(s) and text[s + 1 : e] in names
+        ]
+        for pos in sorted(positions):
+            span = index.module_span(pos)
+            if span is None:
+                continue
+            start = pos
+            while True:
+                start = text.rfind(";", span[0], start)
+                if start < 0 or not index.hidden(start):
+                    break
+            start = span[0] if start < 0 else start + 1
+            toks = index.statement(start)
+            cell = self._cell(toks, pos)
+            if cell is None:
+                continue
+            attrs = [
+                m.group()
+                for m in _TOKEN_RE.finditer(text, start, toks[0].start)
+                if m.lastgroup == "attr"
+            ]
+            src = next(
+                (m.group(1) for a in attrs if (m := _SRC_ATTR_RE.search(a))), None
+            )
+            module = next(
+                (name for name, sp in self._spans.items() if sp == span), None
+            )
+            if module is not None:
+                found.append(NetlistCell(module, toks[0].name, cell, src))
+        return found
+
+    @staticmethod
+    def _cell(toks: list[_Token], pos: int) -> str | None:
+        """The instance name of statement `toks` when it is an instance whose name token starts at `pos`."""
+        if not toks or toks[0].kind not in ("id", "escid"):
+            return None
+        i = 1
+        if i < len(toks) and toks[i].text == "#":
+            if i + 1 >= len(toks) or toks[i + 1].text != "(":
+                return None
+            try:
+                i = _matching_paren(toks, i + 1) + 1
+            except BlockParamError:
+                return None
+        if (
+            i + 1 < len(toks)
+            and toks[i].start == pos
+            and toks[i].kind in ("id", "escid")
+            and toks[i + 1].text in ("(", "[")
+        ):
+            return toks[i].name
+        return None
+
+
 def _int_at(toks: list[_Token], i: int) -> tuple[int, int]:
     """Read a decimal integer, optionally negative, at `i`; return (value, next index)."""
     sign = 1

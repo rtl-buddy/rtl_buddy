@@ -39,7 +39,7 @@ rb --machine pnr-export <run> -c <pnr.yaml> --png        # GDS/PNG from a saved 
 ## Read results
 
 - `pnr` and `pnr-export` exit 0 when every result counts as successful (`PASS`, `SKIP`, `XFAIL`, non-strict `XPASS`), 1 for any `FAIL` or strict `XPASS`, and 2 for a fatal configuration or environment error.
-- `PASS` means the flow finished, not that the design closed. Report `wns_setup_ps`, `wns_hold_ps`, `tns_ps`, `tns_hold_ps`, `drc_count` and the three `max_*_violation_count` fields separately from the verdict.
+- `PASS` means the flow finished, not that the design closed. Report `wns_*`, `tns_*`, `drc_count`, `max_*_violation_count` apart from it; `worst_paths.rpt`, `fanout.rpt` (`worst_path_*`, `max_net_fanout`) name the RTL.
 - Compare experiments on `routed_cell_count`, not `cell_count` (the input netlist).
 - `routed: false` (probe, `--stop-after`) means the numbers are a stage estimate; never report them as routed results.
 - Read qualifiers in `desc`: `pnr.no_wire_rc` (timing before routing had no wire RC; set the PDK's `layer-rc-tcl`, which `RSZ-0089` failures need), electrical violators, a passed-over or failed post-route repair round, `GDS incomplete`, accepted stale abstracts.

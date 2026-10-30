@@ -37,7 +37,23 @@ _NETLIST = dedent("""\
       );
       sram_32x8 u_sram (
         .clk(clk),
-        .din(d)
+        .din(d),
+        .dout(q[0])
+      );
+      (* src = "/proj/rtl/core.sv:30.3-33.6" *)
+      (* keep = 1 *)
+      PARAM_CELL #(
+        .W(8),
+        .MODE("a;b")
+      ) _12_ (
+        .A(d),
+        .Z(q[0])
+      );
+      (* src = "/proj/rtl/core.sv:40.3-41.6" *)
+      DFF_X1 \\u_sub.state_reg[2] (
+        .CK(clk),
+        .D(d),
+        .Q(_05_)
       );
     endmodule
     module demo_top(clk, d, q);
@@ -71,6 +87,7 @@ def _path(group, slack, levels, start, snets, end, enets, corner="-", buffers=0)
 
 
 def _fanout(fanout, *hops):
+    """`hops` are (net, driver pin, driver kind) triples, flattened."""
     return f"{report.FANOUT_TAG}\t{fanout}\t" + "\t".join(hops) + "\n"
 
 
@@ -155,9 +172,21 @@ def test_names_resolve_to_rtl_names_where_the_netlist_keeps_them(tmp_path):
             "net7",
             buffers=1,
         )
-        + _fanout(12, "u_core/q[1]", "u_core/_10_/Q")
-        + _fanout(9, "net42", "u_core/fanout3/X", "u_core/_05_", "u_core/_11_/ZN")
-        + _fanout(4, "net43", "u_core/split9/X", "net44", "rebuffer2/X")
+        + _fanout(12, "u_core/q[1]", "u_core/_10_/Q", "cell")
+        + _fanout(
+            9,
+            "net42",
+            "u_core/fanout3/X",
+            "buf",
+            "u_core/_05_",
+            "u_core/_11_/ZN",
+            "cell",
+        )
+        + _fanout(4, "net43", "u_core/split9/X", "buf", "net44", "rebuffer2/X", "cell")
+        + _fanout(
+            3, "net50", "u_core/inv3/Y", "inv", "u_core/q[1]", "u_core/_10_/Q", "cell"
+        )
+        + _fanout(2, "net51", "-", "-")
     )
     fields = report.write_reports(
         str(tmp_path), report.parse(log), _write_netlist(tmp_path), "demo_top", 10
@@ -198,6 +227,47 @@ def test_names_resolve_to_rtl_names_where_the_netlist_keeps_them(tmp_path):
     assert nets[4].endswith("(behind 1 buffer(s) or inverter(s))")
     # Cells P&R added are not in the netlist: the raw driver stays, marked.
     assert nets[5].endswith("net43  <-  u_core/split9/X (unresolved)")
+    # An odd number of inverters between the net and its named driver inverts it.
+    assert nets[6].endswith(
+        "net50  <-  u_core.q[1] [u_core/_10_/Q; src /proj/rtl/core.sv:12] "
+        "(inverted, behind 1 buffer(s) or inverter(s))"
+    )
+    assert nets[7].endswith("net51  <-  - (unresolved)")
+
+
+def test_a_macro_is_named_by_the_pin_on_the_path(tmp_path):
+    """A macro's own instance name wins over a net, at either end of a path."""
+    log = _path(
+        "m",
+        "1e-10",
+        1,
+        "u_core/u_sram/dout",
+        "u_core/q[0]",
+        "u_core/u_sram/din",
+        "u_core/q[0]",
+    )
+    fields = report.write_reports(
+        str(tmp_path), report.parse(log), _write_netlist(tmp_path), "demo_top", 10
+    )
+    assert fields["worst_path_startpoint"] == "u_core.u_sram.dout"
+    assert fields["worst_path_endpoint"] == "u_core.u_sram.din"
+
+
+def test_the_reader_takes_multi_line_overrides_and_escaped_names(tmp_path):
+    log = _path(
+        "p",
+        "1e-10",
+        1,
+        "u_core/_12_/Z",
+        "u_core/_06_",
+        "u_core/u_sub.state_reg\\[2\\]/D",
+        "",
+    )
+    fields = report.write_reports(
+        str(tmp_path), report.parse(log), _write_netlist(tmp_path), "demo_top", 10
+    )
+    assert fields["worst_path_startpoint"] == "u_core (core.sv:30)"
+    assert fields["worst_path_endpoint"] == "u_core.u_sub.state_reg[2].D"
 
 
 def test_a_name_the_netlist_lacks_stays_raw_and_unresolved(tmp_path):
@@ -277,10 +347,10 @@ _FINAL = (
 )
 _PATHS = _path(
     "clk", "-1.2e-10", 7, "u_core/_10_/Q", "u_core/q[1]", "q[0]", "", corner="ss"
-) + _fanout(33, "u_core/q[1]", "u_core/_10_/Q")
+) + _fanout(33, "u_core/q[1]", "u_core/_10_/Q", "cell")
 _HOOK = (
     ">>> End of final reports\n"
-    + _fanout(999, "hook_net", "hook/X")
+    + _fanout(999, "hook_net", "hook/X", "cell")
     + _path("hook", "-9e-9", 1, "a", "", "b", "")
 )
 
@@ -331,3 +401,26 @@ def test_a_routed_run_without_the_reports_leaves_the_fields_out(tmp_path, monkey
         "max_net_fanout",
     ):
         assert key not in res
+
+
+def test_a_report_that_cannot_be_written_does_not_change_the_verdict(
+    tmp_path, monkeypatch, caplog
+):
+    def _fail(*_a, **_kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(report, "write_reports", _fail)
+    platform = _mc_platform(_pdk(tmp_path))
+    with caplog.at_level("WARNING"):
+        res = (
+            _pnr_backend_over(tmp_path, monkeypatch, platform, _FINAL + _PATHS)
+            .run()
+            .results
+        )
+    assert res["result"] == "PASS"
+    assert "worst_path_startpoint" not in res
+    assert any(
+        "worst_paths.rpt and fanout.rpt could not be written (OSError: disk full)"
+        in r.getMessage()
+        for r in caplog.records
+    )

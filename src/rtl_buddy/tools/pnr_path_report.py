@@ -2,12 +2,16 @@
 
 The final reports print one tagged line per path group's worst setup path and per high-fanout net (`report_tcl`); rb parses them from `pnr.log` (`parse`), resolves their instance and net names against the synthesis netlist the run read (`NetlistNames`), writes the two reports and returns the result fields (`write_reports`).
 
-A pin's name is resolved when the netlist keeps it, tried in this order: a top-level port; the net the pin drives, or a register's output net, when the netlist declares it under a name of its own; the pin of an instance the netlist names itself (a macro or a block); or an instance with a `src` attribute, named by its hierarchy and source lines. Names Yosys made up (`_123_`, anything with `$`) and cells P&R added are not in the netlist under their own name, so they stay raw and are marked unresolved.
+A pin's name is resolved when the netlist keeps it, tried in this order: a top-level port; the pin of an instance the netlist names itself (a macro or a block); the net that names the pin, when the netlist declares it under a name of its own; or an instance with a `src` attribute, named by its scope and source lines. The net that names a startpoint or a fanout driver is the one its pin drives; an endpoint's is its register's single output, or else the endpoint pin's own net. Names Yosys made up (`_123_`, anything with `$`) and cells P&R added are not in the netlist under their own name, so they stay raw and are marked unresolved.
+
+The Tcl reads what it can per pin and per candidate net: a cell's register outputs and asynchronous pins come from its Liberty timing arcs, cached per cell; the fanout scan reads two counts per net and classifies only the nets that can rank.
 """
 
 import os
 import re
 from dataclasses import dataclass, field
+
+from . import block_params
 
 #: Printed once per path group by the final reports: the group's worst setup path at the setup-critical corner.
 WORST_PATH_TAG = "RB-WORST-PATH:"
@@ -24,29 +28,55 @@ _UNAVAILABLE_RE = re.compile(
 )
 
 _PROCS = """\
-proc rb_point_nets {pin registers} {
+proc rb_cell_info {cell} {
+  global rb_cell_info
+  set name [$cell name]
+  if {![info exists rb_cell_info($name)]} {
+    set outputs {}
+    set async {}
+    foreach arcs [$cell timing_arc_sets] {
+      if {[catch {set to [[$arcs to] name]; set from [[$arcs from] name]}]} continue
+      switch -- [$arcs role] {
+        "Reg Clk to Q" - "Latch En to Q" { lappend outputs $to }
+        "recovery" - "removal" { lappend async $to }
+        "Reg Set/Clr" { lappend async $from }
+      }
+    }
+    set rb_cell_info($name) [list [lsort -unique $outputs] [lsort -unique $async]]
+  }
+  return $rb_cell_info($name)
+}
+proc rb_cell_kind {cell} {
+  if {$cell eq "NULL"} { return cell }
+  if {[$cell is_inverter]} { return inv }
+  if {[$cell is_buffer]} { return buf }
+  return cell
+}
+proc rb_point_net {pin} {
   if {[$pin is_top_level_port]} { return "" }
-  if {[$pin is_driver]} {
-    return [expr {[$pin net] eq "NULL" ? "" : [get_full_name [$pin net]]}]
+  set named $pin
+  if {![$pin is_driver]} {
+    set inst [$pin instance]
+    set cell [$inst liberty_cell]
+    if {$cell ne "NULL"} {
+      set outputs [lindex [rb_cell_info $cell] 0]
+      if {[llength $outputs] == 1} {
+        set out [$inst find_pin [lindex $outputs 0]]
+        if {$out ne "NULL" && ![sta::is_clock $out]} { set named $out }
+      }
+    }
   }
-  if {![dict exists $registers [get_full_name [$pin instance]]]} { return "" }
-  set nets {}
-  set it [[$pin instance] pin_iterator]
-  while {[$it has_next]} {
-    set p [$it next]
-    if {[$p is_driver] && [$p net] ne "NULL"} { lappend nets [get_full_name [$p net]] }
-  }
-  $it finish
-  return [join $nets " "]
+  set net [$named net]
+  return [expr {$net eq "NULL" ? "" : [get_full_name $net]}]
 }
-proc rb_is_buffer {cell} {
-  return [expr {$cell ne "NULL" && ([$cell is_buffer] || [$cell is_inverter])}]
-}
-proc rb_worst_path {group corner path_end registers} {
+proc rb_worst_path {group corner path_end} {
   set path [$path_end path]
   set start [[$path start_path] pin]
   set end [$path_end pin]
-  set end_inst [expr {[$end is_top_level_port] ? "" : [get_full_name [$end instance]]}]
+  set skip {}
+  foreach pin [list $start $end] {
+    if {![$pin is_top_level_port]} { lappend skip [get_full_name [$pin instance]] }
+  }
   set seen [dict create]
   set buffers 0
   set reached 0
@@ -55,87 +85,99 @@ proc rb_worst_path {group corner path_end registers} {
     if {[$pin is_top_level_port] || [$pin is_hierarchical]} continue
     set inst [$pin instance]
     set name [get_full_name $inst]
-    if {$name eq $end_inst || [dict exists $seen $name]} continue
+    if {$name in $skip || [dict exists $seen $name]} continue
     dict set seen $name 1
-    if {[rb_is_buffer [$inst liberty_cell]]} { incr buffers }
+    if {[rb_cell_kind [$inst liberty_cell]] ne "cell"} { incr buffers }
   }
   set levels [expr {$reached ? [dict size $seen] : "-"}]
-  puts "{tag}\\t$group\\t$corner\\t[$path_end slack]\\t$levels\\t$buffers\\t[get_full_name $start]\\t[rb_point_nets $start $registers]\\t[get_full_name $end]\\t[rb_point_nets $end $registers]"
+  puts "{tag}\\t$group\\t$corner\\t[$path_end slack]\\t$levels\\t$buffers\\t[get_full_name $start]\\t[rb_point_net $start]\\t[get_full_name $end]\\t[rb_point_net $end]"
 }
 proc rb_net_driver {net} {
   foreach it [$net getITerms] {
     if {[$it getIoType] eq "OUTPUT"} {
-      return [list "[[$it getInst] getName]/[[$it getMTerm] getName]" [$it getInst]]
+      set inst [$it getInst]
+      set kind [rb_cell_kind [sta::find_liberty_cell [[$inst getMaster] getName]]]
+      return [list "[$inst getName]/[[$it getMTerm] getName]" $kind $inst]
     }
   }
   foreach bt [$net getBTerms] {
-    if {[$bt getIoType] eq "INPUT"} { return [list [$bt getName] ""] }
+    if {[$bt getIoType] eq "INPUT"} { return [list [$bt getName] port ""] }
   }
   return {}
 }
-proc rb_buffer_input {inst} {
-  if {![rb_is_buffer [sta::find_liberty_cell [[$inst getMaster] getName]]]} { return "" }
+proc rb_driver_input {inst} {
   foreach it [$inst getITerms] {
     if {[$it getIoType] eq "INPUT" && [$it getSigType] eq "SIGNAL"} { return [$it getNet] }
   }
   return ""
 }
-proc rb_reset_tree_nets {} {
-  set nets [dict create]
-  set queue {}
-  foreach pin [all_registers -async_pins] {
-    if {[$pin net] ne "NULL"} { lappend queue [$pin net] }
+proc rb_sinks {net} {
+  set sinks {}
+  foreach it [$net getITerms] {
+    if {[$it getIoType] ne "OUTPUT"} { lappend sinks $it }
   }
-  while {[llength $queue]} {
-    set net [lindex $queue end]
-    set queue [lreplace $queue end end]
-    set db [sta::sta_to_db_net $net]
-    if {[dict exists $nets $db]} continue
-    dict set nets $db 1
-    set it [$net pin_iterator]
-    while {[$it has_next]} {
-      set pin [$it next]
-      if {![$pin is_driver] || [$pin is_top_level_port]} continue
-      set inst [$pin instance]
-      if {![rb_is_buffer [$inst liberty_cell]]} continue
-      set inputs [$inst pin_iterator]
-      while {[$inputs has_next]} {
-        set p [$inputs next]
-        if {[$p is_load] && [$p net] ne "NULL"} { lappend queue [$p net] }
+  return $sinks
+}
+proc rb_is_reset_tree {net depth} {
+  global rb_reset_tree
+  if {[info exists rb_reset_tree($net)]} { return $rb_reset_tree($net) }
+  set found 0
+  foreach it [rb_sinks $net] {
+    set inst [$it getInst]
+    set cell [sta::find_liberty_cell [[$inst getMaster] getName]]
+    if {$cell eq "NULL"} continue
+    if {[[$it getMTerm] getName] in [lindex [rb_cell_info $cell] 1]} { set found 1; break }
+    if {$depth < {hops} && [rb_cell_kind $cell] ne "cell"} {
+      foreach out [$inst getITerms] {
+        if {[$out getIoType] eq "OUTPUT" && [$out getNet] ne "NULL"
+            && [rb_is_reset_tree [$out getNet] [expr {$depth + 1}]]} { set found 1; break }
       }
-      $inputs finish
+      if {$found} break
     }
-    $it finish
   }
-  return $nets
+  set rb_reset_tree($net) $found
+  return $found
 }
 proc rb_fanout_order {a b} {
   set diff [expr {[lindex $b 0] - [lindex $a 0]}]
   if {$diff} { return $diff }
   return [string compare [lindex $a 1] [lindex $b 1]]
 }
-proc rb_fanout_nets {count} {
-  set excluded [rb_reset_tree_nets]
-  foreach net [sta::find_all_clk_nets] { dict set excluded $net 1 }
+proc rb_fanout_candidates {keep} {
+  set floor 0
   set candidates {}
+  set truncated 0
   foreach net [[ord::get_db_block] getNets] {
-    if {[$net getSigType] in {POWER GROUND CLOCK} || [dict exists $excluded $net]} continue
-    lappend candidates [list [expr {[$net getITermCount] + [$net getBTermCount]}] $net]
+    set bound [expr {[$net getITermCount] + [$net getBTermCount]}]
+    if {$bound < $floor} continue
+    lappend candidates [list $bound $net]
+    if {[llength $candidates] >= 2 * $keep} {
+      set candidates [lrange [lsort -integer -decreasing -index 0 $candidates] 0 [expr {$keep - 1}]]
+      set floor [lindex $candidates end 0]
+      set truncated 1
+    }
   }
-  set top {}
-  foreach candidate [lsort -integer -decreasing -index 0 $candidates] {
-    lassign $candidate bound net
-    if {[llength $top] >= $count && $bound < [lindex $top end 0]} break
-    set fanout 0
-    foreach it [$net getITerms] {
-      if {[$it getIoType] ne "OUTPUT"} { incr fanout }
+  return [list $truncated [lsort -integer -decreasing -index 0 $candidates]]
+}
+proc rb_fanout_nets {count} {
+  set clock [dict create]
+  foreach net [sta::find_all_clk_nets] { dict set clock $net 1 }
+  for {set keep [expr {8 * $count}]} {1} {set keep [expr {8 * $keep}]} {
+    lassign [rb_fanout_candidates $keep] truncated candidates
+    set top {}
+    foreach candidate $candidates {
+      lassign $candidate bound net
+      if {[llength $top] >= $count && $bound < [lindex $top end 0]} break
+      if {[$net getSigType] in {POWER GROUND CLOCK} || [dict exists $clock $net]} continue
+      set fanout [expr {[llength [rb_sinks $net]] + [llength [$net getBTerms]]}]
+      foreach bt [$net getBTerms] {
+        if {[$bt getIoType] eq "INPUT"} { incr fanout -1 }
+      }
+      if {$fanout == 0 || [rb_is_reset_tree $net 0]} continue
+      lappend top [list $fanout [$net getName] $net]
+      set top [lrange [lsort -command rb_fanout_order $top] 0 [expr {$count - 1}]]
     }
-    foreach bt [$net getBTerms] {
-      if {[$bt getIoType] ne "INPUT"} { incr fanout }
-    }
-    if {$fanout == 0} continue
-    lappend top [list $fanout [$net getName] $net]
-    set top [lrange [lsort -command rb_fanout_order $top] 0 [expr {$count - 1}]]
+    if {[llength $top] >= $count || !$truncated} break
   }
   foreach entry $top {
     lassign $entry fanout name net
@@ -143,10 +185,10 @@ proc rb_fanout_nets {count} {
     for {set hop 0} {$net ne "" && $hop <= {hops}} {incr hop} {
       append line "\\t[$net getName]"
       set driver [rb_net_driver $net]
-      if {$driver eq ""} { append line "\\t-"; break }
-      append line "\\t[lindex $driver 0]"
-      set inst [lindex $driver 1]
-      set net [expr {$inst eq "" ? "" : [rb_buffer_input $inst]}]
+      if {$driver eq ""} { append line "\\t-\\t-"; break }
+      lassign $driver pin kind inst
+      append line "\\t$pin\\t$kind"
+      set net [expr {$kind in {buf inv} ? [rb_driver_input $inst] : ""}]
     }
     puts $line
   }
@@ -191,13 +233,10 @@ def report_tcl(corners: list[str], fanout_nets: int) -> str:
         + procs
         + "if {[catch {\n"
         + "".join(f"  {line}\n" for line in corner.splitlines())
-        + "  set rb_registers [dict create]\n"
-        + "  foreach rb_inst [all_registers -cells] "
-        + "{ dict set rb_registers [get_full_name $rb_inst] 1 }\n"
         + "  foreach rb_group [sta::path_group_names] {\n"
         + "    foreach rb_end [find_timing_paths -path_delay max "
         + "-path_group [list $rb_group] {*}$rb_corner_args] {\n"
-        + "      rb_worst_path $rb_group $rb_path_corner $rb_end $rb_registers\n"
+        + "      rb_worst_path $rb_group $rb_path_corner $rb_end\n"
         + "    }\n"
         + "  }\n"
         + '} rb_err]} { puts "rb: worst path report unavailable: $rb_err" }\n'
@@ -215,17 +254,28 @@ class WorstPath:
     levels: int | None
     buffers: int
     startpoint: str
-    start_nets: list[str]
+    # The net that names each end: the start pin's own, and the endpoint register's output or the endpoint pin's own.
+    start_net: str
     endpoint: str
-    end_nets: list[str]
+    end_net: str
+
+
+@dataclass
+class Driver:
+    # The net this hop's pin drives.
+    net: str
+    # The driver pin, None when the net has no driver.
+    pin: str | None
+    # `buf`, `inv`, `cell` or `port`.
+    kind: str
 
 
 @dataclass
 class FanoutNet:
     fanout: int
     net: str
-    # (net, driver pin) from the listed net back through buffers and inverters; a pin is None where the net has no driver.
-    drivers: list[tuple[str, str | None]]
+    # From the listed net back through buffers and inverters.
+    drivers: list[Driver]
 
 
 @dataclass
@@ -249,7 +299,7 @@ def parse(text: str) -> Reports:
     for line in text.splitlines():
         fields = line.split("\t")
         if fields[0] == WORST_PATH_TAG and len(fields) == 10:
-            _, group, corner, slack, levels, buffers, start, snets, end, enets = fields
+            _, group, corner, slack, levels, buffers, start, snet, end, enet = fields
             seconds = _float(slack)
             reports.paths.append(
                 WorstPath(
@@ -263,19 +313,20 @@ def parse(text: str) -> Reports:
                     levels=int(levels) if levels.isdigit() else None,
                     buffers=int(buffers) if buffers.isdigit() else 0,
                     startpoint=start,
-                    start_nets=snets.split(),
+                    start_net=snet,
                     endpoint=end,
-                    end_nets=enets.split(),
+                    end_net=enet,
                 )
             )
-        elif fields[0] == FANOUT_TAG and len(fields) >= 4 and fields[1].isdigit():
+        elif fields[0] == FANOUT_TAG and len(fields) >= 5 and fields[1].isdigit():
             hops = fields[2:]
             drivers = [
-                (
-                    hops[i],
-                    None if i + 1 >= len(hops) or hops[i + 1] == "-" else hops[i + 1],
+                Driver(
+                    net=hops[i],
+                    pin=None if hops[i + 1] == "-" else hops[i + 1],
+                    kind=hops[i + 2] if i + 2 < len(hops) else "cell",
                 )
-                for i in range(0, len(hops), 2)
+                for i in range(0, len(hops) - 1, 3)
             ]
             reports.nets.append(
                 FanoutNet(fanout=int(fields[1]), net=hops[0], drivers=drivers)
@@ -296,116 +347,47 @@ def _is_tool_name(name: str) -> bool:
     return "$" in name or re.fullmatch(r"_\d+_(\[\d+\])?", name) is not None
 
 
-_IDENT = r"(\\\S+|[A-Za-z_][\w$]*)"
-_MODULE_RE = re.compile(rf"^\s*module\s+{_IDENT}")
-_ATTR_RE = re.compile(r"^\s*\(\*(.*)\*\)\s*$")
-_SRC_RE = re.compile(r'\bsrc\s*=\s*"([^"]*)"')
-_DECL_RE = re.compile(
-    rf"^\s*(?:wire|reg|input|output|inout)\b(?:\s+signed)?\s*(?:\[[^\]]*\])?\s*{_IDENT}\s*;"
-)
-_CELL_RE = re.compile(rf"^\s*{_IDENT}\s+(?:#\(.*\)\s*)?{_IDENT}\s*\(")
-_KEYWORDS = frozenset(
-    {
-        "module",
-        "endmodule",
-        "assign",
-        "wire",
-        "reg",
-        "input",
-        "output",
-        "inout",
-        "always",
-        "initial",
-        "parameter",
-        "localparam",
-        "function",
-        "task",
-    }
-)
-
-
-def _unescape(ident: str) -> str:
-    return ident[1:] if ident.startswith("\\") else ident
-
-
-@dataclass
-class _Module:
-    cells: dict[str, tuple[str, str | None]] = field(default_factory=dict)
-    wires: set[str] = field(default_factory=set)
-
-
 class NetlistNames:
-    """The instance and net names of a structural Verilog netlist that a set of hierarchical names refer to, read in one pass.
+    """The instances and declarations of a structural Verilog netlist that a set of hierarchical names refer to.
 
-    Only the cells and wires named by a part of one of `names` are kept, so a large netlist costs one scan and little memory.
+    `block_params.NetlistReader` reads the netlist once and tokenises only the statements of the instances named by a part of one of `names`.
     """
 
     def __init__(self, path: str | None, top: str | None, names: list[str]):
         self.top = top
-        self._modules: dict[str, _Module] = {}
-        wanted: set[str] = set()
-        for name in names:
-            for part in split_name(name):
-                wanted.add(part)
-                wanted.add(re.sub(r"\[\d+\]$", "", part))
-        if path and top and os.path.isfile(path):
-            self._read(path, wanted)
-
-    def _read(self, path: str, wanted: set[str]) -> None:
-        module: _Module | None = None
-        src: str | None = None
+        self._reader: block_params.NetlistReader | None = None
+        self._cells: dict[tuple[str, str], block_params.NetlistCell] = {}
+        if not (path and top and os.path.isfile(path)):
+            return
+        wanted = {part for name in names for part in split_name(name)}
         with open(path, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                m = _ATTR_RE.match(line)
-                if m:
-                    found = _SRC_RE.search(m.group(1))
-                    if found:
-                        src = found.group(1)
-                    continue
-                m = _MODULE_RE.match(line)
-                if m:
-                    module = self._modules.setdefault(_unescape(m.group(1)), _Module())
-                    src = None
-                    continue
-                if module is None:
-                    continue
-                m = _DECL_RE.match(line)
-                if m:
-                    name = _unescape(m.group(1))
-                    if name in wanted:
-                        module.wires.add(name)
-                    src = None
-                    continue
-                m = _CELL_RE.match(line)
-                if m and m.group(1) not in _KEYWORDS:
-                    name = _unescape(m.group(2))
-                    if name in wanted:
-                        module.cells[name] = (_unescape(m.group(1)), src)
-                src = None
+            self._reader = block_params.NetlistReader(f.read())
+        for cell in self._reader.cells(wanted):
+            self._cells.setdefault((cell.module, cell.name), cell)
 
-    def _scope(self, parts: list[str]) -> tuple[_Module | None, list[str]]:
-        """The module the instance path `parts` leads into, and the instance names walked; None when a part is not an instance there."""
-        module = self._modules.get(self.top) if self.top else None
+    def _scope(self, parts: list[str]) -> str | None:
+        """The module the instance path `parts` leads into, or None when a part is not an instance there."""
+        module = self.top if self._reader else None
         for part in parts:
-            if module is None or part not in module.cells:
-                return None, []
-            module = self._modules.get(module.cells[part][0])
-        return module, parts
+            cell = self._cells.get((module, part)) if module else None
+            if cell is None:
+                return None
+            module = cell.cell_type
+        return module
 
-    def cell(self, parts: list[str]) -> tuple[str, str | None] | None:
-        """The (cell type, src) of the instance at hierarchical path `parts`, or None when the netlist has no such instance."""
-        scope, _ = self._scope(parts[:-1])
-        if scope is None:
-            return None
-        return scope.cells.get(parts[-1])
+    def cell(self, parts: list[str]) -> block_params.NetlistCell | None:
+        """The instance at hierarchical path `parts`, or None when the netlist has no such instance."""
+        scope = self._scope(parts[:-1])
+        return self._cells.get((scope, parts[-1])) if scope else None
 
     def has_net(self, parts: list[str]) -> bool:
         """Whether the netlist declares the net at hierarchical path `parts`, a bit of a bus included."""
-        scope, _ = self._scope(parts[:-1])
+        scope = self._scope(parts[:-1])
         if scope is None:
             return False
+        declared = self._reader.declared(scope)
         leaf = parts[-1]
-        return leaf in scope.wires or re.sub(r"\[\d+\]$", "", leaf) in scope.wires
+        return leaf in declared or re.sub(r"\[\d+\]$", "", leaf) in declared
 
 
 @dataclass
@@ -431,22 +413,20 @@ def _src_location(src: str | None) -> str | None:
     return ", ".join(dict.fromkeys(locations))
 
 
-def resolve_pin(netlist: NetlistNames, pin: str, nets: list[str]) -> Resolved:
-    """Resolve pin `pin`, whose instance drives `nets`, to an RTL name (see the module docstring)."""
+def resolve_pin(netlist: NetlistNames, pin: str, net: str) -> Resolved:
+    """Resolve pin `pin` to an RTL name, `net` being the net that names it (see the module docstring)."""
     parts = split_name(pin)
     if len(parts) == 1:
         return Resolved(raw=pin, rtl=parts[0])
     inst = parts[:-1]
     cell = netlist.cell(inst)
-    src = _src_location(cell[1]) if cell else None
-    for net in nets:
+    src = _src_location(cell.src) if cell else None
+    if cell is not None and not _is_tool_name(inst[-1]):
+        return Resolved(raw=pin, rtl=".".join(parts), src=src)
+    if net:
         net_parts = split_name(net)
         if not _is_tool_name(net_parts[-1]) and netlist.has_net(net_parts):
             return Resolved(raw=pin, rtl=".".join(net_parts), src=src)
-    if cell is None:
-        return Resolved(raw=pin, rtl=None)
-    if not _is_tool_name(inst[-1]):
-        return Resolved(raw=pin, rtl=".".join(parts), src=src)
     if src:
         where = ", ".join(os.path.basename(s) for s in src.split(", "))
         scope = ".".join(inst[:-1])
@@ -454,17 +434,22 @@ def resolve_pin(netlist: NetlistNames, pin: str, nets: list[str]) -> Resolved:
     return Resolved(raw=pin, rtl=None)
 
 
-def resolve_driver(netlist: NetlistNames, net: FanoutNet) -> tuple[Resolved, int]:
-    """Resolve the driver of `net`, through the buffers and inverters before it: the first driver that resolves, and how many buffers it is behind; the net's own driver, unresolved, when none does."""
+def resolve_driver(netlist: NetlistNames, net: FanoutNet) -> tuple[Resolved, str]:
+    """Resolve the driver of `net`, through the buffers and inverters before it: the first driver that resolves and a note of what lies between, `""` for none; the net's own driver, unresolved, when none does."""
     first = None
-    for hop, (driven, pin) in enumerate(net.drivers):
-        if pin is None:
+    for hop, driver in enumerate(net.drivers):
+        if driver.pin is None:
             break
-        resolved = resolve_pin(netlist, pin, [driven])
+        resolved = resolve_pin(netlist, driver.pin, driver.net)
         if resolved.resolved:
-            return resolved, hop
+            between = net.drivers[:hop]
+            inverters = sum(d.kind == "inv" for d in between)
+            if not between:
+                return resolved, ""
+            note = f"behind {hop} buffer(s) or inverter(s)"
+            return resolved, (f"inverted, {note}" if inverters % 2 else note)
         first = first or resolved
-    return first or Resolved(raw="-", rtl=None), 0
+    return first or Resolved(raw="-", rtl=None), ""
 
 
 def _ps(value: float | None) -> str:
@@ -495,16 +480,18 @@ def write_reports(
     `worst_path_*` describe the worst of the groups' paths and `max_net_fanout` the first listed net; a value that could not be computed is left out of the fields and reported unavailable in its file.
     """
     names = [p.startpoint for p in reports.paths] + [p.endpoint for p in reports.paths]
-    names += [n for p in reports.paths for n in p.start_nets + p.end_nets]
-    names += [x for net in reports.nets for hop in net.drivers for x in hop if x]
+    names += [n for p in reports.paths for n in (p.start_net, p.end_net) if n]
+    names += [
+        x for net in reports.nets for d in net.drivers for x in (d.net, d.pin) if x
+    ]
     netlist = NetlistNames(netlist_path, top, names)
 
     fields: dict = {}
     lines = ["Worst setup path of each path group" + _corner_note(reports), ""]
     worst = None
     for path in reports.paths:
-        start = resolve_pin(netlist, path.startpoint, path.start_nets)
-        end = resolve_pin(netlist, path.endpoint, path.end_nets)
+        start = resolve_pin(netlist, path.startpoint, path.start_net)
+        end = resolve_pin(netlist, path.endpoint, path.end_net)
         if worst is None or _slack_key(path) < _slack_key(worst[0]):
             worst = (path, start, end)
         levels = (
@@ -540,8 +527,8 @@ def write_reports(
         fields["max_net_fanout"] = reports.nets[0].fanout
         lines.append(f"{'Fanout':>8}  Net  <-  Driver")
         for net in reports.nets:
-            driver, behind = resolve_driver(netlist, net)
-            via = f" (behind {behind} buffer(s) or inverter(s))" if behind else ""
+            driver, note = resolve_driver(netlist, net)
+            via = f" ({note})" if note else ""
             lines.append(f"{net.fanout:>8}  {net.net}  <-  {_point(driver)}{via}")
     else:
         lines.append(_unavailable(reports, "fanout", "no signal net was reported"))

@@ -4183,14 +4183,27 @@ class OpenRoadPnr:
         return fields
 
     def _path_fanout_fields(self, final: str) -> dict:
-        """Write `worst_paths.rpt` and `fanout.rpt` from the final reports and return their result fields; see `pnr_path_report`."""
-        return pnr_path_report.write_reports(
-            self.artefact_dir,
-            pnr_path_report.parse(final),
-            self._openroad_netlist or self._resolve_netlist_path(),
-            self.pnr_cfg.resolve_synth_cfg().get_top(),
-            self.pnr_cfg.get_report_fanout_nets(),
-        )
+        """Write `worst_paths.rpt` and `fanout.rpt` from the final reports and return their result fields; see `pnr_path_report`.
+
+        The reports never change a verdict: when they cannot be written, `pnr.path_report_failed` warns and their fields are left out.
+        """
+        try:
+            return pnr_path_report.write_reports(
+                self.artefact_dir,
+                pnr_path_report.parse(final),
+                self._openroad_netlist or self._resolve_netlist_path(),
+                self.pnr_cfg.resolve_synth_cfg().get_top(),
+                self.pnr_cfg.get_report_fanout_nets(),
+            )
+        except Exception as e:  # noqa: BLE001 - a report must not fail a routed run
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.path_report_failed",
+                pnr=self.pnr_cfg.get_name(),
+                error=f"{type(e).__name__}: {e}",
+            )
+            return {}
 
     def _macro_pin_limits_fields(self, log_text: str) -> dict:
         """Return the macro pin-limit step's counts as result fields, or `{}` when the step did not run; warn `pnr.macro_pin_limits_unmet` when a pin is unmet.
