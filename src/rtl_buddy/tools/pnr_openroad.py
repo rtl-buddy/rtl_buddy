@@ -2959,11 +2959,17 @@ class OpenRoadPnr:
         resume_from: str | None = None,
         dispatch=None,
         run_tag: str | None = None,
+        block_source: pnr_abstract.BlockSource | None = None,
     ):
         self.name = name
         self.suite_dir = suite_dir
-        # `--run-tag`: the run writes under `artefacts/.runs/<tag>/` and reads that tree's block abstracts first.
+        # `--run-tag`: the run writes under `artefacts/.runs/<tag>/` and finds block abstracts through `block_source`.
         self.run_tag = run_tag
+        if block_source is None and run_tag is not None:
+            block_source = pnr_abstract.BlockSource(
+                run_tag, str(run_artifact_root(suite_dir, run_tag))
+            )
+        self.block_source = block_source
         self.accept_stale = accept_stale
         self._mode = pnr_cfg.get_mode()
         # `--stop-after` as given; a probe without one stops after global route.
@@ -5636,7 +5642,7 @@ class OpenRoadPnr:
                     f"'{self.pnr_cfg.get_platform()}' declares corners, and an "
                     "abstract carries one corner's timing model"
                 )
-            resolved = pnr_abstract.resolve_blocks(refs, run_tag=self.run_tag)
+            resolved = pnr_abstract.resolve_blocks(refs, source=self.block_source)
             for block in resolved:
                 if gds_needed_by and block.gds is None:
                     raise pnr_abstract.BlockResolutionError(
@@ -5894,6 +5900,7 @@ class OpenRoadPnr:
                 self.root_cfg,
                 synth_dir,
                 os.path.join(self.artefact_dir, _PARAM_PROBE_DIR),
+                block_source=self.block_source,
             )
             Path(pnr_abstract.view_path(staging, design, "params.json")).write_text(
                 record.to_json()
@@ -5986,6 +5993,7 @@ class OpenRoadPnr:
                     inputs=self.abstract_inputs(platform),
                     config=pnr_abstract.abstract_config(self._configured_cfg, platform),
                     gds=with_gds,
+                    blocks=self._blocks,
                 )
                 published = pnr_abstract.publish(self.artefact_dir)
             except OSError as e:

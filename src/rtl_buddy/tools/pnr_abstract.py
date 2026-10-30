@@ -5,9 +5,11 @@ A hardened run publishes `<artefact-dir>/abstract/` holding `<top>.lef`, `<top>.
 
 import hashlib
 import json
+import logging
 import os
 import shutil
-from dataclasses import asdict, dataclass, replace
+import threading
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 from importlib.metadata import version
@@ -29,9 +31,15 @@ from ..config.pnr import (
     PnrAbstract,
     PortBuffers,
 )
+from ..artifact_lock import tree_lock
+from ..logging_utils import log_event
 from .artifact_paths import project_relative, project_root_or_none, run_artifact_root
 
+logger = logging.getLogger(__name__)
+
 ABSTRACT_DIR_NAME = "abstract"
+#: Under a `--run-tag` tree: copies of the untagged abstracts its runs consume, one directory per block run.
+BLOCK_SNAPSHOTS_DIRNAME = ".block-abstracts"
 #: OpenROAD writes the views here before `publish`; cleared by every run.
 ABSTRACT_STAGING_NAME = "abstract.partial"
 ABSTRACT_MANIFEST_NAME = "abstract.manifest.json"
@@ -654,10 +662,11 @@ def write_manifest(
     inputs: dict,
     config: dict,
     gds: bool = True,
+    blocks: list | None = None,
 ) -> str:
     """Write `abstract.manifest.json` into the staging directory and return its path.
 
-    `inputs` maps a role to an absolute path, a list of paths, or None. `technology` names the technology LEF and corner Liberty a parent must share; it is fingerprinted the same way. Output paths are recorded at their published location, not the staging one. Without `gds` the GDS output is recorded as null.
+    `inputs` maps a role to an absolute path, a list of paths, or None. `technology` names the technology LEF and corner Liberty a parent must share; it is fingerprinted the same way. Output paths are recorded at their published location, not the staging one. Without `gds` the GDS output is recorded as null. `blocks` are the `ResolvedBlock`s the run consumed; each is recorded with the tag its abstract came from and the abstract manifest's digest.
     """
     root = project_root_or_none(artefact_dir)
     published = abstract_dir(artefact_dir)
@@ -697,6 +706,7 @@ def write_manifest(
         "inputs": {role: _fp(value) for role, value in inputs.items()},
         "config": {**config, "sha256": config_digest(config)},
         "outputs": outputs,
+        **({"blocks": [b.manifest_entry() for b in blocks]} if blocks else {}),
     }
     path = os.path.join(staging, ABSTRACT_MANIFEST_NAME)
     Path(path).write_text(json.dumps(document, indent=2) + "\n")
@@ -730,10 +740,25 @@ class ResolvedBlock:
     gds: str | None
     run_cfg: object = None
     changes: tuple[str, ...] = ()
+    #: The `--run-tag` whose block run published the abstract; None for the untagged one.
+    run_tag: str | None = None
+    manifest_sha256: str | None = None
 
     @property
     def stale(self) -> bool:
         return bool(self.changes)
+
+    def rerun_hint(self) -> str:
+        return rerun_command(self.ref, self.run_tag)
+
+    def manifest_entry(self) -> dict:
+        """Return this block's entry in the consuming run's own abstract manifest."""
+        return {
+            "name": self.ref.name,
+            "pnr": self.ref.pnr_run,
+            "run_tag": self.run_tag,
+            "manifest_sha256": self.manifest_sha256,
+        }
 
     def result_row(self) -> dict:
         """Return the machine-output row for this block: abstract location, view fingerprints and staleness."""
@@ -749,6 +774,8 @@ class ResolvedBlock:
             },
             "stale": self.stale,
             "changes": list(self.changes),
+            "run_tag": self.run_tag,
+            "manifest_sha256": self.manifest_sha256,
         }
 
 
@@ -773,10 +800,95 @@ def has_gds(manifest: dict) -> bool:
     return not ("gds" in outputs and outputs["gds"] is None)
 
 
-def resolve_block(ref: BlockRef, *, run_tag: str | None = None) -> ResolvedBlock:
+def rerun_command(ref: BlockRef, run_tag: str | None = None) -> str:
+    """The `rb pnr` command that (re)publishes `ref`'s abstract, under `run_tag` when given."""
+    tag = f" --run-tag {run_tag}" if run_tag else ""
+    return f"`rb pnr {ref.pnr_run} -c {ref.pnr_suite_path}{tag}`"
+
+
+@dataclass
+class BlockSource:
+    """Where a `--run-tag` invocation's runs find their blocks' abstracts.
+
+    A block run the tag has run is read from the tag's tree. One the tag has never run is
+    copied, once per invocation, from its untagged tree into `snapshot_root` while that
+    tree's lock is held, and read from the copy, so an untagged re-harden cannot change it
+    mid-run. Synthesis and P&R in one invocation share the copy.
+    """
+
+    run_tag: str
+    snapshot_root: str
+    _copies: dict = field(default_factory=dict, repr=False)
+    _mutex: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def abstract_dir(self, ref: BlockRef, where: str) -> tuple[str, str | None]:
+        """Return the abstract directory to read for `ref` and the tag it was published under."""
+        suite_dir = os.path.dirname(ref.pnr_suite_path)
+        tagged_run = run_artifact_root(suite_dir, self.run_tag) / ref.pnr_run
+        if tagged_run.is_dir():
+            return abstract_dir(str(tagged_run)), self.run_tag
+        with self._mutex:
+            key = (os.path.realpath(ref.pnr_suite_path), ref.pnr_run)
+            if key not in self._copies:
+                self._copies[key] = self._copy_untagged(ref, where)
+            return self._copies[key], None
+
+    def _copy_untagged(self, ref: BlockRef, where: str) -> str:
+        suite_dir = os.path.dirname(ref.pnr_suite_path)
+        untagged_root = run_artifact_root(suite_dir)
+        source = abstract_dir(str(untagged_root / ref.pnr_run))
+        suite_key = hashlib.sha256(
+            os.path.realpath(ref.pnr_suite_path).encode()
+        ).hexdigest()[:8]
+        dest = Path(
+            self.snapshot_root, BLOCK_SNAPSHOTS_DIRNAME, f"{ref.pnr_run}-{suite_key}"
+        )
+        partial = dest.with_name(f"{dest.name}.partial")
+        shutil.rmtree(partial, ignore_errors=True)
+        with tree_lock(untagged_root, command="pnr"):
+            if read_manifest(source) is None:
+                raise BlockResolutionError(
+                    f"{where}: no abstract at {source}, and --run-tag "
+                    f"{self.run_tag} has not run the block — run "
+                    f"{rerun_command(ref)} or {rerun_command(ref, self.run_tag)} first"
+                )
+            manifest_bytes = Path(source, ABSTRACT_MANIFEST_NAME).read_bytes()
+            partial.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, partial)
+        if Path(partial, ABSTRACT_MANIFEST_NAME).read_bytes() != manifest_bytes:
+            raise BlockResolutionError(
+                f"{where}: the copy of {source} does not match it"
+            )
+        manifest = json.loads(manifest_bytes)
+        design = manifest.get("block")
+        for view, record in (manifest.get("outputs") or {}).items():
+            if not record:
+                continue
+            copied = file_fingerprint(view_path(str(partial), design, view), None)
+            if (copied or {}).get("sha256") != record.get("sha256"):
+                raise BlockResolutionError(
+                    f"{where}: the copy of {source} does not match its manifest "
+                    f"({view})"
+                )
+        shutil.rmtree(dest, ignore_errors=True)
+        os.replace(partial, dest)
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.block_untagged_abstract",
+            block=ref.name,
+            pnr_run=ref.pnr_run,
+            run_tag=self.run_tag,
+            source=source,
+            copy=str(dest),
+        )
+        return str(dest)
+
+
+def resolve_block(ref: BlockRef, *, source: BlockSource | None = None) -> ResolvedBlock:
     """Resolve one `blocks:` entry to its published abstract, or raise BlockResolutionError.
 
-    Nothing is re-run; a missing abstract is reported with the `rb pnr` command that produces it. With `run_tag`, the block run's abstract under that tag wins over the untagged one.
+    Nothing is re-run; a missing abstract is reported with the `rb pnr` command that produces it. With a `source`, the abstract is found as `BlockSource` describes.
     """
     from ..config.pnr import PnrSuiteConfig
     from ..errors import FatalRtlBuddyError
@@ -795,21 +907,24 @@ def resolve_block(ref: BlockRef, *, run_tag: str | None = None) -> ResolvedBlock
         raise BlockResolutionError(
             f"{where}: that run does not set harden: true, so it publishes no abstract"
         )
-    suite_dir = os.path.dirname(ref.pnr_suite_path)
-    candidates = [abstract_dir(os.path.join(suite_dir, "artefacts", ref.pnr_run))]
-    if run_tag is not None:
-        tagged = run_artifact_root(suite_dir, run_tag) / ref.pnr_run
-        candidates.insert(0, abstract_dir(str(tagged)))
-    for directory in candidates:
-        manifest = read_manifest(directory)
-        if manifest is not None:
-            break
-    else:
-        raise BlockResolutionError(
-            f"{where}: no abstract at {' or '.join(candidates)} — run "
-            f"`rb pnr {ref.pnr_run} -c {ref.pnr_suite_path}` first"
+    if source is None:
+        directory, run_tag = (
+            abstract_dir(
+                str(
+                    run_artifact_root(os.path.dirname(ref.pnr_suite_path)) / ref.pnr_run
+                )
+            ),
+            None,
         )
+    else:
+        directory, run_tag = source.abstract_dir(ref, where)
     manifest_path = os.path.join(directory, ABSTRACT_MANIFEST_NAME)
+    manifest = read_manifest(directory)
+    if manifest is None:
+        raise BlockResolutionError(
+            f"{where}: no abstract at {directory} — run "
+            f"{rerun_command(ref, run_tag)} first"
+        )
     if manifest.get("block") != ref.name:
         raise BlockResolutionError(
             f"{where}: the abstract is of module {manifest.get('block')!r}, "
@@ -834,6 +949,8 @@ def resolve_block(ref: BlockRef, *, run_tag: str | None = None) -> ResolvedBlock
         lib=views["lib"],
         gds=views.get("gds"),
         run_cfg=run_cfg,
+        run_tag=run_tag,
+        manifest_sha256=(file_fingerprint(manifest_path, None) or {}).get("sha256"),
     )
 
 
@@ -861,7 +978,7 @@ def check_technology(
         if not expected or None in expected:
             raise BlockResolutionError(
                 f"block {block.ref.name!r}: its abstract records no {what} — "
-                f"re-run `rb pnr {block.ref.pnr_run} -c {block.ref.pnr_suite_path}`"
+                f"re-run {block.rerun_hint()}"
             )
         actual = [(file_fingerprint(p, None) or {}).get("sha256") for p in paths]
         if actual != expected:
@@ -874,9 +991,9 @@ def check_technology(
 
 
 def resolve_blocks(
-    refs: list[BlockRef], *, run_tag: str | None = None
+    refs: list[BlockRef], *, source: BlockSource | None = None
 ) -> list[ResolvedBlock]:
-    return [resolve_block(ref, run_tag=run_tag) for ref in refs]
+    return [resolve_block(ref, source=source) for ref in refs]
 
 
 def _records(value):
@@ -901,6 +1018,7 @@ def block_changes(block: ResolvedBlock, root_cfg) -> list[str]:
         on_disk = (
             path if os.path.isabs(path) or root is None else os.path.join(root, path)
         )
+        path = record.get("shown", path)
         now = (file_fingerprint(on_disk, None) or {}).get("sha256")
         if now is None:
             changes.append(f"{role} {path} is gone")
@@ -910,7 +1028,15 @@ def block_changes(block: ResolvedBlock, root_cfg) -> list[str]:
     for role, value in (block.manifest.get("inputs") or {}).items():
         for record in _records(value):
             _compare(role, record)
+    design = block.manifest.get("block")
     for view, record in (block.manifest.get("outputs") or {}).items():
+        if record and record.get("path"):
+            # The views read, which for a `BlockSource` copy are not at the recorded path.
+            record = {
+                **record,
+                "path": view_path(block.abstract_dir, design, view),
+                "shown": record["path"],
+            }
         _compare(f"abstract {view}", record)
 
     recorded = block.manifest.get("config") or {}
@@ -945,8 +1071,7 @@ def assess_blocks(
         more = f" (and {len(stale) - 1} more stale block(s))" if len(stale) > 1 else ""
         raise BlockResolutionError(
             f"block {first.ref.name!r} is stale: {describe_changes(list(first.changes))}"
-            f"{more} — re-run `rb pnr {first.ref.pnr_run} -c "
-            f"{first.ref.pnr_suite_path}`, or pass --accept-stale"
+            f"{more} — re-run {first.rerun_hint()}, or pass --accept-stale"
         )
     return assessed
 

@@ -3,6 +3,7 @@
 Each command takes an exclusive non-blocking ``flock(2)`` on
 ``<artifact_root>/.rtl-buddy.lock`` and fails fast if another process holds it.
 A lock whose recorded holder is dead on this host is reclaimed.
+:func:`tree_lock` holds another tree's lock for a short read or write, waiting for it.
 :func:`build_dir_lock` is the narrower, blocking lock around a shared compile.
 """
 
@@ -39,6 +40,27 @@ _CONTENTION_ERRNOS = frozenset({errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES})
 BUILD_LOCK_POLL_SEC = 0.2
 BUILD_LOCK_ANNOUNCE_SEC = 300.0
 
+TREE_LOCK_POLL_SEC = 1.0
+TREE_LOCK_ANNOUNCE_SEC = 300.0
+
+# Lock files this process holds through any ArtifactLocks, and one mutex per tree for `tree_lock`.
+_PROCESS_HELD: set[str] = set()
+_TREE_MUTEXES: dict[str, threading.Lock] = {}
+_PROCESS_LOCK = threading.Lock()
+
+
+class ArtifactLockContended(FatalRtlBuddyError):
+    """Another process holds the artefact tree's lock; ``holder`` is its lock-file record."""
+
+    def __init__(self, message: str, holder: dict | None = None):
+        super().__init__(message)
+        self.holder = holder or {}
+
+
+def _lock_key(artifact_root: Path) -> str:
+    return os.path.realpath(Path(artifact_root) / LOCK_FILENAME)
+
+
 # Build directories this process has already reported as unlockable.
 _DEGRADED_BUILD_DIRS: set[str] = set()
 _DEGRADED_BUILD_DIRS_LOCK = threading.Lock()
@@ -70,10 +92,17 @@ class ArtifactLocks:
     def __init__(self) -> None:
         self._held: dict[Path, int] = {}
 
-    def acquire(self, artifact_root: Path, *, command: str | None = None) -> None:
+    def acquire(
+        self,
+        artifact_root: Path,
+        *,
+        command: str | None = None,
+        log_contention: bool = True,
+    ) -> None:
         """Take the exclusive lock for ``artifact_root``, creating it if needed.
 
-        Raises :class:`FatalRtlBuddyError` naming the holder when another process has it.
+        Raises :class:`ArtifactLockContended` naming the holder when another process has it,
+        and :class:`FatalRtlBuddyError` when the filesystem cannot lock.
         """
         artifact_root = Path(artifact_root)
         lock_path = artifact_root / LOCK_FILENAME
@@ -91,7 +120,7 @@ class ArtifactLocks:
             if fd is None:
                 log_event(
                     logger,
-                    logging.ERROR,
+                    logging.ERROR if log_contention else logging.DEBUG,
                     "artifact_lock.contended",
                     path=str(artifact_root),
                     holder_pid=holder.get("pid"),
@@ -107,10 +136,11 @@ class ArtifactLocks:
                         "(the filesystem may not support flock; move the "
                         "artefact tree to a filesystem that does)"
                     ) from exc
-                raise FatalRtlBuddyError(
+                raise ArtifactLockContended(
                     f"{artifact_root}: another rtl-buddy run is already using "
                     f"this artefact tree{_describe_holder(holder)} — wait for "
-                    "it to finish or kill it"
+                    "it to finish or kill it",
+                    holder,
                 ) from exc
             log_event(
                 logger,
@@ -127,12 +157,14 @@ class ArtifactLocks:
         if not _still_owns_lock_path(artifact_root, lock_path, fd):
             # A reclaimer replaced the file between our flock and our write; we hold an unlinked inode.
             os.close(fd)
-            raise FatalRtlBuddyError(
+            raise ArtifactLockContended(
                 f"{artifact_root}: another rtl-buddy run is already using "
                 "this artefact tree (it reclaimed a stale lock at the same "
                 "moment) — wait for it to finish or kill it"
             )
         self._held[lock_path] = fd
+        with _PROCESS_LOCK:
+            _PROCESS_HELD.add(_lock_key(artifact_root))
         log_event(
             logger,
             logging.DEBUG,
@@ -143,12 +175,60 @@ class ArtifactLocks:
 
     def release_all(self) -> None:
         """Drop every held lock. Idempotent and never raises, so it is safe inside ``finally``."""
-        for fd in self._held.values():
+        for lock_path, fd in self._held.items():
             with contextlib.suppress(OSError):
                 fcntl.flock(fd, fcntl.LOCK_UN)
             with contextlib.suppress(OSError):
                 os.close(fd)
+            with _PROCESS_LOCK:
+                _PROCESS_HELD.discard(_lock_key(lock_path.parent))
         self._held.clear()
+
+
+@contextlib.contextmanager
+def tree_lock(artifact_root: Path, *, command: str | None = None) -> Iterator[None]:
+    """Hold ``artifact_root``'s tree lock for the ``with`` body, waiting while another process has it.
+
+    For a short read or write into a tree this command does not own, such as a
+    `--run-tag` run copying an untagged block abstract. A tree this process
+    already holds is not locked again; threads of this process take turns.
+    Logs ``artifact_lock.wait`` every ``TREE_LOCK_ANNOUNCE_SEC`` while waiting.
+    """
+    key = _lock_key(artifact_root)
+    with _PROCESS_LOCK:
+        mutex = _TREE_MUTEXES.setdefault(key, threading.Lock())
+    with mutex:
+        with _PROCESS_LOCK:
+            held = key in _PROCESS_HELD
+        if held:
+            yield
+            return
+        locks = ArtifactLocks()
+        started = time.monotonic()
+        announced = None
+        while True:
+            try:
+                locks.acquire(artifact_root, command=command, log_contention=False)
+                break
+            except ArtifactLockContended as exc:
+                waited = time.monotonic() - started
+                if announced is None or waited - announced >= TREE_LOCK_ANNOUNCE_SEC:
+                    log_console_event(
+                        logger,
+                        logging.INFO,
+                        "artifact_lock.wait",
+                        path=str(artifact_root),
+                        waited_sec=round(waited),
+                        holder_pid=exc.holder.get("pid"),
+                        holder_command=exc.holder.get("command"),
+                        holder_started=exc.holder.get("started"),
+                    )
+                    announced = waited
+                time.sleep(TREE_LOCK_POLL_SEC)
+        try:
+            yield
+        finally:
+            locks.release_all()
 
 
 @contextlib.contextmanager

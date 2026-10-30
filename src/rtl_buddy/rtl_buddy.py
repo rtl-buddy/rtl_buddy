@@ -63,7 +63,7 @@ from .mcp import server as mcp_server_mod
 from .phys import manifest as phys_manifest_mod
 from .phys import query as phys_query_mod
 from .mcp import toolset as mcp_toolset_mod
-from .artifact_lock import ArtifactLocks
+from .artifact_lock import ArtifactLocks, tree_lock
 from .errors import FatalRtlBuddyError, FilelistError
 from .exec_context import ExecutionContext
 from .hooks import exec_hook_script
@@ -243,7 +243,7 @@ from .tools.hier_rtl_buddy_view import (
     RtlBuddyViewQuery,
     probe_view_version,
 )
-from .tools import pnr_dispatch, pnr_stages
+from .tools import pnr_abstract, pnr_dispatch, pnr_stages
 from .tools.pnr_openroad import DEFAULT_PNG_HEIGHT, DEFAULT_PNG_WIDTH
 from .tools.spec_trace import (
     all_spec_blocks,
@@ -11290,6 +11290,7 @@ class RtlBuddy:
         reg_level=None,
         effort_override=None,
         accept_stale: bool = False,
+        block_source=None,
     ):
         syntheses = suite_cfg.get_syntheses(synth_name)
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
@@ -11324,6 +11325,7 @@ class RtlBuddy:
                 suite_dir=suite_dir,
                 effort_override=effort_override,
                 accept_stale=accept_stale,
+                block_source=block_source,
             )
             res = runner.run()
             if s.is_xfail():
@@ -11731,13 +11733,24 @@ class RtlBuddy:
             if run_synth:
                 # Resolve now so a bad `synth:` fails before any block runs.
                 run.resolve_synth_cfg()
-                # Synthesis is not namespaced: every tag shares its untagged tree.
-                self._artifact_locks.acquire(
-                    Path(run.get_synth_suite_path()).resolve().parent / "artefacts",
-                    command="pnr",
-                )
+                # Synthesis is not namespaced; a tagged call locks its tree only while synthesizing.
+                if run_tag is None:
+                    self._artifact_locks.acquire(
+                        run_artifact_root(
+                            Path(run.get_synth_suite_path()).resolve().parent
+                        ),
+                        command="pnr",
+                    )
 
         synths = OnceMap()
+        block_source = (
+            None
+            if run_tag is None
+            else pnr_abstract.BlockSource(
+                run_tag,
+                str(run_artifact_root(Path(suite_path).resolve().parent, run_tag)),
+            )
+        )
 
         def _step(planned, outcomes):
             return self._pnr_plan_step(
@@ -11754,6 +11767,7 @@ class RtlBuddy:
                 resume_from=resume_from,
                 dispatch=dispatch,
                 run_tag=run_tag,
+                block_source=block_source,
             )
 
         def _error(planned, exc):
@@ -11797,6 +11811,7 @@ class RtlBuddy:
         resume_from=None,
         dispatch=None,
         run_tag=None,
+        block_source=None,
     ) -> dict:
         """One planned run of `_do_pnr_suite`: blocked, skipped, or run.
 
@@ -11826,12 +11841,14 @@ class RtlBuddy:
             )
             res.results["mode"] = run.get_mode().value
             return {**row, "results": res}
-        # An XFAIL passes the suite but delivers no abstract.
+        # An XFAIL passes the suite but delivers no abstract. Under `--run-tag` a block
+        # skipped here would leave its consumer the untagged abstract, so it blocks too.
+        delivered = ("PASS", "XPASS") if run_tag else ("PASS", "XPASS", "SKIP")
         blocked_by = [
             dep
             for dep in planned.deps
             if dep.key in outcomes
-            and outcomes[dep.key].results.get("result") not in ("PASS", "XPASS", "SKIP")
+            and outcomes[dep.key].results.get("result") not in delivered
         ]
         if blocked_by:
             # FAIL, not SKIP, so the suite cannot pass; no xfail marker excuses this fail_stage.
@@ -11846,9 +11863,17 @@ class RtlBuddy:
                 blocks=[dep.block for dep in blocked_by],
             )
             noun = "block" if len(blocked_by) == 1 else "blocks"
+            skipped = any(
+                outcomes[dep.key].results.get("result") == "SKIP" for dep in blocked_by
+            )
             res = PnrFailResults(
                 name=f"{run.get_name()}/results",
-                desc=f"blocked: {noun} {names} did not pass",
+                desc=f"blocked: {noun} {names} did not pass"
+                + (
+                    f" (a block skipped here has no abstract under --run-tag {run_tag})"
+                    if skipped
+                    else ""
+                ),
                 fail_stage="blocked",
                 fields={
                     "blocked_by": [dep.block for dep in blocked_by],
@@ -11858,7 +11883,13 @@ class RtlBuddy:
             return {**row, "results": res}
         synth_row = None
         if synths is not None:
-            synth_row = self._pnr_upstream_synth(run, synths, accept_stale=accept_stale)
+            synth_row = self._pnr_upstream_synth(
+                run,
+                synths,
+                accept_stale=accept_stale,
+                run_tag=run_tag,
+                block_source=block_source,
+            )
             if synth_row["result"] not in ("PASS", "XPASS"):
                 # FAIL with a fail_stage that xfail never excuses; consumers are blocked.
                 res = PnrFailResults(
@@ -11886,6 +11917,7 @@ class RtlBuddy:
             resume_from=resume_from,
             dispatch=dispatch,
             run_tag=run_tag,
+            block_source=block_source,
         )
         res = runner.run()
         res.results.setdefault("mode", run.get_mode().value)
@@ -11896,21 +11928,33 @@ class RtlBuddy:
             res.results["synth"] = synth_row
         return {**row, "results": res}
 
-    def _pnr_upstream_synth(self, run, synths, *, accept_stale=False):
+    def _pnr_upstream_synth(
+        self, run, synths, *, accept_stale=False, run_tag=None, block_source=None
+    ):
         """Run `run`'s upstream synthesis for `rb pnr --synth`, once per synthesis.
 
         Runs regardless of `reglvl`. Under `-j`, a second P&R run of the same netlist
-        waits for the first. Its artefact tree is already locked. Returns the row the
-        P&R result carries as `synth`.
+        waits for the first. Untagged, its artefact tree is already locked; under
+        `--run-tag` it is locked only while synthesizing, waiting for another holder.
+        Returns the row the P&R result carries as `synth`.
         """
         synth_path = run.get_synth_suite_path()
 
         def _synthesize():
-            [synth] = self._do_synth_suite(
-                SynthSuiteConfig(synth_path),
-                synth_name=run.get_synth_name(),
-                accept_stale=accept_stale,
-            )
+            with (
+                nullcontext()
+                if run_tag is None
+                else tree_lock(
+                    run_artifact_root(Path(synth_path).resolve().parent),
+                    command="pnr",
+                )
+            ):
+                [synth] = self._do_synth_suite(
+                    SynthSuiteConfig(synth_path),
+                    synth_name=run.get_synth_name(),
+                    accept_stale=accept_stale,
+                    block_source=block_source,
+                )
             res = synth["results"].results
             return {
                 "name": run.get_synth_name(),

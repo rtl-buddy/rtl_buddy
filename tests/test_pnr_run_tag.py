@@ -7,18 +7,30 @@ invocation keeps the flat layout and the whole-tree lock.
 
 import json
 import shutil
+import subprocess
+import sys
+import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
-from test_pnr_blocks import _block_suite, _ref
-from test_pnr_plan import _driver, _run, _suite
+from test_pnr_blocks import _block_platform, _block_suite, _ref, _write
+from test_pnr_plan import _driver, _run, _suite, _synth_driver, _synth_run, _synth_yaml
 from typer.testing import CliRunner
 
+from rtl_buddy import artifact_lock
 from rtl_buddy.artifact_lock import LOCK_FILENAME, ArtifactLocks
+from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.runner.pnr_results import PnrPassResults
 from rtl_buddy.tools.artifact_paths import RUNS_DIRNAME, run_artifact_root
-from rtl_buddy.tools.pnr_abstract import BlockResolutionError, resolve_block
+from rtl_buddy.tools import pnr_abstract
+from rtl_buddy.tools.pnr_abstract import (
+    BLOCK_SNAPSHOTS_DIRNAME,
+    BlockResolutionError,
+    BlockSource,
+    resolve_block,
+)
 from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
 
@@ -196,22 +208,84 @@ def _tag_abstract(tmp_path, tag):
     return tagged / "abstract"
 
 
+def _source(tmp_path, tag="t"):
+    return BlockSource(tag, str(run_artifact_root(tmp_path / "top", tag)))
+
+
+def _root_cfg(tmp_path):
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = _block_platform(tmp_path)
+    return root_cfg
+
+
 def test_a_tagged_consumer_reads_the_abstract_its_tag_hardened(tmp_path):
     suite = _block_suite(tmp_path)
     tagged = _tag_abstract(tmp_path, "t")
 
-    block = resolve_block(_ref(suite), run_tag="t")
+    block = resolve_block(_ref(suite), source=_source(tmp_path))
 
     assert block.abstract_dir == str(tagged)
     assert block.lef == str(tagged / "blk_top.lef")
+    assert block.run_tag == "t"
+    assert block.result_row()["run_tag"] == "t"
 
 
-def test_a_tagged_consumer_falls_back_to_the_untagged_abstract(tmp_path):
+def test_a_tag_that_never_ran_the_block_reads_a_copy_of_the_untagged_abstract(
+    tmp_path, caplog
+):
     suite = _block_suite(tmp_path)
+    source = _source(tmp_path)
 
-    block = resolve_block(_ref(suite), run_tag="t")
+    block = resolve_block(_ref(suite), source=source)
 
-    assert block.abstract_dir == str(tmp_path / "blk/artefacts/blk_pnr/abstract")
+    copy = Path(block.abstract_dir)
+    assert copy.parent == Path(source.snapshot_root) / BLOCK_SNAPSHOTS_DIRNAME
+    assert copy.name.startswith("blk_pnr-")
+    assert (copy / "blk_top.lef").read_text() == (
+        tmp_path / "blk/artefacts/blk_pnr/abstract/blk_top.lef"
+    ).read_text()
+    row = block.result_row()
+    assert row["run_tag"] is None
+    manifest = tmp_path / "blk/artefacts/blk_pnr/abstract/abstract.manifest.json"
+    assert (
+        row["manifest_sha256"]
+        == pnr_abstract.file_fingerprint(str(manifest), None)["sha256"]
+    )
+    assert block.manifest_entry() == {
+        "name": "blk_top",
+        "pnr": "blk_pnr",
+        "run_tag": None,
+        "manifest_sha256": row["manifest_sha256"],
+    }
+    assert any(
+        r.levelname == "WARNING" and "copy of its untagged abstract" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+@pytest.mark.parametrize("state", ["failed", "cleared"])
+def test_a_tag_that_ran_the_block_without_an_abstract_fails_naming_the_tag(
+    tmp_path, state
+):
+    """A tagged block run that failed or was cleared leaves its run directory and no abstract; the untagged one is not used."""
+    suite = _block_suite(tmp_path)
+    run_dir = tmp_path / "blk/artefacts" / RUNS_DIRNAME / "t" / "blk_pnr"
+    run_dir.mkdir(parents=True)
+    if state == "failed":
+        (run_dir / "pnr.log").write_text("route failed\n")
+
+    with pytest.raises(BlockResolutionError) as info:
+        resolve_block(_ref(suite), source=_source(tmp_path))
+    assert str(run_dir / "abstract") in str(info.value)
+    assert "--run-tag t" in str(info.value)
+
+
+def test_a_missing_untagged_abstract_names_both_commands(tmp_path):
+    suite = _block_suite(tmp_path, manifest=False)
+    with pytest.raises(BlockResolutionError, match="has not run the block") as info:
+        resolve_block(_ref(suite), source=_source(tmp_path))
+    assert "rb pnr blk_pnr -c" in str(info.value)
+    assert "--run-tag t" in str(info.value)
 
 
 def test_an_untagged_consumer_never_reads_a_tagged_abstract(tmp_path):
@@ -221,7 +295,150 @@ def test_an_untagged_consumer_never_reads_a_tagged_abstract(tmp_path):
     with pytest.raises(BlockResolutionError) as info:
         resolve_block(_ref(suite))
     assert RUNS_DIRNAME not in str(info.value)
+    assert "--run-tag" not in str(info.value)
 
-    with pytest.raises(BlockResolutionError, match=" or ") as info:
-        resolve_block(_ref(suite), run_tag="u")
-    assert f"{RUNS_DIRNAME}/u/blk_pnr/abstract" in str(info.value)
+
+def test_an_untagged_re_harden_does_not_change_the_copy_a_tagged_run_reads(tmp_path):
+    """Synthesis and P&R of one tagged invocation read one copy, whatever an untagged re-harden does meanwhile."""
+    suite = _block_suite(tmp_path)
+    source = _source(tmp_path)
+    first = resolve_block(_ref(suite), source=source)
+    lef = (Path(first.abstract_dir) / "blk_top.lef").read_text()
+
+    published = tmp_path / "blk/artefacts/blk_pnr/abstract"
+    (published / "blk_top.lef").write_text("re-hardened\n")
+
+    again = resolve_block(_ref(suite), source=source)
+    assert again.abstract_dir == first.abstract_dir
+    assert (Path(again.abstract_dir) / "blk_top.lef").read_text() == lef
+    # Staleness is judged on the views read, not on the re-hardened ones.
+    assert not [
+        c
+        for c in pnr_abstract.block_changes(again, _root_cfg(tmp_path))
+        if "abstract" in c
+    ]
+
+
+def test_a_copy_that_does_not_match_its_manifest_is_refused(tmp_path):
+    suite = _block_suite(tmp_path)
+    published = tmp_path / "blk/artefacts/blk_pnr/abstract"
+    (published / "blk_top.lib").write_text("torn\n")
+
+    with pytest.raises(BlockResolutionError, match="does not match its manifest"):
+        resolve_block(_ref(suite), source=_source(tmp_path))
+
+
+def test_the_copy_is_taken_under_the_untagged_tree_lock(tmp_path, monkeypatch):
+    """A tagged run waits while another process holds the untagged tree, then copies."""
+    monkeypatch.setattr(artifact_lock, "TREE_LOCK_POLL_SEC", 0.05)
+    suite = _block_suite(tmp_path)
+    lock = tmp_path / "blk/artefacts" / LOCK_FILENAME
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import fcntl, sys, time\n"
+            f"f = open({str(lock)!r}, 'a')\n"
+            "fcntl.flock(f, fcntl.LOCK_EX)\n"
+            "print('held', flush=True)\n"
+            "time.sleep(1.5)\n",
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        started = time.monotonic()
+        block = resolve_block(_ref(suite), source=_source(tmp_path))
+        waited = time.monotonic() - started
+    finally:
+        holder.wait(timeout=10)
+    assert waited >= 0.5
+    assert Path(block.abstract_dir, "blk_top.lef").is_file()
+
+
+@pytest.mark.parametrize(
+    "check",
+    ["technology", "stale"],
+)
+def test_fix_it_commands_carry_the_tag_of_the_abstract_they_name(tmp_path, check):
+    suite = _block_suite(tmp_path)
+    _tag_abstract(tmp_path, "t")
+    block = resolve_block(_ref(suite), source=_source(tmp_path))
+    if check == "technology":
+        del block.manifest["technology"]
+        lib = _write(tmp_path / "top/pdk/typ.lib", "library (typ) {}\n")
+        with pytest.raises(BlockResolutionError, match="--run-tag t`"):
+            pnr_abstract.check_technology(block, liberty=[str(lib)], tech_lef=None)
+    else:
+        (tmp_path / "blk/blk.sdc").write_text("changed\n")
+        with pytest.raises(BlockResolutionError, match="--run-tag t`, or pass"):
+            pnr_abstract.assess_blocks([block], _root_cfg(tmp_path), accept_stale=False)
+
+
+def test_an_untagged_fix_it_command_has_no_tag(tmp_path):
+    suite = _block_suite(tmp_path)
+    block = resolve_block(_ref(suite), source=_source(tmp_path))
+    (tmp_path / "blk/blk.sdc").write_text("changed\n")
+    with pytest.raises(BlockResolutionError) as info:
+        pnr_abstract.assess_blocks([block], _root_cfg(tmp_path), accept_stale=False)
+    assert "--run-tag" not in str(info.value)
+
+
+def test_a_block_skipped_in_a_tagged_call_blocks_its_top(tmp_path, monkeypatch):
+    suite = _suite(
+        tmp_path / "pnr.yaml",
+        _run("blk", reglvl=2000),
+        _run("top", [("b", "blk", None)]),
+    )
+    rb, ran = _driver(monkeypatch, {})
+
+    results = {
+        r["pnr_name"]: r for r in rb._do_pnr_suite(suite, reg_level=1000, run_tag="t")
+    }
+
+    assert ran == []
+    top = results["top"]["results"].results
+    assert top["fail_stage"] == "blocked"
+    assert "no abstract under --run-tag t" in top["desc"]
+
+
+def test_tagged_synth_and_pnr_share_one_block_source_and_lock_synthesis_only_while_it_runs(
+    tmp_path, monkeypatch
+):
+    _synth_yaml(tmp_path / "synth.yaml", "top_s")
+    suite = _suite(tmp_path / "pnr.yaml", _synth_run("top", "top_s"))
+    rb, ran, _synths = _synth_driver(monkeypatch, {}, {})
+    seen = {}
+
+    class _Runner:
+        def __init__(self, *, name, block_source=None, **_kw):
+            self.name = name
+            seen["pnr"] = block_source
+
+        def run(self):
+            ran.append(self.name)
+            # Synthesis is over: the untagged tree is free again.
+            probe = ArtifactLocks()
+            probe.acquire(tmp_path / "artefacts")
+            probe.release_all()
+            return PnrPassResults(name=f"{self.name}/results")
+
+    inner = rb._do_synth_suite
+
+    def _synth(suite_cfg, *, block_source=None, **kw):
+        seen["synth"] = block_source
+        with pytest.raises(FatalRtlBuddyError, match="another rtl-buddy run"):
+            ArtifactLocks().acquire(tmp_path / "artefacts")
+        return inner(suite_cfg, **kw)
+
+    rb._do_synth_suite = _synth
+    monkeypatch.setattr("rtl_buddy.rtl_buddy.PnrRunner", _Runner)
+
+    results = rb._do_pnr_suite(suite, run_synth=True, run_tag="t")
+
+    assert results[0]["results"].is_pass(), results
+    assert ran == ["synth:top_s", "top"]
+    assert seen["synth"] is seen["pnr"]
+    assert seen["pnr"].run_tag == "t"
+    assert rb._artifact_locks.acquired == []
