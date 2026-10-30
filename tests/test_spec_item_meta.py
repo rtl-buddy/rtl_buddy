@@ -77,12 +77,12 @@ def test_meta_is_in_machine_output(tmp_path):
     assert "meta" not in items["MYBLK-COV-02"]
 
 
-def test_machine_output_carries_dates_as_iso_strings(tmp_path):
+def test_machine_output_carries_dates_and_non_finite_floats_as_strings(tmp_path):
     _write(
         tmp_path,
         _SPEC.replace(
             "meta: {tier: pr, owner: alice}",
-            "meta: {due: 2026-01-15, at: 2026-01-15 10:00:00}",
+            "meta: {due: 2026-01-15, at: 2026-01-15 10:00:00, cap: .inf, gap: .nan}",
         ),
     )
     (tmp_path / "verif").mkdir()
@@ -101,7 +101,12 @@ def test_machine_output_carries_dates_as_iso_strings(tmp_path):
     assert result.exit_code == 0, result.output
     lines = [line for line in result.output.splitlines() if line.strip()]
     item = json.loads(lines[-1])["payload"]["items"][0]
-    assert item["meta"] == {"due": "2026-01-15", "at": "2026-01-15T10:00:00"}
+    assert item["meta"] == {
+        "due": "2026-01-15",
+        "at": "2026-01-15T10:00:00",
+        "cap": "inf",
+        "gap": "nan",
+    }
 
 
 def test_null_meta_is_empty(tmp_path):

@@ -1,5 +1,6 @@
 import datetime
 import logging
+import math
 import os
 import pprint
 
@@ -111,9 +112,11 @@ def _drop_null_meta(raw: Any) -> None:
 
 
 def _json_safe(value: Any) -> Any:
-    """`value` with dates as ISO strings and other non-JSON types as strings."""
+    """`value` with dates as ISO strings and other non-JSON types, NaN and infinities included, as strings."""
     if isinstance(value, (datetime.date, datetime.datetime)):
         return value.isoformat()
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     if isinstance(value, dict):
