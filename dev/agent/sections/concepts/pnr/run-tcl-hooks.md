@@ -10,7 +10,7 @@
 
 | Point | Sourced |
 | --- | --- |
-| `session` | At the start of every OpenROAD session, after the SDC, before the floorplan |
+| `session` | At the start of every OpenROAD session, after the SDC, before the floorplan. Also in a [`netlist-source: pnr` power run](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#extracted-parasitics) of the run |
 | `after-floorplan` | After floorplan, tracks, blockages, tie cells and the floorplan setup repair |
 | `macro-placement` | Instead of RTL-MP; only when the netlist has macros. `$rb_movable_macros` lists the unlocated ones. |
 | `after-pdn` | After taps and the power grid |
