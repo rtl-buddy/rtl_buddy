@@ -86,6 +86,8 @@ def build_job_argv(spec: BuildJobSpec) -> list[str]:
     if spec.gates_json is not None:
         # Absent for backends that cannot release a pending job.
         argv += ["--gates", str(spec.gates_json)]
+    if spec.verilate_result_json is not None:
+        argv += ["--verilate-result-json", str(spec.verilate_result_json)]
     if spec.reg_level is not None:
         argv += ["-l", str(spec.reg_level)]
     if spec.start_level is not None:
@@ -122,6 +124,8 @@ def test_job_argv(spec: TestJobSpec) -> list[str]:
     if spec.build_result_json is not None:
         # Set only alongside --expect-prebuilt.
         argv += ["--build-result-json", str(spec.build_result_json)]
+    if spec.verilate_result_json is not None:
+        argv += ["--verilate-result-json", str(spec.verilate_result_json)]
     if spec.run_id is not None:
         argv += ["--run-id", str(spec.run_id)]
     if spec.seed_mode != SeedMode.DEFAULT:

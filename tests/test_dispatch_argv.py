@@ -310,3 +310,15 @@ def test_plusarg_overrides_are_absent_when_none_were_given():
 def test_plusarg_is_not_a_build_job_flag():
     """The build job needs no plusarg overrides, since the head already merged them into the plan."""
     assert "--plusarg" not in build_job_argv(_build_spec())
+
+
+def test_the_verilate_envelope_path_is_forwarded_as_given():
+    """Both the build half and its gated sims read the verilate envelope the head
+    named, never one derived from another file name."""
+    path = Path("/s/.dispatch/verilate-result-12-ab.json")
+    build = build_job_argv(_build_spec(verilate_result_json=path))
+    assert _flag_value(build, "--verilate-result-json") == str(path)
+    sim = sim_job_argv(_test_spec(verilate_result_json=path))
+    assert _flag_value(sim, "--verilate-result-json") == str(path)
+    assert "--verilate-result-json" not in build_job_argv(_build_spec())
+    assert "--verilate-result-json" not in sim_job_argv(_test_spec())

@@ -182,3 +182,25 @@ def test_a_malformed_entry_does_not_cost_the_others_their_release():
         ]
     }
     assert release_batches(payload, [0, 1]) == [(None, ["7_1", "7_4"])]
+
+
+def test_the_manifest_carries_the_build_job_for_a_verilate_job_to_shrink(tmp_path):
+    from rtl_buddy.dispatch.gates import build_job_of
+
+    path = write_gates(
+        tmp_path / "gates-9.json",
+        run_token="tok",
+        entries=_entries(),
+        build_job=("4321", "hpc", 16, "64G"),
+    )
+    payload, _ = load_gates(path)
+    assert build_job_of(payload) == {
+        "job_id": "4321",
+        "cluster": "hpc",
+        "cpus": 16,
+        "mem": "64G",
+    }
+    plain, _ = load_gates(write_gates(tmp_path / "g.json", run_token="t", entries=[]))
+    assert "build_job" not in plain
+    assert build_job_of(plain) is None
+    assert build_job_of({"build_job": {"job_id": "1"}}) is None

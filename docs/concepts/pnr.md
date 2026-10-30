@@ -267,7 +267,7 @@ Each output net then ends at a buffer input, which has a Liberty limit, so place
 
 ## Set wire RC
 
-Set the PDK's `layer-rc-tcl`. Without it, placement, clock-tree synthesis and hold repair see the technology LEF's layer RC, which is zero on most open PDKs, and the routed design can fail hold that repair never saw. Setup repair cannot run on zero wire RC: OpenROAD stops with `RSZ-0089`, and the failed run's description names the cause and both fixes. Three steps repair setup by default, as ORFS does: `floorplan-setup-repair`, `post-cts-setup-repair` and the setup repair of `global-route-repair`. Without wire RC, all three must be off: `floorplan-setup-repair: false`, `post-cts-setup-repair: false`, and a `global-route-repair` without `setup-margin`, such as `{hold-margin: 0}`, or `null`. rb warns `pnr.no_wire_rc` and qualifies the `PASS` when the PDK sets no `layer-rc-tcl` or `pnr.log` has `EST-0018` (zero wire capacitance) or `CTS-0104` (zero clock wire RC).
+Set the PDK's `layer-rc-tcl`. Without it, placement, clock-tree synthesis and hold repair see the technology LEF's layer RC, which is zero on most open PDKs, and the routed design can fail hold that repair never saw. Setup repair cannot run on zero wire RC: OpenROAD stops with `RSZ-0089`, and the failed run's description names the cause and both fixes. Three steps repair setup by default, as ORFS does: `floorplan-setup-repair`, `post-cts-setup-repair` and the setup repair of `global-route-repair`. Without wire RC, all three must be off: `floorplan-setup-repair: false`, `post-cts-setup-repair: false`, and a `global-route-repair` without `setup-margin`, such as `{hold-margin: 0}`, or `null`. rb warns `pnr.no_wire_rc` and qualifies the `PASS` when the PDK sets no `layer-rc-tcl` or `pnr.log` has `EST-0018` (zero wire capacitance) or `CTS-0104` (zero clock wire RC). Without `layer-rc-tcl`, `session` hooks may set the wire RC instead: each session then checks after the hooks that every corner has signal and clock wire capacitance, and the run is not qualified for the missing `layer-rc-tcl` when every check passes.
 
 For sky130hd, copy the `set_layer_rc` lines of OpenROAD's `test/sky130hd/sky130hd.rc` and pick the wire layers:
 
@@ -313,6 +313,8 @@ Process-dependent knobs live on the PDK, can be overridden on the platform, and 
 A platform that ends up with `routability-use-grt` but not `routability-driven` fails to load.
 
 On a library with several threshold-voltage flavours, such as ASAP7 RVT and LVT with both flavours' Liberty in each corner and both cell LEFs in `macro-lef`, resizing moves cells between flavours freely. `keep-sizing-vt: true` keeps each cell's flavour when `repair_design` or `repair_timing` resizes it, so a cell changes flavour only through timing repair's threshold-voltage swap. `cts-dont-use-cells` keeps cells out of the clock tree only: CTS and `repair_clock_nets` skip them, and post-CTS repair may still place them on data paths. After `repair_clock_nets` the flow frees only the cells the list made dont-use; a matching cell that Liberty `dont_use`, `dont-use-cells` or an earlier hook excluded stays excluded. Neither CTS nor `repair_clock_nets` checks the `cts-buffer` or `cts-root-buffer` cells against either list. The list governs the cells CTS picks itself: dummy-load inverters, and delay buffers it infers. Name the buffer flavour in `cts-buffer` and `cts-root-buffer`. To keep a flavour out of every step, list it in `dont-use-cells`.
+
+`match-cell-footprint: true` on the PDK or platform adds `-match_cell_footprint` to every `repair_design` and `repair_timing` the run emits: after placement, the floorplan and post-CTS repairs, global-route repair, and each post-route repair round, the electrical round included. Resizing then picks only cells with the same footprint, as ORFS does for platforms that set `MATCH_CELL_FOOTPRINT`, sky130hd and ihp-sg13g2 among them. It does not reach a `repair_design` or `repair_timing` a hook runs; pass the flag there yourself. rb runs no `repair_timing -recover_power`, which ORFS also gives the flag.
 
 Each CTS control sits on the platform and on the run, and a run's value replaces the platform's whole:
 
@@ -556,7 +558,7 @@ A macro grid in the `pdn-config` with a `-halo` needs the standard-cell rows cut
 
 | Point | Sourced |
 | --- | --- |
-| `session` | At the start of every OpenROAD session, after the SDC, before the floorplan |
+| `session` | At the start of every OpenROAD session, after the SDC, before the floorplan. Also in a [`netlist-source: pnr` power run](power.md#extracted-parasitics) of the run |
 | `after-floorplan` | After floorplan, tracks, blockages, tie cells and the floorplan setup repair |
 | `macro-placement` | Instead of RTL-MP; only when the netlist has macros. `$rb_movable_macros` lists the unlocated ones. |
 | `after-pdn` | After taps and the power grid |

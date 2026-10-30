@@ -26,6 +26,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple
 
+from ..config.dispatch import mem_to_bytes
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..process_utils import signals_blocked
@@ -376,6 +377,134 @@ def release_dependency(
             continue
         released.append(job_id)
     return ReleaseOutcome(released, failures, pending, systemic)
+
+
+# What a build job keeps once its verilate job has built every key: it starts, copies
+# the verilate job's records and exits, which needs one core and the head's footprint.
+IDLE_BUILD_JOB_CPUS = 1
+IDLE_BUILD_JOB_MEM = "1G"
+
+
+def pending_reservation(
+    job_id: str, *, cluster: str | None = None, cwd: str | None = None
+) -> dict | None:
+    """What the scheduler holds for ``job_id`` now, or ``None`` if it cannot say.
+
+    Read with ``scontrol -o show job``, so ``sbatch-args`` overrides and anything the
+    site applied are included. Returns ``{"state", "num_nodes", "num_cpus",
+    "num_tasks", "mem_node", "mem_cpu"}``; ``num_nodes`` is the low end of the held
+    node range, and memory is in bytes and is ``None`` where the job does not request
+    it that way. Never raises.
+    """
+    cluster_argv = [] if cluster is None else ["-M", cluster]
+    try:
+        proc = subprocess.run(
+            ["scontrol", *cluster_argv, "-o", "show", "job", str(job_id)],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=_SCONTROL_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    fields = dict(token.split("=", 1) for token in proc.stdout.split() if "=" in token)
+    try:
+        num_cpus = int(fields["NumCPUs"])
+        num_tasks = int(fields.get("NumTasks") or 1)
+        num_nodes = int((fields.get("NumNodes") or "1").split("-")[0])
+    except (KeyError, ValueError):
+        return None
+    return {
+        "state": fields.get("JobState"),
+        "num_nodes": max(1, num_nodes),
+        "num_cpus": num_cpus,
+        "num_tasks": max(1, num_tasks),
+        "mem_node": mem_to_bytes(fields.get("MinMemoryNode")),
+        "mem_cpu": mem_to_bytes(fields.get("MinMemoryCPU")),
+    }
+
+
+def shrink_pending_job(
+    job_id: str,
+    *,
+    cpus: int,
+    mem: str | None,
+    current_cpus: int,
+    current_mem: str | None,
+    cluster: str | None = None,
+    cwd: str | None = None,
+) -> tuple[list[str], str | None]:
+    """Lower a pending job's reservation; return ``(fields changed, error)``.
+
+    ``cpus`` is per task and ``mem`` per node. The current reservation is read back
+    from the scheduler (:func:`pending_reservation`), so an ``sbatch-args`` override
+    of what was submitted counts; ``current_cpus`` and ``current_mem`` are used only
+    when that read fails. A job that is no longer pending is left alone.
+
+    Runs ``scontrol update JobId=<id>`` with ``NumNodes=1`` for a job held on several
+    nodes, then ``CPUsPerTask``, ``MinCPUsNode`` and ``NumCPUs``, then the memory, one
+    call each, so a site that refuses a later change keeps the earlier ones. A refused
+    node change stops there and leaves the job as it was. Memory requested per CPU is lowered per CPU.
+    Only lowers: a field already at or below its target is left alone, since Slurm
+    refuses an owner's increase. A reserved memory of 0 is a whole node's, above any
+    target. Never raises; a job left as it was only starts later.
+    """
+    cluster_argv = [] if cluster is None else ["-M", cluster]
+    held = pending_reservation(job_id, cluster=cluster, cwd=cwd)
+    if held is not None and held["state"] not in (None, "PENDING"):
+        return [], None
+    num_tasks = held["num_tasks"] if held is not None else 1
+    reserved_cpus = held["num_cpus"] if held is not None else current_cpus
+    target_cpus = cpus * num_tasks
+    updates = []
+    if held is not None and held["num_nodes"] > 1:
+        updates.append(("nodes", ["NumNodes=1"]))
+    if reserved_cpus > target_cpus:
+        updates.append(
+            (
+                "cpus",
+                [
+                    f"CPUsPerTask={cpus}",
+                    f"MinCPUsNode={cpus}",
+                    f"NumCPUs={target_cpus}",
+                ],
+            )
+        )
+    target_mem = mem_to_bytes(mem)
+    if held is not None and held["mem_cpu"] is not None:
+        if target_mem is not None:
+            per_cpu = math.ceil(target_mem / target_cpus)
+            if held["mem_cpu"] == 0 or held["mem_cpu"] > per_cpu:
+                updates.append(("mem", [f"MinMemoryCPU={math.ceil(per_cpu / 2**20)}"]))
+    else:
+        reserved_mem = (
+            held["mem_node"] if held is not None else mem_to_bytes(current_mem)
+        )
+        if target_mem is not None and (
+            reserved_mem is None or reserved_mem == 0 or reserved_mem > target_mem
+        ):
+            updates.append(("mem", [f"MinMemoryNode={math.ceil(target_mem / 2**20)}"]))
+    changed: list[str] = []
+    for field, assignments in updates:
+        try:
+            proc = subprocess.run(
+                ["scontrol", *cluster_argv, "update", f"JobId={job_id}", *assignments],
+                capture_output=True,
+                text=True,
+                cwd=cwd,
+                timeout=_SCONTROL_TIMEOUT_S,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            return changed, str(e)[:200]
+        if proc.returncode != 0:
+            return changed, (
+                proc.stderr.strip()
+                or f"`scontrol update` failed (rc={proc.returncode})"
+            )[:200]
+        changed.append(field)
+    return changed, None
 
 
 # `MaxRSS` is a peak over samples, so a job shorter than the sampling interval reports a
