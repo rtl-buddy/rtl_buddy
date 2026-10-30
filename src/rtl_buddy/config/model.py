@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import logging
 import os
 import re
@@ -443,41 +444,36 @@ def _validate_models(models: list["ModelConfig"], path: str) -> None:
             seen_profiles[profile_key] = profile_idx
 
 
-# Validated models by absolute path, with the file stamp they were read at.
-_MODEL_CACHE: dict[str, tuple[tuple[int, int, int], list["ModelConfig"]]] = {}
-
-
-def _file_stamp(path: str) -> tuple[int, int, int] | None:
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    return (st.st_mtime_ns, st.st_size, st.st_ino)
+# Validated models by absolute path, with the digest of the file text they were parsed from.
+_MODEL_CACHE: dict[str, tuple[str, list["ModelConfig"]]] = {}
 
 
 def _read_models(path: str) -> list["ModelConfig"]:
-    """The validated models of ``path``, parsed once per file version.
+    """The validated models of ``path``, parsed once per file content.
 
     The returned list is shared by every caller: copy a model before keeping or changing it.
     """
+    try:
+        with open(path, "rb") as file:
+            data = file.read()
+    except Exception as e:
+        log_event(logger, logging.ERROR, "model_config.load_failed", path=path, error=e)
+        raise FatalRtlBuddyError(f'failed to load "{path}"') from e
+    digest = hashlib.sha256(data).hexdigest()
     key = os.path.abspath(path)
-    stamp = _file_stamp(path)
     cached = _MODEL_CACHE.get(key)
-    if cached is not None and stamp is not None and cached[0] == stamp:
+    if cached is not None and cached[0] == digest:
         return cached[1]
 
     try:
-        with open(path, "r") as file:
-            text = file.read()
-        raw = load_yaml(text, path, fast=True)
+        raw = load_yaml(data.decode("utf-8"), path)
         _reject_unknown_elaboration_resources_keys(raw, path)
         models = config_from_data(ModelConfigFile, raw).models
     except Exception as e:
         log_event(logger, logging.ERROR, "model_config.load_failed", path=path, error=e)
         raise FatalRtlBuddyError(f'failed to load "{path}"') from e
     _validate_models(models, path)
-    if stamp is not None and _file_stamp(path) == stamp:
-        _MODEL_CACHE[key] = (stamp, models)
+    _MODEL_CACHE[key] = (digest, models)
     return models
 
 
@@ -485,7 +481,7 @@ def _read_models(path: str) -> list["ModelConfig"]:
 class ModelConfigLoader:
     """Loads and validates the models in one ``models.yaml``.
 
-    A file is parsed once per version (mtime, size, inode) in a process. Each loader hands out its own copies of the models, with ``path`` as the loader was given it.
+    A file is parsed once per distinct content in a process. Each loader hands out its own copies of the models, with ``path`` as the loader was given it.
     """
 
     def __init__(self, path: str) -> None:

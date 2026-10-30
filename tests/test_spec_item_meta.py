@@ -45,7 +45,7 @@ def _warnings(caplog):
     return [
         r
         for r in caplog.records
-        if getattr(r, "rtl_event", None) == "spec_config.unknown_item_key"
+        if getattr(r, "rtl_event", None) == "spec_config.unknown_key"
     ]
 
 
@@ -77,6 +77,39 @@ def test_meta_is_in_machine_output(tmp_path):
     assert "meta" not in items["MYBLK-COV-02"]
 
 
+def test_machine_output_carries_dates_as_iso_strings(tmp_path):
+    _write(
+        tmp_path,
+        _SPEC.replace(
+            "meta: {tier: pr, owner: alice}",
+            "meta: {due: 2026-01-15, at: 2026-01-15 10:00:00}",
+        ),
+    )
+    (tmp_path / "verif").mkdir()
+    result = CliRunner().invoke(
+        RtlBuddy(name="test_spec_item_meta_dates").app,
+        [
+            "--machine",
+            "spec",
+            "check-coverage",
+            "--spec-dir",
+            str(tmp_path / "spec"),
+            "--verif-dir",
+            str(tmp_path / "verif"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    item = json.loads(lines[-1])["payload"]["items"][0]
+    assert item["meta"] == {"due": "2026-01-15", "at": "2026-01-15T10:00:00"}
+
+
+def test_null_meta_is_empty(tmp_path):
+    for empty in ("meta:", "meta: ~"):
+        text = _SPEC.replace("meta: {tier: pr, owner: alice}", empty)
+        assert _items(_write(tmp_path, text))[0].meta == {}
+
+
 def test_meta_does_not_warn(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         _items(_write(tmp_path, _SPEC))
@@ -92,7 +125,7 @@ def test_unknown_item_key_warns_and_loads(tmp_path, caplog):
     assert {r.rtl_fields["key"] for r in warned} == {"tier", "level"}
     for record in warned:
         assert record.levelno == logging.WARNING
-        assert record.rtl_fields["item"] == "MYBLK-COV-02"
+        assert "MYBLK-COV-02" in record.rtl_fields["where"]
         message = record.getMessage()
         assert str(path) in message
         assert "MYBLK-COV-02" in message
@@ -106,3 +139,17 @@ def test_unknown_item_key_warns_once_per_process(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         _items(path)
     assert not _warnings(caplog)
+
+
+def test_unknown_block_and_top_level_keys_warn(tmp_path, caplog):
+    text = _SPEC.replace(
+        "    desc: example\n", "    desc: example\n    meta: {tier: pr}\n", 1
+    ).replace("blocks:\n", "owner: alice\nblocks:\n", 1)
+    path = _write(tmp_path, text)
+    with caplog.at_level(logging.WARNING):
+        SpecConfig(str(path))
+    warned = {(r.rtl_fields["where"], r.rtl_fields["key"]) for r in _warnings(caplog)}
+    assert warned == {
+        ("top level", "owner"),
+        ("block 'my_block'", "meta"),
+    }

@@ -34,7 +34,7 @@ An item may carry project metadata, such as the test tier that must own it, unde
         meta: {tier: pr}
 ```
 
-`meta` is a free-form mapping that rtl-buddy does not interpret. `rb --machine spec check-coverage` reports it as `meta` on each item that sets it, so a project script can group or filter items without re-reading `specs.yaml`. Other keys beside `id`, `desc` and `meta` are ignored with a warning.
+`meta` is a free-form mapping that rtl-buddy does not interpret. `rb --machine spec check-coverage` reports it as `meta` on each item that sets it, so a project script can group or filter items without re-reading `specs.yaml`. Dates and other non-JSON values in `meta` are reported as strings. Other keys beside `id`, `desc` and `meta` are ignored with a warning.
 
 ## Link the design model
 

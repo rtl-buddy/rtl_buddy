@@ -1381,4 +1381,4 @@ blocks:
 | `coverage-items[].desc` | Required | Verification requirement |
 | `coverage-items[].meta` | Optional mapping | Free-form project metadata, such as the test tier that owns the item. Any keys and values; rtl-buddy does not interpret it. Reported as `meta` per item by `rb --machine spec check-coverage` when set |
 
-A key on a coverage item other than `id`, `desc` and `meta` is ignored. The file still loads and a warning names the file, item and key, once per process. A single-block file matches its linked model unconditionally. These fields affect traceability only. See [Spec Traceability](../concepts/spec-traceability.md).
+A key that is not listed here, at the top level, on a block or on a coverage item, is ignored. The file still loads and a warning names the file, the location and the key, once per process. A `meta:` left empty or set to `~` means no metadata. A single-block file matches its linked model unconditionally. These fields affect traceability only. See [Spec Traceability](../concepts/spec-traceability.md).

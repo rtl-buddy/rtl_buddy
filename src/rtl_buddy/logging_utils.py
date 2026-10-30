@@ -2875,11 +2875,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             if known:
                 msg += f" (valid keys: {', '.join(str(k) for k in known)})"
             return msg
-        case "spec_config.unknown_item_key":
+        case "spec_config.unknown_key":
+            hint = f"; {fields.get('hint')}" if fields.get("hint") else ""
             return (
-                f"{fields.get('path')}: coverage item {fields.get('item')!r} in block "
-                f"{fields.get('block')!r} has unknown key {fields.get('key')!r}, ignored; "
-                "put project metadata under 'meta:'"
+                f"{fields.get('path')}: {fields.get('where')} has unknown key "
+                f"{fields.get('key')!r}, ignored{hint}"
             )
         case "root_config.reg_cfg_unknown_keys":
             return (

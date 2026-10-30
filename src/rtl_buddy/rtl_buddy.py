@@ -11531,7 +11531,7 @@ class RtlBuddy:
                     "tests": [
                         {"path": p, "test": t} for p, t in cov_map.get(item.id, [])
                     ],
-                    **({"meta": item.meta} if item.meta else {}),
+                    **({"meta": item.meta_json()} if item.meta else {}),
                 }
                 for cfg, b in blocks
                 for item in b.coverage_items

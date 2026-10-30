@@ -1,7 +1,7 @@
 """``models.yaml`` is parsed once per file version, however many tests name its models."""
 
-import os
 import pprint
+import os
 from pathlib import Path
 
 import pytest
@@ -47,6 +47,11 @@ def _write_suite(root: Path) -> Path:
     return suite
 
 
+class _NoCache(dict):
+    def __setitem__(self, key, value):
+        pass
+
+
 @pytest.fixture(autouse=True)
 def fresh_cache():
     model_mod._MODEL_CACHE.clear()
@@ -83,7 +88,7 @@ def test_suite_parses_shared_models_yaml_once(tmp_path, parse_count):
 def test_cached_suite_matches_uncached(tmp_path, monkeypatch):
     suite = _write_suite(tmp_path)
     cached = _tests(suite)
-    monkeypatch.setattr(model_mod, "_file_stamp", lambda path: None)
+    monkeypatch.setattr(model_mod, "_MODEL_CACHE", _NoCache())
     assert _tests(suite) == cached
 
 
@@ -92,8 +97,18 @@ def test_changed_file_is_read_again(tmp_path, parse_count):
     path.write_text(_models_yaml())
     assert len(ModelConfigLoader(str(path)).get_models()) == N_MODELS
     path.write_text(_models_yaml("  - name: extra\n    filelist: [x.sv]\n"))
-    os.utime(path, ns=(1, 1))
     assert len(ModelConfigLoader(str(path)).get_models()) == N_MODELS + 1
+    assert len(parse_count) == 2
+
+
+def test_same_size_edit_in_the_same_mtime_is_read_again(tmp_path, parse_count):
+    path = tmp_path / "models.yaml"
+    path.write_text(_models_yaml().replace("m0", "ma"))
+    stamp = path.stat().st_mtime_ns
+    ModelConfigLoader(str(path))
+    path.write_text(_models_yaml().replace("m0", "mb"))
+    os.utime(path, ns=(stamp, stamp))
+    assert ModelConfigLoader(str(path)).get_model("mb")
     assert len(parse_count) == 2
 
 
