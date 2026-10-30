@@ -1,8 +1,7 @@
 """Tests for `placement.macro-pin-limits`, the macro pin-limit repair step (rtl_buddy#838).
 
 The pure-Tcl helpers in `rtl_buddy/pnr/macro_pin_limits.tcl` run under a bare Tcl
-interpreter, as the macro packer's do; the OpenROAD half is checked by its place in
-the rendered flow.
+interpreter; the OpenROAD half is checked by its place in the rendered flow.
 """
 
 import logging
@@ -22,7 +21,7 @@ from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
 from test_multi_corner import _pnr_backend_over
 from test_pnr import _make_pdk_cfg, _make_pnr_cfg, _platform, _render_flow
-from test_pnr_macro_pack import _tcl_eval
+from tcl_eval import _tcl_eval
 
 _BUFFERS = ["BUF_X1", "BUF_X4", "BUF_X8"]
 
@@ -155,6 +154,9 @@ def test_the_block_joins_the_hardened_config_digest_only_when_set(tmp_path):
 # --- rendered flow ------------------------------------------------------------
 
 _LEGALIZED = 'puts ">>> Detail placement (legalize)"\ndetailed_placement\n'
+_OPTIMIZED = (
+    'puts ">>> Detail placement optimization"\nimprove_placement\noptimize_mirroring\n'
+)
 _PLACE_END = 'rb::global_connect\n\nputs ">>> Clock tree synthesis"'
 _CTS = 'puts ">>> Clock tree synthesis"'
 
@@ -176,29 +178,29 @@ def test_an_unset_key_renders_the_flow_byte_identically(tmp_path):
     assert on.replace(block, "", 1) == off
     assert "rb::macro_pins" not in off
     assert "Macro pin limits" not in off
-    assert f"{_LEGALIZED}{_PLACE_END}" in off
+    assert f"{_LEGALIZED}{_OPTIMIZED}{_PLACE_END}" in off
 
 
 def test_the_step_runs_on_the_legalised_post_repair_placement_before_cts(tmp_path):
-    """After `repair_design`, its hook and its legalisation, at the end of the place
+    """After `repair_design`, its hook, its legalisation and the placement optimisation, at the end of the place
     stage: legalisation moves a macro output's loads, so checks read before it miss pins.
     """
     platform = _on(tmp_path, margin=0.1)
     text = _render_flow(tmp_path, platform)
     block = _block(tmp_path, platform)
 
-    assert f"repair_design\n\n{_LEGALIZED}{block}{_PLACE_END}" in text
+    assert f"repair_design\n\n{_LEGALIZED}{_OPTIMIZED}{block}{_PLACE_END}" in text
     assert text.count('puts ">>> Macro pin limits"') == 1
     assert text.index("global_placement -density") < text.index(block)
     assert text.index(block) < text.index("clock_tree_synthesis")
     # Buffers weakest first, the two margins, the global-placement padding, the tag
     # and the flow's legalizer options.
     assert block.endswith(
-        "rb::macro_pins::repair {BUF_X1 BUF_X4 BUF_X8} 0.1 0.1 1 "
+        "rb::macro_pins::repair {BUF_X1 BUF_X4 BUF_X8} 0.1 0.1 0 "
         "RB-MACRO-PIN-LIMITS: [list]\n"
     )
     assert _block(tmp_path, _on(tmp_path, capacitance_margin=0.5)).endswith(
-        "{BUF_X1 BUF_X4 BUF_X8} 0.05 0.5 1 RB-MACRO-PIN-LIMITS: [list]\n"
+        "{BUF_X1 BUF_X4 BUF_X8} 0.05 0.5 0 RB-MACRO-PIN-LIMITS: [list]\n"
     )
 
 

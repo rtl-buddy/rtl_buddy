@@ -1,6 +1,6 @@
 """OpenROAD worker-thread count (`threads:`) for the pnr, power and synth flows.
 
-- Unset: OpenROAD's default of one thread; nothing is emitted.
+- Unset: nothing is emitted, and OpenROAD uses its own default: every hardware thread on 26Q4, one thread before. OpenROAD does not log that count, so the results report it as unknown (`effective: null`).
 - A positive integer: emitted as `set_thread_count N` ahead of the first tool command. Anything else except ``auto`` fails config loading.
 - ``auto``: the CPU count of the current allocation, or one when there is none. Never the host core count.
 - A count above the detected allocation is clamped to it with a WARNING.
@@ -103,7 +103,7 @@ def detect_allocation(
 class ThreadPlan:
     """The thread count for one OpenROAD invocation.
 
-    ``count`` is what the script sets, or OpenROAD's default of one when ``emit`` is false.
+    ``count`` is what the script sets; when ``emit`` is false OpenROAD picks its own count, which rb does not know, and ``count`` is 1.
     """
 
     requested: int | str | None
@@ -121,13 +121,15 @@ class ThreadPlan:
         """The thread provenance recorded in the run's results.
 
         ``reported`` is the count OpenROAD logged; it can be lower than ``count`` and wins when present.
-        It is ignored when nothing was emitted, because a count in the log then belongs to a previous run.
+        When nothing was emitted, OpenROAD chose its own count and logged none, so ``effective`` is None; a count in the log then belongs to a previous run.
         """
         if not self.emit:
-            reported = None
+            effective = None
+        else:
+            effective = reported if reported is not None else self.count
         return {
             "requested": self.requested,
-            "effective": reported if reported is not None else self.count,
+            "effective": effective,
             "allocation": self.allocation,
             "allocation_source": self.allocation_source,
         }

@@ -17,7 +17,7 @@ from rtl_buddy.config.openroad_threads import (
     plan_threads,
     validate_threads,
 )
-from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
+from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr import PnrConfig, PnrFloorplan, PnrSuiteConfig
 from rtl_buddy.config.pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
 from rtl_buddy.errors import FatalRtlBuddyError
@@ -51,6 +51,7 @@ def _pnr_yaml(tmp_path, threads_line):
                 desc: demo
                 synth: demo_synth
                 synth-path: synth.yaml
+                floorplan: {{utilization: 0.55}}
                 constraints: c.sdc
                 platform: nangate45_typ
             {threads_line}
@@ -171,15 +172,15 @@ def _capture_events(monkeypatch):
     return events
 
 
-def test_unset_emits_nothing_and_records_one_thread(monkeypatch):
+def test_unset_emits_nothing_and_records_an_unknown_count(monkeypatch):
     events = _capture_events(monkeypatch)
     plan = plan_threads(None, flow="pnr", run="r", allocation=(8, "SLURM_CPUS_ON_NODE"))
     assert plan.tcl() == ""
     assert plan.count == 1
-    # An allocation alone never raises the count; unset stays deterministic.
+    # OpenROAD picks its own count and logs none, so rb does not know it.
     assert plan.fields() == {
         "requested": None,
-        "effective": 1,
+        "effective": None,
         "allocation": 8,
         "allocation_source": "SLURM_CPUS_ON_NODE",
     }
@@ -251,6 +252,7 @@ def test_parse_reported_threads_takes_the_last_report():
 def _platform(tmp_path):
     pdk = PdkConfig(
         PdkConfigFile(
+            pin_layers=PdkPinLayersFile(horizontal="metal3", vertical="metal2"),
             name="nangate45",
             site="FreePDK45_38x28_10R_NP_162NW_34O",
             corners={"typ": "pdk/lib/typ.lib"},
@@ -370,12 +372,12 @@ def test_pnr_pass_records_requested_and_reported_threads(
     }
 
 
-def test_pnr_pass_without_threads_records_the_default(
+def test_pnr_pass_without_threads_records_an_unknown_count(
     tmp_path, monkeypatch, no_allocation
 ):
     res = _run(tmp_path, monkeypatch, None, "")
     assert res.results["openroad_threads"]["requested"] is None
-    assert res.results["openroad_threads"]["effective"] == 1
+    assert res.results["openroad_threads"]["effective"] is None
 
 
 def test_pnr_failure_after_openroad_still_records_threads(
@@ -409,4 +411,20 @@ def test_pnr_machine_row_carries_openroad_threads():
 def test_a_count_in_the_log_is_ignored_when_none_was_set():
     """With nothing emitted OpenROAD logs no count; one in the log is stale."""
     plan = plan_threads(None, flow="pnr", run="r", allocation=_NO_ALLOCATION)
-    assert plan.fields(reported=8)["effective"] == 1
+    assert plan.fields(reported=8)["effective"] is None
+
+
+@pytest.mark.parametrize(
+    "script, log_text, expected",
+    [
+        ("read_db x.odb\n", "[INFO ORD-0030] Using 8 thread(s).\n", None),
+        ("set_thread_count 4\n", "", 4),
+        ("set_thread_count 4\n", "[INFO ORD-0030] Using 3 thread(s).\n", 3),
+    ],
+)
+def test_a_stage_session_without_a_thread_count_reports_none(
+    script, log_text, expected
+):
+    from rtl_buddy.tools.pnr_openroad import _session_threads
+
+    assert _session_threads(script, log_text) == expected

@@ -24,12 +24,13 @@ def serde_keys(cls) -> tuple[str, ...]:
 class KeySpec(NamedTuple):
     """A block's serde class and the specs of its nested mapping blocks, by YAML key.
 
-    ``many`` marks a block that is a list of mappings, each read by ``cls``.
+    ``many`` marks a block that is a list of mappings, each read by ``cls``. ``removed`` maps a key the block does not read to what to do instead.
     """
 
     cls: type
     nested: Mapping[str, "KeySpec"] = {}
     many: bool = False
+    removed: Mapping[str, str] = {}
 
 
 class UnknownKey(NamedTuple):
@@ -37,8 +38,11 @@ class UnknownKey(NamedTuple):
     key: str
     suggestion: str | None
     valid: tuple[str, ...]
+    removed: str | None = None
 
     def message(self) -> str:
+        if self.removed:
+            return f"{self.location}: {self.key!r} is not a key: {self.removed}"
         hint = f", did you mean {self.suggestion!r}?" if self.suggestion else ""
         return (
             f"{self.location}: unknown key {self.key!r}{hint} "
@@ -67,6 +71,9 @@ def find_unknown_keys(raw: Any, spec: KeySpec, *, label: str, path: str = "") ->
             continue
         # YAML 1.1 reads an unquoted `on` or `yes` key as a boolean.
         name = str(key)
+        if name in spec.removed:
+            found.append(UnknownKey(location, name, None, valid, spec.removed[name]))
+            continue
         close = difflib.get_close_matches(name, valid, n=1)
         found.append(UnknownKey(location, name, close[0] if close else None, valid))
     for key, child in spec.nested.items():
@@ -110,6 +117,7 @@ def reject_unknown_keys(found: list, *, path: str) -> None:
             key=unknown.key,
             suggestion=unknown.suggestion,
             known=list(unknown.valid),
+            **({"removed": unknown.removed} if unknown.removed else {}),
         )
     raise FatalRtlBuddyError(
         "\n".join(f"{path}: {unknown.message()}" for unknown in found)

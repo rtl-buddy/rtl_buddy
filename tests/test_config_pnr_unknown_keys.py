@@ -25,7 +25,8 @@ from rtl_buddy.logging_utils import _human_message
 PLACEMENT_ALL = {
     "density": 0.5,
     "padding": 1,
-    "macro-halo": 10,
+    "macro-channel": [10, 20],
+    "macro-pin-aware-channels": False,
     "macro-cell-halo": 1,
     "tie-separation": 0,
     "reference-hpwl": 1000,
@@ -38,6 +39,8 @@ PLACEMENT_ALL = {
         "margin": 0.05,
         "capacitance-margin": 0.5,
     },
+    "improve-placement": False,
+    "optimize-mirroring": False,
 }
 
 # Sized by core-margin; the second run sizes with die-area, core-area and core-cutouts instead.
@@ -98,8 +101,6 @@ RUN_SIZED = {
         "utilization": 0.5,
         "aspect": 1.0,
         "core-margin": 5.0,
-        "macro-anchor": "lower-right",
-        "macro-placement": "pack",
         "blockages": [
             {"rect": [0, 0, 10, 10]},
             {"rect": [0, 0, 10, 10], "type": "soft"},
@@ -169,6 +170,10 @@ RUN_SIZED = {
     "cts-latency-balancing": False,
     "cts-repair-clock-nets": {"max-wire-length": 1000},
     "post-cts-setup-repair": False,
+    "floorplan-setup-repair": False,
+    "cts-repair-clock-inverters": False,
+    "global-route-antenna-repair": False,
+    "detailed-route-antenna-repair": False,
     "port-buffer": "buf2",
     "tapcell-tcl": "tap_run.tcl",
     "cts-dont-use-cells": ["*_L"],
@@ -254,6 +259,10 @@ PLATFORM_ONE_CORNER = {
     "cts-latency-balancing": False,
     "cts-repair-clock-nets": {"max-wire-length": 1000},
     "post-cts-setup-repair": True,
+    "floorplan-setup-repair": False,
+    "cts-repair-clock-inverters": False,
+    "global-route-antenna-repair": False,
+    "detailed-route-antenna-repair": False,
     "global-route-repair": GLOBAL_ROUTE_REPAIR_ALL,
     "post-route-repair": POST_ROUTE_REPAIR_ALL,
     "routing-layer-adjustment": 0.1,
@@ -354,7 +363,9 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "global-route-repair, post-route-repair, routing-layers, "
             "routing-layer-adjustment, cts-buffer, cts-latency-balancing, "
             "cts-repair-clock-nets, cts-sink-clustering, cts-root-buffer, "
-            "cts-obstruction-aware, post-cts-setup-repair, global-route-hold-repair, "
+            "cts-obstruction-aware, post-cts-setup-repair, floorplan-setup-repair, "
+            "cts-repair-clock-inverters, global-route-antenna-repair, "
+            "detailed-route-antenna-repair, global-route-hold-repair, "
             "port-buffer, tapcell-tcl, cts-dont-use-cells, keep-sizing-vt, "
             "cts-clock-nets, global-route, mode, signoff, reglvl, tool_overrides, "
             "threads, resources, detailed-route-verbose, xfail, xfail_strict, "
@@ -364,7 +375,7 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "pnr run 'a': floorplan",
             ("floorplan",),
             "utilization, aspect, core-margin, die-area, core-area, core-cutouts, "
-            "macro-anchor, macro-placement, blockages, pins, macros, macros-file, "
+            "blockages, pins, macros, macros-file, "
             "macro-snap, pins-file, pin-snap, pins-complete",
         ),
         (
@@ -406,9 +417,11 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
         (
             "pnr run 'a': placement",
             ("placement",),
-            "density, padding, macro-halo, macro-cell-halo, tie-separation, "
+            "density, padding, macro-channel, macro-pin-aware-channels, macro-cell-halo, "
+            "tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
-            "rotated-macro-footprint, macro-pin-limits",
+            "rotated-macro-footprint, macro-pin-limits, improve-placement, "
+            "optimize-mirroring",
         ),
         (
             "pnr run 'a': placement.macro-pin-limits",
@@ -584,6 +597,31 @@ def test_an_unknown_key_is_logged_at_error_with_its_fields(tmp_path, caplog):
     )
 
 
+def test_a_removed_key_is_logged_with_what_to_do_instead(tmp_path, caplog):
+    run = copy.deepcopy(RUN_SIZED)
+    run["floorplan"]["macro-placement"] = "pack"
+    path = _write_pnr(tmp_path, run)
+    caplog.set_level(logging.ERROR)
+
+    with pytest.raises(FatalRtlBuddyError) as err:
+        PnrSuiteConfig(path)
+
+    [event] = [
+        r.rtl_fields
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "config.unknown_key_rejected"
+    ]
+    assert event["key"] == "macro-placement"
+    assert "suggestion" not in event
+    message = (
+        f"{path}: pnr run 'a': floorplan: 'macro-placement' is not a key: "
+        "rb places macros with RTL-MP; remove the key, or use a "
+        "'macro-placement' hook for another placement"
+    )
+    assert _human_message("config.unknown_key_rejected", event) == message
+    assert str(err.value) == message
+
+
 def test_a_run_without_a_name_is_labelled_by_position(tmp_path):
     run = {"desc": "no name", "bogus": 1}
     path = _write_pnr(tmp_path, copy.deepcopy(RUN_DIE), run)
@@ -720,9 +758,11 @@ cfg-pnr-platforms:
             "pdk",
             ("placement",),
             "cfg-pdks 'pdk1': placement",
-            "density, padding, macro-halo, macro-cell-halo, tie-separation, "
+            "density, padding, macro-channel, macro-pin-aware-channels, macro-cell-halo, "
+            "tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
-            "rotated-macro-footprint, macro-pin-limits",
+            "rotated-macro-footprint, macro-pin-limits, improve-placement, "
+            "optimize-mirroring",
         ),
         (
             "pdk",
@@ -737,8 +777,10 @@ cfg-pnr-platforms:
             "name, pdk, corner, corners, cts-buffer, cts-sink-clustering, "
             "cts-root-buffer, cts-obstruction-aware, "
             "cts-latency-balancing, cts-repair-clock-nets, "
-            "post-cts-setup-repair, global-route-hold-repair, global-route-repair, "
-            "post-route-repair, routing-layer-adjustment, cts-apply-ndr, "
+            "post-cts-setup-repair, floorplan-setup-repair, "
+            "cts-repair-clock-inverters, global-route-antenna-repair, "
+            "detailed-route-antenna-repair, global-route-hold-repair, "
+            "global-route-repair, post-route-repair, routing-layer-adjustment, cts-apply-ndr, "
             "port-buffer, max-fanout, routing-layers, placement, dont-use-cells, "
             "cts-dont-use-cells, keep-sizing-vt, tapcell-tcl, global-route, signoff",
         ),
@@ -784,9 +826,11 @@ cfg-pnr-platforms:
             "platform",
             ("placement",),
             "cfg-pnr-platforms 'pl1': placement",
-            "density, padding, macro-halo, macro-cell-halo, tie-separation, "
+            "density, padding, macro-channel, macro-pin-aware-channels, macro-cell-halo, "
+            "tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
-            "rotated-macro-footprint, macro-pin-limits",
+            "rotated-macro-footprint, macro-pin-limits, improve-placement, "
+            "optimize-mirroring",
         ),
         (
             "platform",

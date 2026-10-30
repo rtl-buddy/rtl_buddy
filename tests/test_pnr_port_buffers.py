@@ -14,7 +14,7 @@ from rtl_buddy.tools import pnr_abstract
 from rtl_buddy.tools.pnr_openroad import _FREE_PORT_BUFFERS_TCL
 
 from test_pnr import _make_pdk_cfg, _make_pnr_cfg, _platform, _render_flow
-from test_pnr_macro_pack import _tcl_eval
+from tcl_eval import _tcl_eval
 
 _GLOBAL_PLACEMENT = "global_placement -density"
 
@@ -30,6 +30,7 @@ def _run(tmp_path, extra=""):
             synth: s
             synth-path: synth.yaml
             platform: p
+            floorplan: {utilization: 0.55}
         """)
         + extra
     )

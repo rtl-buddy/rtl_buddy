@@ -1,7 +1,6 @@
 """Tests for the `rb pnr` floorplan controls.
 
-Covers the macro-packer anchor corner, standard-cell placement blockages and IO pin
-placement after the macros. Packing geometry is tested in test_pnr_macro_pack.py.
+Covers standard-cell placement blockages and IO pin placement after the macros.
 """
 
 import textwrap
@@ -10,10 +9,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
+from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr import (
     BlockageType,
-    MacroAnchor,
     PnrBlockage,
     PnrBlockageFile,
     PnrConfig,
@@ -27,14 +25,22 @@ from rtl_buddy.config.pnr_platform import PnrPlatformConfig, PnrPlatformConfigFi
 from rtl_buddy.errors import FatalRtlBuddyError
 
 
-def _load(tmp_path, **floorplan) -> PnrConfig:
+def _sized(floorplan: dict) -> dict:
+    """`floorplan` with a utilization when it sets no size."""
+    if floorplan.keys() & {"utilization", "die_area", "core_area"}:
+        return floorplan
+    return {"utilization": 0.55, **floorplan}
+
+
+def _load(tmp_path, hooks=None, **floorplan) -> PnrConfig:
     return PnrConfigFile(
         name="fp",
         desc="fp",
         synth="demo",
         synth_path="synth.yaml",
         platform="p",
-        floorplan=PnrFloorplanFile(**floorplan),
+        floorplan=PnrFloorplanFile(**_sized(floorplan)),
+        hooks=hooks,
     ).initialise(str(tmp_path))
 
 
@@ -45,18 +51,7 @@ def _blockage(**fields) -> PnrBlockageFile:
 def test_floorplan_defaults_keep_the_flow_as_it_was(tmp_path):
     fp = _load(tmp_path).get_floorplan()
 
-    assert fp.macro_anchor is MacroAnchor.LOWER_LEFT
     assert fp.blockages == []
-
-
-@pytest.mark.parametrize("anchor", [a.value for a in MacroAnchor])
-def test_every_anchor_corner_loads(tmp_path, anchor):
-    assert _load(tmp_path, macro_anchor=anchor).get_floorplan().macro_anchor == anchor
-
-
-def test_an_unknown_anchor_fails_at_load(tmp_path):
-    with pytest.raises(FatalRtlBuddyError, match="unknown 'floorplan.macro-anchor'"):
-        _load(tmp_path, macro_anchor="centre")
 
 
 def test_blockages_load_with_hard_as_the_default_type(tmp_path):
@@ -126,7 +121,6 @@ def test_the_yaml_spelling_loads(tmp_path):
                 platform: p
                 floorplan:
                   utilization: 0.4
-                  macro-anchor: upper-right
                   blockages:
                     - rect: [0, 0, 120, 90]
                     - {rect: [10, 10, 20.5, 20], type: partial, max-density: 0.3}
@@ -135,7 +129,6 @@ def test_the_yaml_spelling_loads(tmp_path):
     )
     fp = PnrSuiteConfig(str(path)).get_runs("r")[0].get_floorplan()
 
-    assert fp.macro_anchor is MacroAnchor.UPPER_RIGHT
     assert fp.blockages == [
         PnrBlockage((0.0, 0.0, 120.0, 90.0), BlockageType.HARD),
         PnrBlockage((10.0, 10.0, 20.5, 20.0), BlockageType.PARTIAL, 0.3),
@@ -155,6 +148,7 @@ def test_a_bad_blockage_in_yaml_fails_the_suite_load(tmp_path):
                 synth-path: synth.yaml
                 platform: p
                 floorplan:
+                  utilization: 0.55
                   blockages:
                     - rect: [50, 0, 10, 90]
             """
@@ -169,6 +163,7 @@ def _render(tmp_path, floorplan: PnrFloorplan | None = None, **overrides) -> str
 
     pdk = PdkConfig(
         PdkConfigFile(
+            pin_layers=PdkPinLayersFile(horizontal="metal3", vertical="metal2"),
             name="nangate45",
             site="FreePDK45_38x28_10R_NP_162NW_34O",
             corners={"typ": "pdk/lib/typ.lib"},
@@ -213,19 +208,15 @@ def _floorplan(**fields) -> PnrFloorplan:
     return PnrFloorplan(utilization=0.55, aspect=1.0, core_margin=2.0, **fields)
 
 
-_DEFAULT_SOLVE = (
-    "  set placement [rb::macro_pack::solve \\\n"
-    "      [list [$core xMin] [$core yMin] [$core xMax] [$core yMax]] \\\n"
-    "      $footprints $halo_dbu $site_grid_dbu $dbu_per_micron]\n"
-)
+_RTL_MP = "  rtl_macro_placer -report_directory $OUT_DIR/rtlmp -target_util 0.7\n"
 
 
-def test_unset_controls_render_no_blockages_and_the_plain_packer_call(tmp_path):
+def test_unset_controls_render_no_blockages_and_rtl_mp(tmp_path):
     text = _render(tmp_path)
 
     assert "create_blockage" not in text
-    assert "MACRO_KEEPOUTS" not in text
-    assert _DEFAULT_SOLVE in text
+    assert "HARD_BLOCKAGES" not in text
+    assert _RTL_MP in text
     assert 'make_tracks\n\nputs ">>> Tie cells"' in text
     assert "{{" not in text
 
@@ -263,28 +254,7 @@ def test_io_pins_follow_a_configured_pdn(tmp_path, monkeypatch):
     )
 
 
-@pytest.mark.parametrize(
-    "anchor", [MacroAnchor.LOWER_RIGHT, MacroAnchor.UPPER_LEFT, MacroAnchor.UPPER_RIGHT]
-)
-def test_a_non_default_anchor_is_passed_to_the_packer(tmp_path, anchor):
-    text = _render(tmp_path, _floorplan(macro_anchor=anchor))
-
-    assert (
-        "      $footprints $halo_dbu $site_grid_dbu $dbu_per_micron \\\n"
-        f"      {anchor.value}]\n"
-    ) in text
-    assert "create_blockage" not in text
-
-
-def test_the_lower_left_anchor_renders_the_plain_call(tmp_path):
-    text = _render(tmp_path, _floorplan(macro_anchor=MacroAnchor.LOWER_LEFT))
-
-    assert _DEFAULT_SOLVE in text
-
-
-def test_blockages_render_after_the_floorplan_and_feed_hard_ones_to_the_packer(
-    tmp_path,
-):
+def test_blockages_render_after_the_floorplan_and_before_rtl_mp(tmp_path):
     text = _render(
         tmp_path,
         _floorplan(
@@ -300,28 +270,30 @@ def test_blockages_render_after_the_floorplan_and_feed_hard_ones_to_the_packer(
         "make_tracks\n"
         "\n"
         'puts ">>> Placement blockages"\n'
-        "set MACRO_KEEPOUTS {}\n"
+        "set HARD_BLOCKAGES {}\n"
+        "set HARD_BLOCKAGE_LABELS {}\n"
         "set blockage_box [[create_blockage -region {0 0 120 90.5}] getBBox]\n"
-        "lappend MACRO_KEEPOUTS [list [$blockage_box xMin] [$blockage_box yMin]"
+        "lappend HARD_BLOCKAGES [list [$blockage_box xMin] [$blockage_box yMin]"
         " [$blockage_box xMax] [$blockage_box yMax]]\n"
+        "lappend HARD_BLOCKAGE_LABELS floorplan.blockages[0]\n"
         "create_blockage -region {10 10 20.123 20} -soft\n"
         "create_blockage -region {1 2 3 4} -max_density 35\n"
     )
     assert block in text
     assert (
-        'puts ">>>   cut [rb::rows::cut_under [ord::get_db_block] $MACRO_KEEPOUTS]'
+        'puts ">>>   cut [rb::rows::cut_under [ord::get_db_block] $HARD_BLOCKAGES]'
         ' row(s) under hard placement blockages"\n'
         "\n"
         'puts ">>> Tie cells"\n'
     ) in text
     assert (
-        "      $footprints $halo_dbu $site_grid_dbu $dbu_per_micron \\\n"
-        "      lower-left $MACRO_KEEPOUTS]\n"
-    ) in text
-    assert text.index("create_blockage") < text.index("global_placement -density")
+        text.rindex("create_blockage")
+        < text.index(_RTL_MP)
+        < text.index("global_placement -density")
+    )
 
 
-def test_soft_and_partial_blockages_alone_leave_the_packer_call_alone(tmp_path):
+def test_soft_and_partial_blockages_alone_cut_no_rows(tmp_path):
     text = _render(
         tmp_path,
         _floorplan(
@@ -334,9 +306,9 @@ def test_soft_and_partial_blockages_alone_leave_the_packer_call_alone(tmp_path):
 
     assert "create_blockage -region {10 10 20 20} -soft\n" in text
     assert "create_blockage -region {1 2 3 4} -max_density 50\n" in text
-    assert "MACRO_KEEPOUTS" not in text
+    assert "HARD_BLOCKAGES" not in text
     assert "rb::rows" not in text
-    assert _DEFAULT_SOLVE in text
+    assert _RTL_MP in text
 
 
 def test_unset_controls_cut_no_rows(tmp_path):
@@ -364,7 +336,7 @@ def test_hard_blockages_cut_rows_after_every_blockage_and_before_tap_insertion(
         ),
     )
 
-    call = "[rb::rows::cut_under [ord::get_db_block] $MACRO_KEEPOUTS]"
+    call = "[rb::rows::cut_under [ord::get_db_block] $HARD_BLOCKAGES]"
     assert text.count(call) == 1
     assert text.count("proc rb::rows::cut_under") == 1
     assert (
@@ -375,18 +347,6 @@ def test_hard_blockages_cut_rows_after_every_blockage_and_before_tap_insertion(
         < text.index('puts ">>> Tap and endcap cells (tapcell-tcl)"')
         < text.index("pdngen")
     )
-
-
-def test_an_anchor_and_hard_blockages_render_together(tmp_path):
-    text = _render(
-        tmp_path,
-        _floorplan(
-            macro_anchor=MacroAnchor.UPPER_RIGHT,
-            blockages=[PnrBlockage((5.0, 5.0, 50.0, 50.0), BlockageType.HARD)],
-        ),
-    )
-
-    assert "      upper-right $MACRO_KEEPOUTS]\n" in text
 
 
 @pytest.mark.parametrize(

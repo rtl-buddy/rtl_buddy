@@ -5,9 +5,9 @@ from importlib.resources import files
 
 import pytest
 from test_pnr_floorplan_controls import _floorplan, _load, _render
-from test_pnr_macro_pack import _tcl_eval
+from tcl_eval import _tcl_eval
 
-from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
+from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr import (
     PinSide,
     PnrPin,
@@ -98,6 +98,7 @@ def test_the_yaml_spelling_loads(tmp_path):
                 synth-path: synth.yaml
                 platform: p
                 floorplan:
+                  utilization: 0.55
                   pins:
                     - {names: [paddr*, psel], side: left}
                     - {names: prdata, side: right, start: 10, end: 60}
@@ -181,6 +182,7 @@ def test_nearest_edge_picks_the_closest_die_edge():
 def _platform(tmp_path):
     pdk = PdkConfig(
         PdkConfigFile(
+            pin_layers=PdkPinLayersFile(horizontal="metal3", vertical="metal2"),
             name="p",
             site="core",
             corners={"typ": "pdk/typ.lib"},

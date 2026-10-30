@@ -83,29 +83,10 @@ class PnrToolConfig:
         )
 
 
-class MacroAnchor(StrEnum):
-    """The core corner the macro packer starts from; the opposite edges stay clear of macros."""
-
-    LOWER_LEFT = "lower-left"
-    LOWER_RIGHT = "lower-right"
-    UPPER_LEFT = "upper-left"
-    UPPER_RIGHT = "upper-right"
-
-
-class MacroPlacement(StrEnum):
-    """Who places the hard macros.
-
-    ``PACK`` is rtl_buddy's shelf packer, steered by `macro-anchor` and hard blockages. ``RTL_MP`` uses OpenROAD's `rtl_macro_placer`.
-    """
-
-    PACK = "pack"
-    RTL_MP = "rtl-mp"
-
-
 class BlockageType(StrEnum):
     """Placement blockage kinds.
 
-    ``HARD`` keeps every standard cell out and is also a macro-packer keep-out. ``SOFT`` excludes cells from global placement only. ``PARTIAL`` caps density at ``max-density``.
+    ``HARD`` keeps every standard cell out. ``SOFT`` excludes cells from global placement only. ``PARTIAL`` caps density at ``max-density``. RTL-MP keeps macros out of all three.
     """
 
     HARD = "hard"
@@ -205,7 +186,7 @@ class PnrMacroFile:
 class PnrMacro:
     """One `floorplan.macros` directive.
 
-    `location` is the lower-left corner of the macro in die microns; it fixes the macro before the packer or RTL-MP runs. `halo` is the standard-cell keep-out ring in microns, overriding `placement.macro-cell-halo` for the macros `instance` matches.
+    `location` is the lower-left corner of the macro in die microns; it fixes the macro before RTL-MP or a `macro-placement` hook runs. `halo` is the standard-cell keep-out ring in microns, overriding `placement.macro-cell-halo` for the macros `instance` matches.
     """
 
     instance: str
@@ -218,15 +199,14 @@ class PnrMacro:
     exact: bool = False
 
 
-#: `floorplan` sizing defaults when neither `die-area` nor `core-area` is set.
-DEFAULT_UTILIZATION = 0.55
+#: `floorplan` sizing defaults when neither `die-area` nor `core-area` is set: `initialize_floorplan`'s aspect and ORFS's core margin. `utilization` has no default.
 DEFAULT_ASPECT = 1.0
-DEFAULT_CORE_MARGIN = 2.0
+DEFAULT_CORE_MARGIN = 1.0
 
 
 @serde
 class PnrFloorplanFile:
-    # Unset means the default below; set together with `die-area` is an error.
+    # Required without `die-area`; set together with `die-area` is an error.
     utilization: float | int | None = None
     aspect: float | int | None = None
     core_margin: float | int | None = field(rename="core-margin", default=None)
@@ -234,12 +214,6 @@ class PnrFloorplanFile:
     core_area: list[float | int] | None = field(rename="core-area", default=None)
     core_cutouts: list[list[float | int]] = field(
         rename="core-cutouts", default_factory=list
-    )
-    macro_anchor: str = field(
-        rename="macro-anchor", default=MacroAnchor.LOWER_LEFT.value
-    )
-    macro_placement: str = field(
-        rename="macro-placement", default=MacroPlacement.PACK.value
     )
     blockages: list[PnrBlockageFile] = field(default_factory=list)
     pins: list[PnrPinFile] = field(default_factory=list)
@@ -254,12 +228,11 @@ class PnrFloorplanFile:
 
 @dataclass
 class PnrFloorplan:
-    utilization: float
+    # None only with `die_area`.
+    utilization: float | None
     aspect: float
     core_margin: float
-    macro_anchor: MacroAnchor = MacroAnchor.LOWER_LEFT
     blockages: list[PnrBlockage] = dc_field(default_factory=list)
-    macro_placement: MacroPlacement = MacroPlacement.PACK
     pins: list[PnrPin] = dc_field(default_factory=list)
     macros: list[PnrMacro] = dc_field(default_factory=list)
     # Explicit die and core rectangles in microns; when set, `utilization`, `aspect` and `core_margin` are unused.
@@ -278,10 +251,8 @@ class PnrFloorplan:
     pin_snap: bool = True
     # Every signal port must be covered by exactly one exact entry or region rule.
     pins_complete: bool = False
-
-    def flow_blockages(self) -> list["PnrBlockage"]:
-        """The blockages that live for the whole flow."""
-        return [b for b in self.blockages if b.lifetime is BlockageLifetime.FLOW]
+    # A `macro-placement` hook places the macros instead of RTL-MP, so a `floorplan.macros` entry may orient a macro without locating it.
+    macro_hook: bool = False
 
     def global_placement_blockages(self) -> list["PnrBlockage"]:
         """The blockages that exist only during `global_placement`."""
@@ -494,9 +465,7 @@ def _load_pin(where: str, entry: PnrPinFile) -> PnrPin:
     )
 
 
-def _load_macro(
-    where: str, entry: PnrMacroFile, placement: "MacroPlacement"
-) -> PnrMacro:
+def _load_macro(where: str, entry: PnrMacroFile, macro_hook: bool) -> PnrMacro:
     """Validate one `floorplan.macros` or macros-file entry; `where` names it in errors."""
     (instance,) = _tcl_safe_names(where, "instances", entry.instance)
     location = None
@@ -514,11 +483,11 @@ def _load_macro(
                 f"{where}: unknown orientation {orientation!r} "
                 f"(expected one of {', '.join(MACRO_ORIENTATIONS)})"
             )
-        if location is None and placement is MacroPlacement.RTL_MP:
+        if location is None and not macro_hook:
             raise FatalRtlBuddyError(
-                f"{where}: 'macro-placement: rtl-mp' chooses the orientation of "
-                "every macro it places; give this macro a location too, or use "
-                "the packer"
+                f"{where}: RTL-MP chooses the orientation of every macro it "
+                "places; give this macro a location too, or place the macros "
+                "with a 'macro-placement' hook"
             )
     halo = None
     if entry.halo is not None:
@@ -614,9 +583,7 @@ def _file_entry(where: str, entry, keys: tuple[str, ...]) -> dict:
     return entry
 
 
-def _load_macros_file(
-    run: str, path: str, placement: "MacroPlacement"
-) -> list[PnrMacro]:
+def _load_macros_file(run: str, path: str, macro_hook: bool) -> list[PnrMacro]:
     """Read and validate a `floorplan.macros-file`: entries with the `floorplan.macros` keys."""
     entries = _read_planner_file(f"pnr run '{run}': floorplan.macros-file", path)
     macros = []
@@ -626,7 +593,7 @@ def _load_macros_file(
         if "instance" not in entry:
             raise FatalRtlBuddyError(f"{where}: instance is required")
         macro = _load_macro(
-            where, _file_entry_object(where, PnrMacroFile, entry), placement
+            where, _file_entry_object(where, PnrMacroFile, entry), macro_hook
         )
         macros.append(replace(macro, label=f"floorplan.macros-file[{i}]", exact=True))
     return macros
@@ -663,7 +630,7 @@ def with_planner_files(run: str, fp: PnrFloorplan) -> PnrFloorplan:
     macros = list(fp.macros)
     pins = list(fp.pins)
     if fp.macros_file is not None:
-        macros += _load_macros_file(run, fp.macros_file, fp.macro_placement)
+        macros += _load_macros_file(run, fp.macros_file, fp.macro_hook)
     if fp.pins_file is not None:
         pins += _load_pins_file(run, fp.pins_file)
     return replace(fp, macros=macros, pins=pins)
@@ -1151,8 +1118,13 @@ def _load_floorplan_shape(run: str, fp: PnrFloorplanFile) -> dict:
             raise FatalRtlBuddyError(f"{where}.{key} must be a number, got {value!r}")
         return float(value)
 
+    if die is None and fp.utilization is None:
+        raise FatalRtlBuddyError(
+            f"{where}: set utilization, or die-area and core-area; "
+            "initialize_floorplan has no default utilization"
+        )
     return {
-        "utilization": _or_default("utilization", fp.utilization, DEFAULT_UTILIZATION),
+        "utilization": _or_default("utilization", fp.utilization, None),
         "aspect": _or_default("aspect", fp.aspect, DEFAULT_ASPECT),
         "core_margin": _or_default("core-margin", fp.core_margin, DEFAULT_CORE_MARGIN),
         "die_area": die,
@@ -1363,6 +1335,18 @@ class PnrConfigFile:
     post_cts_setup_repair: bool | None = field(
         rename="post-cts-setup-repair", default=None
     )
+    floorplan_setup_repair: bool | None = field(
+        rename="floorplan-setup-repair", default=None
+    )
+    cts_repair_clock_inverters: bool | None = field(
+        rename="cts-repair-clock-inverters", default=None
+    )
+    global_route_antenna_repair: bool | None = field(
+        rename="global-route-antenna-repair", default=None
+    )
+    detailed_route_antenna_repair: bool | None = field(
+        rename="detailed-route-antenna-repair", default=None
+    )
     global_route_hold_repair: bool | None = field(
         rename="global-route-hold-repair", default=None
     )
@@ -1427,31 +1411,8 @@ class PnrConfigFile:
             self.name, self.detailed_route_verbose
         )
 
-        try:
-            macro_anchor = MacroAnchor(self.floorplan.macro_anchor)
-        except ValueError:
-            raise FatalRtlBuddyError(
-                f"pnr run '{self.name}': unknown 'floorplan.macro-anchor' "
-                f"{self.floorplan.macro_anchor!r} "
-                f"(expected one of {', '.join(a.value for a in MacroAnchor)})"
-            ) from None
-        try:
-            macro_placement = MacroPlacement(self.floorplan.macro_placement)
-        except ValueError:
-            raise FatalRtlBuddyError(
-                f"pnr run '{self.name}': unknown 'floorplan.macro-placement' "
-                f"{self.floorplan.macro_placement!r} "
-                f"(expected one of {', '.join(m.value for m in MacroPlacement)})"
-            ) from None
-        if (
-            macro_placement is MacroPlacement.RTL_MP
-            and macro_anchor is not MacroAnchor.LOWER_LEFT
-        ):
-            raise FatalRtlBuddyError(
-                f"pnr run '{self.name}': 'floorplan.macro-anchor' steers the "
-                "packer and has no effect with 'macro-placement: rtl-mp' — "
-                "remove one of them"
-            )
+        hooks = _normalise_hooks(self.name, self.hooks, config_dir)
+        macro_hook = "macro-placement" in hooks
         blockages = [
             _load_blockage(self.name, i, entry)
             for i, entry in enumerate(self.floorplan.blockages)
@@ -1462,7 +1423,7 @@ class PnrConfigFile:
         ]
         macros = [
             _load_macro(
-                f"pnr run '{self.name}': floorplan.macros[{i}]", entry, macro_placement
+                f"pnr run '{self.name}': floorplan.macros[{i}]", entry, macro_hook
             )
             for i, entry in enumerate(self.floorplan.macros)
         ]
@@ -1510,6 +1471,10 @@ class PnrConfigFile:
             keep_sizing_vt=self.keep_sizing_vt,
             signoff=self.signoff,
             global_route=self.global_route,
+            floorplan_setup_repair=self.floorplan_setup_repair,
+            cts_repair_clock_inverters=self.cts_repair_clock_inverters,
+            global_route_antenna_repair=self.global_route_antenna_repair,
+            detailed_route_antenna_repair=self.detailed_route_antenna_repair,
         )
         post_route_repair = read_post_route_repair(
             f"pnr run '{self.name}'", self.post_route_repair
@@ -1545,19 +1510,7 @@ class PnrConfigFile:
                 f"pnr run '{self.name}': 'stages: true' writes every stage "
                 "checkpoint; remove 'checkpoints' or set it to true"
             )
-        hooks = _normalise_hooks(self.name, self.hooks, config_dir)
         inputs = _normalise_inputs(self.name, self.inputs, config_dir)
-        if "macro-placement" in hooks:
-            for key, is_default in (
-                ("floorplan.macro-placement", macro_placement is MacroPlacement.PACK),
-                ("floorplan.macro-anchor", macro_anchor is MacroAnchor.LOWER_LEFT),
-            ):
-                if not is_default:
-                    raise FatalRtlBuddyError(
-                        f"pnr run '{self.name}': '{key}' steers rb's macro placement "
-                        "and has no effect with a 'macro-placement' hook — remove "
-                        "one of them"
-                    )
 
         blocks = load_block_refs(
             f"pnr run '{self.name}'",
@@ -1606,9 +1559,7 @@ class PnrConfigFile:
             pdn=pdn,
             floorplan=PnrFloorplan(
                 **shape,
-                macro_anchor=macro_anchor,
                 blockages=blockages,
-                macro_placement=macro_placement,
                 pins=pins,
                 macros=macros,
                 macros_file=planner_files.get("macros-file"),
@@ -1616,6 +1567,7 @@ class PnrConfigFile:
                 macro_snap=self.floorplan.macro_snap,
                 pin_snap=self.floorplan.pin_snap,
                 pins_complete=self.floorplan.pins_complete,
+                macro_hook=macro_hook,
             ),
             placement=placement,
             global_route_repair=global_route_repair,
@@ -1657,6 +1609,12 @@ PNR_RUN_SPEC = KeySpec(
                 "blockages": KeySpec(PnrBlockageFile, many=True),
                 "pins": KeySpec(PnrPinFile, many=True),
                 "macros": KeySpec(PnrMacroFile, many=True),
+            },
+            removed={
+                "macro-placement": "rb places macros with RTL-MP; remove the "
+                "key, or use a 'macro-placement' hook for another placement",
+                "macro-anchor": "fix macros with floorplan.macros locations, "
+                "or place them with a 'macro-placement' hook",
             },
         ),
         "pdn": KeySpec(

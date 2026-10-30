@@ -14,13 +14,12 @@ from unittest.mock import MagicMock
 import pytest
 from test_pnr import _capture_pnr_events, _make_pdk_cfg, _make_pnr_cfg, _one_event
 from test_pnr_floorplan_controls import _floorplan
-from test_pnr_macro_pack import _tcl_eval
+from tcl_eval import _tcl_eval
 
 from rtl_buddy.config.pdk import PlacementFile
 from rtl_buddy.config.pnr import (
     BlockageLifetime,
     BlockageType,
-    MacroPlacement,
     PinSide,
     PnrBlockage,
     PnrBlockageFile,
@@ -46,15 +45,23 @@ def _write(path: Path, text: str) -> str:
     return str(path)
 
 
-def _load(tmp_path, placement=None, **floorplan) -> PnrConfig:
+def _sized(floorplan: dict) -> dict:
+    """`floorplan` with a utilization when it sets no size."""
+    if floorplan.keys() & {"utilization", "die_area", "core_area"}:
+        return floorplan
+    return {"utilization": 0.55, **floorplan}
+
+
+def _load(tmp_path, placement=None, hooks=None, **floorplan) -> PnrConfig:
     return PnrConfigFile(
         name="fp",
         desc="fp",
         synth="demo",
         synth_path="synth.yaml",
         platform="p",
-        floorplan=PnrFloorplanFile(**floorplan),
+        floorplan=PnrFloorplanFile(**_sized(floorplan)),
         placement=placement,
+        hooks=hooks,
     ).initialise(str(tmp_path))
 
 
@@ -116,6 +123,7 @@ def test_a_suite_with_a_missing_planner_file_still_loads(tmp_path):
             synth-path: synth.yaml
             platform: p
             floorplan:
+              utilization: 0.55
               macros-file: plan/missing.yaml
               pins-file: plan/missing.json
         """,
@@ -131,8 +139,10 @@ def test_macros_file_entries_follow_the_inline_ones_with_their_own_labels(tmp_pa
         - {instance: "u_b*", orientation: MYR90, halo: [1, 2]}
         """,
     )
+    (tmp_path / "place_macros.tcl").write_text("# places the macros\n")
     fp = _expanded(
         tmp_path,
+        hooks={"macro-placement": "place_macros.tcl"},
         macros=[PnrMacroFile(instance="u_c", halo=[3, 3])],
         macros_file="plan/macros.yaml",
     )
@@ -249,10 +259,14 @@ def test_an_empty_planner_file_adds_nothing(tmp_path):
     assert _expanded(tmp_path, macros_file="macros.yaml").macros == []
 
 
-def test_rtl_mp_still_refuses_a_file_orientation_without_a_location(tmp_path):
+def test_rtl_mp_refuses_a_file_orientation_without_a_location(tmp_path):
     _write(tmp_path / "macros.yaml", "- {instance: a, orientation: R90}\n")
-    with pytest.raises(FatalRtlBuddyError, match="chooses the orientation"):
-        _expanded(tmp_path, macros_file="macros.yaml", macro_placement="rtl-mp")
+    with pytest.raises(
+        FatalRtlBuddyError,
+        match=r"macros-file .*\[0\]: RTL-MP chooses the orientation .* "
+        "'macro-placement' hook",
+    ):
+        _expanded(tmp_path, macros_file="macros.yaml")
 
 
 def test_a_large_pins_file_loads_quickly(tmp_path):
@@ -385,7 +399,7 @@ def test_global_placement_blockages_live_only_around_global_placement(tmp_path):
         "lappend RB_GP_BLOCKAGES [create_blockage -region {5 5 9 9} -max_density 35]\n"
     )
     hard = "lappend RB_GP_BLOCKAGES [create_blockage -region {6 6 8 8}]\n"
-    # Only the flow blockage is a packer keep-out with its rows cut.
+    # Only the flow blockage exists at macro placement, with its rows cut.
     assert text.count("create_blockage -region") == 3
     assert "{6 6 8 8}] getBBox" not in text
     ordered = [
@@ -423,28 +437,24 @@ def test_without_checkpoints_no_checkpoint_is_forced(tmp_path):
 def test_unset_keys_add_nothing_around_global_placement(tmp_path):
     for fp in (
         _floorplan(),
-        _floorplan(macros=[PnrMacro("u_a", location=(1.0, 2.0), orientation="MX")]),
         # RTL-MP only flips macros, so it alone turns none.
-        _floorplan(macro_placement=MacroPlacement.RTL_MP),
+        _floorplan(macros=[PnrMacro("u_a", location=(1.0, 2.0), orientation="MX")]),
     ):
         text = _render(tmp_path, fp)
         assert "RB_GP_BLOCKAGES" not in text
         assert "rb::rotated" not in text
         assert "RB_DPL_OPTIONS" not in text
-        assert "global_placement -density 0.7 -pad_left 1 -pad_right 1\n\n" in text
-        assert text.count("detailed_placement\n") == 3
+        assert "global_placement -density 0.7 -pad_left 0 -pad_right 0\n\n" in text
+        assert text.count("detailed_placement\n") == text.count("detailed_placement")
 
 
 @pytest.mark.parametrize(
     "fp",
     [
         _floorplan(macros=[PnrMacro("u_a", location=(1.0, 2.0), orientation="R270")]),
-        _floorplan(
-            macro_placement=MacroPlacement.RTL_MP,
-            macros=[PnrMacro("u_a", location=(1.0, 2.0), orientation="R90")],
-        ),
+        _floorplan(macros=[PnrMacro("u_a", location=(1.0, 2.0), orientation="R90")]),
     ],
-    ids=["pack", "rtl-mp"],
+    ids=["R270", "R90"],
 )
 def test_rotated_footprint_block_blocks_it_for_global_placement_only(tmp_path, fp):
     text = _render(tmp_path, fp)
@@ -562,14 +572,14 @@ def test_run_placement_overrides_the_platform_and_pdk_field_by_field(tmp_path):
         pdk_placement=PlacementFile(
             density=0.5, padding=2, rotated_macro_footprint="none"
         ),
-        placement=PlacementFile(density=0.6, macro_halo=15.0),
+        placement=PlacementFile(density=0.6, macro_channel=15.0),
     )
     run = PlacementFile(density=0.45, rotated_macro_footprint="diamond-legalizer")
     merged = platform.with_run_placement(run, "r")
 
     assert merged.get_placement_density() == 0.45
     assert merged.get_placement_padding() == 2
-    assert merged.get_placement_macro_halo() == 15.0
+    assert merged.get_placement_macro_channel() == [15.0, 15.0]
     assert merged.get_placement_rotated_macro_footprint() == "diamond-legalizer"
     assert platform.get_placement_density() == 0.6
     assert platform.get_placement_rotated_macro_footprint() == "none"
@@ -629,6 +639,7 @@ def test_set_keys_enter_the_abstract_record(tmp_path):
         synth_path="synth.yaml",
         platform="p",
         floorplan=PnrFloorplanFile(
+            utilization=0.55,
             macros_file="plan/m.yaml",
             pins_file="plan/p.json",
             macro_snap=False,
@@ -943,7 +954,7 @@ def test_a_later_orientation_applies_before_any_location(snap, expected):
         + f"""
 set entries [list [list {{floorplan.macros[0]}} m {{1.2345 2.0005}} {{}} {{}}] \\
                   [list {{floorplan.macros-file[0]}} m* {{}} R90 {{}}]]
-rb::macros::apply fake_block {{m}} $entries {{100 1000}} 10 1000 {snap}
+rb::macros::apply fake_block {{m}} $entries {{100 1000}} 1000 {snap}
 set result [lindex $::printed end]
 """
     )
@@ -957,7 +968,7 @@ def test_a_key_set_inline_and_in_the_file_fails_naming_both():
         + """
 set entries [list [list {floorplan.macros[0]} m {} R180 {}] \\
                   [list {floorplan.macros-file[2]} m {} R90 {}]]
-catch {rb::macros::apply fake_block {m} $entries {1 1} 10 1000} result
+catch {rb::macros::apply fake_block {m} $entries {1 1} 1000} result
 """
     )
     assert _tcl_eval(script) == (

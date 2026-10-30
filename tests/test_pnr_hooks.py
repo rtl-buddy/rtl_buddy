@@ -44,10 +44,13 @@ from test_pnr_checkpoints import (
 from rtl_buddy.config.pdk import PlacementFile
 from rtl_buddy.config.pnr import (
     HOOK_POINTS,
+    BlockageType,
+    PnrBlockage,
     PnrConfigFile,
     PnrFloorplan,
     PnrFloorplanFile,
     PnrMacro,
+    PnrMacroFile,
     PnrSuiteConfig,
 )
 from rtl_buddy.errors import FatalRtlBuddyError
@@ -58,8 +61,14 @@ from rtl_buddy.tools.pnr_openroad import OpenRoadPnr, _run_hook_lines
 
 
 def _cfg_file(**kw):
+    kw.setdefault("floorplan", PnrFloorplanFile(utilization=0.55))
     return PnrConfigFile(
-        name="r", desc="r", synth="s", synth_path="synth.yaml", platform="p", **kw
+        name="r",
+        desc="r",
+        synth="s",
+        synth_path="synth.yaml",
+        platform="p",
+        **kw,
     )
 
 
@@ -142,6 +151,7 @@ def test_hooks_load_from_yaml_relative_to_the_file(tmp_path):
             desc: d
             synth: s
             synth-path: synth.yaml
+            floorplan: {utilization: 0.55}
             platform: p
             hooks:
               macro-placement: macros.tcl
@@ -300,7 +310,7 @@ def test_every_point_renders_at_its_flow_position(tmp_path):
 
 
 def test_a_run_without_hooks_renders_the_flow_unchanged(tmp_path):
-    """Setting every point adds only its blocks; the macro-placement block replaces the packer.
+    """Setting every point adds only its blocks; the macro-placement block replaces RTL-MP.
 
     A hook before global placement also arms `placement.rotated-macro-footprint`, which is off here.
     """
@@ -348,9 +358,9 @@ def test_a_run_without_hooks_renders_the_flow_unchanged(tmp_path):
         f'  rb::hook::run macro-placement "{paths["macro-placement"]}"\n'
     )
     assert hooked.count(macro_lines) == 1
-    packer = unset[unset.index("  set core [$block getCoreArea]") :]
-    packer = packer[: packer.index("  # A hard placement blockage")]
-    assert stripped.replace(macro_lines, packer) == unset
+    rtl_mp = unset[unset.index("  file mkdir $OUT_DIR/rtlmp") :]
+    rtl_mp = rtl_mp[: rtl_mp.index("  # A hard placement blockage")]
+    assert stripped.replace(macro_lines, rtl_mp) == unset
 
 
 def test_an_empty_hooks_mapping_renders_the_flow_unchanged(tmp_path):
@@ -388,7 +398,7 @@ def test_files_of_one_point_run_in_list_order(tmp_path):
     )
 
 
-def test_the_macro_placement_hook_replaces_the_packer_after_the_directives(tmp_path):
+def test_the_macro_placement_hook_replaces_rtl_mp_after_the_directives(tmp_path):
     hook = str(tmp_path / "macros.tcl")
     floorplan = PnrFloorplan(
         utilization=0.55,
@@ -407,31 +417,86 @@ def test_the_macro_placement_hook_replaces_the_packer_after_the_directives(tmp_p
     hook_at = text.index("rb::hook::run macro-placement")
     halo_at = text.index("set cell_halo [list $MACRO_CELL_HALO")
     assert apply_at < hook_at < halo_at
-    assert "rb::macro_pack::solve \\" not in text
+    assert "rtl_macro_placer" not in text
     # The macro branch and its keep-out halos are still there around the hook.
     assert text.index("if {[llength $macros] > 0} {") < apply_at
 
 
-@pytest.mark.parametrize(
-    "floorplan, key",
-    [
-        ({"macro_placement": "rtl-mp"}, "floorplan.macro-placement"),
-        ({"macro_anchor": "upper-right"}, "floorplan.macro-anchor"),
-    ],
-)
-def test_macro_placement_keys_are_rejected_with_a_macro_placement_hook(
-    tmp_path, floorplan, key
-):
-    """They would have no effect, as `macro-anchor` has none with `rtl-mp`."""
-    with pytest.raises(FatalRtlBuddyError) as err:
-        _cfg_file(
-            floorplan=PnrFloorplanFile(utilization=0.5, **floorplan),
-            hooks={"macro-placement": "macros.tcl"},
-        ).initialise(str(tmp_path))
-    assert str(err.value).startswith(
-        f"pnr run 'r': '{key}' steers rb's macro placement and has no effect "
-        "with a 'macro-placement' hook"
+def test_the_keepout_check_follows_a_macro_placement_hook(tmp_path):
+    """A hook may place a macro on a hard blockage as RTL-MP may, so the check runs after either."""
+    hook = str(tmp_path / "macros.tcl")
+    floorplan = PnrFloorplan(
+        utilization=0.55,
+        aspect=1.0,
+        core_margin=2.0,
+        blockages=[PnrBlockage((5.0, 5.0, 50.0, 50.0), BlockageType.HARD)],
     )
+    text = _render_flow(
+        tmp_path,
+        _full_platform(tmp_path),
+        floorplan=floorplan,
+        hooks={"macro-placement": (hook,)},
+    )
+
+    assert text.index("rb::hook::run macro-placement") < text.index(
+        "  rb::keepouts::check $macros"
+    )
+
+
+@pytest.mark.parametrize("point", ["after-pdn", "after-pins", "stage-end"])
+def test_the_keepout_check_runs_again_after_a_floorplan_hook_that_may_move_a_macro(
+    tmp_path, point
+):
+    hook = str(tmp_path / "late.tcl")
+    floorplan = PnrFloorplan(
+        utilization=0.55,
+        aspect=1.0,
+        core_margin=2.0,
+        blockages=[PnrBlockage((5.0, 5.0, 50.0, 50.0), BlockageType.HARD)],
+    )
+    text = _render_flow(
+        tmp_path, _full_platform(tmp_path), floorplan=floorplan, hooks={point: (hook,)}
+    )
+
+    check = "  rb::keepouts::check $macros"
+    assert text.count(check) == 2
+    second = text.rindex(check)
+    assert text.index(f"{hook}") < second < text.index(">>> Global placement")
+
+
+def test_without_a_later_floorplan_hook_the_keepout_check_runs_once(tmp_path):
+    floorplan = PnrFloorplan(
+        utilization=0.55,
+        aspect=1.0,
+        core_margin=2.0,
+        blockages=[PnrBlockage((5.0, 5.0, 50.0, 50.0), BlockageType.HARD)],
+    )
+    text = _render_flow(
+        tmp_path,
+        _full_platform(tmp_path),
+        floorplan=floorplan,
+        hooks={"after-global-placement": (str(tmp_path / "gp.tcl"),)},
+    )
+
+    assert text.count("  rb::keepouts::check $macros") == 1
+
+
+def test_a_macro_placement_hook_loads_with_any_floorplan_and_lets_entries_orient(
+    tmp_path,
+):
+    """The hook replaces RTL-MP, so an entry may orient a macro for it without a location."""
+    (tmp_path / "macros.tcl").write_text("# places the macros\n")
+    cfg = _cfg_file(
+        floorplan=PnrFloorplanFile(
+            utilization=0.5,
+            macros=[PnrMacroFile(instance="u_sram", orientation="R180")],
+        ),
+        hooks={"macro-placement": "macros.tcl"},
+    ).initialise(str(tmp_path))
+
+    fp = cfg.get_floorplan()
+    assert fp.macro_hook
+    assert fp.macros == [PnrMacro("u_sram", orientation="R180")]
 
 
 def test_the_macro_placement_hook_gets_every_macro_as_movable_without_directives(

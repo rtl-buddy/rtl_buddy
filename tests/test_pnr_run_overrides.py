@@ -18,7 +18,7 @@ from rtl_buddy.config.pnr_platform import (
     PnrRoutingLayersFile,
     PnrRunOverrides,
 )
-from rtl_buddy.config.pnr_repair import GlobalRouteRepair
+from rtl_buddy.config.pnr_repair import GlobalRouteRepair, RepairDesign
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.tools import pnr_abstract
 from rtl_buddy.tools.pnr_openroad import OpenRoadPnr, tcl_source
@@ -44,6 +44,7 @@ def _run(tmp_path, **keys):
         "desc": "d",
         "synth": "s",
         "synth-path": "synth.yaml",
+        "floorplan": {"utilization": 0.55},
         "platform": "pl",
         **keys,
     }
@@ -251,7 +252,9 @@ def test_a_run_hold_repair_false_keeps_the_rest_of_a_platform_block(tmp_path):
     assert resolved.get_global_route_repair() == GlobalRouteRepair(setup_margin=0.1)
 
 
-def test_a_run_hold_repair_false_over_no_platform_repair_stays_off(tmp_path):
+def test_a_run_hold_repair_false_over_no_platform_repair_drops_it_from_the_default(
+    tmp_path,
+):
     platform = _platform(_pdk(tmp_path))
     run = _run(tmp_path, **{"global-route-hold-repair": False})
 
@@ -259,7 +262,9 @@ def test_a_run_hold_repair_false_over_no_platform_repair_stays_off(tmp_path):
         run.global_route_repair, run.post_route_repair, "r"
     )
 
-    assert resolved.get_global_route_repair() is None
+    assert resolved.get_global_route_repair() == GlobalRouteRepair(
+        repair_design=RepairDesign(), setup_margin=0.0
+    )
 
 
 def test_a_run_with_the_shorthand_and_the_block_is_refused(tmp_path):
@@ -522,7 +527,7 @@ def _digest_cfg(tmp_path, overrides=PnrRunOverrides(), **kw):
         (PnrRunOverrides(cts_clock_nets=("clk",)), "cts_clock_nets", ["clk"]),
         (PnrRunOverrides(cts_latency_balancing=False), "cts_latency_balancing", False),
         (PnrRunOverrides(cts_repair_clock_nets=True), "cts_repair_clock_nets", True),
-        (PnrRunOverrides(post_cts_setup_repair=True), "post_cts_setup_repair", True),
+        (PnrRunOverrides(post_cts_setup_repair=False), "post_cts_setup_repair", False),
         (PnrRunOverrides(routing_layer_adjustment=0.2), "routing", None),
         (PnrRunOverrides(port_buffer="BUF_X4"), "port_buffer", "BUF_X4"),
         (PnrRunOverrides(tapcell_tcl="/elsewhere/tap.tcl"), "tcl_hooks", None),
@@ -548,7 +553,7 @@ def test_unset_overrides_and_platform_defaults_add_nothing_to_the_digest(tmp_pat
     explicit = PnrRunOverrides(
         cts_latency_balancing=True,
         cts_repair_clock_nets=False,
-        post_cts_setup_repair=False,
+        post_cts_setup_repair=True,
     )
     assert pnr_abstract.config_digest(
         pnr_abstract.abstract_config(_digest_cfg(tmp_path, explicit), platform)

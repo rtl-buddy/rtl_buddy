@@ -31,12 +31,11 @@ class PnrGlobalRouteFile:
 #: The keys of the block, for the unknown-key check.
 GLOBAL_ROUTE_SPEC = KeySpec(PnrGlobalRouteFile)
 
-#: The congestion iterations of a full route when `congestion-iterations` is unset.
-DEFAULT_CONGESTION_ITERATIONS = 20
+#: The congestion iterations of a full route when `congestion-iterations` is unset: ORFS's setting.
+DEFAULT_CONGESTION_ITERATIONS = 30
 
 #: What these fields route as when unset; the digest leaves such a value out.
 _ROUTE_DEFAULTS = {
-    "congestion_iterations": DEFAULT_CONGESTION_ITERATIONS,
     "allow_congestion": False,
     "resistance_aware": False,
 }
@@ -77,14 +76,17 @@ class GlobalRoute:
             }
         )
 
-    def full_options(self) -> str:
-        """The options of a full `global_route` other than its report file and `-verbose`, each with a leading space."""
-        iterations = (
+    def effective_congestion_iterations(self) -> int:
+        """`congestion-iterations`, or the default when unset."""
+        return (
             self.congestion_iterations
             if self.congestion_iterations is not None
             else DEFAULT_CONGESTION_ITERATIONS
         )
-        options = f" -congestion_iterations {iterations}"
+
+    def full_options(self) -> str:
+        """The options of a full `global_route` other than its report file and `-verbose`, each with a leading space."""
+        options = f" -congestion_iterations {self.effective_congestion_iterations()}"
         if self.congestion_report_iter_step is not None:
             options += (
                 f" -congestion_report_iter_step {self.congestion_report_iter_step}"
@@ -109,13 +111,14 @@ class GlobalRoute:
     def digest(self) -> dict:
         """The values that change the route, by YAML key, for a hardened block's config digest.
 
-        The report step changes only what is reported, and a value equal to rb's default routes as leaving it unset does, so neither is in it.
+        The report step changes only what is reported, and a value equal to rb's default routes as leaving it unset does, so neither is in it. The congestion iterations are always in it, at their effective value.
         """
-        out: dict = {}
+        out: dict = {"congestion-iterations": self.effective_congestion_iterations()}
         for f in fields(self):
             value = getattr(self, f.name)
             if (
                 value is None
+                or f.name == "congestion_iterations"
                 or f.name in _REPORTING_ONLY
                 or (f.name in _ROUTE_DEFAULTS and value == _ROUTE_DEFAULTS[f.name])
             ):

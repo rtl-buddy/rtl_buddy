@@ -27,10 +27,9 @@ from ..config.pnr import (
     PNR_STAGES,
     POST_ROUTE_REPAIR_STAGE,
     ROTATED_ORIENTATIONS,
+    BlockageLifetime,
     BlockageType,
     GdsMode,
-    MacroAnchor,
-    MacroPlacement,
     PnrBlockage,
     PnrConfig,
     PnrFloorplan,
@@ -81,11 +80,12 @@ from .liberty_units import (
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
 _TEMPLATE_FILE = "flow.tcl.template"
-_MACRO_PACK_FILE = "macro_pack.tcl"
 # The macro pin-limit procedures, substituted only when `placement.macro-pin-limits` is set.
 _MACRO_PIN_LIMITS_FILE = "macro_pin_limits.tcl"
-# Cuts the rows under hard placement blockages before tap insertion; see `_floorplan_directives`.
+# Cuts the rows under hard placement blockages before tap insertion; see `_blockages_block`.
 _CUT_ROWS_FILE = "cut_rows.tcl"
+# `rb::keepouts::check`, run after macro placement when the floorplan has hard blockages or cut-outs.
+_KEEPOUTS_FILE = "keepouts.tcl"
 # Replaces the pdn-config's core grid with a run's `pdn:` block; see `_pdn_block`.
 _PDN_GRID_FILE = "pdn_grid.tcl"
 # `floorplan.macros` directives; see `_macro_directives_block`.
@@ -118,6 +118,8 @@ _FLOW_OUTPUT_NAMES = (
     "route.drc.rpt",
     "timing.rpt",
     "electrical.rpt",
+    "grt_antennas.rpt",
+    "drt_antennas.rpt",
     "{design}.def",
     "{design}.routed.v",
     "{design}.routed.pwr.v",
@@ -160,6 +162,8 @@ _CONGESTION_REPORT_NAME = "congestion.rpt"
 
 # Where `harden: true` elaborates the top to record its parameter values; see `_record_block_parameters`.
 _PARAM_PROBE_DIR = "param_probe"
+# RTL-MP's `-report_directory` (`_RTL_MP_PLACEMENT`). A run that places no macro with RTL-MP writes none, so like the script it is cleared up front only.
+_RTL_MP_REPORT_DIR = "rtlmp"
 # The synth netlist with `blocks:` parameter overrides stripped, read in its place; an input like the script.
 _BLOCK_NETLIST_NAME = "pnr_netlist.v"
 # Public: `rb power` uses it to check the SPEF and ODB came from the same run.
@@ -287,6 +291,22 @@ _NO_WIRE_RC_CODES = ("EST-0018", "CTS-0104")
 # Where the `pnr.no_wire_rc` warning sends the reader.
 _NO_WIRE_RC_DOCS = "rb docs show concepts/pnr#set-wire-rc"
 
+#: OpenROAD's error when a setup repair finds no signal wire resistance at any corner.
+_NO_WIRE_RC_ERROR = "[ERROR RSZ-0089]"
+
+
+def _no_wire_rc_hint(log_text: str) -> str:
+    """The cause and the fix of a run that failed `RSZ-0089`, or `""`: each setup repair needs a wire RC, which a PDK without `layer-rc-tcl` gets only from its technology LEF, so turning one off moves the failure to the next."""
+    if _NO_WIRE_RC_ERROR not in log_text:
+        return ""
+    return (
+        "; setup repair found no wire RC (RSZ-0089): set the PDK's layer-rc-tcl "
+        f"(see {_NO_WIRE_RC_DOCS}), or turn every setup repair off with "
+        "floorplan-setup-repair: false, post-cts-setup-repair: false and a "
+        "global-route-repair without setup-margin, such as {hold-margin: 0}"
+    )
+
+
 _STA_CELL_NOT_FOUND = re.compile(
     r"^\[WARNING STA-0122\] cell '(.+)' not found\.$", re.M
 )
@@ -342,6 +362,13 @@ def _hook_block(title: str, path: str) -> str:
     return f'\nputs ">>> {title}"\n{tcl_source(path)}\n'
 
 
+def _tapcell_block(title: str, path: str) -> str:
+    """Return the tap-cell step: the `tapcell-tcl` hook, or without one `cut_rows` with its default halo around each placed macro, as ORFS runs it."""
+    if path:
+        return _hook_block(title, path)
+    return '\nputs ">>> Cut rows around macros"\ncut_rows\n'
+
+
 def _run_hook_lines(point: str, paths, indent: str = "") -> str:
     """Return one announce-and-source pair per hook file of `point`, each line ending in a newline."""
     return "".join(
@@ -375,12 +402,12 @@ def _stage_end_block(stage: str, hooks: dict) -> str:
     )
 
 
-def _before_cts_block(hooks: dict, *, checkpoints: bool) -> str:
-    """Return the `before-cts` hook lines, or `""` when the run has none.
+def _before_cts_block(hooks: dict, *, checkpoints: bool, steps: str = "") -> str:
+    """Return the `before-cts` hook lines, then the flow's `steps` before CTS, or `""` when there are neither.
 
-    With `checkpoints` (a one-session run that writes them), the `place` stage ends before the hooks; it otherwise ends on entering `clock_tree_synthesis`, and its checkpoint would hold what they changed.
+    With `checkpoints` (a one-session run that writes them), the `place` stage ends before them; it otherwise ends on entering `clock_tree_synthesis`, and its checkpoint would hold what they changed.
     """
-    block = _run_hook_block("before-cts", hooks)
+    block = _run_hook_block("before-cts", hooks) + steps
     if block and checkpoints:
         return "\nrb::ckpt::checkpoint_for clock_tree_synthesis enter" + block
     return block
@@ -547,11 +574,6 @@ def _macro_pin_limits_tcl(platform, dpl_options: str = "") -> str:
     )
 
 
-#: The flow's global route without `global-route:` options; a `reroute: full` global-route repair runs it again.
-_GLOBAL_ROUTE_CMD = (
-    "global_route -congestion_iterations 20 "
-    "-congestion_report_file $CONGESTION_RPT -verbose\n"
-)
 #: Closes an incremental global route around a repair without `global-route:` options; it logs the usage table again.
 _END_INCREMENTAL_CMD = (
     "global_route -end_incremental -congestion_report_file $CONGESTION_RPT -verbose\n"
@@ -564,6 +586,10 @@ def _global_route_cmd(gr: GlobalRoute) -> str:
         f"global_route{gr.full_options()} "
         "-congestion_report_file $CONGESTION_RPT -verbose\n"
     )
+
+
+#: The flow's global route without `global-route:` options; a `reroute: full` global-route repair runs it again.
+_GLOBAL_ROUTE_CMD = _global_route_cmd(GlobalRoute())
 
 
 def _start_incremental_cmd(gr: GlobalRoute) -> str:
@@ -685,7 +711,7 @@ def _repair_steps_tcl(
 
 
 def _post_cts_repair_tcl(platform, mode: PnrMode) -> str:
-    """Return the post-CTS timing repair on placement parasitics: setup when `post-cts-setup-repair` is set, then hold. A probe skips it.
+    """Return the post-CTS timing repair on placement parasitics: setup unless `post-cts-setup-repair` is false, then hold. A probe skips it.
 
     The block carries its own leading newline, as the template once held the text itself.
     """
@@ -696,6 +722,90 @@ def _post_cts_repair_tcl(platform, mode: PnrMode) -> str:
         '\nputs ">>> Post-CTS timing repair"\n'
         "estimate_parasitics -placement\n"
         f"{setup}repair_timing -hold\n"
+    )
+
+
+def _floorplan_setup_repair_tcl(platform, mode: PnrMode) -> str:
+    """Return ORFS's setup repair at the end of the floorplan, before placement: sizing and buffer removal only, without last-gasp moves. `""` when `floorplan-setup-repair` is false; a probe skips it."""
+    if not platform.get_floorplan_setup_repair():
+        return ""
+    if mode is PnrMode.PROBE:
+        return 'puts ">>> Floorplan setup repair: skipped (mode: probe)"\n'
+    return (
+        'puts ">>> Floorplan setup repair"\n'
+        'repair_timing -setup -sequence "unbuffer,sizeup,swap,vt_swap" '
+        "-skip_last_gasp\n"
+    )
+
+
+def _detailed_placement_optimization_tcl(platform) -> str:
+    """Return `improve_placement` and `optimize_mirroring` after the placement stage's legalization, each as its `placement:` key sets, or `""` when both are off."""
+    commands = [
+        command
+        for command, on in (
+            ("improve_placement", platform.get_placement_improve_placement()),
+            ("optimize_mirroring", platform.get_placement_optimize_mirroring()),
+        )
+        if on
+    ]
+    if not commands:
+        return ""
+    return 'puts ">>> Detail placement optimization"\n' + "".join(
+        f"{command}\n" for command in commands
+    )
+
+
+def _cts_repair_clock_inverters_tcl(platform) -> str:
+    """Return `repair_clock_inverters` before CTS, which clones each clock-tree inverter next to its register loads so CTS does not buffer the inverted clocks, or `""` when `cts-repair-clock-inverters` is false. The block carries its own leading newline, as the `before-cts` hook block does."""
+    if not platform.get_cts_repair_clock_inverters():
+        return ""
+    return "\nrepair_clock_inverters\n"
+
+
+#: Antenna repair rounds after global route (`repair_antennas -iterations`) and the most detailed routes after detailed route, as ORFS's `MAX_REPAIR_ANTENNAS_ITER_GRT` and `_DRT`.
+_ANTENNA_REPAIR_ITERATIONS = 5
+
+
+def _global_route_antenna_repair_tcl(
+    platform, mode: PnrMode, gr: GlobalRoute = GlobalRoute()
+) -> str:
+    """Return `repair_antennas` after global route, which inserts diodes and legalizes them, then `check_antennas` into `grt_antennas.rpt`, as ORFS runs them; `""` when `global-route-antenna-repair` is false. A probe skips it. `allow-congestion` passes on, as to every incremental route."""
+    if not platform.get_global_route_antenna_repair():
+        return ""
+    if mode is PnrMode.PROBE:
+        return 'puts ">>> Global-route antenna repair: skipped (mode: probe)"\n'
+    congestion = " -allow_congestion" if gr.allow_congestion else ""
+    return (
+        'puts ">>> Global-route antenna repair"\n'
+        f"repair_antennas -iterations {_ANTENNA_REPAIR_ITERATIONS}{congestion}\n"
+        "check_placement -verbose\n"
+        "check_antennas -report_file $OUT_DIR/grt_antennas.rpt\n"
+    )
+
+
+def _detailed_route_antenna_repair_tcl(platform, verbose: int) -> str:
+    """Return the antenna repair after detailed route, as ORFS runs it, or `""` when `detailed-route-antenna-repair` is false: `repair_antennas` and a detailed route while violations remain, at most five more detailed routes, then `check_antennas` into `drt_antennas.rpt`. Each detailed route writes `route.drc.rpt` again, so the report is the last one's."""
+    if not platform.get_detailed_route_antenna_repair():
+        return ""
+    route = (
+        "detailed_route \\\n"
+        "      -output_drc  $OUT_DIR/route.drc.rpt \\\n"
+        "      -output_maze $OUT_DIR/route.maze.log \\\n"
+        f"      -verbose {verbose}\n"
+    )
+    return (
+        'puts ">>> Detailed-route antenna repair"\n'
+        "set rb_antenna_rounds 1\n"
+        "if {[repair_antennas]} {\n"
+        f"  {route}"
+        "}\n"
+        "while {[check_antennas] && "
+        f"$rb_antenna_rounds < {_ANTENNA_REPAIR_ITERATIONS}}} {{\n"
+        "  repair_antennas\n"
+        f"  {route}"
+        "  incr rb_antenna_rounds\n"
+        "}\n"
+        "check_antennas -report_file $OUT_DIR/drt_antennas.rpt\n"
     )
 
 
@@ -756,11 +866,25 @@ def _global_route_repair_tcl(
     return head + steps + legalize
 
 
+def _routing_layers_tcl(platform) -> str:
+    """Return `set_routing_layers` with the layer ranges `routing-layers` sets, or `""` when it sets neither, which leaves the router the block's own range."""
+    options = "".join(
+        f" -{kind} ${var}"
+        for kind, var, layers in (
+            ("signal", "SIGNAL_LAYERS", platform.get_signal_layers()),
+            ("clock", "CLOCK_LAYERS", platform.get_clock_layers()),
+        )
+        if layers
+    )
+    return f"set_routing_layers{options}\n" if options else ""
+
+
 def _layer_adjustment_tcl(platform) -> str:
-    """Return the `set_global_routing_layer_adjustment` line over the signal layers, as ORFS does, then one per `global-route.layer-adjustment` entry, or `""` when neither is set."""
+    """Return the `set_global_routing_layer_adjustment` line over the signal layers, as ORFS does, or over every layer without them, then one per `global-route.layer-adjustment` entry, or `""` when neither is set."""
     adjustment = platform.get_routing_layer_adjustment()
+    over = "$SIGNAL_LAYERS" if platform.get_signal_layers() else "*"
     lines = (
-        f"set_global_routing_layer_adjustment $SIGNAL_LAYERS {adjustment:g}\n"
+        f"set_global_routing_layer_adjustment {over} {adjustment:g}\n"
         if adjustment is not None
         else ""
     )
@@ -886,6 +1010,7 @@ def run_output_paths(artefact_dir: str, design: str) -> list[str]:
         os.path.join(artefact_dir, _DEF2STREAM_REPORT_NAME),
         os.path.join(artefact_dir, _EXPORT_PROVENANCE_NAME),
         os.path.join(artefact_dir, _CONGESTION_REPORT_NAME),
+        os.path.join(artefact_dir, _RTL_MP_REPORT_DIR),
     ]
 
 
@@ -945,10 +1070,11 @@ def clear_run_outputs(
         shutil.rmtree(failed_gr, ignore_errors=True)
         stale.append(failed_gr)
     # The parameter probe's scratch files belong to the abstract.
-    probe_dir = os.path.join(artefact_dir, _PARAM_PROBE_DIR)
-    if include_script and os.path.isdir(probe_dir):
-        shutil.rmtree(probe_dir, ignore_errors=True)
-        stale.append(probe_dir)
+    for name in (_PARAM_PROBE_DIR, _RTL_MP_REPORT_DIR):
+        scratch = os.path.join(artefact_dir, name)
+        if include_script and os.path.isdir(scratch):
+            shutil.rmtree(scratch, ignore_errors=True)
+            stale.append(scratch)
     return stale
 
 
@@ -1125,17 +1251,17 @@ def _blockage_command(blockage: PnrBlockage) -> str:
     return command
 
 
-def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
-    """Return `(blockages_block, macro_pack_directives)` for `floorplan.blockages` and `floorplan.macro-anchor`.
+def _blockages_block(fp: PnrFloorplan) -> tuple[str, str]:
+    """Return the Tcl for `floorplan.core-cutouts` and `floorplan.blockages`, and the check that no macro overlaps a hard one; each is "" when the floorplan sets neither.
 
-    Both are empty when the floorplan sets neither key. Blockages with `lifetime: global-placement` are left to `_global_placement_blocks`. The blockages block runs right after the floorplan. Hard blockages also become `MACRO_KEEPOUTS`, which the packer keeps macros out of, and the rows under them are cut, so the later tap insertion leaves them empty (rtl_buddy#773); soft and partial ones only thin standard cells. The directives are the anchor and keep-outs appended to the `rb::macro_pack::solve` call.
+    Blockages with `lifetime: global-placement` are left to `_global_placement_blocks`. The block runs right after the floorplan, so RTL-MP weighs every blockage it creates. The rows under hard blockages (`HARD_BLOCKAGES`) are cut, so the later tap insertion leaves them empty (rtl_buddy#773); soft and partial ones only thin standard cells. Hard blockages and cut-outs are labelled in `HARD_BLOCKAGE_LABELS`, and the returned check, run after macro placement, fails when a macro overlaps one.
     """
     lines = []
-    has_keepouts = False
+    has_hard = False
     for index, cutout in enumerate(fp.core_cutouts):
         # A cut-out is a hard blockage that must overlap the core; OpenROAD's site
         # snapping may move the core edges a little inside the requested ones.
-        has_keepouts = True
+        has_hard = True
         region = "{" + " ".join(_tcl_microns(v) for v in cutout) + "}"
         lines.append(f"set blockage_box [[create_blockage -region {region}] getBBox]")
         lines.append(
@@ -1146,44 +1272,62 @@ def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
             "the core; a cut-out is carved out of the core} }"
         )
         lines.append(
-            "lappend MACRO_KEEPOUTS "
+            "lappend HARD_BLOCKAGES "
             "[list [$blockage_box xMin] [$blockage_box yMin] [$blockage_box xMax] [$blockage_box yMax]]"
         )
-    blockages = fp.flow_blockages()
-    for blockage in blockages:
+        lines.append(f"lappend HARD_BLOCKAGE_LABELS floorplan.core-cutouts[{index}]")
+    flow_blockages = [
+        (index, blockage)
+        for index, blockage in enumerate(fp.blockages)
+        if blockage.lifetime is BlockageLifetime.FLOW
+    ]
+    for index, blockage in flow_blockages:
         command = _blockage_command(blockage)
         if blockage.type is BlockageType.HARD:
-            has_keepouts = True
+            has_hard = True
             lines.append(f"set blockage_box [[{command}] getBBox]")
             lines.append(
-                "lappend MACRO_KEEPOUTS "
+                "lappend HARD_BLOCKAGES "
                 "[list [$blockage_box xMin] [$blockage_box yMin] [$blockage_box xMax] [$blockage_box yMax]]"
             )
+            lines.append(f"lappend HARD_BLOCKAGE_LABELS floorplan.blockages[{index}]")
         else:
             lines.append(command)
     blockages_block = ""
+    keepout_check = ""
     if lines:
         header = [
             'puts ">>> Placement blockages"'
-            if blockages
+            if flow_blockages
             else 'puts ">>> Core cut-outs"'
         ]
-        if has_keepouts:
-            header.append("set MACRO_KEEPOUTS {}")
-            procs = files(_TEMPLATE_PACKAGE).joinpath(_CUT_ROWS_FILE).read_text()
+        if has_hard:
+            header.append("set HARD_BLOCKAGES {}")
+            header.append("set HARD_BLOCKAGE_LABELS {}")
+            package = files(_TEMPLATE_PACKAGE)
+            procs = package.joinpath(_CUT_ROWS_FILE).read_text()
+            keepouts = package.joinpath(_KEEPOUTS_FILE).read_text()
             lines += [
                 procs.rstrip("\n"),
-                'puts ">>>   cut [rb::rows::cut_under [ord::get_db_block] $MACRO_KEEPOUTS]'
+                keepouts.rstrip("\n"),
+                'puts ">>>   cut [rb::rows::cut_under [ord::get_db_block] $HARD_BLOCKAGES]'
                 ' row(s) under hard placement blockages"',
             ]
+            keepout_check = (
+                "  rb::keepouts::check $macros $HARD_BLOCKAGES "
+                "$HARD_BLOCKAGE_LABELS $dbu_per_micron\n"
+            )
         blockages_block = "\n" + "\n".join(header + lines) + "\n"
+    return blockages_block, keepout_check
 
-    directives = ""
-    if has_keepouts:
-        directives = f" \\\n      {fp.macro_anchor.value} $MACRO_KEEPOUTS"
-    elif fp.macro_anchor is not MacroAnchor.LOWER_LEFT:
-        directives = f" \\\n      {fp.macro_anchor.value}"
-    return blockages_block, directives
+
+def _keepout_recheck_block(keepout_check: str, hooks: dict) -> str:
+    """Return the keep-out check again at the end of the floorplan, when a later hook may move a macro."""
+    if not keepout_check or not any(
+        hooks.get(point) for point in ("after-pdn", "after-pins", "stage-end")
+    ):
+        return ""
+    return f"if {{[llength $macros] > 0}} {{\n{keepout_check}}}\n"
 
 
 def _initialize_floorplan_tcl(fp: PnrFloorplan) -> str:
@@ -1332,7 +1476,7 @@ def _place_pins_block(fp: PnrFloorplan) -> str:
 def _macro_directives_block(fp: PnrFloorplan) -> str:
     """Return the `floorplan.macros` and macros-file Tcl that opens the macro branch, or "" without directives.
 
-    Inline entries come first. It leaves the macros still to place in `rb_movable_macros`; located ones are LOCKED and, for the packer, keep-outs.
+    Inline entries come first. It leaves the macros still to place in `rb_movable_macros`; located ones are LOCKED, so RTL-MP places around them.
     """
     if not fp.macros:
         return ""
@@ -1358,8 +1502,7 @@ def _macro_directives_block(fp: PnrFloorplan) -> str:
     snap = "" if fp.macro_snap else " 0"
     lines.append(
         "  set rb_movable_macros [rb::macros::apply $block $macros $MACRO_DIRECTIVES "
-        "$site_grid_dbu [expr {int(round([ord::microns_to_dbu $MACRO_HALO]))}] "
-        f"$dbu_per_micron{snap}]"
+        f"$site_grid_dbu $dbu_per_micron{snap}]"
     )
     return "\n".join(lines) + "\n"
 
@@ -1385,70 +1528,48 @@ def _no_macros_block(fp: PnrFloorplan) -> str:
     return f" else {{\n  error {{{message}}}\n}}"
 
 
-_PACK_PLACEMENT = """\
-  set core [$block getCoreArea]
-  set halo_dbu [expr {{int(round([ord::microns_to_dbu $MACRO_HALO]))}}]
-  set footprints {{}}
-  foreach inst {packed} {{
-{footprint}  }}
-  set placement [rb::macro_pack::solve \\
-      [list [$core xMin] [$core yMin] [$core xMax] [$core yMax]] \\
-      $footprints $halo_dbu $site_grid_dbu $dbu_per_micron{directives}]
-  foreach inst {packed} {{
-    lassign [dict get $placement [$inst getName]] x y
-    $inst setLocation $x $y
-    $inst setPlacementStatus FIRM
-    puts ">>>   placed [$inst getName] at ($x, $y) DBU"
-  }}
-"""
-
-# A macro the packer places at its master's size, as every macro is R0 before `floorplan.macros` orients one.
-_MASTER_FOOTPRINT = """\
-    set master [$inst getMaster]
-    lappend footprints [list [$inst getName] [$master getWidth] [$master getHeight]]
-"""
-# A macro the packer places at its oriented size: an R90 macro is its master's height wide.
-_ORIENTED_FOOTPRINT = """\
-    set bbox [$inst getBBox]
-    lappend footprints [list [$inst getName] [$bbox getDX] [$bbox getDY]]
-"""
-
-# OpenROAD RTL-MP. The halo option spelling depends on the OpenROAD version, so both are emitted.
-_RTL_MP_PLACEMENT = """\
-  file mkdir $OUT_DIR/rtlmp
-  if {[llength [info commands set_macro_base_halo]]} {
-    set_macro_base_halo $MACRO_HALO $MACRO_HALO
-    rtl_macro_placer -report_directory $OUT_DIR/rtlmp
-  } else {
-    rtl_macro_placer -halo_width $MACRO_HALO -halo_height $MACRO_HALO \\
-        -report_directory $OUT_DIR/rtlmp
-  }
-  foreach inst $macros {
+_RTL_MP_REPORT = """\
+  foreach inst {placed} {{
     lassign [$inst getLocation] x y
     puts ">>>   placed [$inst getName] at ($x, $y) DBU [$inst getOrient] (rtl-mp)"
+  }}
+"""
+# RTL-MP with a minimum channel needs `-min_channel_size`, which older OpenROAD lacks. A `rtl_macro_placer` that is not a Tcl proc cannot be probed, so the option is assumed.
+_RTL_MP_CHANNEL_PROBE = """\
+  if {[catch {info body rtl_macro_placer} rb_mp_body]} {
+    set rb_mp_body -min_channel_size
+  }
+  if {[string first -min_channel_size $rb_mp_body] < 0} {
+    error {placement.macro-channel needs rtl_macro_placer -min_channel_size (OpenROAD 26Q4 or newer)}
   }
 """
 
 
-def _macro_place_block(fp: PnrFloorplan, directives: str) -> str:
-    """Return the macro-placement Tcl for the flow's macro branch.
-
-    With `floorplan.macros` the packer packs only `rb_movable_macros`, keeping out of the located ones (in `MACRO_KEEPOUTS`), and is skipped when every macro is located.
-    """
-    if fp.macro_placement is MacroPlacement.RTL_MP:
-        return _RTL_MP_PLACEMENT
-    if not fp.macros:
-        return _PACK_PLACEMENT.format(
-            directives=directives, packed="$macros", footprint=_MASTER_FOOTPRINT
-        )
-    if not directives.endswith("$MACRO_KEEPOUTS"):
-        anchor = f" \\\n      {fp.macro_anchor.value}"
-        directives = f"{anchor} $MACRO_KEEPOUTS"
-    body = _PACK_PLACEMENT.format(
-        directives=directives,
-        packed="$rb_movable_macros",
-        footprint=_ORIENTED_FOOTPRINT,
+def _rtl_mp_tcl(platform) -> str:
+    """Return the `rtl_macro_placer` call with the arguments ORFS passes: `-target_util` from the placement density, and `-min_channel_size` and `-pin_aware_channels` only with `placement.macro-channel`."""
+    call = (
+        "  rtl_macro_placer -report_directory $OUT_DIR/rtlmp"
+        f" -target_util {platform.get_placement_density():g}"
     )
+    channel = platform.get_placement_macro_channel()
+    if channel is None:
+        return f"  file mkdir $OUT_DIR/rtlmp\n{call}\n"
+    call += f" \\\n      -min_channel_size {_tcl_list(f'{v:g}' for v in channel)}"
+    if platform.get_placement_macro_pin_aware_channels():
+        call += " -pin_aware_channels"
+    return f"  file mkdir $OUT_DIR/rtlmp\n{_RTL_MP_CHANNEL_PROBE}{call}\n"
+
+
+def _macro_place_block(fp: PnrFloorplan, platform) -> str:
+    """Return the RTL-MP Tcl for the flow's macro branch.
+
+    With `floorplan.macros`, RTL-MP places around the located macros, reports only the macros it placed, and is skipped when every macro is located.
+    """
+    block = _rtl_mp_tcl(platform)
+    if not fp.macros:
+        return block + _RTL_MP_REPORT.format(placed="$macros")
+    block += _RTL_MP_REPORT.format(placed="$rb_movable_macros")
+    body = "".join(f"  {line}\n" if line else "\n" for line in block.splitlines())
     return f"  if {{[llength $rb_movable_macros] > 0}} {{\n{body}  }}\n"
 
 
@@ -1488,7 +1609,7 @@ def _global_placement_blocks(
 ) -> GlobalPlacementBlocks:
     """Return the Tcl for `lifetime: global-placement` blockages and `placement.rotated-macro-footprint`.
 
-    The blockages are created immediately before `global_placement` and destroyed immediately after by the handles the flow created, so no checkpoint, row cut, packer keep-out or RTL-MP run sees them. With checkpoints, the floorplan checkpoint is written before they exist. `footprint` acts only when a macro is rotated at run time: `block` adds a hard blockage over each rotated macro's unrotated footprint (see `rotated_macros.tcl`), `diamond-legalizer` passes `-use_diamond_legalizer` to every `detailed_placement`.
+    The blockages are created immediately before `global_placement` and destroyed immediately after by the handles the flow created, so no checkpoint, row cut or RTL-MP run sees them. With checkpoints, the floorplan checkpoint is written before they exist. `footprint` acts only when a macro is rotated at run time: `block` adds a hard blockage over each rotated macro's unrotated footprint (see `rotated_macros.tcl`), `diamond-legalizer` passes `-use_diamond_legalizer` to every `detailed_placement`.
     """
     blockages = fp.global_placement_blockages()
     rotated = _may_rotate(fp, hooks) and footprint != RotatedMacroFootprint.NONE
@@ -2190,7 +2311,7 @@ def run_post_route_repair(
         plan["out_dir"], pnr_checkpoints.STAGE_REPORTS[POST_ROUTE_REPAIR_STAGE]["drc"]
     )
     sections: list[bytes] = []
-    used = {"wall_s": 0.0, "cpu_s": 0.0, "peak_rss_kb": 0, "threads": 1}
+    used = {"wall_s": 0.0, "cpu_s": 0.0, "peak_rss_kb": 0, "threads": 0}
 
     def _run(file: str, label: str, done: str):
         """Run one session; return its exit code, stderr, why the stage fails if it exited 0 before `done`, why it failed (None if it did not), and its log."""
@@ -2206,7 +2327,10 @@ def run_post_route_repair(
         used["peak_rss_kb"] = max(
             used["peak_rss_kb"], resources.get("peak_rss_kb") or 0
         )
-        used["threads"] = max(used["threads"], resources.get("threads") or 1)
+        threads = resources.get("threads")
+        # One session of unknown count makes the stage's unknown.
+        if used["threads"] is not None:
+            used["threads"] = None if threads is None else max(used["threads"], threads)
         problem = failure = None
         text = section.decode(errors="replace")
         errors = _error_lines(text)
@@ -2567,11 +2691,11 @@ def checkpoint_error(run_dir: str | None, stage: str) -> str | None:
 _SET_THREAD_COUNT_RE = re.compile(r"^set_thread_count (\d+)$", re.MULTILINE)
 
 
-def _session_threads(script: str, log_text: str) -> int:
-    """The threads a stage session ran on: the count OpenROAD reported, else the one its script set, else OpenROAD's default of one."""
+def _session_threads(script: str, log_text: str) -> int | None:
+    """The threads a stage session ran on: the count OpenROAD reported, else the one its script set; None when the script set none, since OpenROAD then picks a count it does not log."""
     match = _SET_THREAD_COUNT_RE.search(script)
     if match is None:
-        return 1
+        return None
     reported = parse_reported_threads(log_text)
     return reported if reported is not None else int(match.group(1))
 
@@ -2944,9 +3068,6 @@ class OpenRoadPnr:
     def _load_template(self) -> str:
         return files(_TEMPLATE_PACKAGE).joinpath(_TEMPLATE_FILE).read_text()
 
-    def _load_macro_pack(self) -> str:
-        return files(_TEMPLATE_PACKAGE).joinpath(_MACRO_PACK_FILE).read_text()
-
     def _pdn_config(self, pdk) -> str:
         """The PDN Tcl this run sources: its own `pdn-config`, else the PDK's, else ""."""
         return self.pnr_cfg.get_pdn_config() or pdk.get_pdn_config()
@@ -3063,14 +3184,16 @@ class OpenRoadPnr:
         self._mode_corners = tuple(corners) if modes else ()
 
         cts_buffers = platform.get_cts_buffers()
-        if len(cts_buffers) > 1:
-            cts_buf = "{" + " ".join(cts_buffers) + "}"
-            cts_root_buf = "[lindex $CTS_BUF 0]"
-        else:
-            cts_buf = cts_buffers[0] if cts_buffers else ""
-            cts_root_buf = "$CTS_BUF"
-        if isinstance(root_buffer := platform.get_cts_root_buffer(), str):
-            cts_root_buf = root_buffer
+        cts_buf = (
+            cts_buffers[0]
+            if len(cts_buffers) == 1
+            else "{" + " ".join(cts_buffers) + "}"
+        )
+        # Unset, CTS infers them: the root from the buffer list, the list from the libraries.
+        root_buffer = platform.get_cts_root_buffer()
+        cts_buffer_options = (
+            f"    -root_buf {root_buffer} \\\n" if isinstance(root_buffer, str) else ""
+        ) + ("    -buf_list $CTS_BUF \\\n" if cts_buffers else "")
 
         dont_use_cells = platform.get_dont_use_cells()
         dont_use_block = (
@@ -3107,7 +3230,7 @@ class OpenRoadPnr:
         # Must precede the first `read_liberty`.
         threads_block = _threads_block(self._threads())
 
-        blockages_block, macro_pack_directives = _floorplan_directives(fp)
+        blockages_block, keepout_check_block = _blockages_block(fp)
         gp_blocks = _global_placement_blocks(
             fp,
             platform.get_placement_rotated_macro_footprint(),
@@ -3203,7 +3326,9 @@ class OpenRoadPnr:
             # The template reads the first; `extra_libs_lefs` reads the rest, in order.
             "macro_lef": next(iter(pdk.get_macro_lef_paths()), ""),
             "site": pdk.get_site(),
-            "util_pct": f"{fp.utilization * 100:.2f}",
+            "util_pct": (
+                f"{fp.utilization * 100:.2f}" if fp.utilization is not None else "{}"
+            ),
             "aspect": f"{fp.aspect:.2f}",
             "core_margin": f"{fp.core_margin:.2f}",
             "tie_hi": pdk.get_tie_hi() or "{}",
@@ -3211,23 +3336,23 @@ class OpenRoadPnr:
             "tie_cells_block": tie_cells_block,
             "tie_fanout_block": tie_fanout_block,
             "cts_buf": cts_buf,
-            "cts_root_buf": cts_root_buf,
+            "cts_buffer_options": cts_buffer_options,
             "place_density": f"{platform.get_placement_density():g}",
             "place_padding": str(platform.get_placement_padding()),
             "reference_hpwl_option": _reference_hpwl_option(platform),
             "routability_options": _routability_options(platform),
             "timing_driven_option": _timing_driven_option(platform),
-            "macro_halo": f"{platform.get_placement_macro_halo():g}",
             "macro_cell_halo": f"{platform.get_placement_macro_cell_halo():g}",
-            "macro_pack_procs": self._load_macro_pack(),
             "macro_directives_block": _macro_directives_block(fp),
             "initialize_floorplan": _initialize_floorplan_tcl(fp),
-            # A `macro-placement` hook replaces the packer or RTL-MP inside the macro branch.
+            # A `macro-placement` hook replaces RTL-MP inside the macro branch.
             "macro_place_block": (
                 _macro_hook_block(fp, hooks["macro-placement"])
                 if "macro-placement" in hooks
-                else _macro_place_block(fp, macro_pack_directives)
+                else _macro_place_block(fp, platform)
             ),
+            "keepout_check_block": keepout_check_block,
+            "keepout_recheck_block": _keepout_recheck_block(keepout_check_block, hooks),
             "no_macros_block": _no_macros_block(fp),
             "blockages_block": blockages_block,
             "dont_use_block": dont_use_block,
@@ -3246,8 +3371,8 @@ class OpenRoadPnr:
                 "Layer RC (layer-rc-tcl)", pdk.get_layer_rc_tcl()
             ),
             "make_tracks": make_tracks,
-            # After macro placement and before the power grid, as ORFS `TAPCELL_TCL`, so endcaps see the placed macros.
-            "tapcell_block": _hook_block(
+            # After macro placement and before the power grid, as ORFS `TAPCELL_TCL` or its `cut_rows`, so endcaps see the placed macros.
+            "tapcell_block": _tapcell_block(
                 "Tap and endcap cells (tapcell-tcl)", platform.get_tapcell_tcl()
             ),
             "threads_block": threads_block,
@@ -3263,7 +3388,9 @@ class OpenRoadPnr:
                 "after-repair-design", hooks
             ),
             "hook_before_cts_block": _before_cts_block(
-                hooks, checkpoints=self._arms_checkpoints() and not self._staged
+                hooks,
+                checkpoints=self._arms_checkpoints() and not self._staged,
+                steps=_cts_repair_clock_inverters_tcl(platform),
             ),
             "hook_before_repair_clock_nets_block": _run_hook_block(
                 "before-repair-clock-nets", hooks
@@ -3302,6 +3429,16 @@ class OpenRoadPnr:
                 else ""
             ),
             "post_cts_repair": _post_cts_repair_tcl(platform, self._mode),
+            "floorplan_setup_repair": _floorplan_setup_repair_tcl(platform, self._mode),
+            "detailed_placement_optimization": _detailed_placement_optimization_tcl(
+                platform
+            ),
+            "global_route_antenna_repair": _global_route_antenna_repair_tcl(
+                platform, self._mode, platform.get_global_route()
+            ),
+            "detailed_route_antenna_repair": _detailed_route_antenna_repair_tcl(
+                platform, self.pnr_cfg.get_detailed_route_verbose()
+            ),
             "layer_adjustment": _layer_adjustment_tcl(platform),
             "global_route_cmd": _global_route_cmd(platform.get_global_route()),
             "grid_origin_guides": _grid_origin_guides_tcl(platform.get_global_route()),
@@ -3343,8 +3480,9 @@ class OpenRoadPnr:
             ),
             "cts_repair_clock_nets": _cts_repair_clock_nets_tcl(platform),
             "max_fanout_block": max_fanout_block,
-            "signal_layers": platform.get_signal_layers(),
-            "clock_layers": platform.get_clock_layers(),
+            "signal_layers": platform.get_signal_layers() or "{}",
+            "clock_layers": platform.get_clock_layers() or "{}",
+            "routing_layers": _routing_layers_tcl(platform),
             "pin_layer_horizontal": pdk.get_pin_layer_horizontal(),
             "pin_layer_vertical": pdk.get_pin_layer_vertical(),
             "fill_cells": fill_cells,
@@ -3380,9 +3518,7 @@ class OpenRoadPnr:
             corners=self._timing_corners,
             scenes=bool(self._corners),
             modes=self._mode_corners,
-            flow_ended=(
-                ("detailed_route",) if "stage-end" in self.pnr_cfg.get_hooks() else ()
-            ),
+            flow_ended=("detailed_route",) if self._flow_ends_detailed_route() else (),
         )
 
     def _render(self, text: str, substitutions: dict) -> str:
@@ -3396,16 +3532,23 @@ class OpenRoadPnr:
         return text
 
     def _unbroken_marker(self, marker: str) -> str:
-        """A one-session run's text for a template marker: nothing, except that with checkpoints armed the global-route stage ends after any global-route repair, before the `before-detailed-route` hooks, and `place` is timed before the clocks are propagated, as a staged `place` session and its report time it (its checkpoint is written on entering clock-tree synthesis). With `stage-end` hooks the detailed route ends after its `stage-end` hooks rather than on leaving `detailed_route`."""
+        """A one-session run's text for a template marker: nothing, except that with checkpoints armed the global-route stage ends after any global-route repair, before the `before-detailed-route` hooks, and `place` is timed before the clocks are propagated, as a staged `place` session and its report time it (its checkpoint is written before the `before-cts` hooks and `repair_clock_inverters`, or on entering clock-tree synthesis without them). With `stage-end` hooks or detailed-route antenna repair the detailed route ends after them rather than on leaving `detailed_route`."""
         if not self._arms_checkpoints():
             return ""
         if marker == "cts":
             return "rb::ckpt::stage_timing place stage_end\n"
         if marker == "detailed_route":
             return "rb::ckpt::stage_end global_route\n"
-        if marker == "finish" and "stage-end" in self.pnr_cfg.get_hooks():
+        if marker == "finish" and self._flow_ends_detailed_route():
             return "rb::ckpt::stage_end detailed_route\n"
         return ""
+
+    def _flow_ends_detailed_route(self) -> bool:
+        """Whether a one-session run ends its detailed route itself, where the `finish` stage begins, rather than on leaving `detailed_route`: after its `stage-end` hooks, or after the antenna repair's detailed routes."""
+        return (
+            "stage-end" in self.pnr_cfg.get_hooks()
+            or self._platform.get_detailed_route_antenna_repair()
+        )
 
     def _run_stages(self) -> tuple[str, ...]:
         """The stages this run executes: from `--from` (or the start) through `--stop-after` (or `finish`)."""
@@ -3605,7 +3748,7 @@ class OpenRoadPnr:
         )
 
     def _post_route_repair_script(self, round_: int, run_dir: str) -> str:
-        """Round `round_`'s repair session, bound to `run_dir`: repair round `round_ - 1`'s database on its SPEF, legalize inside an incremental global route, connect the supply pins of the cells the repair added, run the `before-detailed-route` hooks and connect again, route in detail, run the `stage-end` hooks and write the stage's checkpoint.
+        """Round `round_`'s repair session, bound to `run_dir`: repair round `round_ - 1`'s database on its SPEF, legalize inside an incremental global route, connect the supply pins of the cells the repair added, run the `before-detailed-route` hooks and connect again, route in detail, repair antennas as the flow does after its detailed route (`_round_antenna_repair_tcl`), run the `stage-end` hooks and write the stage's checkpoint, which keeps the round's `drt_antennas.rpt`.
 
         The rounds work on the unfilled database; `finish` fills after the last. Each round starts with `remove_fillers`, which removes every CORE_SPACER instance that is not LOCKED, spacers a hook placed included. A repair in the session that routed fails detailed routing (DRT-0218), so each round is a fresh session that reads the routed database.
 
@@ -3677,6 +3820,7 @@ class OpenRoadPnr:
             # So the round's DRC count is its own route's.
             "file delete -force $OUT_DIR/route.drc.rpt\n",
             _DETAILED_ROUTE_CMD,
+            self._round_antenna_repair_tcl(),
             "{{ hook_stage_end_post_route_repair_block }}",
             f"\nrb::ckpt::stage_end {POST_ROUTE_REPAIR_STAGE}\n",
             f'puts "{_ROUND_DONE_MARKER}{round_} repair"\n',
@@ -3692,6 +3836,17 @@ class OpenRoadPnr:
                 + "repair",
             ),
         )
+
+    def _round_antenna_repair_tcl(self) -> str:
+        """A repair round's antenna repair after its detailed route, as the flow's after its own (`_detailed_route_antenna_repair_tcl`), then the supply connections of the diodes it added; `""` when `detailed-route-antenna-repair` is false."""
+        repair = _detailed_route_antenna_repair_tcl(
+            self._platform, self.pnr_cfg.get_detailed_route_verbose()
+        )
+        return repair + "rb::global_connect\n" if repair else ""
+
+    def _hints(self, log_text: str) -> str:
+        """What to change, appended to a failed run's description: the `eco` hint (`_eco_hint`) and the wire-RC hint (`_no_wire_rc_hint`), each `""` when it does not apply."""
+        return self._eco_hint(log_text) + _no_wire_rc_hint(log_text)
 
     def _eco_hint(self, log_text: str) -> str:
         """What to change when the post-route repair session that failed the run, the last one in `log_text`, is an `eco` round's repair that failed RSZ-0074, else "".
@@ -6185,7 +6340,7 @@ class OpenRoadPnr:
             return None
         fail_stage = INCOMPLETE_FAIL_STAGE
         if chain_problem is not None:
-            desc = chain_problem + self._eco_hint(log_text)
+            desc = chain_problem + self._hints(log_text)
             fail_stage = self._chain_fail_stage
         elif self._failed_stage is not None:
             return None
@@ -6376,6 +6531,23 @@ class OpenRoadPnr:
             )
             return PnrFailResults(
                 name=self.name + "/results", desc=str(e), fail_stage="setup"
+            )
+        pdk = platform.get_pdk()
+        if not (pdk.get_pin_layer_horizontal() and pdk.get_pin_layer_vertical()):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.pin_layers_missing",
+                pnr=self.pnr_cfg.get_name(),
+                pdk=pdk.get_name(),
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    f"PDK '{pdk.get_name()}' needs pin-layers.horizontal and "
+                    "pin-layers.vertical: place_pins has no default layers"
+                ),
+                fail_stage="setup",
             )
         if (
             platform.get_global_route().allow_congestion is True
@@ -6973,7 +7145,7 @@ class OpenRoadPnr:
                 log=log_path,
             )
             return self._fail_after_openroad(
-                chain_problem + self._eco_hint(log_text),
+                chain_problem + self._hints(log_text),
                 fail_stage=self._chain_fail_stage,
             )
         if returncode != 0:
@@ -6994,7 +7166,7 @@ class OpenRoadPnr:
                 desc = f"{desc}: {first_line.strip()}"
             if self._dispatch_reason:
                 desc = f"{desc} ({self._dispatch_reason})"
-            desc += self._eco_hint(log_text)
+            desc += self._hints(log_text)
             if not self._staged and self.stop_after is not None:
                 stop_unwritten = checkpoint_error(self._ckpt_run_dir, self.stop_after)
             else:
@@ -7011,7 +7183,7 @@ class OpenRoadPnr:
             desc = f"{stage_prefix}{len(error_lines)} ERROR(s) in OpenROAD log"
             if self._dispatch_reason:
                 desc = f"{desc} ({self._dispatch_reason})"
-            desc += self._eco_hint(log_text)
+            desc += self._hints(log_text)
             return self._fail_after_openroad(desc, fail_stage=self._chain_fail_stage)
 
         unwritten = self._unwritten_checkpoint(log_text)

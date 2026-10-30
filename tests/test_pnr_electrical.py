@@ -30,6 +30,7 @@ def _run(tmp_path, extra=""):
             desc: block
             synth: s
             synth-path: synth.yaml
+            floorplan: {utilization: 0.55}
             platform: p
         """)
         + extra

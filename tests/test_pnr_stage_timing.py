@@ -140,15 +140,13 @@ _PROPAGATED = {"cts", "global_route", "detailed_route", "finish"}
 def _configure(
     backend, tmp_path, *, gr_repair=None, post_route=None, corners=None, rcx=False
 ):
-    """Give a stub-harness backend the timing stubs and a platform with the repair knobs and corners."""
+    """Give a stub-harness backend the timing stubs and a platform with the repair knobs and corners; `gr_repair` is its `global-route-repair`, off when None."""
     pdk_corners = {c: "pdk/lib/typ.lib" for c in corners} if corners else None
     if rcx:
         pdk = _rcx_pdk(tmp_path, pdk_corners)
     else:
         pdk = _pdk(tmp_path, **({"corners": pdk_corners} if corners else {}))
-    extra = {}
-    if gr_repair is not None:
-        extra["global_route_repair"] = gr_repair
+    extra = {"global_route_repair": gr_repair}
     if post_route is not None:
         extra["post_route_repair"] = post_route
     if corners:
@@ -221,7 +219,7 @@ def test_each_stage_end_is_timed_on_the_parasitics_of_its_own_report(
         }
     # A stage is timed before its end is recorded, and after its checkpoint except
     # a one-session `place`, which is timed before the clocks are propagated and
-    # checkpointed on entering clock-tree synthesis.
+    # checkpointed before `repair_clock_inverters`.
     kinds = [(e["event"], e.get("stage")) for e in _events(run_dir)]
     for stage in _STAGES[:-1]:
         assert kinds.index(("stage_timing", stage)) < kinds.index(("stage_end", stage))
@@ -318,7 +316,7 @@ def test_global_route_repair_is_timed_before_it_runs_and_at_the_stage_end(
 
 
 def test_a_one_session_run_times_each_stage_as_a_staged_run_does(tmp_path, monkeypatch):
-    """The one-session `place` ends on entering clock-tree synthesis, after the clocks are propagated; its event must still be timed as the staged session and the stage report time it."""
+    """The one-session `place` ends before `repair_clock_inverters`, after the clocks are propagated; its event must still be timed as the staged session and the stage report time it."""
     timed = {}
     for kind in ("one", "staged"):
         (tmp_path / kind).mkdir()

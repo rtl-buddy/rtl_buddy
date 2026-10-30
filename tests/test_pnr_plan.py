@@ -18,6 +18,7 @@ def _run(name, blocks=(), *, reglvl=0, xfail=False, mode=None):
         f"    desc: {name}\n"
         "    synth: s\n"
         "    synth-path: synth.yaml\n"
+        "    floorplan: {utilization: 0.55}\n"
         "    platform: p\n"
         f"    reglvl: {reglvl}\n"
     )

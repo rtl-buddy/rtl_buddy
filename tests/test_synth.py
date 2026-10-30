@@ -6656,9 +6656,12 @@ def _or_threads_script(tmp_path, monkeypatch, threads):
 
 
 def test_openroad_or_script_unset_threads_emits_nothing(tmp_path, monkeypatch):
-    _, script = _or_threads_script(tmp_path, monkeypatch, None)
+    or_synth, script = _or_threads_script(tmp_path, monkeypatch, None)
     assert "set_thread_count" not in script
     assert script.startswith("read_lef ")
+    # OpenROAD picks its own count and logs none, so the count is unknown.
+    res = or_synth._with_threads(SynthPassResults(name="x/results"))
+    assert res.results["openroad_threads"]["effective"] is None
 
 
 def test_openroad_or_script_threads_come_first(tmp_path, monkeypatch):

@@ -2408,6 +2408,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"was not filed as a checkpoint ({fields.get('error')}); what the "
                 f"flow wrote is left in {fields.get('dir')} until the next run"
             )
+        case "pnr.pin_layers_missing":
+            return (
+                f"P&R \"{fields.get('pnr')}\": PDK '{fields.get('pdk')}' needs "
+                "pin-layers.horizontal and pin-layers.vertical in cfg-pdks; "
+                "place_pins has no default layers"
+            )
         case "pnr.allow_congestion_harden":
             return (
                 f'P&R "{fields.get("pnr")}": global-route.allow-congestion is for '
@@ -2775,6 +2781,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "convention"
             )
         case "config.unknown_key_rejected":
+            if fields.get("removed"):
+                return f"{fields.get('path')}: {fields.get('block')}: {fields.get('key')!r} is not a key: {fields.get('removed')}"
             msg = f"{fields.get('path')}: {fields.get('block')}: unknown key {fields.get('key')!r}"
             if fields.get("suggestion"):
                 msg += f", did you mean {fields.get('suggestion')!r}?"

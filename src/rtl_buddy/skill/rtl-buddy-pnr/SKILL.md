@@ -31,7 +31,7 @@ rb --machine pnr-export <run> -c <pnr.yaml> --png        # GDS/PNG from a saved 
 
 - Explore a floorplan with `mode: probe` (no timing repair, stops after global route) before full closure runs.
 - For long runs set `checkpoints: true`, or `stages: true` to make the run resumable. `--resume` reuses earlier stages only if their scripts, inputs and OpenROAD version are unchanged; it is refused otherwise (`fail_stage: resume`).
-- OpenROAD is single-threaded unless the run sets `threads:` (`auto` = the allocation's CPUs). Quote `openroad_threads.effective`.
+- Without `threads:` OpenROAD picks its thread count (26Q4: every host thread); set a count or `auto` (the allocation's CPUs). `openroad_threads.effective` is null when unset.
 - `--dispatch slurm` sizes each stage from the run's `resources:` (`stages.<stage>` overrides). `rb pnr` blocks until the chain ends; Ctrl-C cancels its jobs.
 - `pnr.log` is live. Before calling a route hung, check `DRT-0195` iterations and `DRT-0199` violation counts, and `checkpoints/latest/progress.jsonl` for the current step.
 - To compare iterations stage by stage, read the `stage_timing` events of `checkpoints/latest/progress.jsonl` (or `timing` in `manifest.json`): per corner setup and hold WNS and TNS in ps, with the `parasitics` they were timed on. Null means no constrained path. Compare only events with the same `parasitics`.
@@ -42,7 +42,7 @@ rb --machine pnr-export <run> -c <pnr.yaml> --png        # GDS/PNG from a saved 
 - `PASS` means the flow finished, not that the design closed. Report `wns_setup_ps`, `wns_hold_ps`, `tns_ps`, `tns_hold_ps`, `drc_count` and the three `max_*_violation_count` fields separately from the verdict.
 - Compare experiments on `routed_cell_count`, not `cell_count` (the input netlist).
 - `routed: false` (probe, `--stop-after`) means the numbers are a stage estimate; never report them as routed results.
-- Read qualifiers in `desc`: `pnr.no_wire_rc` (timing before routing had no wire RC; set the PDK's `layer-rc-tcl`), electrical violators, a passed-over or failed post-route repair round, `GDS incomplete`, accepted stale abstracts.
+- Read qualifiers in `desc`: `pnr.no_wire_rc` (timing before routing had no wire RC; set the PDK's `layer-rc-tcl`, which `RSZ-0089` failures need), electrical violators, a passed-over or failed post-route repair round, `GDS incomplete`, accepted stale abstracts.
 - Multi-corner: WNS fields are the worst over corners; `worst_setup_corner`, `worst_hold_corner` and `corners` give the breakdown. `max_fanout_violation_count` counts a pin once per corner. `<top>.<corner>.routed.sdc` is each corner's SDC for signoff STA.
 - To make the verdict judge timing, DRCs or electrical violators, set a `signoff:` block on the platform or run (`rb --machine docs show concepts/pnr#gate-signoff`); `signoff` in the result gives each gate's values and verdict. A gate that cannot be measured (setup unconstrained, no DRC report, an electrical count missing) fails.
 - `post_route_repair.kept_round`, `stop` and `reason` say what the repair rounds achieved.
@@ -59,7 +59,7 @@ Frequent cases:
 - `fail_stage: setup`: a missing file or bad config, named in `desc`. Nothing ran.
 - `fail_stage: incomplete`: a sourced Tcl file called `exit`; remove it.
 - `fail_stage: dispatch`: the stage job was killed by Slurm; read `dispatch/<NN>_<stage>.slurm.log` and raise that stage's `resources:`.
-- `PDN-*` errors: macro halo, macro grid or a turned macro (`PDN-0008`: cut rows around macros in `tapcell-tcl`); `N macros do not fit`: lower `utilization`.
+- `PDN-0179`, or `GRT-0116` between macros: set `placement.macro-channel` (ORFS: sky130hd `[80, 80]`). `PDN-0008`: macro grid or turned macro; cut rows in `tapcell-tcl`.
 - Global-route overflow or high `drc_count`: lower density or utilization, `placement.routability-driven`, `routing-layer-adjustment`, `global-route:` options. A failed global route leaves its database as the checkpoint its `failed_global_route` field names; inspect it with `rb pnr-export --checkpoint <that value>`.
 - Macro pins in `electrical.rpt`, such as SRAM inputs with a tight `max_transition`: `placement.macro-pin-limits`; `macro_pin_unmet_count` counts the pins it could not fix.
 - Clock tree: a run sets `cts-sink-clustering` (`false`, or `{size, max-diameter}` in µm), `cts-root-buffer`, `cts-obstruction-aware` and `cts-repair-clock-nets` (`{max-wire-length}` in µm) without a platform of its own. `CTS-0080`: `cts-sink-clustering: false`, or `cts-obstruction-aware: false` on a block with macros; that one fails setup on an OpenROAD without `-no_obstruction_aware`.

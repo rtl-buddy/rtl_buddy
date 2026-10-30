@@ -3,9 +3,8 @@
 #
 # Substituted into pnr.tcl at the start of the macro placement stage, only when
 # the run has macro directives. `rb::macros::apply` orients the macros,
-# records their cell halos, and fixes the ones with a location before the
-# packer or RTL-MP runs. Both leave a fixed macro where it is; the packer also
-# keeps the others a macro halo away from it.
+# records their cell halos, and fixes the ones with a location before RTL-MP
+# or a `macro-placement` hook runs. RTL-MP leaves a fixed macro where it is.
 #
 # `snap` and `overlaps` are plain arithmetic, so tests/test_pnr_floorplan_macros.py
 # runs them under a bare Tcl interpreter.
@@ -77,16 +76,12 @@ proc rb::macros::match {block where pattern} {
 # corner of the oriented macro whichever entry orients it. A located macro is
 # snapped to the site grid from the core's lower-left corner (`grid` is
 # {site_width row_height} in DBU) unless `snap` is 0, must lie inside the core
-# and clear of every other fixed macro, and is LOCKED. Its box grown by
-# `halo_dbu` (the macro halo) is appended to the global MACRO_KEEPOUTS for the
-# packer; its cell halo goes into the global MACRO_CELL_HALOS. Each fixed macro
-# is reported on a `RB-FLOORPLAN-MACRO: x y orientation name` line in DBU,
-# which rb compares with the routed DEF.
-proc rb::macros::apply {block macros entries grid halo_dbu dbu_per_micron {snap 1}} {
-    upvar #0 MACRO_CELL_HALOS cell_halos MACRO_KEEPOUTS keepouts
-    if {![info exists keepouts]} {
-        set keepouts {}
-    }
+# and clear of every other fixed macro, and is LOCKED. Its cell halo goes into
+# the global MACRO_CELL_HALOS. Each fixed macro is reported on a
+# `RB-FLOORPLAN-MACRO: x y orientation name` line in DBU, which rb compares
+# with the routed DEF.
+proc rb::macros::apply {block macros entries grid dbu_per_micron {snap 1}} {
+    upvar #0 MACRO_CELL_HALOS cell_halos
     set core [$block getCoreArea]
     set core_box [list [$core xMin] [$core yMin] [$core xMax] [$core yMax]]
     lassign $core_box cx0 cy0 cx1 cy1
@@ -155,9 +150,6 @@ proc rb::macros::apply {block macros entries grid halo_dbu dbu_per_micron {snap 
         $inst setLocation $x $y
         $inst setPlacementStatus LOCKED
         lappend fixed [list $name $box]
-        lappend keepouts [list \
-            [expr {$x - $halo_dbu}] [expr {$y - $halo_dbu}] \
-            [expr {$x + $width + $halo_dbu}] [expr {$y + $height + $halo_dbu}]]
         set placed [$inst getBBox]
         puts [format ">>>   %s: fixed %s at (%s, %s) um %s (requested (%s, %s))" \
             $where $name [um [$placed xMin] $dbu_per_micron] [um [$placed yMin] $dbu_per_micron] \

@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
+from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr import GdsMode, PnrConfig, PnrFloorplan, PnrSuiteConfig
 from rtl_buddy.config.pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
 from rtl_buddy.runner.pnr_results import PnrFailResults, PnrPassResults
@@ -35,6 +35,7 @@ def _touch(*paths):
 def _pdk(tmp_path):
     pdk = PdkConfig(
         PdkConfigFile(
+            pin_layers=PdkPinLayersFile(horizontal="metal3", vertical="metal2"),
             name="nangate45",
             site="core",
             corners={"typ": "pdk/lib/typ.lib"},
@@ -194,6 +195,7 @@ def _suite(tmp_path, extra=""):
             desc: block
             synth: s
             synth-path: synth.yaml
+            floorplan: {{utilization: 0.55}}
             platform: p
         {extra}""")
     )

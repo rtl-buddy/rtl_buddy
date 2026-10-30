@@ -22,7 +22,7 @@ from textwrap import dedent
 import pytest
 from test_pnr import _make_pdk_cfg, _platform, _render_flow
 from test_pnr_block_power import _TECH_LEF
-from test_pnr_macro_pack import _tcl_eval
+from tcl_eval import _tcl_eval
 from test_pnr_stages import _NAMES, _STAGES, _only_run, _staged
 
 _CALL = "rb::supply_ports::reassert\n"

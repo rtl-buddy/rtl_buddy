@@ -6,12 +6,9 @@ from importlib.resources import files
 import pytest
 from test_pnr_floorplan_controls import _floorplan, _load, _render
 from test_pnr_floorplan_pins import _platform
-from test_pnr_macro_pack import _tcl_eval
+from tcl_eval import _tcl_eval
 
 from rtl_buddy.config.pnr import (
-    BlockageType,
-    MacroPlacement,
-    PnrBlockage,
     PnrMacro,
     PnrMacroFile,
     PnrSuiteConfig,
@@ -20,9 +17,20 @@ from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.tools import pnr_abstract
 
 
-def _macros(tmp_path, *entries, **floorplan) -> list[PnrMacro]:
+def _macro_hook(tmp_path) -> dict:
+    """A `macro-placement` hook, which lets an entry orient a macro without locating it."""
+    (tmp_path / "place_macros.tcl").write_text("# places the macros\n")
+    return {"macro-placement": "place_macros.tcl"}
+
+
+def _macros(tmp_path, *entries, hook=False, **floorplan) -> list[PnrMacro]:
     return (
-        _load(tmp_path, macros=[PnrMacroFile(**e) for e in entries], **floorplan)
+        _load(
+            tmp_path,
+            hooks=_macro_hook(tmp_path) if hook else None,
+            macros=[PnrMacroFile(**e) for e in entries],
+            **floorplan,
+        )
         .get_floorplan()
         .macros
     )
@@ -38,6 +46,7 @@ def test_directives_load(tmp_path):
         {"instance": "u_sram", "location": [30, 200.5], "orientation": "MX"},
         {"instance": "u_blk*", "orientation": "R180", "halo": [2, 3.5]},
         {"instance": r"gen\[0\].u_mem", "halo": [0, 0]},
+        hook=True,
     )
 
     assert macros == [
@@ -51,7 +60,9 @@ def test_directives_load(tmp_path):
     "orientation", ["R0", "R90", "R180", "R270", "MX", "MY", "MXR90", "MYR90"]
 )
 def test_every_orientation_loads(tmp_path, orientation):
-    (macro,) = _macros(tmp_path, {"instance": "m", "orientation": orientation})
+    (macro,) = _macros(
+        tmp_path, {"instance": "m", "orientation": orientation}, hook=True
+    )
     assert macro.orientation == orientation
 
 
@@ -77,19 +88,20 @@ def test_a_malformed_directive_fails_at_load_and_names_its_index(
     assert "pnr run 'fp': floorplan.macros[1]" in str(err.value)
 
 
-def test_rtl_mp_refuses_an_orientation_without_a_location(tmp_path):
-    with pytest.raises(FatalRtlBuddyError, match="chooses the orientation"):
-        _macros(
-            tmp_path,
-            {"instance": "m", "orientation": "MX"},
-            macro_placement="rtl-mp",
-        )
+def test_an_orientation_without_a_location_needs_a_macro_placement_hook(tmp_path):
+    with pytest.raises(
+        FatalRtlBuddyError,
+        match="floorplan.macros\\[0\\]: RTL-MP chooses the orientation of every "
+        "macro it places; give this macro a location too, or place the macros "
+        "with a 'macro-placement' hook",
+    ):
+        _macros(tmp_path, {"instance": "m", "orientation": "MX"})
     (macro,) = _macros(
-        tmp_path,
-        {"instance": "m", "orientation": "MX", "location": [5, 5]},
-        macro_placement="rtl-mp",
+        tmp_path, {"instance": "m", "orientation": "MX", "location": [5, 5]}
     )
     assert macro.location == (5.0, 5.0)
+    (macro,) = _macros(tmp_path, {"instance": "m", "orientation": "MX"}, hook=True)
+    assert macro.orientation == "MX"
 
 
 def test_the_yaml_spelling_loads(tmp_path):
@@ -105,9 +117,10 @@ def test_the_yaml_spelling_loads(tmp_path):
                 synth-path: synth.yaml
                 platform: p
                 floorplan:
+                  utilization: 0.55
                   macros:
                     - {instance: u_sram, location: [30, 200], orientation: MX, halo: [3, 3]}
-                    - {instance: "u_c*", orientation: R180}
+                    - {instance: "u_c*", halo: [1, 1]}
             """
         )
     )
@@ -115,14 +128,13 @@ def test_the_yaml_spelling_loads(tmp_path):
 
     assert fp.macros == [
         PnrMacro("u_sram", (30.0, 200.0), "MX", (3.0, 3.0)),
-        PnrMacro("u_c*", orientation="R180"),
+        PnrMacro("u_c*", halo=(1.0, 1.0)),
     ]
 
 
 _APPLY = (
     "  set rb_movable_macros [rb::macros::apply $block $macros $MACRO_DIRECTIVES "
-    "$site_grid_dbu [expr {int(round([ord::microns_to_dbu $MACRO_HALO]))}] "
-    "$dbu_per_micron]\n"
+    "$site_grid_dbu $dbu_per_micron]\n"
 )
 
 
@@ -132,10 +144,14 @@ def test_unset_directives_render_the_plain_macro_branch(tmp_path):
     assert "rb::macros" not in text
     assert "rb_movable_macros" not in text
     assert "set MACRO_CELL_HALOS {}\n" in text
-    assert "  foreach inst $macros {\n    set master [$inst getMaster]" in text
+    assert (
+        "if {[llength $macros] > 0} {\n"
+        "  file mkdir $OUT_DIR/rtlmp\n"
+        "  rtl_macro_placer -report_directory $OUT_DIR/rtlmp -target_util 0.7\n"
+    ) in text
 
 
-def test_directives_fix_macros_before_the_packer_and_feed_it_keepouts(tmp_path):
+def test_directives_fix_macros_before_rtl_mp_places_the_rest(tmp_path):
     text = _render(
         tmp_path,
         _floorplan(
@@ -152,54 +168,20 @@ def test_directives_fix_macros_before_the_packer_and_feed_it_keepouts(tmp_path):
         "  lappend MACRO_DIRECTIVES [list {floorplan.macros[1]} {u_c*} {} R180 {}]\n"
     )
     assert entries + _APPLY in text
+    # RTL-MP leaves the LOCKED macros where they are, and does not run when every macro is located.
     assert (
-        "  if {[llength $rb_movable_macros] > 0} {\n  set core [$block getCoreArea]\n"
-    ) in text
-    # The packer packs a directive's macros by their oriented size.
-    assert (
-        "  foreach inst $rb_movable_macros {\n    set bbox [$inst getBBox]\n"
-        "    lappend footprints [list [$inst getName] [$bbox getDX] [$bbox getDY]]\n"
-    ) in text
-    assert (
-        "      $footprints $halo_dbu $site_grid_dbu $dbu_per_micron \\\n"
-        "      lower-left $MACRO_KEEPOUTS]\n"
+        _APPLY + "  if {[llength $rb_movable_macros] > 0} {\n"
+        "    file mkdir $OUT_DIR/rtlmp\n"
+        "    rtl_macro_placer -report_directory $OUT_DIR/rtlmp -target_util 0.7\n"
+        "    foreach inst $rb_movable_macros {\n"
     ) in text
     assert (
         text.index('puts ">>> Macro placement"')
         < text.index("proc rb::macros::apply")
         < text.index(_APPLY)
-        < text.index("rb::macro_pack::solve \\")
+        < text.index("rtl_macro_placer -")
         < text.index("dict exists $MACRO_CELL_HALOS [$inst getName]")
     )
-
-
-def test_directives_with_an_anchor_and_hard_blockages_keep_both(tmp_path):
-    from rtl_buddy.config.pnr import MacroAnchor
-
-    text = _render(
-        tmp_path,
-        _floorplan(
-            macro_anchor=MacroAnchor.UPPER_RIGHT,
-            blockages=[PnrBlockage((5.0, 5.0, 50.0, 50.0), BlockageType.HARD)],
-            macros=[PnrMacro("u_sram", halo=(1.0, 1.0))],
-        ),
-    )
-
-    assert text.count("      upper-right $MACRO_KEEPOUTS]\n") == 1
-    assert text.index("set MACRO_KEEPOUTS {}") < text.index(_APPLY)
-
-
-def test_rtl_mp_runs_after_the_directives(tmp_path):
-    text = _render(
-        tmp_path,
-        _floorplan(
-            macro_placement=MacroPlacement.RTL_MP,
-            macros=[PnrMacro("u_sram", (30.0, 20.0))],
-        ),
-    )
-
-    assert text.index(_APPLY) < text.index("rtl_macro_placer -")
-    assert "rb::macro_pack::solve \\" not in text
 
 
 def _tcl(script: str) -> str:

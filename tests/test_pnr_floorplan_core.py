@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from test_pnr_floorplan_controls import _floorplan, _load, _render
 from test_pnr_floorplan_pins import _platform
-from test_pnr_macro_pack import _tcl_eval
+from tcl_eval import _tcl_eval
 
 from rtl_buddy.config.pdk import PdkConfig
 from rtl_buddy.config.pnr import (
@@ -33,6 +33,13 @@ _DEFAULT_INIT = (
 )
 
 
+def _sized(floorplan: dict) -> dict:
+    """`floorplan` with a utilization when it sets no size."""
+    if floorplan.keys() & {"utilization", "die_area", "core_area"}:
+        return floorplan
+    return {"utilization": 0.55, **floorplan}
+
+
 def _run(tmp_path, **fields):
     floorplan = fields.pop("floorplan", {})
     return PnrConfigFile(
@@ -41,7 +48,7 @@ def _run(tmp_path, **fields):
         synth="demo",
         synth_path="synth.yaml",
         platform="p",
-        floorplan=PnrFloorplanFile(**floorplan),
+        floorplan=PnrFloorplanFile(**_sized(floorplan)),
         **fields,
     ).initialise(str(tmp_path))
 
@@ -49,11 +56,35 @@ def _run(tmp_path, **fields):
 # --- die and core areas -----------------------------------------------------
 
 
-def test_sizing_defaults_are_unchanged(tmp_path):
-    fp = _load(tmp_path).get_floorplan()
+def test_sizing_defaults_are_the_tool_aspect_and_the_orfs_core_margin(tmp_path):
+    fp = _load(tmp_path, utilization=0.4).get_floorplan()
 
-    assert (fp.utilization, fp.aspect, fp.core_margin) == (0.55, 1.0, 2.0)
+    assert (fp.utilization, fp.aspect, fp.core_margin) == (0.4, 1.0, 1.0)
     assert fp.die_area is None and fp.core_area is None and fp.core_cutouts == []
+
+
+def test_utilization_is_required_without_die_and_core_areas(tmp_path):
+    with pytest.raises(
+        FatalRtlBuddyError,
+        match="floorplan: set utilization, or die-area and core-area; "
+        "initialize_floorplan has no default utilization",
+    ):
+        PnrConfigFile(
+            name="fp",
+            desc="fp",
+            synth="demo",
+            synth_path="synth.yaml",
+            platform="p",
+            floorplan=PnrFloorplanFile(aspect=1.0),
+        ).initialise(str(tmp_path))
+
+
+def test_die_and_core_areas_leave_utilization_unset(tmp_path):
+    fp = _run(
+        tmp_path, floorplan={"die_area": [0, 0, 100, 100], "core_area": [5, 5, 95, 95]}
+    ).get_floorplan()
+
+    assert fp.utilization is None
 
 
 def test_explicit_areas_load(tmp_path):
@@ -139,25 +170,26 @@ def test_explicit_areas_render_die_and_core(tmp_path):
     assert "-utilization" not in text
 
 
-def test_cutouts_are_checked_hard_blockages_that_cut_rows_and_keep_macros_out(
+def test_cutouts_are_checked_hard_blockages_that_cut_rows_before_macro_placement(
     tmp_path,
 ):
     text = _render(tmp_path, _floorplan(core_cutouts=[(80.0, 80.0, 140.0, 140.0)]))
 
-    assert 'puts ">>> Core cut-outs"\nset MACRO_KEEPOUTS {}\n' in text
+    assert (
+        'puts ">>> Core cut-outs"\nset HARD_BLOCKAGES {}\nset HARD_BLOCKAGE_LABELS {}\n'
+    ) in text
     assert (
         "set blockage_box [[create_blockage -region {80 80 140 140}] getBBox]\n"
     ) in text
     assert "floorplan.core-cutouts[0] {80 80 140 140} um does not overlap" in text
-    assert "[rb::rows::cut_under [ord::get_db_block] $MACRO_KEEPOUTS]" in text
-    assert "      lower-left $MACRO_KEEPOUTS]\n" in text
+    assert "[rb::rows::cut_under [ord::get_db_block] $HARD_BLOCKAGES]" in text
     assert text.index("Core cut-outs") < text.index('puts ">>> Macro placement"')
 
 
 def test_a_cutout_outside_the_core_fails_with_its_message(tmp_path):
     text = _render(tmp_path, _floorplan(core_cutouts=[(80.0, 80.0, 140.0, 140.0)]))
     start = text.index("set blockage_box [[create_blockage")
-    check = text[start : text.index("lappend MACRO_KEEPOUTS", start)]
+    check = text[start : text.index("lappend HARD_BLOCKAGES", start)]
     stubs = textwrap.dedent(
         """\
         proc rb_box {x0 y0 x1 y1} {
@@ -272,7 +304,7 @@ def test_an_explicit_connect_list_is_kept(tmp_path):
                 ),
             },
             {},
-            r"ring needs 3.5 um outside the core .* leaves 2 um",
+            r"ring needs 3.5 um outside the core .* leaves 1 um",
         ),
         (
             {
