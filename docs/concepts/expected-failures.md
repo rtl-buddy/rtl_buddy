@@ -29,7 +29,7 @@ A negative control fails in two ways when the check it exists for regresses: the
 
 - The regex is searched, not anchored, with Python `re` syntax. Quote it in YAML.
 - It is searched in the first error/fatal line the grader recorded, then in the result desc. A matching `FAIL` becomes `XFAIL`.
-- The first error/fatal line is the sim log's first `ERR:`/`FAT:` line; under `uvm:`, the first `UVM_ERROR`/`UVM_FATAL` report; for a failure from fired SVA assertions, the first `Assertion failed` line. The result carries it as `first_error`. Other flows and graders use the desc alone.
+- The first error/fatal line is the sim log's first `ERR:`/`FAT:` line; under `uvm:`, the first `UVM_ERROR`/`UVM_FATAL` report; for a failure from fired SVA assertions, the first `Assertion failed` line; for a simulator that exited nonzero after `PASS`, the first assertion failure or Verilator `%Error`/`%Fatal` line. The result carries it as `first_error`. Other flows and graders use the desc alone.
 - A `FAIL` that does not match stays `FAIL`, with desc `xfail: failed for a different reason (expected /ECP-1017/): <desc>`, and the `*_suite.xfail` event reports `excused: false` with that reason.
 - A pass is graded as without `xfail_match`: `XPASS`, a failure only under `xfail_strict`.
 - It is accepted on every flow that takes a marker. Without `xfail` or `xfail_strict`, or with an invalid regex, configuration loading fails.
@@ -44,6 +44,8 @@ A marker excuses only a verdict the flow's own tool reported at its end: a simul
 | `fpv` | sby reporting `UNKNOWN`, a solver timeout, or an error instead of `PASS`/`FAIL`; a `prove` whose base case passed and induction step failed is a verdict, not a tool failure |
 | `cdc`, `lint` | the analyzer failing before it produced a count |
 | `synth`, `pnr`, `power`, `fpga` | setup failures: a missing tool, an unresolvable platform or PDK, a filelist or script-generation error |
+
+A simulator that printed `PASS` and then exited nonzero reported its own error, so a marker covers that `FAIL`; name the expected error with `xfail_match`.
 
 In `synth`, `pnr`, `power` and `fpga`, a failure the tool itself reports is that flow's verdict, so a marker still covers a synthesis the tool rejected.
 

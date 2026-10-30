@@ -1535,6 +1535,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('test')}: simulator {_sim_exit_phrase(fields)} and "
                 "the transcript has no PASS/FAIL verdict; result is FAIL (#546)"
             )
+        case "sim.error_after_pass":
+            first = fields.get("first_error")
+            return (
+                f"{fields.get('test')}: simulator {_sim_exit_phrase(fields)} after "
+                "the transcript's PASS verdict; result is FAIL"
+                + (f" ({first})" if first else "")
+            )
         case "sim.stage_failed":
             return (
                 f"{fields.get('test')}: simulator {_sim_exit_phrase(fields)} before "

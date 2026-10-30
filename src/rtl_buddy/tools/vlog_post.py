@@ -3,7 +3,7 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Grades Verilog simulation output from its PASS/FAIL markers, UVM summary and assertion failures."""
+"""Grades Verilog simulation output from its PASS/FAIL markers, UVM summary, assertion failures and exit status."""
 
 import logging
 import os
@@ -57,6 +57,31 @@ def first_assertion_failure(*paths) -> str | None:
     return None
 
 
+# A Verilator error or fatal message, e.g. `%Error: tb.sv:12: Verilog $stop`.
+_VERILATOR_ERROR_LINE_RE = re.compile(r"^(?:\[\d+\]\s+)?%(?:Error|Fatal)\b")
+
+
+def first_sim_error(*paths) -> str | None:
+    """Return the line that best names why a simulator exited nonzero, stripped, or None.
+
+    The first assertion failure (see :func:`first_assertion_failure`) wins; otherwise the first Verilator ``%Error``/``%Fatal`` line. Missing files are skipped.
+    """
+    first = first_assertion_failure(*paths)
+    if first is not None:
+        return first
+    for path in paths:
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", errors="replace") as f:
+                for line in f:
+                    if _VERILATOR_ERROR_LINE_RE.match(line):
+                        return line.strip()
+        except OSError:
+            continue
+    return None
+
+
 # A UVM_ERROR/UVM_FATAL report line, e.g. `UVM_ERROR tb.sv(42) @ 100: reporter [ID] msg`, optionally after a `# ` transcript prefix.
 # The negative lookahead skips the report summary's `UVM_ERROR :    1` count lines.
 _UVM_ERROR_LINE_RE = re.compile(r"^\s*(?:#\s*)?UVM_(?:ERROR|FATAL)\s+(?!:)\S")
@@ -95,6 +120,56 @@ def grade_unknown_sim_exit(results: dict, sim_returncode, *, test, run_id=None):
     # The simulator died without a verdict, so an xfail marker has nothing to excuse.
     results[FAIL_STAGE_KEY] = "sim"
     return True
+
+
+def grade_pass_sim_exit(
+    results: dict, sim_returncode, *, test, run_id=None, transcripts=()
+):
+    """Re-grade a ``PASS`` result to ``FAIL`` when the simulator exited nonzero.
+
+    A nonzero exit or a signal death means the simulator reported an error the
+    PASS verdict does not cover, e.g. a ``final``-block assertion, ``$stop`` or
+    an abort after the marker. Mutates ``results`` in place and returns whether
+    it changed. The desc names the exit status and, when ``transcripts`` hold
+    one, the first error line, which is also recorded as ``first_error``. No
+    ``fail_stage`` is set: the failure is the simulator's own report, so an
+    xfail marker may excuse it. Call before ``postproc.completed`` is logged.
+    """
+    if not sim_returncode or results.get("result") != "PASS":
+        return False
+    first = first_sim_error(*transcripts)
+    log_event(
+        logger,
+        logging.ERROR,
+        "sim.error_after_pass",
+        test=test,
+        run_id=run_id,
+        returncode=sim_returncode,
+        first_error=first,
+    )
+    reason = f"Sim {describe_sim_exit(sim_returncode)} after a PASS verdict"
+    if first is not None:
+        reason = f"{reason}: {first}"
+        results[FIRST_ERROR_KEY] = first
+    results["result"] = "FAIL"
+    results["desc"] = f"{reason} (was PASS: {results.get('desc', '')})"
+    return True
+
+
+def grade_sim_exit(results: dict, sim_returncode, *, test, run_id=None, transcripts=()):
+    """Grade a post-processed result against the simulator's exit status.
+
+    A nonzero exit or signal death fails the test whatever the transcript says:
+    an ``NA`` becomes a ``FAIL`` the xfail marker cannot excuse
+    (:func:`grade_unknown_sim_exit`), a ``PASS`` becomes a ``FAIL`` it can
+    (:func:`grade_pass_sim_exit`). A ``FAIL`` keeps its own reason. Returns
+    whether the result changed.
+    """
+    if grade_unknown_sim_exit(results, sim_returncode, test=test, run_id=run_id):
+        return True
+    return grade_pass_sim_exit(
+        results, sim_returncode, test=test, run_id=run_id, transcripts=transcripts
+    )
 
 
 class VlogPost:
