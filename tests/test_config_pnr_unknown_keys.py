@@ -241,6 +241,7 @@ PDK_ALL = {
     "pin-layers": {"horizontal": "m3", "vertical": "m2"},
     "placement": PLACEMENT_ALL,
     "dont-use-cells": ["x*"],
+    "match-cell-footprint": True,
     "pdn-config": "pdn.tcl",
     "rcx-rules": "rcx.rules",
     "tracks-tcl": "tracks.tcl",
@@ -274,6 +275,7 @@ PLATFORM_ONE_CORNER = {
     "dont-use-cells": ["y*"],
     "cts-dont-use-cells": ["*_L", "*_SL"],
     "keep-sizing-vt": True,
+    "match-cell-footprint": False,
     "tapcell-tcl": "tap_platform.tcl",
     "global-route": GLOBAL_ROUTE_ALL,
     "signoff": {"setup-corners": ["typ"], "fail-on": ["timing"]},
@@ -745,8 +747,8 @@ cfg-pnr-platforms:
             "cfg-pdks 'pdk1'",
             "name, site, corners, tech-lef, macro-lef, cell-gds, klayout-tech, "
             "klayout-props, tie-hi, tie-lo, fill-cells, pin-layers, placement, "
-            "dont-use-cells, pdn-config, rcx-rules, tracks-tcl, layer-rc-tcl, "
-            "tapcell-tcl, platform-tcl",
+            "dont-use-cells, match-cell-footprint, pdn-config, rcx-rules, "
+            "tracks-tcl, layer-rc-tcl, tapcell-tcl, platform-tcl",
         ),
         (
             "pdk",
@@ -782,7 +784,8 @@ cfg-pnr-platforms:
             "detailed-route-antenna-repair, global-route-hold-repair, "
             "global-route-repair, post-route-repair, routing-layer-adjustment, cts-apply-ndr, "
             "port-buffer, max-fanout, routing-layers, placement, dont-use-cells, "
-            "cts-dont-use-cells, keep-sizing-vt, tapcell-tcl, global-route, signoff",
+            "cts-dont-use-cells, keep-sizing-vt, match-cell-footprint, tapcell-tcl, "
+            "global-route, signoff",
         ),
         (
             "platform",

@@ -643,9 +643,16 @@ def _wire_rc_spec(wire_rc: WireRc) -> str:
     )
 
 
-def _repair_design_tcl(title: str, design: RepairDesign, when: str = "") -> list[str]:
-    """`repair_design` after a log line naming it; with `wire-rc`, at that signal wire RC, the session's restored after it. `when` follows the command in the log line."""
-    command = f"repair_design{design.options()}"
+def _match_footprint_option(platform) -> str:
+    """Return ` -match_cell_footprint` for every `repair_design` and `repair_timing` when `match-cell-footprint` is set, as ORFS passes it for `MATCH_CELL_FOOTPRINT`, else `""`."""
+    return " -match_cell_footprint" if platform.get_match_cell_footprint() else ""
+
+
+def _repair_design_tcl(
+    title: str, design: RepairDesign, when: str = "", footprint: str = ""
+) -> list[str]:
+    """`repair_design` after a log line naming it; with `wire-rc`, at that signal wire RC, the session's restored after it. `when` follows the command in the log line; `footprint` is `_match_footprint_option`."""
+    command = f"repair_design{design.options()}{footprint}"
     if design.wire_rc is None:
         return [f'puts ">>> {title}: {command}{when}"', command]
     return [
@@ -665,8 +672,9 @@ def _repair_steps_tcl(
     hold_ns: float | None,
     ps_per_unit: float | None,
     legalize: str | None,
+    footprint: str = "",
 ) -> str:
-    """Return `repair_design`, then setup and hold `repair_timing`, each after a log line naming it.
+    """Return `repair_design`, then setup and hold `repair_timing`, each after a log line naming it, each with `footprint` (`_match_footprint_option`).
 
     Margins are given in ns and passed in the Liberty time unit (`ps_per_unit` picoseconds), which is what `repair_timing` reads; the log line gives both. A zero margin is the tool's default and passes no option. The hold repair also passes a set setup margin, as ORFS's `repair_timing_helper` does, so it keeps that much setup slack on the paths it delays.
 
@@ -676,7 +684,7 @@ def _repair_steps_tcl(
     """
     lines = []
     if design is not None:
-        lines += _repair_design_tcl(title, design)
+        lines += _repair_design_tcl(title, design, footprint=footprint)
         if legalize is not None and (setup_ns is not None or hold_ns is not None):
             lines += [
                 f'puts ">>> {title}: legalize after repair_design"',
@@ -698,7 +706,9 @@ def _repair_steps_tcl(
         options = [_option(kind, margin)]
         if kind == "hold" and setup_ns is not None:
             options.append(_option("setup", setup_ns))
-        command = f"repair_timing -{kind}" + "".join(opt for opt, _ in options)
+        command = (
+            f"repair_timing -{kind}" + "".join(opt for opt, _ in options) + footprint
+        )
         note = ", ".join(n for _, n in options)
         if any(opt for opt, _ in options):
             note += f" in Liberty time unit {format_time_unit(ps_per_unit)}"
@@ -706,7 +716,7 @@ def _repair_steps_tcl(
             note += ", signal wire RC [rb::rc::describe] for the nets it changes"
         lines += [f'puts ">>> {title}: {command} ({note})"', command]
     if design is not None and design.after_timing:
-        lines += _repair_design_tcl(title, design, " after timing repair")
+        lines += _repair_design_tcl(title, design, " after timing repair", footprint)
     return "".join(f"{line}\n" for line in lines)
 
 
@@ -717,11 +727,16 @@ def _post_cts_repair_tcl(platform, mode: PnrMode) -> str:
     """
     if mode is PnrMode.PROBE:
         return '\nputs ">>> Post-CTS timing repair: skipped (mode: probe)"\n'
-    setup = "repair_timing -setup\n" if platform.get_post_cts_setup_repair() else ""
+    footprint = _match_footprint_option(platform)
+    setup = (
+        f"repair_timing -setup{footprint}\n"
+        if platform.get_post_cts_setup_repair()
+        else ""
+    )
     return (
         '\nputs ">>> Post-CTS timing repair"\n'
         "estimate_parasitics -placement\n"
-        f"{setup}repair_timing -hold\n"
+        f"{setup}repair_timing -hold{footprint}\n"
     )
 
 
@@ -734,7 +749,7 @@ def _floorplan_setup_repair_tcl(platform, mode: PnrMode) -> str:
     return (
         'puts ">>> Floorplan setup repair"\n'
         'repair_timing -setup -sequence "unbuffer,sizeup,swap,vt_swap" '
-        "-skip_last_gasp\n"
+        f"-skip_last_gasp{_match_footprint_option(platform)}\n"
     )
 
 
@@ -816,8 +831,9 @@ def _global_route_repair_tcl(
     dpl_options: str = "",
     gr: GlobalRoute = GlobalRoute(),
     timing: bool = False,
+    footprint: str = "",
 ) -> str:
-    """Return the repair on global-route parasitics, as ORFS runs it, or `""` when the platform and run leave it off. A probe skips it. With `timing` (checkpoints armed) the repair starts by timing the router's result, the stage's `before_repair` event.
+    """Return the repair on global-route parasitics, as ORFS runs it, or `""` when the platform and run leave it off. Each repair command takes `footprint` (`_match_footprint_option`). A probe skips it. With `timing` (checkpoints armed) the repair starts by timing the router's result, the stage's `before_repair` event.
 
     The global-route estimate includes the wires that post-CTS repair (on placement parasitics) could not see. The resizer reroutes the nets it changes; the cells it adds are legalized, then `reroute: incremental` reroutes their nets incrementally and `full` runs the flow's global route again. The closing route is `-verbose`, so the log repeats the congestion table after the repair. `dpl_options` follows its `detailed_placement`, as it does the flow's others.
 
@@ -834,7 +850,7 @@ def _global_route_repair_tcl(
         return (
             before + 'puts ">>> Post-global-route hold repair"\n'
             "estimate_parasitics -global_routing\n"
-            "repair_timing -hold\n"
+            f"repair_timing -hold{footprint}\n"
             + _start_incremental_cmd(gr)
             + f"detailed_placement{dpl_options}\n"
             + _end_incremental_cmd(gr)
@@ -849,6 +865,7 @@ def _global_route_repair_tcl(
         repair.hold_margin,
         ps_per_unit,
         legalize,
+        footprint,
     )
     head = (
         before + f'puts ">>> {title} (reroute {repair.reroute.value})"\n'
@@ -3430,6 +3447,7 @@ class OpenRoadPnr:
             ),
             "post_cts_repair": _post_cts_repair_tcl(platform, self._mode),
             "floorplan_setup_repair": _floorplan_setup_repair_tcl(platform, self._mode),
+            "match_cell_footprint": _match_footprint_option(platform),
             "detailed_placement_optimization": _detailed_placement_optimization_tcl(
                 platform
             ),
@@ -3453,6 +3471,7 @@ class OpenRoadPnr:
                 gp_blocks.dpl_options,
                 platform.get_global_route(),
                 timing=self._arms_checkpoints(),
+                footprint=_match_footprint_option(platform),
             ),
             "gp_blockages_create": gp_blocks.create,
             "gp_blockages_destroy": gp_blocks.destroy,
@@ -3763,6 +3782,7 @@ class OpenRoadPnr:
         setup, hold = repair.margins(round_)
         title = self._round_title(round_)
         gr = self._platform.get_global_route()
+        footprint = _match_footprint_option(self._platform)
         if round_ == self._electrical_round():
             # Only `repair_design`, on the best round's database (`run_post_route_repair`).
             design = repair.electrical_design()
@@ -3791,13 +3811,13 @@ class OpenRoadPnr:
                 "estimate_parasitics -global_routing\n",
                 spef,
                 _repair_steps_tcl(
-                    title, design, setup, hold, self._ps_per_unit, legalize
+                    title, design, setup, hold, self._ps_per_unit, legalize, footprint
                 ),
                 legalize,
             ]
         else:
             steps = _repair_steps_tcl(
-                title, design, setup, hold, self._ps_per_unit, None
+                title, design, setup, hold, self._ps_per_unit, None, footprint
             )
             parts += [
                 files(_TEMPLATE_PACKAGE).joinpath(_ECO_REPAIR_FILE).read_text(),

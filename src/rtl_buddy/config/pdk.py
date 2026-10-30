@@ -343,6 +343,10 @@ class PdkConfigFile:
     placement: PlacementFile = field(default_factory=PlacementFile)
     # Cell patterns that `rb synth` and `rb pnr` must not map to or repair with.
     dont_use_cells: list[str] = field(rename="dont-use-cells", default_factory=list)
+    # `-match_cell_footprint` on every `repair_design` and `repair_timing` of `rb pnr`, as ORFS's `MATCH_CELL_FOOTPRINT`; `None` leaves it to the platform, unset means off.
+    match_cell_footprint: bool | None = field(
+        rename="match-cell-footprint", default=None
+    )
     # Tcl snippet defining the power grid; the flow sources it and calls `pdngen`.
     pdn_config: str = field(rename="pdn-config", default="")
     # OpenRCX rules file. When set, `rb pnr` writes `<top>.routed.spef`, which `rb power` with `netlist-source: pnr` reads.
@@ -393,6 +397,7 @@ class PdkConfig:
         self._dont_use_cells = _validate_dont_use_cells(
             cfg.dont_use_cells, f"PDK '{cfg.name}'"
         )
+        self._match_cell_footprint = cfg.match_cell_footprint
         self._pdn_config = _resolve(cfg.pdn_config)
         self._rcx_rules = _resolve(cfg.rcx_rules)
         self._tcl_hooks = {
@@ -521,6 +526,10 @@ class PdkConfig:
 
     def get_dont_use_cells(self) -> list[str]:
         return list(self._dont_use_cells)
+
+    def get_match_cell_footprint(self) -> bool | None:
+        """Configured `match-cell-footprint`, or `None` when unset."""
+        return self._match_cell_footprint
 
     def get_pdn_config(self) -> str:
         """Resolved path to the PDN Tcl snippet, or `""` when unset."""

@@ -117,7 +117,7 @@ rb::global_connect
 {{ free_port_buffers_block }}{{ gp_blockages_destroy }}{{ hook_after_global_placement_block }}{{ tie_fanout_block }}
 puts ">>> Resize"
 estimate_parasitics -placement
-repair_design
+repair_design{{ match_cell_footprint }}
 {{ hook_after_repair_design_block }}
 puts ">>> Detail placement (legalize)"
 detailed_placement{{ dpl_options }}
