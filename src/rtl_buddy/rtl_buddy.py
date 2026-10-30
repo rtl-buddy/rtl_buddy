@@ -254,7 +254,7 @@ from .tools.hier_rtl_buddy_view import (
     RtlBuddyViewQuery,
     probe_view_version,
 )
-from .tools import pnr_abstract, pnr_dispatch, pnr_stages
+from .tools import pnr_dispatch, pnr_stages, pnr_tag_inputs
 from .tools.pnr_openroad import DEFAULT_PNG_HEIGHT, DEFAULT_PNG_WIDTH
 from .tools.spec_trace import (
     all_spec_blocks,
@@ -11801,7 +11801,7 @@ class RtlBuddy:
         reg_level=None,
         effort_override=None,
         accept_stale: bool = False,
-        block_source=None,
+        tag_inputs=None,
     ):
         syntheses = suite_cfg.get_syntheses(synth_name)
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
@@ -11836,7 +11836,7 @@ class RtlBuddy:
                 suite_dir=suite_dir,
                 effort_override=effort_override,
                 accept_stale=accept_stale,
-                block_source=block_source,
+                tag_inputs=tag_inputs,
             )
             res = runner.run()
             if s.is_xfail():
@@ -12255,10 +12255,10 @@ class RtlBuddy:
                     )
 
         synths = OnceMap()
-        block_source = (
+        tag_inputs = (
             None
             if run_tag is None
-            else pnr_abstract.BlockSource(
+            else pnr_tag_inputs.TagInputs(
                 run_tag,
                 str(run_artifact_root(Path(suite_path).resolve().parent, run_tag)),
             )
@@ -12279,7 +12279,7 @@ class RtlBuddy:
                 resume_from=resume_from,
                 dispatch=dispatch,
                 run_tag=run_tag,
-                block_source=block_source,
+                tag_inputs=tag_inputs,
             )
 
         def _error(planned, exc):
@@ -12323,7 +12323,7 @@ class RtlBuddy:
         resume_from=None,
         dispatch=None,
         run_tag=None,
-        block_source=None,
+        tag_inputs=None,
     ) -> dict:
         """One planned run of `_do_pnr_suite`: blocked, skipped, or run.
 
@@ -12400,7 +12400,7 @@ class RtlBuddy:
                 synths,
                 accept_stale=accept_stale,
                 run_tag=run_tag,
-                block_source=block_source,
+                tag_inputs=tag_inputs,
             )
             if synth_row["result"] not in ("PASS", "XPASS"):
                 # FAIL with a fail_stage that xfail never excuses; consumers are blocked.
@@ -12429,7 +12429,7 @@ class RtlBuddy:
             resume_from=resume_from,
             dispatch=dispatch,
             run_tag=run_tag,
-            block_source=block_source,
+            tag_inputs=tag_inputs,
         )
         res = runner.run()
         res.results.setdefault("mode", run.get_mode().value)
@@ -12441,14 +12441,15 @@ class RtlBuddy:
         return {**row, "results": res}
 
     def _pnr_upstream_synth(
-        self, run, synths, *, accept_stale=False, run_tag=None, block_source=None
+        self, run, synths, *, accept_stale=False, run_tag=None, tag_inputs=None
     ):
         """Run `run`'s upstream synthesis for `rb pnr --synth`, once per synthesis.
 
         Runs regardless of `reglvl`. Under `-j`, a second P&R run of the same netlist
         waits for the first. Untagged, its artefact tree is already locked; under
-        `--run-tag` it is locked only while synthesizing, waiting for another holder.
-        Returns the row the P&R result carries as `synth`.
+        `--run-tag` it is locked, waiting for another holder, only while synthesizing
+        and copying the netlist P&R reads into the tag's tree. Returns the row the P&R
+        result carries as `synth`.
         """
         synth_path = run.get_synth_suite_path()
 
@@ -12465,8 +12466,10 @@ class RtlBuddy:
                     SynthSuiteConfig(synth_path),
                     synth_name=run.get_synth_name(),
                     accept_stale=accept_stale,
-                    block_source=block_source,
+                    tag_inputs=tag_inputs,
                 )
+                if tag_inputs is not None:
+                    tag_inputs.synth_dir(synth_path, run.get_synth_name())
             res = synth["results"].results
             return {
                 "name": run.get_synth_name(),

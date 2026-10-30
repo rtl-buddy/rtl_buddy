@@ -25,12 +25,9 @@ from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.runner.pnr_results import PnrPassResults
 from rtl_buddy.tools.artifact_paths import RUNS_DIRNAME, run_artifact_root
 from rtl_buddy.tools import pnr_abstract
-from rtl_buddy.tools.pnr_abstract import (
-    BLOCK_SNAPSHOTS_DIRNAME,
-    BlockResolutionError,
-    BlockSource,
-    resolve_block,
-)
+from rtl_buddy.tools import pnr_tag_inputs
+from rtl_buddy.tools.pnr_abstract import BlockResolutionError, resolve_block
+from rtl_buddy.tools.pnr_tag_inputs import BLOCK_COPIES_DIRNAME, TagInputs
 from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
 
@@ -208,8 +205,8 @@ def _tag_abstract(tmp_path, tag):
     return tagged / "abstract"
 
 
-def _source(tmp_path, tag="t"):
-    return BlockSource(tag, str(run_artifact_root(tmp_path / "top", tag)))
+def _source(tmp_path, tag="t", **kw):
+    return TagInputs(tag, str(run_artifact_root(tmp_path / "top", tag)), **kw)
 
 
 def _root_cfg(tmp_path):
@@ -218,14 +215,19 @@ def _root_cfg(tmp_path):
     return root_cfg
 
 
-def test_a_tagged_consumer_reads_the_abstract_its_tag_hardened(tmp_path):
+def _copies(source):
+    return sorted(Path(source.root, BLOCK_COPIES_DIRNAME).iterdir())
+
+
+def test_a_tagged_consumer_reads_a_copy_of_the_abstract_its_tag_hardened(tmp_path):
     suite = _block_suite(tmp_path)
     tagged = _tag_abstract(tmp_path, "t")
+    source = _source(tmp_path)
 
-    block = resolve_block(_ref(suite), source=_source(tmp_path))
+    block = resolve_block(_ref(suite), source=source)
 
-    assert block.abstract_dir == str(tagged)
-    assert block.lef == str(tagged / "blk_top.lef")
+    assert Path(block.abstract_dir).parent == Path(source.root) / BLOCK_COPIES_DIRNAME
+    assert Path(block.lef).read_text() == (tagged / "blk_top.lef").read_text()
     assert block.run_tag == "t"
     assert block.result_row()["run_tag"] == "t"
 
@@ -238,24 +240,22 @@ def test_a_tag_that_never_ran_the_block_reads_a_copy_of_the_untagged_abstract(
 
     block = resolve_block(_ref(suite), source=source)
 
+    manifest = tmp_path / "blk/artefacts/blk_pnr/abstract/abstract.manifest.json"
+    digest = pnr_abstract.file_fingerprint(str(manifest), None)["sha256"]
     copy = Path(block.abstract_dir)
-    assert copy.parent == Path(source.snapshot_root) / BLOCK_SNAPSHOTS_DIRNAME
-    assert copy.name.startswith("blk_pnr-")
+    assert copy.parent == Path(source.root) / BLOCK_COPIES_DIRNAME
+    assert copy.name.startswith("blk_pnr-") and copy.name.endswith(digest[:16])
     assert (copy / "blk_top.lef").read_text() == (
         tmp_path / "blk/artefacts/blk_pnr/abstract/blk_top.lef"
     ).read_text()
     row = block.result_row()
     assert row["run_tag"] is None
-    manifest = tmp_path / "blk/artefacts/blk_pnr/abstract/abstract.manifest.json"
-    assert (
-        row["manifest_sha256"]
-        == pnr_abstract.file_fingerprint(str(manifest), None)["sha256"]
-    )
+    assert row["manifest_sha256"] == digest
     assert block.manifest_entry() == {
         "name": "blk_top",
         "pnr": "blk_pnr",
         "run_tag": None,
-        "manifest_sha256": row["manifest_sha256"],
+        "manifest_sha256": digest,
     }
     assert any(
         r.levelname == "WARNING" and "copy of its untagged abstract" in r.getMessage()
@@ -298,25 +298,72 @@ def test_an_untagged_consumer_never_reads_a_tagged_abstract(tmp_path):
     assert "--run-tag" not in str(info.value)
 
 
-def test_an_untagged_re_harden_does_not_change_the_copy_a_tagged_run_reads(tmp_path):
-    """Synthesis and P&R of one tagged invocation read one copy, whatever an untagged re-harden does meanwhile."""
+def _re_harden(tmp_path):
+    """Republish the untagged abstract with a new LEF and a manifest recording it."""
+    published = tmp_path / "blk/artefacts/blk_pnr/abstract"
+    (published / "blk_top.lef").write_text("re-hardened\n")
+    manifest = json.loads((published / "abstract.manifest.json").read_text())
+    manifest["outputs"]["lef"]["sha256"] = pnr_abstract.file_fingerprint(
+        str(published / "blk_top.lef"), None
+    )["sha256"]
+    (published / "abstract.manifest.json").write_text(json.dumps(manifest))
+
+
+def test_an_untagged_re_harden_does_not_change_the_copy_a_tagged_call_reads(tmp_path):
+    """Synthesis and P&R of one tagged call read one copy, whatever an untagged re-harden does meanwhile."""
     suite = _block_suite(tmp_path)
     source = _source(tmp_path)
     first = resolve_block(_ref(suite), source=source)
-    lef = (Path(first.abstract_dir) / "blk_top.lef").read_text()
+    lef = Path(first.lef).read_text()
 
-    published = tmp_path / "blk/artefacts/blk_pnr/abstract"
-    (published / "blk_top.lef").write_text("re-hardened\n")
+    _re_harden(tmp_path)
 
     again = resolve_block(_ref(suite), source=source)
     assert again.abstract_dir == first.abstract_dir
-    assert (Path(again.abstract_dir) / "blk_top.lef").read_text() == lef
+    assert Path(again.lef).read_text() == lef
     # Staleness is judged on the views read, not on the re-hardened ones.
     assert not [
         c
         for c in pnr_abstract.block_changes(again, _root_cfg(tmp_path))
         if "abstract" in c
     ]
+
+
+def test_copies_are_keyed_by_digest_and_never_overwritten(tmp_path):
+    suite = _block_suite(tmp_path)
+    first = resolve_block(_ref(suite), source=_source(tmp_path))
+    lef = Path(first.lef).read_text()
+
+    _re_harden(tmp_path)
+    later = resolve_block(_ref(suite), source=_source(tmp_path))
+
+    assert later.abstract_dir != first.abstract_dir
+    assert Path(later.lef).read_text() == "re-hardened\n"
+    assert Path(first.lef).read_text() == lef
+    assert len(_copies(_source(tmp_path))) == 2
+
+
+def test_a_saved_tagged_run_is_exported_with_the_copy_it_consumed(tmp_path):
+    """`rb pnr-export --run-tag` reads the copy the run recorded, not the block's current abstract."""
+    suite = _block_suite(tmp_path)
+    run_dir = tmp_path / "top/artefacts" / RUNS_DIRNAME / "t" / "top_pnr"
+    run_dir.mkdir(parents=True)
+    consumed = resolve_block(_ref(suite), source=_source(tmp_path))
+    pnr_tag_inputs.write_consumed_blocks(str(run_dir), "t", [consumed])
+
+    _re_harden(tmp_path)
+    pinned = pnr_tag_inputs.read_consumed_blocks(str(run_dir))
+    exported = resolve_block(_ref(suite), source=_source(tmp_path, pinned=pinned))
+
+    assert exported.abstract_dir == consumed.abstract_dir
+    assert exported.manifest_sha256 == consumed.manifest_sha256
+    assert len(_copies(_source(tmp_path))) == 1
+
+    shutil.rmtree(consumed.abstract_dir)
+    with pytest.raises(BlockResolutionError, match="is gone"):
+        resolve_block(_ref(suite), source=_source(tmp_path, pinned=pinned))
+    with pytest.raises(BlockResolutionError, match="records no abstract"):
+        resolve_block(_ref(suite), source=_source(tmp_path, pinned={}))
 
 
 def test_a_copy_that_does_not_match_its_manifest_is_refused(tmp_path):
@@ -328,11 +375,19 @@ def test_a_copy_that_does_not_match_its_manifest_is_refused(tmp_path):
         resolve_block(_ref(suite), source=_source(tmp_path))
 
 
-def test_the_copy_is_taken_under_the_untagged_tree_lock(tmp_path, monkeypatch):
-    """A tagged run waits while another process holds the untagged tree, then copies."""
+@pytest.mark.parametrize("tree", ["untagged", "tagged"])
+def test_the_copy_is_taken_under_the_block_trees_lock(tmp_path, monkeypatch, tree):
+    """A tagged call waits while another process holds the tree the block's abstract is in, then copies.
+
+    The tagged case is a named run consuming a block from another `pnr.yaml`, whose tagged tree this call does not hold.
+    """
     monkeypatch.setattr(artifact_lock, "TREE_LOCK_POLL_SEC", 0.05)
     suite = _block_suite(tmp_path)
     lock = tmp_path / "blk/artefacts" / LOCK_FILENAME
+    if tree == "tagged":
+        _tag_abstract(tmp_path, "t")
+        lock = run_artifact_root(tmp_path / "blk", "t") / LOCK_FILENAME
+        lock.parent.mkdir(parents=True, exist_ok=True)
     holder = subprocess.Popen(
         [
             sys.executable,
@@ -354,7 +409,8 @@ def test_the_copy_is_taken_under_the_untagged_tree_lock(tmp_path, monkeypatch):
     finally:
         holder.wait(timeout=10)
     assert waited >= 0.5
-    assert Path(block.abstract_dir, "blk_top.lef").is_file()
+    assert Path(block.lef).is_file()
+    assert block.run_tag == (None if tree == "untagged" else "t")
 
 
 @pytest.mark.parametrize(
@@ -403,7 +459,7 @@ def test_a_block_skipped_in_a_tagged_call_blocks_its_top(tmp_path, monkeypatch):
     assert "no abstract under --run-tag t" in top["desc"]
 
 
-def test_tagged_synth_and_pnr_share_one_block_source_and_lock_synthesis_only_while_it_runs(
+def test_tagged_synth_and_pnr_share_one_tag_inputs_and_lock_synthesis_only_while_it_runs(
     tmp_path, monkeypatch
 ):
     _synth_yaml(tmp_path / "synth.yaml", "top_s")
@@ -412,9 +468,9 @@ def test_tagged_synth_and_pnr_share_one_block_source_and_lock_synthesis_only_whi
     seen = {}
 
     class _Runner:
-        def __init__(self, *, name, block_source=None, **_kw):
+        def __init__(self, *, name, tag_inputs=None, **_kw):
             self.name = name
-            seen["pnr"] = block_source
+            seen["pnr"] = tag_inputs
 
         def run(self):
             ran.append(self.name)
@@ -426,8 +482,8 @@ def test_tagged_synth_and_pnr_share_one_block_source_and_lock_synthesis_only_whi
 
     inner = rb._do_synth_suite
 
-    def _synth(suite_cfg, *, block_source=None, **kw):
-        seen["synth"] = block_source
+    def _synth(suite_cfg, *, tag_inputs=None, **kw):
+        seen["synth"] = tag_inputs
         with pytest.raises(FatalRtlBuddyError, match="another rtl-buddy run"):
             ArtifactLocks().acquire(tmp_path / "artefacts")
         return inner(suite_cfg, **kw)
@@ -442,3 +498,83 @@ def test_tagged_synth_and_pnr_share_one_block_source_and_lock_synthesis_only_whi
     assert seen["synth"] is seen["pnr"]
     assert seen["pnr"].run_tag == "t"
     assert rb._artifact_locks.acquired == []
+
+
+def _synth_tree(tmp_path, *, netlist="module top; endmodule\n"):
+    """A `synth.yaml` defining `s` beside a pnr.yaml, with its netlist and a relative filelist."""
+    _synth_yaml(tmp_path / "synth.yaml", "s")
+    out = tmp_path / "artefacts" / "s"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "synth_netlist.v").write_text(netlist)
+    (out / "synth.f").write_text("+incdir+../../rtl\n../../rtl/top.sv\n")
+    return out
+
+
+def test_a_tagged_run_reads_a_copy_of_the_synthesis_netlist(tmp_path):
+    out = _synth_tree(tmp_path)
+    [cfg] = _suite(tmp_path / "pnr.yaml", _run("a")).get_runs("a")
+    backend = OpenRoadPnr(
+        name="a", pnr_cfg=cfg, suite_dir=str(tmp_path), root_cfg=None, run_tag="t"
+    )
+
+    netlist = backend._resolve_netlist_path()
+
+    copy = Path(netlist).parent
+    assert (
+        copy.parent
+        == run_artifact_root(tmp_path, "t") / pnr_tag_inputs.SYNTH_COPIES_DIRNAME
+    )
+    assert Path(netlist).read_text() == "module top; endmodule\n"
+    assert (copy / "synth.f").read_text().splitlines() == [
+        f"+incdir+{tmp_path / 'rtl'}",
+        str(tmp_path / "rtl/top.sv"),
+    ]
+    # A re-synthesis clearing the netlist does not reach the copy.
+    (out / "synth_netlist.v").unlink()
+    assert backend._resolve_netlist_path() == netlist
+    assert Path(netlist).is_file()
+
+
+def test_an_untagged_run_reads_the_synthesis_netlist_in_place(tmp_path):
+    out = _synth_tree(tmp_path)
+    [cfg] = _suite(tmp_path / "pnr.yaml", _run("a")).get_runs("a")
+    backend = OpenRoadPnr(name="a", pnr_cfg=cfg, suite_dir=str(tmp_path), root_cfg=None)
+
+    assert backend._resolve_netlist_path() == str(out / "synth_netlist.v")
+
+
+def test_a_tagged_run_without_a_netlist_reads_the_synthesis_path(tmp_path):
+    out = _synth_tree(tmp_path)
+    (out / "synth_netlist.v").unlink()
+    [cfg] = _suite(tmp_path / "pnr.yaml", _run("a")).get_runs("a")
+    backend = OpenRoadPnr(
+        name="a", pnr_cfg=cfg, suite_dir=str(tmp_path), root_cfg=None, run_tag="t"
+    )
+
+    assert backend._resolve_netlist_path() == str(out / "synth_netlist.v")
+
+
+def test_tagged_synth_copies_the_netlist_before_releasing_the_synthesis_lock(
+    tmp_path, monkeypatch
+):
+    _synth_yaml(tmp_path / "synth.yaml", "top_s")
+    suite = _suite(tmp_path / "pnr.yaml", _synth_run("top", "top_s"))
+    rb, ran, _synths = _synth_driver(monkeypatch, {}, {})
+    copied_under_lock = []
+    real = TagInputs.synth_dir
+
+    def _synth_dir(self, path, name):
+        probe = ArtifactLocks()
+        try:
+            probe.acquire(tmp_path / "artefacts", log_contention=False)
+        except FatalRtlBuddyError:
+            copied_under_lock.append(name)
+        else:
+            probe.release_all()
+        return real(self, path, name)
+
+    monkeypatch.setattr(TagInputs, "synth_dir", _synth_dir)
+
+    rb._do_pnr_suite(suite, run_synth=True, run_tag="t")
+
+    assert copied_under_lock == ["top_s"]

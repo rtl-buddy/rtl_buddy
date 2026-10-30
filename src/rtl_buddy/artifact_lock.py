@@ -45,7 +45,7 @@ TREE_LOCK_ANNOUNCE_SEC = 300.0
 
 # Lock files this process holds through any ArtifactLocks, and one mutex per tree for `tree_lock`.
 _PROCESS_HELD: set[str] = set()
-_TREE_MUTEXES: dict[str, threading.Lock] = {}
+_TREE_MUTEXES: dict[str, threading.RLock] = {}
 _PROCESS_LOCK = threading.Lock()
 
 
@@ -191,12 +191,12 @@ def tree_lock(artifact_root: Path, *, command: str | None = None) -> Iterator[No
 
     For a short read or write into a tree this command does not own, such as a
     `--run-tag` run copying an untagged block abstract. A tree this process
-    already holds is not locked again; threads of this process take turns.
+    already holds is not locked again, so calls nest; threads of this process take turns.
     Logs ``artifact_lock.wait`` every ``TREE_LOCK_ANNOUNCE_SEC`` while waiting.
     """
     key = _lock_key(artifact_root)
     with _PROCESS_LOCK:
-        mutex = _TREE_MUTEXES.setdefault(key, threading.Lock())
+        mutex = _TREE_MUTEXES.setdefault(key, threading.RLock())
     with mutex:
         with _PROCESS_LOCK:
             held = key in _PROCESS_HELD

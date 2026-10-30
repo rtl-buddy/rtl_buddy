@@ -5,11 +5,9 @@ A hardened run publishes `<artefact-dir>/abstract/` holding `<top>.lef`, `<top>.
 
 import hashlib
 import json
-import logging
 import os
 import shutil
-import threading
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from enum import Enum
 from importlib.metadata import version
@@ -31,15 +29,9 @@ from ..config.pnr import (
     PnrAbstract,
     PortBuffers,
 )
-from ..artifact_lock import tree_lock
-from ..logging_utils import log_event
 from .artifact_paths import project_relative, project_root_or_none, run_artifact_root
 
-logger = logging.getLogger(__name__)
-
 ABSTRACT_DIR_NAME = "abstract"
-#: Under a `--run-tag` tree: copies of the untagged abstracts its runs consume, one directory per block run.
-BLOCK_SNAPSHOTS_DIRNAME = ".block-abstracts"
 #: OpenROAD writes the views here before `publish`; cleared by every run.
 ABSTRACT_STAGING_NAME = "abstract.partial"
 ABSTRACT_MANIFEST_NAME = "abstract.manifest.json"
@@ -679,6 +671,8 @@ def write_manifest(
     def _fp(value):
         if isinstance(value, list):
             return [_fp(v) for v in value]
+        if isinstance(value, dict):
+            return value
         return file_fingerprint(value, root)
 
     outputs = {}
@@ -811,89 +805,10 @@ def rerun_command(ref: BlockRef, run_tag: str | None = None) -> str:
     return f"`rb pnr {ref.pnr_run} -c {ref.pnr_suite_path}{tag}`"
 
 
-@dataclass
-class BlockSource:
-    """Where a `--run-tag` invocation's runs find their blocks' abstracts.
-
-    A block run the tag has run is read from the tag's tree. One the tag has never run is
-    copied, once per invocation, from its untagged tree into `snapshot_root` while that
-    tree's lock is held, and read from the copy, so an untagged re-harden cannot change it
-    mid-run. Synthesis and P&R in one invocation share the copy.
-    """
-
-    run_tag: str
-    snapshot_root: str
-    _copies: dict = field(default_factory=dict, repr=False)
-    _mutex: threading.Lock = field(default_factory=threading.Lock, repr=False)
-
-    def abstract_dir(self, ref: BlockRef, where: str) -> tuple[str, str | None]:
-        """Return the abstract directory to read for `ref` and the tag it was published under."""
-        suite_dir = os.path.dirname(ref.pnr_suite_path)
-        tagged_run = run_artifact_root(suite_dir, self.run_tag) / ref.pnr_run
-        if tagged_run.is_dir():
-            return abstract_dir(str(tagged_run)), self.run_tag
-        with self._mutex:
-            key = (os.path.realpath(ref.pnr_suite_path), ref.pnr_run)
-            if key not in self._copies:
-                self._copies[key] = self._copy_untagged(ref, where)
-            return self._copies[key], None
-
-    def _copy_untagged(self, ref: BlockRef, where: str) -> str:
-        suite_dir = os.path.dirname(ref.pnr_suite_path)
-        untagged_root = run_artifact_root(suite_dir)
-        source = abstract_dir(str(untagged_root / ref.pnr_run))
-        suite_key = hashlib.sha256(
-            os.path.realpath(ref.pnr_suite_path).encode()
-        ).hexdigest()[:8]
-        dest = Path(
-            self.snapshot_root, BLOCK_SNAPSHOTS_DIRNAME, f"{ref.pnr_run}-{suite_key}"
-        )
-        partial = dest.with_name(f"{dest.name}.partial")
-        shutil.rmtree(partial, ignore_errors=True)
-        with tree_lock(untagged_root, command="pnr"):
-            if read_manifest(source) is None:
-                raise BlockResolutionError(
-                    f"{where}: no abstract at {source}, and --run-tag "
-                    f"{self.run_tag} has not run the block — run "
-                    f"{rerun_command(ref)} or {rerun_command(ref, self.run_tag)} first"
-                )
-            manifest_bytes = Path(source, ABSTRACT_MANIFEST_NAME).read_bytes()
-            partial.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(source, partial)
-        if Path(partial, ABSTRACT_MANIFEST_NAME).read_bytes() != manifest_bytes:
-            raise BlockResolutionError(
-                f"{where}: the copy of {source} does not match it"
-            )
-        manifest = json.loads(manifest_bytes)
-        design = manifest.get("block")
-        for view, record in (manifest.get("outputs") or {}).items():
-            if not record:
-                continue
-            copied = file_fingerprint(view_path(str(partial), design, view), None)
-            if (copied or {}).get("sha256") != record.get("sha256"):
-                raise BlockResolutionError(
-                    f"{where}: the copy of {source} does not match its manifest "
-                    f"({view})"
-                )
-        shutil.rmtree(dest, ignore_errors=True)
-        os.replace(partial, dest)
-        log_event(
-            logger,
-            logging.WARNING,
-            "pnr.block_untagged_abstract",
-            block=ref.name,
-            pnr_run=ref.pnr_run,
-            run_tag=self.run_tag,
-            source=source,
-            copy=str(dest),
-        )
-        return str(dest)
-
-
-def resolve_block(ref: BlockRef, *, source: BlockSource | None = None) -> ResolvedBlock:
+def resolve_block(ref: BlockRef, *, source=None) -> ResolvedBlock:
     """Resolve one `blocks:` entry to its published abstract, or raise BlockResolutionError.
 
-    Nothing is re-run; a missing abstract is reported with the `rb pnr` command that produces it. With a `source`, the abstract is found as `BlockSource` describes.
+    Nothing is re-run; a missing abstract is reported with the `rb pnr` command that produces it. With a `source` (`pnr_tag_inputs.TagInputs`), the abstract read is the one it returns.
     """
     from ..config.pnr import PnrSuiteConfig
     from ..errors import FatalRtlBuddyError
@@ -995,9 +910,7 @@ def check_technology(
             )
 
 
-def resolve_blocks(
-    refs: list[BlockRef], *, source: BlockSource | None = None
-) -> list[ResolvedBlock]:
+def resolve_blocks(refs: list[BlockRef], *, source=None) -> list[ResolvedBlock]:
     return [resolve_block(ref, source=source) for ref in refs]
 
 

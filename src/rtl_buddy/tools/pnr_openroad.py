@@ -70,6 +70,7 @@ from . import (
     pnr_placement_check,
     pnr_stages,
     pnr_supply_order,
+    pnr_tag_inputs,
 )
 from .synth_yosys import probe_block_parameters
 from .liberty_units import (
@@ -1222,6 +1223,7 @@ def clear_run_outputs(
                         _SCRIPT_NAME,
                         _DEF2STREAM_INPUTS_NAME,
                         _BLOCK_NETLIST_NAME,
+                        pnr_tag_inputs.CONSUMED_BLOCKS_NAME,
                         *(
                             name
                             for _kind, name in pnr_checkpoints.congestion_reports(
@@ -3109,17 +3111,17 @@ class OpenRoadPnr:
         resume_from: str | None = None,
         dispatch=None,
         run_tag: str | None = None,
-        block_source: pnr_abstract.BlockSource | None = None,
+        tag_inputs: pnr_tag_inputs.TagInputs | None = None,
     ):
         self.name = name
         self.suite_dir = suite_dir
-        # `--run-tag`: the run writes under `artefacts/.runs/<tag>/` and finds block abstracts through `block_source`.
+        # `--run-tag`: the run writes under `artefacts/.runs/<tag>/` and reads its block abstracts and synthesis netlist from copies `tag_inputs` takes.
         self.run_tag = run_tag
-        if block_source is None and run_tag is not None:
-            block_source = pnr_abstract.BlockSource(
+        if tag_inputs is None and run_tag is not None:
+            tag_inputs = pnr_tag_inputs.TagInputs(
                 run_tag, str(run_artifact_root(suite_dir, run_tag))
             )
-        self.block_source = block_source
+        self.tag_inputs = tag_inputs
         self.accept_stale = accept_stale
         self._mode = pnr_cfg.get_mode()
         # `--stop-after` as given; a probe without one stops after global route.
@@ -3201,8 +3203,28 @@ class OpenRoadPnr:
         return os.path.join(self.artefact_dir, "pnr.log")
 
     def _resolve_netlist_path(self) -> str:
-        """Return the path of the upstream synth run's tech-mapped netlist."""
+        """Return the path of the upstream synth run's tech-mapped netlist, or of its `--run-tag` copy."""
+        copy = self._synth_copy()
+        if copy is not None:
+            return os.path.join(copy, "synth_netlist.v")
         return synth_netlist_path(self.pnr_cfg)
+
+    def _synth_copy(self) -> str | None:
+        """The `--run-tag` copy of the upstream synthesis's netlist and filelist, or None."""
+        if self.tag_inputs is None:
+            return None
+        return self.tag_inputs.synth_dir(
+            self.pnr_cfg.get_synth_suite_path(),
+            self.pnr_cfg.resolve_synth_cfg().get_name(),
+        )
+
+    def _synth_dir(self) -> str:
+        """The directory the synthesis filelist is read from: the synthesis's own, or its `--run-tag` copy."""
+        return self._synth_copy() or os.path.join(
+            os.path.dirname(self.pnr_cfg.get_synth_suite_path()),
+            "artefacts",
+            self.pnr_cfg.resolve_synth_cfg().get_name(),
+        )
 
     def _threads(self) -> ThreadPlan:
         """Return this run's OpenROAD thread plan, resolved once against the current allocation.
@@ -5258,6 +5280,13 @@ class OpenRoadPnr:
                 desc=f"cannot resolve the design name from the synth entry: {e}",
                 fail_stage="setup",
             )
+        if self.run_tag is not None:
+            # The block copies the saved run consumed, not the abstracts current now.
+            self.tag_inputs = pnr_tag_inputs.TagInputs(
+                self.run_tag,
+                self.tag_inputs.root,
+                pinned=pnr_tag_inputs.read_consumed_blocks(self.artefact_dir) or {},
+            )
         blocks_failure = self._resolve_blocks(
             platform,
             "the gds-mode: strict stream-out"
@@ -5766,7 +5795,7 @@ class OpenRoadPnr:
                     f"'{self.pnr_cfg.get_platform()}' declares corners, and an "
                     "abstract carries one corner's timing model"
                 )
-            resolved = pnr_abstract.resolve_blocks(refs, source=self.block_source)
+            resolved = pnr_abstract.resolve_blocks(refs, source=self.tag_inputs)
             for block in resolved:
                 if gds_needed_by and block.gds is None:
                     raise pnr_abstract.BlockResolutionError(
@@ -5968,15 +5997,21 @@ class OpenRoadPnr:
         `rtl` lists the synthesis filelist's sources so an RTL edit is detected before re-synthesis.
         """
         pdk = platform.get_pdk()
-        synth_cfg = self.pnr_cfg.resolve_synth_cfg()
-        synth_dir = os.path.join(
-            os.path.dirname(self.pnr_cfg.get_synth_suite_path()),
-            "artefacts",
-            synth_cfg.get_name(),
-        )
+        netlist = self._resolve_netlist_path()
+        if self._synth_copy() is not None:
+            # Recorded at the synthesis's own path, so a later re-synthesis makes the block stale.
+            root = project_root_or_none(self.artefact_dir)
+            netlist = {
+                **pnr_abstract.file_fingerprint(netlist, root),
+                "path": pnr_abstract.file_fingerprint(
+                    synth_netlist_path(self.pnr_cfg), root
+                )["path"],
+            }
         return {
-            "rtl": pnr_abstract.filelist_sources(os.path.join(synth_dir, "synth.f")),
-            "netlist": self._resolve_netlist_path(),
+            "rtl": pnr_abstract.filelist_sources(
+                os.path.join(self._synth_dir(), "synth.f")
+            ),
+            "netlist": netlist,
             "sdc": self.pnr_cfg.get_constraints(),
             "liberty": [*platform.get_sta_lib_paths(), *self.pnr_cfg.get_lib_paths()],
             "lef": _dedup_paths(
@@ -6013,18 +6048,13 @@ class OpenRoadPnr:
         A parent's instance overrides are checked against it (see `block_params`). A probe that cannot run leaves no record and a warning: the abstract is still usable, and its consumers fall back to the synthesis's `params:`.
         """
         synth_cfg = self.pnr_cfg.resolve_synth_cfg()
-        synth_dir = os.path.join(
-            os.path.dirname(self.pnr_cfg.get_synth_suite_path()),
-            "artefacts",
-            synth_cfg.get_name(),
-        )
         try:
             record = probe_block_parameters(
                 synth_cfg,
                 self.root_cfg,
-                synth_dir,
+                self._synth_dir(),
                 os.path.join(self.artefact_dir, _PARAM_PROBE_DIR),
-                block_source=self.block_source,
+                tag_inputs=self.tag_inputs,
             )
             Path(pnr_abstract.view_path(staging, design, "params.json")).write_text(
                 record.to_json()
@@ -7076,6 +7106,10 @@ class OpenRoadPnr:
         )
         if blocks_failure is not None:
             return blocks_failure
+        if self.run_tag is not None and self._blocks:
+            pnr_tag_inputs.write_consumed_blocks(
+                self.artefact_dir, self.run_tag, self._blocks
+            )
         netlist_failure = self._prepare_netlist(write=self.resume is None)
         if netlist_failure is not None:
             return netlist_failure

@@ -1880,11 +1880,11 @@ def _probe_value(value) -> str:
 
 
 def _probe_lib_paths(
-    synth_cfg, root_cfg, sources: list[str], block_source=None
+    synth_cfg, root_cfg, sources: list[str], tag_inputs=None
 ) -> list[str]:
     """Return the Liberty files the block's synthesis reads, so the probe knows the cells and sub-blocks its top instances.
 
-    Sub-blocks resolve through `block_source` (a `pnr_abstract.BlockSource`), as the hardening run's own do.
+    Sub-blocks resolve through `tag_inputs` (a `pnr_tag_inputs.TagInputs`), as the hardening run's own do.
     """
     libs = list(getattr(synth_cfg, "get_lib_paths", lambda: [])())
     platform = getattr(synth_cfg, "get_platform", lambda: None)()
@@ -1899,7 +1899,7 @@ def _probe_lib_paths(
         from .pnr_abstract import BlockResolutionError, resolve_blocks
 
         try:
-            nested = resolve_blocks(refs, source=block_source)
+            nested = resolve_blocks(refs, source=tag_inputs)
         except BlockResolutionError:
             nested = []
         libs += [b.lib for b in nested]
@@ -1907,7 +1907,7 @@ def _probe_lib_paths(
 
 
 def probe_block_parameters(
-    synth_cfg, root_cfg, synth_dir: str, out_dir: str, block_source=None
+    synth_cfg, root_cfg, synth_dir: str, out_dir: str, tag_inputs=None
 ):
     """Elaborate a block's top in Yosys and return its parameter values as a `block_params.ParamRecord`.
 
@@ -1938,7 +1938,7 @@ def probe_block_parameters(
     overrides_json = os.path.join(out_dir, "param_probe_overrides.json")
     cmds = [
         f"read_liberty -lib {shlex.quote(lib)}"
-        for lib in _probe_lib_paths(synth_cfg, root_cfg, sources, block_source)
+        for lib in _probe_lib_paths(synth_cfg, root_cfg, sources, tag_inputs)
     ]
     cmds += emit_frontend_read_cmds(
         opts=opts,

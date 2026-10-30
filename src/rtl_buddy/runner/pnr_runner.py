@@ -29,7 +29,7 @@ class PnrRunner:
         resume_from: str | None = None,
         dispatch=None,
         run_tag: str | None = None,
-        block_source=None,
+        tag_inputs=None,
     ):
         self.name = name
         self.root_cfg = root_cfg
@@ -48,7 +48,7 @@ class PnrRunner:
         # `None` defers to each run's `gds-mode:`; otherwise it overrides every run.
         self.gds_mode = gds_mode
         self.run_tag = run_tag
-        self.block_source = block_source
+        self.tag_inputs = tag_inputs
 
     def run(self) -> PnrResults:
         log_event(
@@ -95,7 +95,7 @@ class PnrRunner:
             resume_from=self.resume_from,
             dispatch=self.dispatch,
             run_tag=self.run_tag,
-            block_source=self.block_source,
+            tag_inputs=self.tag_inputs,
         )
         return backend.run()
 
