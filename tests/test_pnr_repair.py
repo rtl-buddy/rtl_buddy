@@ -628,6 +628,13 @@ def test_a_probe_skips_timing_repair_and_stops_after_global_route(tmp_path):
 # every corner (one count per round from round 0; unset, the count fails), and
 # `RB_STUB_SLEW_<corner>` and `RB_STUB_CAP_<corner>` the `report_check_types`
 # violators of that corner. A round's `write_spef` writes its SPEF.
+# `RB_STUB_EXTRACTED` is the report of a `report_check_types -verbose`
+# without `-net`; with it set, `RB_STUB_ESTIMATED` lists `{check pin scene
+# limit value}` rows that one with `-net` reports for the net's pins at its
+# `-corner` (every scene without one), `RB_STUB_NETS` maps a pin to its net
+# (default `net_<pin>`), a name without `/` is a port, and `RB_STUB_CLOCK`,
+# `RB_STUB_CONSTANT` and `RB_STUB_DONT_TOUCH` list clock pins, constant-driven
+# nets and dont_touch nets.
 _ROUND_STUBS = r"""
 proc design_is_routed {args} { return 1 }
 proc rb_round {} {
@@ -683,8 +690,58 @@ proc sta::max_slew_violation_count {} { rb_violators RB_STUB_SLEW }
 proc sta::max_capacitance_violation_count {} { rb_violators RB_STUB_CAP }
 proc sta::redirect_string_begin {} { set ::rb_redirect "" }
 proc sta::redirect_string_end {} { return $::rb_redirect }
+if {[info exists env(RB_STUB_EXTRACTED)]} {
+    proc rb_list {var} {
+        return [expr {[info exists ::env($var)] ? $::env($var) : {}}]
+    }
+    proc get_pins {args} {
+        set name [lindex $args end]
+        return [expr {[string first / $name] < 0 ? "" : $name}]
+    }
+    proc get_nets {args} {
+        set pin [lindex $args end]
+        set nets [rb_list RB_STUB_NETS]
+        return [expr {[dict exists $nets $pin] ? [dict get $nets $pin] : "net_$pin"}]
+    }
+    proc get_full_name {object} { return $object }
+    proc sta::net_driver_pins {net} { return [list drv_$net] }
+    proc sta::pin_sim_logic_value {pin} {
+        return [expr {[string range $pin 4 end] in [rb_list RB_STUB_CONSTANT] ? 1 : "X"}]
+    }
+    proc sta::is_clock {pin} { return [expr {$pin in [rb_list RB_STUB_CLOCK]}] }
+    proc sta::sta_to_db_net {net} {
+        puts "stub: db net $net"
+        return [list rb_db_net $net]
+    }
+    proc rb_db_net {net method} {
+        return [expr {$method eq "isDoNotTouch" && $net in [rb_list RB_STUB_DONT_TOUCH]}]
+    }
+}
 proc report_check_types {args} {
+    global env
     if {[rb_round] eq ""} { return }
+    if {[info exists env(RB_STUB_EXTRACTED)] && [lsearch $args -verbose] >= 0} {
+        set i [lsearch $args -net]
+        if {$i < 0} {
+            append ::rb_redirect $env(RB_STUB_EXTRACTED)
+            return
+        }
+        set net [lindex $args [expr {$i + 1}]]
+        set i [lsearch $args -corner]
+        set corner [expr {$i < 0 ? "" : [lindex $args [expr {$i + 1}]]}]
+        puts "stub: estimate $net $corner"
+        foreach check {slew capacitance} {
+            append ::rb_redirect "max $check\n\n"
+            foreach row [rb_list RB_STUB_ESTIMATED] {
+                lassign $row kind pin scene limit value
+                if {$kind eq $check && [get_nets $pin] eq $net
+                    && ($corner eq "" || $corner eq $scene)} {
+                    append ::rb_redirect "$pin $limit $value 0.0 (MET)\n"
+                }
+            }
+        }
+        return
+    }
     set check [expr {[lsearch $args -max_slew] >= 0 ? "SLEW" : "CAP"}]
     set corner [lindex $args [expr {[lsearch $args -corner] + 1}]]
     for {set i 0} {$i < [rb_slack RB_STUB_${check}_$corner 0]} {incr i} {
@@ -3727,6 +3784,159 @@ def test_the_electrical_round_inherits_the_repair_design_wire_rc(tmp_path, monke
     r2 = (run_dir / "06_post_route_repair.r2.repair.tcl").read_text()
     assert "rb::rc::apply {layer {M5}}\n" in r2
     assert "\nrepair_design -slew_margin 10 -cap_margin 5\nrb::rc::restore\n" in r2
+
+
+def _verbose(check: str, pin: str, scene: str, limit: str, value: str) -> str:
+    """One check as `report_check_types -verbose` prints it; `scene` is empty on a design with one scene."""
+    corner = f" (corner {scene})" if scene else ""
+    return (
+        f"Pin {pin} ^{corner}\nmax {check} {limit}\n{check}     {value}\n"
+        f"----------------\nSlack    -0.100000 (VIOLATED)\n\n"
+    )
+
+
+#: The electrical round's violators on the extracted parasitics, as `report_check_types -verbose` prints them: each pin's worst scene, and a capacitance row without one.
+_EXTRACTED = (
+    "max slew\n\n"
+    + _verbose("slew", "u_a/A", "ss", "1.500000", "1.600000")
+    + _verbose("slew", "u_b/A", "ss", "1.500000", "1.700000")
+    + _verbose("slew", "u_f/A", "ss", "1.500000", "1.650000")
+    + _verbose("slew", "u_k/CK", "ss", "1.500000", "1.600000")
+    + _verbose("slew", "u_t/A", "ss", "1.500000", "1.600000")
+    + _verbose("slew", "u_z/A", "ss", "1.500000", "1.600000")
+    + _verbose("slew", "out1", "ss", "1.500000", "1.600000")
+    + "max capacitance\n\n"
+    + _verbose("capacitance", "u_c/X", "", "0.200000", "0.250000")
+    + "max fanout\n\n"
+    + "Pin u_d/X\nmax fanout 10\nfanout     12\n----\nSlack -2 (VIOLATED)\n"
+)
+#: Their estimates, {check pin scene limit value}: u_a/A is within its limit at its row's scene, ss, though over the margin at tt; u_a/A and u_f/A share a net; u_k/CK is a clock pin, u_t/A on a dont_touch net and u_z/A on a constant one.
+_ESTIMATED = (
+    "{slew u_a/A ss 1.5 0.98} {slew u_a/A tt 1.5 1.45} {slew u_b/A ss 1.5 1.4} "
+    "{slew u_f/A ss 1.5 1.0} {slew u_k/CK ss 1.5 0.5} {slew u_t/A ss 1.5 0.5} "
+    "{slew u_z/A ss 1.5 0.5} {capacitance u_c/X ss 0.2 0.15}"
+)
+_UNSEEN_ENV = {
+    "RB_STUB_EXTRACTED": _EXTRACTED,
+    "RB_STUB_ESTIMATED": _ESTIMATED,
+    "RB_STUB_NETS": "u_a/A n_a u_f/A n_a",
+    "RB_STUB_CLOCK": "u_k/CK",
+    "RB_STUB_CONSTANT": "net_u_z/A",
+    "RB_STUB_DONT_TOUCH": "net_u_t/A",
+}
+
+
+@pytest.mark.parametrize("wire_rc", [False, True])
+def test_the_electrical_round_names_the_violators_its_repair_did_not_see(
+    tmp_path, monkeypatch, wire_rc
+):
+    """Its `repair_design` buffers on the placement estimate, so a violator within its limit less the round's margin there is left; the kept round's extraction names each such violator, leaving out those `repair_design` skips whatever the parasitics, and the run warns with the knobs."""
+    design = {"wire-rc": {"layer": "M5"}} if wire_rc else {"slew-margin": 20}
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_PR_E, "repair-design": design},
+        env={
+            "RB_STUB_SETUP": "-0.1 -0.05 -0.04",
+            "RB_STUB_SLEW": "0 2 2",
+            "RB_STUB_CAP": "0 1 1",
+            **_UNSEEN_ENV,
+        },
+    )
+    logged = _logged(monkeypatch)
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    assert _done(run_dir)["electrical_round"]["status"] == "kept"
+    unseen = [
+        {
+            "check": "slew",
+            "pin": "u_a/A",
+            "limit": 1.5,
+            "extracted": 1.6,
+            "estimated": 0.98,
+        },
+        {
+            "check": "slew",
+            "pin": "u_f/A",
+            "limit": 1.5,
+            "extracted": 1.65,
+            "estimated": 1.0,
+        },
+        {
+            "check": "capacitance",
+            "pin": "u_c/X",
+            "limit": 0.2,
+            "extracted": 0.25,
+            "estimated": 0.15,
+        },
+    ]
+    assert _done(run_dir)["electrical_round"]["unseen"] == unseen
+    assert res.results["post_route_repair"]["electrical_round"]["unseen"] == unseen
+    (warning,) = [f for lvl, e, f in logged if e == "pnr.electrical_round_unseen"]
+    assert (warning["round"], warning["count"], warning["violators"]) == (
+        2,
+        3,
+        unseen,
+    )
+    message = _human_message("pnr.electrical_round_unseen", warning)
+    assert "u_a/A (slew 1.6 extracted, 0.98 estimated, limit 1.5)" in message
+    assert "post-route-repair.repair-design.wire-rc" in message
+    assert "placement.repair-design.max-wire-length" in message
+    # Each net is looked up once, and estimated once at each scene a row names
+    # (every scene for a row without one).
+    log = (artefacts / "pnr.log").read_text()
+    assert log.count("stub: db net n_a\n") == 1
+    assert log.count("stub: estimate n_a ss\n") == 1
+    assert log.count("stub: estimate net_u_c/X \n") == 1
+    assert "stub: estimate net_u_z/A" not in log
+    # Only the electrical round's extraction lists them, last, at its margins.
+    r2 = (run_dir / "06_post_route_repair.r2.extract.tcl").read_text()
+    assert r2.count("rb::unseen::report RB-ELECTRICAL-UNSEEN: 10 5\n") == 1
+    assert r2.index("rb::unseen::report RB-") < r2.index(
+        "End of post-route repair round"
+    )
+    assert ("rb::rc::apply {layer {M5}}\n" in r2) is wire_rc
+    r1 = (run_dir / "06_post_route_repair.r1.extract.tcl").read_text()
+    assert "rb::unseen" not in r1
+
+
+@pytest.mark.parametrize(
+    ("setup", "estimated", "status"),
+    [
+        ("-0.1 -0.05 -0.04", "seen", "kept"),
+        ("-0.1 -0.05 -0.06", "unseen", "not_kept"),
+    ],
+)
+def test_an_electrical_round_warns_only_when_kept_with_unseen_violators(
+    tmp_path, monkeypatch, setup, estimated, status
+):
+    env = dict(_UNSEEN_ENV)
+    if estimated == "seen":
+        env["RB_STUB_ESTIMATED"] = (
+            "{slew u_a/A ss 1.5 1.6} {slew u_b/A ss 1.5 1.7} {slew u_f/A ss 1.5 1.65} "
+            "{capacitance u_c/X ss 0.2 0.25}"
+        )
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR_E,
+        env={
+            "RB_STUB_SETUP": setup,
+            "RB_STUB_SLEW": "0 2 2",
+            "RB_STUB_CAP": "0 1 1",
+            **env,
+        },
+    )
+    logged = _logged(monkeypatch)
+
+    assert backend.run().results["result"] == "PASS"
+    (run_dir,) = _runs(artefacts)
+    assert _done(run_dir)["electrical_round"]["status"] == status
+    assert "unseen" not in _done(run_dir)["electrical_round"]
+    assert not [e for _lvl, e, _f in logged if e == "pnr.electrical_round_unseen"]
 
 
 def test_the_electrical_round_is_skipped_when_the_best_round_has_no_violators(

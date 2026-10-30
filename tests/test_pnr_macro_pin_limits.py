@@ -254,17 +254,29 @@ def test_supplies_are_connected_before_dont_touch_in_the_documented_order(tmp_pa
         body.index("\n    ::rb::global_connect\n"),
         body.index("\n    detailed_placement {*}$dpl_args\n"),
         body.rindex(estimate),
-        body.index("replace_cell $final $final_cell"),
+        body.index("lassign [choose $buffers"),
         body.rindex("\n    ::rb::global_connect\n"),
         body.index("set_dont_touch $dont_touch"),
     ]
     assert order == sorted(order)
     assert "setPlacementStatus FIRM" in body
     # The macro's checks come from the timer, in the macro library's thresholds.
-    assert "report_check_types -max_slew -max_capacitance -net $net" in _block(
-        tmp_path, _on(tmp_path)
-    )
+    block = _block(tmp_path, _on(tmp_path))
+    assert "report_check_types -max_slew -max_capacitance" in block
+    assert "::rb::checks::report -net [get_nets -of_objects $pin]" in block
     assert "sta::is_clock $pin" in body
+
+
+def test_both_buffers_are_inserted_and_legalized_at_the_widest_candidate(tmp_path):
+    """Sizing then swaps cells within the legalized footprint, so whichever pair it
+    keeps, the closest when none meets the limit, leaves the placement legal.
+    """
+    body = _repair_body(_block(tmp_path, _on(tmp_path)))
+    assert body.count("insert_buffer ") == 3
+    assert body.count("-buffer_cell ") == body.count("-buffer_cell $widest_name") == 3
+    assert body.rindex("insert_buffer ") < body.index(
+        "\n    detailed_placement {*}$dpl_args\n"
+    )
 
 
 def test_the_rendered_block_has_no_template_placeholder(tmp_path):
@@ -295,7 +307,10 @@ u_inner/u_hist_mem/u_sram/dout1[13]     0.027560    0.080000   -0.052440 (VIOLAT
 
 
 def _run(body: str) -> str:
-    source = files("rtl_buddy.pnr").joinpath("macro_pin_limits.tcl").read_text()
+    source = "".join(
+        files("rtl_buddy.pnr").joinpath(name).read_text()
+        for name in ("check_reports.tcl", "macro_pin_limits.tcl")
+    )
     return _tcl_eval(source + "\n" + body + "\n")
 
 
@@ -303,20 +318,21 @@ def _tcl_braced(text: str) -> str:
     return "{" + text + "}"
 
 
-# One line per parsed check: kind, pin, limit, value.
+# One line per parsed check: kind, pin, limit, value, and the scene when the
+# row names one.
 _ROWS_OUT = (
     "set lines {}\n"
     "foreach kind {slew capacitance} {\n"
-    "    foreach row [dict get $c $kind] { lappend lines [join [linsert $row 0 $kind]] }\n"
+    "    foreach row [dict get $c $kind] {\n"
+    "        lappend lines [string trimright [join [linsert $row 0 $kind]]]\n"
+    "    }\n"
     "}\n"
     'set result [join $lines "\\n"]'
 )
 
 
-def test_parse_checks_reads_both_tables_in_report_units():
-    out = _run(
-        f"set c [rb::macro_pins::parse_checks {_tcl_braced(_REPORT)}]\n" + _ROWS_OUT
-    )
+def test_the_check_parser_reads_both_tables_in_report_units():
+    out = _run(f"set c [rb::checks::parse {_tcl_braced(_REPORT)}]\n" + _ROWS_OUT)
     assert out.splitlines() == [
         "slew u_inner/u_hist_mem/u_sram/addr0[2] 0.040000 0.143900",
         "slew u_inner/u_hist_mem/wire145/X 1.506500 0.107900",
@@ -325,30 +341,80 @@ def test_parse_checks_reads_both_tables_in_report_units():
     ]
 
 
-def test_parse_checks_tolerates_a_scene_column():
+def test_the_check_parser_tolerates_a_scene_column():
     report = (
         "max slew\n\nPin   Corner   Limit   Slew   Slack\n------\n"
         "u_sram/addr0[0]   ss   0.04   0.05   -0.01 (VIOLATED)\n"
     )
-    out = _run(
-        f"set c [rb::macro_pins::parse_checks {_tcl_braced(report)}]\n" + _ROWS_OUT
-    )
-    assert out.splitlines() == ["slew u_sram/addr0[0] 0.04 0.05"]
+    out = _run(f"set c [rb::checks::parse {_tcl_braced(report)}]\n" + _ROWS_OUT)
+    assert out.splitlines() == ["slew u_sram/addr0[0] 0.04 0.05 ss"]
 
 
-def test_pin_check_takes_the_named_pin_worst_headroom():
+# `report_check_types -max_slew -max_capacitance -violators -verbose -digits 6`
+# on a design with two scenes, as OpenROAD 26Q4 prints it.
+_VERBOSE = """\
+max slew
+
+Pin u_sram/addr0[0] ^ (corner ss)
+max slew 0.040000
+slew     0.131956
+----------------
+Slack    -0.091956 (VIOLATED)
+
+Pin u_csr/_1119_/Q v (corner tt)
+max slew 1.497951
+slew     1.518542
+----------------
+Slack    -0.020591 (VIOLATED)
+
+max capacitance
+
+Pin u_csr/_1119_/Q   (corner ss)
+max capacitance 0.162058
+capacitance     0.164883
+----------------
+Slack    -0.002825 (VIOLATED)
+
+Pin u_sram/dout1[8]
+max capacitance 0.027560
+capacitance     0.032708
+----------------
+Slack    -0.005148 (VIOLATED)
+
+max fanout
+
+Pin u_csr/_1119_/Q
+max fanout 10
+fanout     12
+----------------
+Slack    -2 (VIOLATED)
+
+"""
+
+
+def test_the_check_parser_reads_verbose_rows_with_their_scene():
+    out = _run(f"set c [rb::checks::parse {_tcl_braced(_VERBOSE)}]\n" + _ROWS_OUT)
+    assert out.splitlines() == [
+        "slew u_sram/addr0[0] 0.040000 0.131956 ss",
+        "slew u_csr/_1119_/Q 1.497951 1.518542 tt",
+        "capacitance u_csr/_1119_/Q 0.162058 0.164883 ss",
+        "capacitance u_sram/dout1[8] 0.027560 0.032708",
+    ]
+
+
+def test_the_worst_check_is_the_named_pin_s_smallest_headroom():
     report = _REPORT + (
         "max slew\n\n"
         "u_inner/u_hist_mem/u_sram/addr0[2]      0.050000    0.149000   "
         "-0.099000 (VIOLATED)\n"
     )
     out = _run(
-        f"set c [rb::macro_pins::parse_checks {_tcl_braced(report)}]\n"
+        f"set c [rb::checks::parse {_tcl_braced(report)}]\n"
         "set result [list "
-        "[rb::macro_pins::pin_check $c slew {u_inner/u_hist_mem/u_sram/addr0[2]}] "
-        "[rb::macro_pins::pin_check $c capacitance {u_inner/u_hist_mem/u_sram/addr0[2]}]]"
+        "[rb::checks::worst $c slew {u_inner/u_hist_mem/u_sram/addr0[2]}] "
+        "[rb::checks::worst $c capacitance {u_inner/u_hist_mem/u_sram/addr0[2]}]]"
     )
-    assert out == "{0.040000 0.143900} {}"
+    assert out == "{0.040000 0.143900 {}} {}"
 
 
 @pytest.mark.parametrize(
@@ -378,6 +444,68 @@ def test_fits_judges_inputs_on_slew_and_outputs_on_slew_and_capacitance():
         "[rb::macro_pins::fits {0.5 0.01 0.0276 0.02} {slew capacitance} {0.05 0.3}]]"
     )
     assert out == "1 0 1 1 0"
+
+
+def test_shortfall_is_the_worst_counted_ratio_to_the_limit_less_the_margin():
+    out = _run(
+        "set result [list "
+        "[rb::macro_pins::shortfall {0.04 0.042 {} {}} slew {0.0 0.0}] "
+        "[rb::macro_pins::shortfall {0.04 0.036 {} {}} slew {0.1 0.1}] "
+        # An input ignores the capacitance check; an output takes the worse of two.
+        "[rb::macro_pins::shortfall {0.04 0.02 0.01 0.03} slew {0.0 0.0}] "
+        "[rb::macro_pins::shortfall {0.04 0.02 0.01 0.03} {slew capacitance} "
+        "{0.0 0.5}]]"
+    )
+    assert [round(float(v), 6) for v in out.split()] == [1.05, 1.0, 0.5, 6.0]
+
+
+# A fake `trial`: the slew at the macro pin for each final/pre-driver pair, with
+# the trials made logged in `tried`.
+_TRIAL = """set tried {}
+proc fake_trial {slews final pre} {
+    global tried
+    lappend tried $final/$pre
+    return [list 0.04 [dict get $slews $final/$pre] {} {}]
+}
+"""
+
+
+def _choose(slews: dict, buffers: str, has_pre: int, margin: str) -> str:
+    pairs = " ".join(f"{k} {v}" for k, v in slews.items())
+    return _run(
+        _TRIAL
+        + f"set c [rb::macro_pins::choose {{{buffers}}} {has_pre} slew "
+        + f"{{{margin} {margin}}} [list fake_trial {{{pairs}}}]]\n"
+        + 'set result "$c | $tried"'
+    )
+
+
+def test_choose_takes_the_first_pair_that_fits_weakest_first():
+    slews = {"B2/B2": 0.05, "B2/B4": 0.037, "B4/B2": 0.03, "B4/B4": 0.03}
+    assert _choose(slews, "B2 B4", 1, "0.05") == (
+        "1 B2 B4 {0.04 0.037 {} {}} | B2/B2 B2/B4"
+    )
+
+
+def test_choose_keeps_the_lowest_slew_pair_when_none_fits():
+    """The strongest pair is not always the fastest: with none meeting the target, the
+    pair with the lowest slew stays, not the last tried."""
+    slews = {
+        "B12/B12": 0.038,
+        "B12/B16": 0.0375,
+        "B16/B12": 0.041,
+        "B16/B16": 0.042,
+    }
+    assert _choose(slews, "B12 B16", 1, "0.1") == (
+        "0 B12 B16 {0.04 0.0375 {} {}} | B12/B12 B12/B16 B16/B12 B16/B16"
+    )
+
+
+def test_choose_without_a_pre_driver_sizes_the_final_buffer_alone():
+    slews = {"B2/": 0.05, "B4/": 0.045, "B8/": 0.047}
+    assert _choose(slews, "B2 B4 B8", 0, "0.05") == (
+        "0 B4 {} {0.04 0.045 {} {}} | B2/ B4/ B8/"
+    )
 
 
 # One row 0..10000 DBU high 0..100, site pitch 10; the target sits on the row.
