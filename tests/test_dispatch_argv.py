@@ -310,3 +310,12 @@ def test_plusarg_overrides_are_absent_when_none_were_given():
 def test_plusarg_is_not_a_build_job_flag():
     """The build job needs no plusarg overrides, since the head already merged them into the plan."""
     assert "--plusarg" not in build_job_argv(_build_spec())
+
+
+def test_the_verilate_envelope_sits_beside_the_build_envelope():
+    from rtl_buddy.dispatch.argv import verilate_result_path
+
+    assert verilate_result_path("/s/.dispatch/build-result-12-ab.json") == Path(
+        "/s/.dispatch/verilate-result-12-ab.json"
+    )
+    assert verilate_result_path("/s/.dispatch/result-0001.json") is None

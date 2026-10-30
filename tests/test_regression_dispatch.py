@@ -19,6 +19,8 @@ from typer.testing import CliRunner
 
 import rtl_buddy.rtl_buddy as rtl_buddy_module
 from rtl_buddy.config.dispatch import mem_to_bytes, time_to_seconds
+from rtl_buddy.dispatch.argv import verilate_result_path
+from rtl_buddy.dispatch.gates import build_job_of, load_gates
 from rtl_buddy.dispatch.base import DispatchBackend, JobHandle
 
 # Aliased so pytest does not try to collect the dataclass as a test class.
@@ -7408,7 +7410,7 @@ def test_the_verilate_job_owns_its_own_envelope_log_and_gate(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """Split-compile jobs mirror the build job's naming so the halves never overwrite
-    each other, and carry no gates manifest.
+    each other, and share one gates manifest: either releases a key it leaves built.
     """
     backend, result = _splitting_run(monkeypatch, minimal_project)
     assert result.exit_code == 0, result.output
@@ -7417,10 +7419,18 @@ def test_the_verilate_job_owns_its_own_envelope_log_and_gate(
     (build,) = backend.build_submitted
     assert Path(verilate.result_json).name.startswith("verilate-result-")
     assert Path(verilate.log_path).name.startswith("verilate-")
-    assert verilate.gates_json is None
     # The build job's own names are untouched.
     assert Path(build.result_json).name.startswith("build-result-")
     assert build.gates_json is not None
+    assert verilate.gates_json == build.gates_json
+    # The build job finds the verilate job's envelope by name.
+    assert Path(verilate.result_json) == verilate_result_path(build.result_json)
+    # ...and the verilate job finds the build job, to shrink it, in the manifest.
+    payload, _reason = load_gates(build.gates_json)
+    record = build_job_of(payload)
+    assert record is not None
+    assert record["cpus"] == build.resources.cpus
+    assert record["mem"] == build.resources.mem
 
 
 def test_a_non_verilator_suite_is_not_split(

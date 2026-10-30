@@ -984,23 +984,27 @@ def test_the_default_build_job_streams_pre_into_compile_per_config(
     assert _build_payload(result.output)["built"] == ["basic", "extra"]
 
 
-def test_a_parallel_build_job_batches_every_pre_before_any_compile(
+def test_a_parallel_build_job_compiles_a_key_while_later_configs_run_pre(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """``parallel > 1`` batches every PRE before any compile.
+    """``parallel > 1`` starts a key's compile once its first config is through PRE.
 
-    The compile key is known only after PRE, so a pool cannot be filled without probing every config first. Mirrors the streaming test with one flag changed.
+    The second config's PRE waits until the first config's compile has started; a job that ran every PRE before any compile would time that wait out.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
     events: list[str] = []
+    compiling = threading.Event()
 
     def note_pre(name):
+        if name == "extra":
+            assert compiling.wait(timeout=10), "basic did not compile during PRE"
         events.append(f"pre:{name}")
         return None
 
     def note_compile(name):
         events.append(f"compile:{name}")
+        compiling.set()
         return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
 
     stub_runner.prepare_hook = note_pre
@@ -1011,8 +1015,7 @@ def test_a_parallel_build_job_batches_every_pre_before_any_compile(
         ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "2"],
     )
     assert result.exit_code == 0, result.output
-    assert events[:2] == ["pre:basic", "pre:extra"]
-    assert sorted(events[2:]) == ["compile:basic", "compile:extra"]
+    assert events.index("compile:basic") < events.index("pre:extra"), events
     assert sorted(_build_payload(result.output)["built"]) == ["basic", "extra"]
 
 
@@ -1090,21 +1093,29 @@ def test_a_cancelled_build_job_never_starts_a_queued_group(
 ):
     """A cancelled build job never starts a queued group.
 
-    Three groups, two pool slots. Cancellation begins in group 1's compile on a worker thread, which then takes group 3 off the queue; only the worker's own latch check stops it. Deterministic because group 3 can only be picked up after group 1 latched.
+    Three groups, two pool slots. Cancellation begins in group 1's compile on a worker thread, and group 3 is queued only after that (its PRE waits for the latch); only the worker's own latch check stops it.
     """
     from rtl_buddy import process_utils
     from rtl_buddy.runner.test_results import EarlyStopResults
 
     _add_third_test(minimal_project)
     compiled: list[str] = []
+    latched = threading.Event()
 
     def cancel_on_basic(name):
         compiled.append(name)
         if name == "basic":  # plan 0, the first group handed to the pool
             process_utils.terminate_live_managed_processes()
+            latched.set()
         return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
 
+    def pre_after_the_latch(name):
+        if name == "gamma":
+            assert latched.wait(timeout=10)
+        return None
+
     stub_runner.compile_hook = cancel_on_basic  # group_of default: one each
+    stub_runner.prepare_hook = pre_after_the_latch
     runner, rb = _runner()
     result = runner.invoke(
         rb.app,
@@ -3809,3 +3820,417 @@ def test_the_release_skipped_event_has_a_dedicated_human_message():
     assert "start when it ends" in message
     assert "would recompile" not in message
     assert "dispatch release_skipped" not in message
+
+
+# The verilate job's share of a split compile: early release, idle build job, no
+# second PRE
+
+
+def _fake_shrink(monkeypatch: pytest.MonkeyPatch, *, error=None):
+    """Record ``shrink_pending_job`` calls instead of shelling out."""
+    calls = []
+
+    def shrink(job_id, **kwargs):
+        calls.append({"job_id": job_id, **kwargs})
+        return (["cpus", "mem"], None) if error is None else ([], error)
+
+    monkeypatch.setattr(rtl_buddy_module, "shrink_pending_job", shrink)
+    return calls
+
+
+def _gates_with_build_job(path: Path, entries) -> Path:
+    from rtl_buddy.dispatch.gates import write_gates
+
+    return write_gates(
+        path,
+        run_token=None,
+        entries=[(*entry, "hpc") for entry in entries],
+        build_job=("2000", "hpc", 16, "64G"),
+    )
+
+
+def _verilate_job(rb_args, gates: Path) -> list[str]:
+    return [
+        "--machine",
+        "_build-job",
+        "-c",
+        "tests.yaml",
+        "-l",
+        "5",
+        "--phase",
+        "verilate",
+        "--result-json",
+        "verilate-result-1.json",
+        "--gates",
+        str(gates),
+        *rb_args,
+    ]
+
+
+@pytest.mark.parametrize("parallel", ["1", "2"])
+def test_a_verilate_job_releases_every_reused_key_and_shrinks_the_build_job(
+    minimal_project: Path,
+    stamped_runner: type[_StampedStubRunner],
+    monkeypatch: pytest.MonkeyPatch,
+    parallel: str,
+):
+    """A warm suite's sims start from the verilate job, and the build job goes idle.
+
+    Every key validated its stamp in the verilate phase, so each key's sims are released there, and the build job, which has nothing left to compile, is lowered to an idle reservation. Every config still ran PRE in this job.
+    """
+    stamped_runner.group_of = lambda name: f"obj_dir_{name}"
+    stamped_runner.canned = EarlyStopResults(name="b/results", desc="reused")
+    stamped_runner.compile_record_of = lambda _name: {
+        "duration_sec": 0.0,
+        "builder": "stub-builder",
+        "reused": True,
+    }
+    pre: list[str] = []
+    stamped_runner.prepare_hook = lambda name: pre.append(name)
+    calls = _fake_release(monkeypatch)
+    shrinks = _fake_shrink(monkeypatch)
+    gates = _gates_with_build_job(
+        minimal_project / "gates-1.json",
+        [(0, "basic", "1000_1"), (1, "extra", "1000_2")],
+    )
+
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, _verilate_job(["--parallel", parallel], gates))
+    assert result.exit_code == 0, result.output
+
+    assert sorted(pre) == ["basic", "extra"]
+    assert sorted(job for call in calls for job in call["job_ids"]) == [
+        "1000_1",
+        "1000_2",
+    ]
+    records = _records(job_log_path(minimal_project / "verilate-result-1.json"))
+    released = [r for r in records if r.get("event") == "dispatch.key_released"]
+    assert {r["phase"] for r in released} == {"verilate"}
+    assert len(shrinks) == 1, shrinks
+    assert shrinks[0]["job_id"] == "2000"
+    assert shrinks[0]["cluster"] == "hpc"
+    assert (shrinks[0]["current_cpus"], shrinks[0]["current_mem"]) == (16, "64G")
+    assert shrinks[0]["cpus"] == slurm_module.IDLE_BUILD_JOB_CPUS
+    assert [r for r in records if r.get("event") == "dispatch.build_job_shrunk"]
+
+    envelope = load_build_result_json(minimal_project / "verilate-result-1.json")
+    assert not envelope["partial"]
+    assert {entry["fingerprint_sha"] for entry in envelope["builds"]} == {"sha"}
+
+
+def test_a_verilate_job_releases_a_reused_key_while_another_still_builds(
+    minimal_project: Path,
+    stamped_runner: type[_StampedStubRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Mixed warm and cold keys: the reused key is released, the verilated one waits.
+
+    ``extra`` was only verilated (no stamp), so its sims wait for the build job, and that job keeps its reservation.
+    """
+    stamped_runner.group_of = lambda name: f"obj_dir_{name}"
+    stamped_runner.canned = EarlyStopResults(name="b/results", desc="done")
+    stamped_runner.build_stamp_of = lambda name: (
+        {"build_dir": "/b", "fingerprint_sha": "sha", "simv": None}
+        if name == "basic"
+        else None
+    )
+    calls = _fake_release(monkeypatch)
+    shrinks = _fake_shrink(monkeypatch)
+    gates = _gates_with_build_job(
+        minimal_project / "gates-1.json",
+        [(0, "basic", "1000_1"), (1, "extra", "1000_2")],
+    )
+
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, _verilate_job([], gates))
+    assert result.exit_code == 0, result.output
+
+    assert [call["job_ids"] for call in calls] == [["1000_1"]]
+    assert shrinks == []
+    records = _records(job_log_path(minimal_project / "verilate-result-1.json"))
+    # The verilate half writes no stamp by design, so no warning for `extra`.
+    assert "build_job.group_leader_unstamped" not in {r.get("event") for r in records}
+
+
+def test_a_verilate_job_whose_shrink_is_refused_warns_and_exits_0(
+    minimal_project: Path,
+    stamped_runner: type[_StampedStubRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    stamped_runner.group_of = lambda name: f"obj_dir_{name}"
+    stamped_runner.canned = EarlyStopResults(name="b/results", desc="reused")
+    _fake_release(monkeypatch)
+    _fake_shrink(monkeypatch, error="Access/permission denied")
+    gates = _gates_with_build_job(
+        minimal_project / "gates-1.json",
+        [(0, "basic", "1000_1"), (1, "extra", "1000_2")],
+    )
+
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, _verilate_job([], gates))
+    assert result.exit_code == 0, result.output
+    records = _records(job_log_path(minimal_project / "verilate-result-1.json"))
+    (failed,) = [
+        r for r in records if r.get("event") == "dispatch.build_job_shrink_failed"
+    ]
+    assert failed["job_id"] == "2000"
+    assert "permission denied" in failed["error"]
+
+
+def _verilate_envelope(project: Path, builds) -> Path:
+    from rtl_buddy.runner.result_io import write_build_result_json
+
+    return write_build_result_json(
+        project / "verilate-result-1.json",
+        built=[entry["test"] for entry in builds if entry.pop("ok", True)],
+        failed=[],
+        builds=builds,
+    )
+
+
+def _build_half(*extra) -> list[str]:
+    return [
+        "--machine",
+        "_build-job",
+        "-c",
+        "tests.yaml",
+        "-l",
+        "5",
+        "--phase",
+        "build",
+        "--result-json",
+        "build-result-1.json",
+        *extra,
+    ]
+
+
+@pytest.mark.parametrize("parallel", ["1", "2"])
+def test_the_build_half_runs_no_pre_for_a_key_the_verilate_job_built(
+    minimal_project: Path,
+    stamped_runner: type[_StampedStubRunner],
+    parallel: str,
+):
+    """A config the verilate job left built and stamped is copied, not prepared."""
+    _verilate_envelope(
+        minimal_project,
+        [
+            {
+                "test": name,
+                "builder": "stub-builder",
+                "duration_sec": 0.0,
+                "reused": True,
+                "group": f"obj_dir_{name}",
+                "fingerprint_sha": f"sha-{name}",
+                "inputs_sha": f"sha-{name}",
+            }
+            for name in ("basic", "extra")
+        ],
+    )
+    pre: list[str] = []
+    stamped_runner.prepare_hook = lambda name: pre.append(name)
+
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, _build_half("--parallel", parallel))
+    assert result.exit_code == 0, result.output
+
+    assert pre == []
+    assert stamped_runner.inits == []
+    assert _build_payload(result.output)["built"] == ["basic", "extra"]
+    envelope = load_build_result_json(minimal_project / "build-result-1.json")
+    assert {e["test"]: e["fingerprint_sha"] for e in envelope["builds"]} == {
+        "basic": "sha-basic",
+        "extra": "sha-extra",
+    }
+    (done,) = [
+        r
+        for r in _records(job_log_path(minimal_project / "build-result-1.json"))
+        if r.get("event") == "build_job.done"
+    ]
+    assert (done["settled"], done["followed"]) == (2, 0)
+
+
+def _three_configs_on_one_verilated_key(project: Path, *, gamma_sha="sha"):
+    _add_third_test(project)
+    _verilate_envelope(
+        project,
+        [
+            {
+                "test": name,
+                "builder": "stub-builder",
+                "duration_sec": 5.0,
+                "reused": name != "basic",
+                "group": "obj_dir_one",
+                "inputs_sha": gamma_sha if name == "gamma" else "sha",
+            }
+            for name in ("basic", "extra", "gamma")
+        ],
+    )
+
+
+@pytest.mark.parametrize("parallel", ["1", "2"])
+def test_the_build_half_runs_pre_once_per_verilated_key(
+    minimal_project: Path,
+    stamped_runner: type[_StampedStubRunner],
+    monkeypatch: pytest.MonkeyPatch,
+    parallel: str,
+):
+    """One config per key runs PRE and the make; the others take its build with no PRE, and are released with it."""
+    _three_configs_on_one_verilated_key(minimal_project)
+    stamped_runner.group_of = lambda _name: "obj_dir_one"
+    stamped_runner.canned = EarlyStopResults(name="b/results", desc="built")
+    pre: list[str] = []
+    stamped_runner.prepare_hook = lambda name: pre.append(name)
+    calls = _fake_release(monkeypatch)
+    gates = _gates(
+        minimal_project / "gates-1.json",
+        [(0, "basic", "1000_1"), (1, "extra", "1000_2"), (2, "gamma", "1000_3")],
+    )
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, _build_half("--parallel", parallel, "--gates", str(gates))
+    )
+    assert result.exit_code == 0, result.output
+
+    assert pre == ["basic"]
+    assert stamped_runner.adopt_calls == []
+    assert _build_payload(result.output)["built"] == ["basic", "extra", "gamma"]
+    assert sorted(job for call in calls for job in call["job_ids"]) == [
+        "1000_1",
+        "1000_2",
+        "1000_3",
+    ]
+    envelope = load_build_result_json(minimal_project / "build-result-1.json")
+    by_test = {entry["test"]: entry for entry in envelope["builds"]}
+    assert by_test["basic"]["reused"] is False
+    for name in ("extra", "gamma"):
+        assert by_test[name]["reused"] is True
+        assert by_test[name]["duration_sec"] == 0.0
+        assert by_test[name]["fingerprint_sha"] == "sha"
+        assert by_test[name]["group"] == by_test["basic"]["group"]
+
+
+def test_a_follower_whose_inputs_moved_runs_pre_and_compiles(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    """A follower whose recorded inputs differ from the leader's build goes the full way.
+
+    It runs PRE here and meets the leader's build through adoption, which is where drift between same-key configs is reported.
+    """
+    _three_configs_on_one_verilated_key(minimal_project, gamma_sha="other")
+    stamped_runner.group_of = lambda _name: "obj_dir_one"
+    stamped_runner.canned = EarlyStopResults(name="b/results", desc="built")
+    stamped_runner.adopt_of = lambda name: ("drift", "inc/defs.svh")
+    pre: list[str] = []
+    stamped_runner.prepare_hook = lambda name: pre.append(name)
+
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, _build_half())
+    assert result.exit_code == 0, result.output
+
+    assert pre == ["basic", "gamma"]
+    assert stamped_runner.adopt_calls == ["gamma"]
+    payload = _build_payload(result.output)
+    assert payload["built"] == ["basic", "extra"]
+    assert payload["failed"] == ["gamma"]
+    drift = [
+        r
+        for r in _records(job_log_path(minimal_project / "build-result-1.json"))
+        if r.get("event") == "build_job.group_input_drift"
+    ]
+    assert [r["test"] for r in drift] == ["gamma"]
+
+
+def test_followers_of_a_failed_leader_run_pre_and_take_the_failure_path(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    """A leader that failed leaves its followers nothing to follow; each runs PRE here."""
+    _three_configs_on_one_verilated_key(minimal_project)
+    stamped_runner.group_of = lambda _name: "obj_dir_one"
+    stamped_runner.compile_hook = lambda name: CompileFailResults(
+        name=f"{name}/results"
+    )
+    pre: list[str] = []
+    stamped_runner.prepare_hook = lambda name: pre.append(name)
+
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, _build_half())
+    assert result.exit_code == 0, result.output
+
+    assert pre == ["basic", "extra", "gamma"]
+    assert _build_payload(result.output)["failed"] == ["basic", "extra", "gamma"]
+
+
+def test_a_build_half_without_a_verilate_record_runs_every_pre(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    stamped_runner.canned = EarlyStopResults(name="b/results", desc="built")
+    pre: list[str] = []
+    stamped_runner.prepare_hook = lambda name: pre.append(name)
+
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, _build_half())
+    assert result.exit_code == 0, result.output
+    assert pre == ["basic", "extra"]
+    events = _events(job_log_path(minimal_project / "build-result-1.json"))
+    assert "build_job.verilate_result_unusable" in events
+
+
+def test_the_verilate_job_records_each_config_s_compile_inputs(
+    minimal_project: Path,
+    stamped_runner: type[_StampedStubRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """``inputs_sha`` is on every record whose key was probed, stamped or not."""
+    monkeypatch.setattr(
+        _StampedStubRunner,
+        "compile_inputs_sha",
+        lambda self: f"in-{self.test_name}",
+        raising=False,
+    )
+    stamped_runner.canned = EarlyStopResults(name="b/results", desc="verilated")
+    stamped_runner.build_stamp_of = lambda _name: None
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--phase",
+            "verilate",
+            "--result-json",
+            "verilate-result-1.json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    envelope = load_build_result_json(minimal_project / "verilate-result-1.json")
+    assert {e["test"]: e["inputs_sha"] for e in envelope["builds"]} == {
+        "basic": "in-basic",
+        "extra": "in-extra",
+    }
+    assert all("fingerprint_sha" not in e for e in envelope["builds"])
+
+
+def test_the_shrink_and_follow_events_have_dedicated_human_messages():
+    from rtl_buddy.logging_utils import _human_message
+
+    shrunk = _human_message(
+        "dispatch.build_job_shrunk", {"job_id": "2000", "cpus": 1, "mem": "1G"}
+    )
+    assert "2000" in shrunk and "cpus=1" in shrunk and "mem=1G" in shrunk
+    refused = _human_message(
+        "dispatch.build_job_shrink_failed", {"job_id": "2000", "error": "denied"}
+    )
+    assert "2000" in refused and "denied" in refused
+    released = _human_message(
+        "dispatch.key_released",
+        {"group": "g", "tests": ["t"], "job_ids": ["1"], "phase": "verilate"},
+    )
+    assert released.endswith("waiting for the build job")
+    unusable = _human_message("build_job.verilate_result_unusable", {"path": "p"})
+    assert "dispatch build_job" not in unusable and "p" in unusable

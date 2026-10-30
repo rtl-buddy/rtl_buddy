@@ -9350,3 +9350,49 @@ def test_pruning_retires_the_record(tmp_path, monkeypatch):
 
 def test_the_record_is_never_a_compile_input():
     assert vlog_sim_module._is_non_input_file(_RECORD)
+
+
+def _write_verilate_envelope(tmp_path, *, builds):
+    from rtl_buddy.runner.result_io import write_build_result_json
+
+    return write_build_result_json(
+        tmp_path / "artefacts" / ".dispatch" / "verilate-result-1.json",
+        built=[entry["test"] for entry in builds],
+        failed=[],
+        builds=builds,
+        partial=True,
+    )
+
+
+def test_a_job_the_verilate_job_released_reads_its_verdict_from_that_job(
+    tmp_path, monkeypatch
+):
+    """Released by the verilate job before the build job wrote anything, a gated job takes that job's stamped build as `built`."""
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    sim.expect_prebuilt = True
+    sim.build_result_json = tmp_path / "artefacts" / ".dispatch" / "build-result-1.json"
+    record = {"test": "test_a", "fingerprint_sha": "sha", "group": "g"}
+    _write_verilate_envelope(tmp_path, builds=[record])
+
+    assert sim._gated_build_verdict() == ("built", record)
+
+    # A verilation alone is not a build.
+    _write_verilate_envelope(tmp_path, builds=[{"test": "test_a", "group": "g"}])
+    assert sim._gated_build_verdict() == (None, None)
+
+
+def test_the_build_envelope_outranks_the_verilate_job_s(tmp_path, monkeypatch):
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    sim.expect_prebuilt = True
+    _write_verilate_envelope(
+        tmp_path, builds=[{"test": "test_a", "fingerprint_sha": "sha"}]
+    )
+    failure = {"test": "test_a", "returncode": 2}
+    sim.build_result_json = _write_build_envelope(
+        tmp_path, failed=["test_a"], builds=[failure]
+    )
+    assert sim._gated_build_verdict() == ("failed", failure)
+
+    # A build envelope that does not name the test defers to the verilate job's.
+    sim.build_result_json = _write_build_envelope(tmp_path, failed=[], built=[])
+    assert sim._gated_build_verdict()[0] == "built"

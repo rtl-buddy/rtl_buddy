@@ -4500,6 +4500,72 @@ def test_release_dependency_survives_a_missing_or_wedged_scontrol(monkeypatch):
     assert outcome.systemic is not None
 
 
+def test_shrink_pending_job_lowers_cpus_then_memory(monkeypatch):
+    """Two calls, so a site that refuses the memory change keeps the cpu change."""
+    calls = []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, []))
+
+    changed, error = slurm_module.shrink_pending_job(
+        "2000",
+        cpus=1,
+        mem="1G",
+        current_cpus=16,
+        current_mem="64G",
+        cluster="hpc",
+        cwd="/proj",
+    )
+    assert (changed, error) == (["cpus", "mem"], None)
+    assert [call["argv"] for call in calls] == [
+        [
+            "scontrol",
+            "-M",
+            "hpc",
+            "update",
+            "JobId=2000",
+            "CPUsPerTask=1",
+            "MinCPUsNode=1",
+        ],
+        ["scontrol", "-M", "hpc", "update", "JobId=2000", "MinMemoryNode=1024"],
+    ]
+    assert {call["cwd"] for call in calls} == {"/proj"}
+    assert all(call["timeout"] is not None for call in calls)
+
+
+def test_shrink_pending_job_never_raises_a_reservation(monkeypatch):
+    """An owner cannot raise a pending job's reservation, so a field at or below the target is not touched."""
+    calls = []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, []))
+
+    assert slurm_module.shrink_pending_job(
+        "2000", cpus=1, mem="1G", current_cpus=1, current_mem="512M"
+    ) == ([], None)
+    assert calls == []
+
+
+def test_shrink_pending_job_reports_a_refusal_and_keeps_what_changed(monkeypatch):
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr="Access/permission denied"),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, results))
+
+    changed, error = slurm_module.shrink_pending_job(
+        "2000", cpus=1, mem="1G", current_cpus=8, current_mem=None
+    )
+    assert changed == ["cpus"]
+    assert "permission denied" in error
+
+    def run(argv, **kwargs):
+        raise OSError("No such file or directory: 'scontrol'")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    changed, error = slurm_module.shrink_pending_job(
+        "2000", cpus=1, mem=None, current_cpus=8, current_mem=None
+    )
+    assert changed == [] and "scontrol" in error
+
+
 def test_a_systemic_failure_stops_the_batch_instead_of_paying_it_per_id(monkeypatch):
     """A systemic failure stops the batch.
 
