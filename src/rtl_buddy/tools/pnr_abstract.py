@@ -29,7 +29,7 @@ from ..config.pnr import (
     PnrAbstract,
     PortBuffers,
 )
-from .artifact_paths import project_relative, project_root_or_none
+from .artifact_paths import project_relative, project_root_or_none, run_artifact_root
 
 ABSTRACT_DIR_NAME = "abstract"
 #: OpenROAD writes the views here before `publish`; cleared by every run.
@@ -768,10 +768,10 @@ def has_gds(manifest: dict) -> bool:
     return not ("gds" in outputs and outputs["gds"] is None)
 
 
-def resolve_block(ref: BlockRef) -> ResolvedBlock:
+def resolve_block(ref: BlockRef, *, run_tag: str | None = None) -> ResolvedBlock:
     """Resolve one `blocks:` entry to its published abstract, or raise BlockResolutionError.
 
-    Nothing is re-run; a missing abstract is reported with the `rb pnr` command that produces it.
+    Nothing is re-run; a missing abstract is reported with the `rb pnr` command that produces it. With `run_tag`, the block run's abstract under that tag wins over the untagged one.
     """
     from ..config.pnr import PnrSuiteConfig
     from ..errors import FatalRtlBuddyError
@@ -790,16 +790,21 @@ def resolve_block(ref: BlockRef) -> ResolvedBlock:
         raise BlockResolutionError(
             f"{where}: that run does not set harden: true, so it publishes no abstract"
         )
-    directory = abstract_dir(
-        os.path.join(os.path.dirname(ref.pnr_suite_path), "artefacts", ref.pnr_run)
-    )
-    manifest_path = os.path.join(directory, ABSTRACT_MANIFEST_NAME)
-    manifest = read_manifest(directory)
-    if manifest is None:
+    suite_dir = os.path.dirname(ref.pnr_suite_path)
+    candidates = [abstract_dir(os.path.join(suite_dir, "artefacts", ref.pnr_run))]
+    if run_tag is not None:
+        tagged = run_artifact_root(suite_dir, run_tag) / ref.pnr_run
+        candidates.insert(0, abstract_dir(str(tagged)))
+    for directory in candidates:
+        manifest = read_manifest(directory)
+        if manifest is not None:
+            break
+    else:
         raise BlockResolutionError(
-            f"{where}: no abstract at {directory} — run "
+            f"{where}: no abstract at {' or '.join(candidates)} — run "
             f"`rb pnr {ref.pnr_run} -c {ref.pnr_suite_path}` first"
         )
+    manifest_path = os.path.join(directory, ABSTRACT_MANIFEST_NAME)
     if manifest.get("block") != ref.name:
         raise BlockResolutionError(
             f"{where}: the abstract is of module {manifest.get('block')!r}, "
@@ -863,8 +868,10 @@ def check_technology(
             )
 
 
-def resolve_blocks(refs: list[BlockRef]) -> list[ResolvedBlock]:
-    return [resolve_block(ref) for ref in refs]
+def resolve_blocks(
+    refs: list[BlockRef], *, run_tag: str | None = None
+) -> list[ResolvedBlock]:
+    return [resolve_block(ref, run_tag=run_tag) for ref in refs]
 
 
 def _records(value):

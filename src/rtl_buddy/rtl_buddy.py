@@ -11564,8 +11564,21 @@ class RtlBuddy:
                 show_default="local",
             ),
         ] = None,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="namespace this invocation's P&R output under "
+                "artefacts/.runs/<tag>/ with its own tree lock and log, so "
+                "concurrent rb pnr calls on one pnr.yaml do not collide; "
+                "blocks: read the tag's abstract first, then the untagged one",
+            ),
+        ] = None,
     ):
         """run place-and-route"""
+        # Validated before the execution context is entered, which derives the artefact
+        # root from it.
+        self._run_tag = validate_run_tag(run_tag)
         ctx = self._enter_command_context(
             primary_config=pnr_config, list_only=list_runs
         )
@@ -11611,6 +11624,7 @@ class RtlBuddy:
                 ),
                 resume_from=resume_from,
                 dispatch=backend,
+                run_tag=self._run_tag,
             )
         exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
         if self.machine:
@@ -11661,6 +11675,7 @@ class RtlBuddy:
         resume: str | None = None,
         resume_from: str | None = None,
         dispatch=None,
+        run_tag: str | None = None,
     ):
         suite_path = suite_cfg.get_path()
         if stop_after is not None or resume is not None or resume_from is not None:
@@ -11708,12 +11723,15 @@ class RtlBuddy:
                 continue
             if planned.pulled_in:
                 self._artifact_locks.acquire(
-                    Path(planned.suite_path).resolve().parent / "artefacts",
+                    run_artifact_root(
+                        Path(planned.suite_path).resolve().parent, run_tag
+                    ),
                     command="pnr",
                 )
             if run_synth:
                 # Resolve now so a bad `synth:` fails before any block runs.
                 run.resolve_synth_cfg()
+                # Synthesis is not namespaced: every tag shares its untagged tree.
                 self._artifact_locks.acquire(
                     Path(run.get_synth_suite_path()).resolve().parent / "artefacts",
                     command="pnr",
@@ -11735,6 +11753,7 @@ class RtlBuddy:
                 resume=resume,
                 resume_from=resume_from,
                 dispatch=dispatch,
+                run_tag=run_tag,
             )
 
         def _error(planned, exc):
@@ -11777,6 +11796,7 @@ class RtlBuddy:
         resume=None,
         resume_from=None,
         dispatch=None,
+        run_tag=None,
     ) -> dict:
         """One planned run of `_do_pnr_suite`: blocked, skipped, or run.
 
@@ -11865,6 +11885,7 @@ class RtlBuddy:
             resume=resume,
             resume_from=resume_from,
             dispatch=dispatch,
+            run_tag=run_tag,
         )
         res = runner.run()
         res.results.setdefault("mode", run.get_mode().value)
@@ -12092,8 +12113,17 @@ class RtlBuddy:
                 show_default="each run's gds-mode (preview)",
             ),
         ] = None,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="export the result an rb pnr --run-tag <tag> wrote under "
+                "artefacts/.runs/<tag>/",
+            ),
+        ] = None,
     ):
         """export GDS/PNG from a saved P&R result (no synthesis, no OpenROAD)"""
+        self._run_tag = validate_run_tag(run_tag)
         ctx = self._enter_command_context(
             primary_config=pnr_config, list_only=list_runs
         )
@@ -12129,6 +12159,7 @@ class RtlBuddy:
             png_width=png_width,
             png_height=png_height,
             gds_mode=gds_mode,
+            run_tag=self._run_tag,
         )
         exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
         if self.machine:
@@ -12155,6 +12186,7 @@ class RtlBuddy:
         png_width: int = DEFAULT_PNG_WIDTH,
         png_height: int = DEFAULT_PNG_HEIGHT,
         gds_mode: str | None = None,
+        run_tag: str | None = None,
     ):
         runs = suite_cfg.get_runs(pnr_name)
         if checkpoint is not None and len(runs) != 1:
@@ -12214,6 +12246,7 @@ class RtlBuddy:
                 klayout_props=lyp,
                 png_width=png_width,
                 png_height=png_height,
+                run_tag=run_tag,
             )
             res = runner.run()
             # No xfail handling: the marker excuses a P&R run, not an export.

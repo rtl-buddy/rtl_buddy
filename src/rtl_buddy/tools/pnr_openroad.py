@@ -60,6 +60,7 @@ from .artifact_paths import (
     clear_stale_artefacts,
     project_relative,
     project_root_or_none,
+    run_artifact_root,
 )
 from . import (
     block_params,
@@ -2908,9 +2909,12 @@ class OpenRoadPnr:
         resume: str | None = None,
         resume_from: str | None = None,
         dispatch=None,
+        run_tag: str | None = None,
     ):
         self.name = name
         self.suite_dir = suite_dir
+        # `--run-tag`: the run writes under `artefacts/.runs/<tag>/` and reads that tree's block abstracts first.
+        self.run_tag = run_tag
         self.accept_stale = accept_stale
         self._mode = pnr_cfg.get_mode()
         # `--stop-after` as given; a probe without one stops after global route.
@@ -2973,7 +2977,7 @@ class OpenRoadPnr:
         self._thread_plan: ThreadPlan | None = None
         self._blocks: list[pnr_abstract.ResolvedBlock] = []
 
-        artefact_root = Path(suite_dir) / "artefacts" / pnr_cfg.get_name()
+        artefact_root = run_artifact_root(suite_dir, run_tag) / pnr_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
         self._ckpt_run_dir: str | None = None
@@ -5554,7 +5558,7 @@ class OpenRoadPnr:
                     f"'{self.pnr_cfg.get_platform()}' declares corners, and an "
                     "abstract carries one corner's timing model"
                 )
-            resolved = pnr_abstract.resolve_blocks(refs)
+            resolved = pnr_abstract.resolve_blocks(refs, run_tag=self.run_tag)
             for block in resolved:
                 if gds_needed_by and block.gds is None:
                     raise pnr_abstract.BlockResolutionError(

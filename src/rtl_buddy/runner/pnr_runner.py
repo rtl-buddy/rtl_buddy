@@ -28,6 +28,7 @@ class PnrRunner:
         resume: str | None = None,
         resume_from: str | None = None,
         dispatch=None,
+        run_tag: str | None = None,
     ):
         self.name = name
         self.root_cfg = root_cfg
@@ -45,6 +46,7 @@ class PnrRunner:
         self.emit_png = emit_png
         # `None` defers to each run's `gds-mode:`; otherwise it overrides every run.
         self.gds_mode = gds_mode
+        self.run_tag = run_tag
 
     def run(self) -> PnrResults:
         log_event(
@@ -90,6 +92,7 @@ class PnrRunner:
             resume=self.resume,
             resume_from=self.resume_from,
             dispatch=self.dispatch,
+            run_tag=self.run_tag,
         )
         return backend.run()
 
@@ -116,6 +119,7 @@ class PnrExportRunner:
         png_width: int = DEFAULT_PNG_WIDTH,
         png_height: int = DEFAULT_PNG_HEIGHT,
         checkpoint: str | None = None,
+        run_tag: str | None = None,
     ):
         self.name = name
         self.root_cfg = root_cfg
@@ -123,6 +127,7 @@ class PnrExportRunner:
         self.suite_dir = suite_dir
         self.reglvl_filter = reglvl_filter
         self.checkpoint = checkpoint
+        self.run_tag = run_tag
         self.emit_png = emit_png or png_only
         self.gds_mode = gds_mode
         self.def_path = def_path
@@ -168,6 +173,7 @@ class PnrExportRunner:
             klayout_props=self.klayout_props,
             png_width=self.png_width,
             png_height=self.png_height,
+            run_tag=self.run_tag,
         )
         return backend.export_only(
             def_path=self.def_path, png_only=self.png_only, checkpoint=self.checkpoint
