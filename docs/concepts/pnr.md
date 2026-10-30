@@ -43,6 +43,25 @@ rb pnr alu_pnr -c pnr/alu/pnr.yaml --png    # also stream out GDS and render a P
 
 Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previous run's outputs first, except a refused `--resume`, which stops before that and leaves them in place. With no run name, `rb pnr` runs every entry whose `reglvl` is within `-l`, hardened blocks before the runs that use them.
 
+## Run several P&R calls at once
+
+`rb pnr` locks the suite's whole `artefacts/` tree, so a second untagged `rb pnr` on the same `pnr.yaml` is refused, even for a different run. Give each concurrent call its own `--run-tag`, for example to sweep one block's settings:
+
+```bash
+rb pnr alu_pnr -c pnr/alu/pnr.yaml --run-tag util55 &
+rb pnr alu_pnr -c pnr/alu/pnr.yaml --run-tag util60 &
+wait
+rb pnr-export alu_pnr -c pnr/alu/pnr.yaml --run-tag util60 --png
+```
+
+- A tagged call writes each run under `artefacts/.runs/<tag>/<run>/`, with its own tree lock and `rtl_buddy.log` in `artefacts/.runs/<tag>/`. Tag rules are in [Namespace concurrent runs](execution-context.md#namespace-concurrent-runs).
+- Calls under different tags, or one tagged and one untagged, run side by side. Two calls under the same tag, or two untagged, still contend for one lock.
+- With no run name, the tag also applies to runs pulled in from another `pnr.yaml`: they write and lock that suite's `artefacts/.runs/<tag>/`.
+- A run's `blocks:` read the abstract its block run published under the same tag, and the untagged one when that tag has none. A tagged top can therefore use blocks hardened untagged.
+- Synthesis is not namespaced. Every tag reads the untagged `synth_netlist.v`, and `--synth` writes and locks the synthesis suite's untagged tree, so only one call at a time can pass `--synth` for a given synthesis suite.
+- `--resume latest` and `--dispatch slurm` work inside the tag's tree: checkpoints, stage jobs and orphan checks are per tag.
+- `rb pnr-export --run-tag <tag>` exports a tagged result. `rb power` and other readers read the untagged `artefacts/<run>/` only; see [`--run-tag` readers](../known-issues.md#--run-tag-covers-the-test-and-pr-flows-not-every-reader).
+
 ## Interpret results
 
 `PASS` means OpenROAD ran the flow to its end and wrote its outputs, or, for `mode: probe` and `--stop-after`, to the stage it stops after, with `routed: false` and no routed outputs. Check `routed` before treating a `PASS` as a routed result. It does not mean the design meets timing or routes clean unless [signoff gates](#gate-signoff) are set. Judge the design on these fields:
