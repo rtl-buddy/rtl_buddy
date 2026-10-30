@@ -3791,7 +3791,7 @@ class OpenRoadPnr:
         )
 
     def _unseen_tcl(self) -> str:
-        """The end of the electrical round's extraction: print each max-slew and max-capacitance violator left on the extracted parasitics that is within its limit less the round's margin on the placement estimate at the round's signal wire RC (`electrical_unseen.tcl`). It leaves out the violators `repair_design` skips whatever the parasitics: ports, and pins on clock, dont_touch, special or abutment nets.
+        """The end of the electrical round's extraction: print each max-slew and max-capacitance violator left on the extracted parasitics that is within its limit less the round's margin on the placement estimate at the round's signal wire RC (`electrical_unseen.tcl`). Each is judged by the same check at the scene where its extracted violation is worst. It leaves out the violators `repair_design` skips whatever the parasitics: ports, and pins on constant-driven, clock, dont_touch, special or abutment nets.
 
         `repair_design` finds violators on the SPEF but sizes its buffering on Steiner trees at that RC, so it leaves such a net as it is. Moving the round to detailed-routing parasitics instead would build buffer trees from global routes rebuilt from the guides (RSZ-0074). It runs last, since it replaces the session's parasitics with the estimate, and a failure only prints a line.
         """
