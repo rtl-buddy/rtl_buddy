@@ -8,6 +8,7 @@ Process-dependent knobs live on the PDK, can be overridden on the platform, and 
 | DRCs left in congested areas | `routing-layer-adjustment` (0 to 1) withholds that fraction of each signal layer from the global router; `global-route.layer-adjustment` sets it per layer. See [Tune global routing](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#tune-global-routing). |
 | Setup misses on long nets | `placement.timing-driven: true`. On OpenROAD 26Q4 it also buffers and resizes during placement, which grows area. Needs wire RC. |
 | Timing misses after routing | [`global-route-repair` or `post-route-repair`](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#repair-timing-after-routing) |
+| Long nets that placement's `repair_design` leaves for routing to push over their slew limit | `placement.repair-design: {max-wire-length: <µm>}`, below |
 | Many fanout buffers on a library without a fanout limit (sky130hd) | `max-fanout: 100000` stops buffering for fanout alone; `repair_design` otherwise uses 50. |
 | Cells too tight | `placement.padding` (sites, default 0) |
 | Clock tree | `cts-buffer` (CTS picks the root buffer from it unless `cts-root-buffer` names one), `cts-sink-clustering`, `cts-obstruction-aware`, `cts-apply-ndr`; `cts-clock-nets` builds trees for the named clocks only |
@@ -37,6 +38,15 @@ Each CTS control sits on the platform and on the run, and a run's value replaces
 
 This calls `clock_tree_synthesis -root_buf sky130_fd_sc_hd__clkbuf_16 -buf_list sky130_fd_sc_hd__clkbuf_4 -sink_clustering_enable -sink_clustering_size 20 -sink_clustering_max_diameter 25 -no_obstruction_aware`, then `repair_clock_nets -max_wire_length 1000`. `cts-obstruction-aware: false` needs an OpenROAD whose `clock_tree_synthesis` takes `-no_obstruction_aware`, which rb checks at setup; see the [YAML reference](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#synthesis-and-physical-design-tools).
 
+`placement.repair-design` passes `slew-margin`, `cap-margin` (percent) and `max-wire-length` (µm) to the place stage's `repair_design`, as `global-route-repair.repair-design` does after global route. Unset, it runs with OpenROAD's defaults, as ORFS does. The block merges field by field from the PDK through the platform to the run, and `null` clears the levels below:
+
+```yaml
+    placement:
+      repair-design: {max-wire-length: 600, slew-margin: 10}
+```
+
+`repair_design` judges wires on the placement estimate, which a long routed net can exceed. `max-wire-length` splits any wire longer than it with a buffer, so one driver does not carry a long chain to routing, where post-route repair may not see it (see [Known Issues](https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#post-route-repair_design-sizes-its-buffering-on-the-placement-estimate)).
+
 `repair_design` sizes repeaters for the library's target slew, so a macro pin whose own limit is far below it stays in `electrical.rpt`. `placement.macro-pin-limits` buffers such pins at the end of the place stage, after `repair_design`, the `after-repair-design` hook and legalization:
 
 ```yaml
@@ -48,7 +58,7 @@ This calls `clock_tree_synthesis -root_buf sky130_fd_sc_hd__clkbuf_16 -buf_list 
         capacitance-margin: 0.5   # of each max-capacitance limit; default: margin
 ```
 
-Each macro data pin over its limit less the margin gets a buffer fixed on the free row site nearest it (an input also gets a pre-driver), sized from `buffers` weakest first and marked `dont_touch`, so later repair leaves it alone. `pnr.log` has one `>>>` line per pin. The step judges on placement parasitics, so check `electrical.rpt`: a long macro-output net can route to twice its estimated capacitance (hence `capacitance-margin: 0.5` on sky130hd), a large `macro-cell-halo` keeps the buffer too far from the pin (3 µm works with `buf_8` on sky130hd, 20 µm does not), and a pin route that global routing detours around the macro is out of its reach. A block set on the run or platform replaces a lower level's whole.
+Each macro data pin over its limit less the margin gets a buffer fixed on the free row site nearest it (an input also gets a pre-driver), sized from `buffers` weakest first and marked `dont_touch`, so later repair leaves it alone. When no pair meets the limit less the margin, the pair closest to it stays (for an input, the lowest slew), which is not always the strongest, and the pin counts in `macro_pin_unmet_count`. `pnr.log` has one `>>>` line per pin. The step judges on placement parasitics, so check `electrical.rpt`: a long macro-output net can route to twice its estimated capacitance (hence `capacitance-margin: 0.5` on sky130hd), a large `macro-cell-halo` keeps the buffer too far from the pin (3 µm works with `buf_8` on sky130hd, 20 µm does not), and a pin route that global routing detours around the macro is out of its reach. A block set on the run or platform replaces a lower level's whole.
 
 ### Optimisation steps
 

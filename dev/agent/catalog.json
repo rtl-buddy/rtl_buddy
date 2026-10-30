@@ -2729,6 +2729,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/post-route-repair-works-around-openroad-routing-failures.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#post-route-repairdesign-sizes-its-buffering-on-the-placement-estimate",
+          "slug": "post-route-repairdesign-sizes-its-buffering-on-the-placement-estimate",
+          "title": "Post-route `repair_design` sizes its buffering on the placement estimate",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/post-route-repairdesign-sizes-its-buffering-on-the-placement-estimate.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#corners-share-one-sdc-mode-on-an-openroad-without-modes",
           "slug": "corners-share-one-sdc-mode-on-an-openroad-without-modes",
           "title": "Corners share one SDC mode on an OpenROAD without modes",
