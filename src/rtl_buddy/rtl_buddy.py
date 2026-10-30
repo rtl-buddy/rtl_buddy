@@ -63,19 +63,21 @@ from .mcp import server as mcp_server_mod
 from .phys import manifest as phys_manifest_mod
 from .phys import query as phys_query_mod
 from .mcp import toolset as mcp_toolset_mod
-from .artifact_lock import ArtifactLocks, tree_lock
+from .artifact_lock import ArtifactLocks, acquire_in_order, tree_lock
 from .errors import FatalRtlBuddyError, FilelistError
 from .exec_context import ExecutionContext
 from .hooks import exec_hook_script
 from .logging_utils import (
     attach_file_log,
     emit_console_text,
+    held_log_records,
     is_machine_mode,
     log_console_event,
     log_event,
     render_summary,
     set_print_failures_only,
     setup_logging,
+    write_held_records,
 )
 from .process_utils import cancellation_has_started, terminate_live_managed_processes
 from .runner.cdc_runner import CdcRunner
@@ -215,7 +217,7 @@ from .runner.xfail import apply_xfail, xfail_mismatch, xfail_refusal
 from .runner.fpga_runner import FpgaRunner
 from .runner.fpga_results import FpgaSkipResults
 from .runner.pnr_runner import PnrExportRunner, PnrRunner
-from .runner.pnr_plan import OnceMap, PlannedRun, plan_pnr_runs, run_plan
+from .runner.pnr_plan import OnceMap, PlannedRun, plan_pnr_runs, run_key, run_plan
 from .runner.pnr_results import PnrFailResults, PnrSkipResults
 from .runner.power_runner import PowerRunner
 from .runner.power_results import PowerSkipResults
@@ -1309,6 +1311,8 @@ class RtlBuddy:
             self._artifact_locks.acquire(
                 ctx.artifact_root,
                 command=getattr(self, "_pending_invoked_subcommand", None),
+                # A tagged tree is held briefly by a same-tag call copying a block out of it.
+                wait_for_copying=self._run_tag is not None,
             )
 
         if log_path is not None:
@@ -12101,10 +12105,25 @@ class RtlBuddy:
         # Validated before the execution context is entered, which derives the artefact
         # root from it.
         self._run_tag = validate_run_tag(run_tag)
+        tagged = None
+        if self._run_tag is not None and not list_runs:
+            with held_log_records() as held:
+                tagged = self._pnr_tagged_inputs(
+                    pnr_config,
+                    self._run_tag,
+                    pnr_name=pnr_name,
+                    reg_level=reg_level,
+                    run_synth=run_synth,
+                )
         ctx = self._enter_command_context(
             primary_config=pnr_config, list_only=list_runs
         )
-        suite_cfg = PnrSuiteConfig(path=str(ctx.primary_config))
+        if tagged is not None:
+            write_held_records(held)
+            suite_cfg, plan, tag_inputs = tagged
+        else:
+            suite_cfg = PnrSuiteConfig(path=str(ctx.primary_config))
+            plan = tag_inputs = None
         if emit_png or gds_mode is not None:
             emit_gds = True
         log_event(
@@ -12147,6 +12166,8 @@ class RtlBuddy:
                 resume_from=resume_from,
                 dispatch=backend,
                 run_tag=self._run_tag,
+                tag_inputs=tag_inputs,
+                plan=plan,
             )
         exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
         if self.machine:
@@ -12181,6 +12202,78 @@ class RtlBuddy:
             config_path=getattr(self.root_cfg, "root_cfg_path", None),
         )
 
+    @staticmethod
+    def _pnr_plan(suite_cfg, *, pnr_name, reg_level, run_synth):
+        """The runs `rb pnr` plans, and the predicate that tells whether `-l` selects one."""
+
+        def _selected(run):
+            level = run.get_reglvl(run.get_tool_name())
+            return reg_level is None or level <= reg_level
+
+        if pnr_name is None:
+            plan = plan_pnr_runs(
+                suite_cfg, synth_blocks=_selected if run_synth else None
+            )
+        else:
+            # A named run never re-runs its blocks; it fails fast when an abstract is missing.
+            plan = [
+                PlannedRun(suite_path=suite_cfg.get_path(), cfg=run)
+                for run in suite_cfg.get_runs(pnr_name)
+            ]
+        return plan, _selected
+
+    def _pnr_tagged_inputs(
+        self, pnr_config, run_tag: str, *, pnr_name, reg_level, run_synth
+    ):
+        """Lock a tagged `rb pnr`'s own tree and copy into it the blocks its runs read from another suite's tagged tree.
+
+        Runs before the call opens its log. The own tree is taken first, so a busy one refuses the call before anything is waited for. Each other suite's tagged tree is waited for while its block is copied, then let go; `acquire_in_order` takes the trees so that calls copying out of each other's trees never wait for each other in a cycle. Blocks the call runs itself, and those in its own suite, are copied later under the own tree's lock. Returns the suite, its `_pnr_plan` and the `TagInputs` holding the copies.
+        """
+        ctx = ExecutionContext.for_command(
+            invocation_cwd=self.invocation_cwd,
+            primary_config=pnr_config,
+            run_tag=run_tag,
+        )
+        suite_cfg = PnrSuiteConfig(path=str(ctx.primary_config))
+        plan = self._pnr_plan(
+            suite_cfg, pnr_name=pnr_name, reg_level=reg_level, run_synth=run_synth
+        )
+        runs, selected = plan
+        in_plan = {p.key for p in runs}
+        refs = []
+        for planned in runs:
+            if not selected(planned.cfg):
+                continue
+            consumed = list(planned.cfg.get_blocks())
+            # Synthesis reads its blocks under --synth; a hardening run's parameter probe reads them too.
+            if run_synth or planned.cfg.get_harden():
+                try:
+                    consumed += planned.cfg.resolve_synth_cfg().get_blocks()
+                except FatalRtlBuddyError:
+                    # The run fails on its synthesis configuration where it reads it.
+                    pass
+            for ref in consumed:
+                tree = run_artifact_root(
+                    Path(ref.pnr_suite_path).resolve().parent, run_tag
+                )
+                if (
+                    run_key(ref.pnr_suite_path, ref.pnr_run) not in in_plan
+                    and tree != ctx.artifact_root
+                ):
+                    refs.append((ref, tree))
+        tag_inputs = pnr_tag_inputs.TagInputs.for_suite(ctx.command_root, run_tag)
+        sources = acquire_in_order(
+            self._artifact_locks,
+            ctx.artifact_root,
+            [tree for _ref, tree in refs],
+            command="pnr",
+        )
+        try:
+            tag_inputs.prefetch([ref for ref, _tree in refs])
+        finally:
+            sources.release_all()
+        return suite_cfg, plan, tag_inputs
+
     def _do_pnr_suite(
         self,
         suite_cfg,
@@ -12198,7 +12291,10 @@ class RtlBuddy:
         resume_from: str | None = None,
         dispatch=None,
         run_tag: str | None = None,
+        tag_inputs=None,
+        plan=None,
     ):
+        """Run the planned P&R runs of `suite_cfg`; `plan` is `_pnr_plan`'s result when the caller built it already."""
         suite_path = suite_cfg.get_path()
         if stop_after is not None or resume is not None or resume_from is not None:
             if pnr_name is None:
@@ -12209,14 +12305,10 @@ class RtlBuddy:
             if problem is not None:
                 raise FatalRtlBuddyError(problem)
 
-        def _selected(run):
-            level = run.get_reglvl(run.get_tool_name())
-            return reg_level is None or level <= reg_level
-
+        plan, _selected = plan or self._pnr_plan(
+            suite_cfg, pnr_name=pnr_name, reg_level=reg_level, run_synth=run_synth
+        )
         if pnr_name is None:
-            plan = plan_pnr_runs(
-                suite_cfg, synth_blocks=_selected if run_synth else None
-            )
             log_event(
                 logger,
                 logging.INFO,
@@ -12227,12 +12319,6 @@ class RtlBuddy:
                 ],
                 jobs=jobs,
             )
-        else:
-            # A named run never re-runs its blocks; it fails fast when an abstract is missing.
-            plan = [
-                PlannedRun(suite_path=suite_path, cfg=run)
-                for run in suite_cfg.get_runs(pnr_name)
-            ]
 
         for planned in plan:
             if _selected(planned.cfg):
@@ -12263,14 +12349,10 @@ class RtlBuddy:
                     )
 
         synths = OnceMap()
-        tag_inputs = (
-            None
-            if run_tag is None
-            else pnr_tag_inputs.TagInputs(
-                run_tag,
-                str(run_artifact_root(Path(suite_path).resolve().parent, run_tag)),
+        if tag_inputs is None and run_tag is not None:
+            tag_inputs = pnr_tag_inputs.TagInputs.for_suite(
+                Path(suite_path).resolve().parent, run_tag
             )
-        )
 
         def _step(planned, outcomes):
             return self._pnr_plan_step(
@@ -12480,7 +12562,11 @@ class RtlBuddy:
                     tag_inputs=tag_inputs,
                 )
                 if tag_inputs is not None:
-                    tag_inputs.synth_dir(synth_path, run.get_synth_name())
+                    try:
+                        tag_inputs.synth_dir(synth_path, run.get_synth_name())
+                    except pnr_tag_inputs.SynthCopyChanged:
+                        # The P&R run fails at setup naming the copy.
+                        pass
             res = synth["results"].results
             return {
                 "name": run.get_synth_name(),
