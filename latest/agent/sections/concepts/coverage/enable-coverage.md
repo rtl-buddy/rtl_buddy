@@ -22,4 +22,4 @@ rb -M cov test basic
 rb -M cov regression
 ```
 
-`cfg-coverage.name` must match the simulator family. `use-lcov: true` enables LCOV conversion and HTML generation. Coverview packaging is configured under `cfg-coverview`; see [YAML formats](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#root_configyaml).
+`cfg-coverage.name` must match the simulator family. `use-lcov: true` enables LCOV conversion and HTML generation. Coverview packaging is configured under `cfg-coverview`; see [YAML formats](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#root_configyaml).

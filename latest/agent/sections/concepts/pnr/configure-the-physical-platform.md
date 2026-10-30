@@ -4,14 +4,14 @@ A PDK entry in `cfg-pdks` supplies the files and cell names; a `cfg-pnr-platform
 
 | PDK key | Use |
 | --- | --- |
-| `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers` | Tie cells, filler masters, horizontal and vertical pin layers |
+| `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers` | Tie cells, filler masters, horizontal and vertical pin layers. `pin-layers` is required: `place_pins` has no default layers |
 | `cell-gds`, `klayout-tech`, `klayout-props` | Stream-out layout and KLayout technology and colours |
 | `pdn-config` | Tcl that declares the power grid (no `pdngen` call). Unset means no grid. |
 | `rcx-rules` | OpenRCX rules. Enables extraction, `<top>.routed.spef` and post-route repair. Its `LayerCount` must match the LEF. |
-| `layer-rc-tcl` | `set_layer_rc` / `set_wire_rc` lines. Sourced after `read_sdc`. See [Set wire RC](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#set-wire-rc). |
+| `layer-rc-tcl` | `set_layer_rc` / `set_wire_rc` lines. Sourced after `read_sdc`. See [Set wire RC](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#set-wire-rc). |
 | `platform-tcl` | Sourced before the first Liberty read, such as `suppress_message` lines |
 | `tracks-tcl` | Replaces the bare `make_tracks` after floorplan initialisation |
-| `tapcell-tcl` | Inserts tap and endcap cells, after macro placement and before the power grid |
+| `tapcell-tcl` | Inserts tap and endcap cells, after macro placement and before the power grid. Unset runs `cut_rows`, which cuts the rows 2 µm around each placed macro |
 | `dont-use-cells` | Cells no step may choose. Also read by synthesis. |
 | `placement.*` | Placement defaults, overridable per platform and per run |
 

@@ -10,4 +10,4 @@ For a repository-wide review:
 
 For a targeted feature review, identify the user-visible behavior in the change, check that a concept page explains it, verify new YAML fields in `reference/yaml.md`, and regenerate `reference/cli.md` when CLI help changes.
 
-For a full review, report `Page | Type | Criterion | Status | Note`. For a targeted review, list each gap with one recommended action. Treat missing `description:` frontmatter as CI-blocking. Follow [Code Reviews](https://rtl-buddy.github.io/rtl_buddy/v7/development/reviews/) for pull request scope and feedback rules.
+For a full review, report `Page | Type | Criterion | Status | Note`. For a targeted review, list each gap with one recommended action. Treat missing `description:` frontmatter as CI-blocking. Follow [Code Reviews](https://rtl-buddy.github.io/rtl_buddy/v8/development/reviews/) for pull request scope and feedback rules.

@@ -40,4 +40,4 @@ cfg-rtl-reg:
 
 - If several platform entries match `uname`, the last match wins. Routing names are validated on every platform entry at load time, including entries for other hosts.
 - A platform routes simulation builders, Verible, and Surfer. It cannot route `cfg-synth-tools`, `cfg-pnr-tools`, `cfg-power-tools`, `cfg-cdc-tools`, `cfg-fpv-tools`, or `cfg-fpga-tools`; each flow's `tool:` field selects those entries directly.
-- `--builder`, `--builder-mode`, or a flow-specific option overrides the platform default for one command. See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v7/reference/cli/).
+- `--builder`, `--builder-mode`, or a flow-specific option overrides the platform default for one command. See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v8/reference/cli/).

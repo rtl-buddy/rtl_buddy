@@ -31,7 +31,7 @@ runs:
 | `constraints` | Required for synth source | SDC path. For P&R source it defaults to the routed SDC, the primary corner's on a multi-corner platform |
 | `platform` | Required | `cfg-pnr-platforms` entry |
 | `lib-paths` | Optional | Extra macro Liberty files relative to `power.yaml`, appended after what the referenced run declares. An entry can map each platform corner to its Liberty, as in `pnr.yaml`, here or inherited from the P&R run. A map must name every corner of the platform; corners the platform lacks are ignored, and on a single-corner platform the entry is that corner's file. A file listed both as a plain entry and in a map fails setup |
-| `threads` | Default unset (1) | OpenROAD worker threads, as in `pnr.yaml`. See [OpenROAD threads](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#openroad-threads) |
+| `threads` | OpenROAD's | OpenROAD worker threads, as in `pnr.yaml`. See [OpenROAD threads](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#openroad-threads) |
 | `activity.saif` / `.vcd` | Mutually exclusive | Activity trace path |
 | `activity.scope` | Only with a trace | OpenROAD trace scope; invalid without SAIF or VCD |
 | `activity.default-toggle-rate` | Default 0.1 | Synthetic toggle rate for dynamic mode without a trace |

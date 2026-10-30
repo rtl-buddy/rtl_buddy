@@ -7,9 +7,9 @@ A run killed at a wall-time limit leaves only its log. `checkpoints: true` (or o
 | `floorplan` | Floorplan, macros, power grid, pins |
 | `place` | Legalized global placement |
 | `cts` | Clock tree and hold repair |
-| `global_route` | The global route after global-route repair, with route guides and segments; with `global-route.grid-origin`, before the GCell grid is rebuilt from the guides |
-| `detailed_route` | The detailed route, before fill, with its DRC report |
-| `post_route_repair` | The kept repair round (only with `post-route-repair`) |
+| `global_route` | The global route after global-route repair and antenna repair, with route guides and segments and `grt_antennas.rpt`; with `global-route.grid-origin`, before the GCell grid is rebuilt from the guides |
+| `detailed_route` | The detailed route after antenna repair, before fill, with its DRC report and `drt_antennas.rpt` |
+| `post_route_repair` | The kept repair round, with its DRC report and `drt_antennas.rpt` (only with `post-route-repair`) |
 
 On a multi-corner platform the `.sdc` holds every corner's SDC mode, and `<NN>_<stage>.<corner>.sdc` each corner's alone.
 

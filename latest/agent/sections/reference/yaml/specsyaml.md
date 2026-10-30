@@ -22,4 +22,4 @@ blocks:
 | `coverage-items[].id` | Required | Identifier used by `covers` in tests and formal verifications |
 | `coverage-items[].desc` | Required | Verification requirement |
 
-A single-block file matches its linked model unconditionally. These fields affect traceability only. See [Spec Traceability](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/spec-traceability/).
+A single-block file matches its linked model unconditionally. These fields affect traceability only. See [Spec Traceability](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/spec-traceability/).

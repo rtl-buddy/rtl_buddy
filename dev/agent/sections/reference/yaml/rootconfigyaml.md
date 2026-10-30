@@ -115,7 +115,8 @@ cfg-pdks:
       - pdk/sky130hd/gds/sky130_fd_sc_hd.gds
       - pdk/sky130hd/gds/sky130_fd_sc_hd_fill.gds
     klayout-tech: pdk/sky130hd/sky130hd.lyt
-    placement: {density: 0.55, padding: 2, macro-halo: 30.0}
+    pin-layers: {horizontal: met3, vertical: met2}
+    placement: {density: 0.55, padding: 2, macro-channel: [80, 80]}
     dont-use-cells: ["*_lp__*", "sky130_fd_sc_hd__probe*"]
     pdn-config: pdk/sky130hd/pdn.tcl
     rcx-rules: pdk/sky130hd/rcx_patterns.rules
@@ -139,7 +140,7 @@ cfg-pnr-platforms:
 | Block | Fields and behavior |
 |---|---|
 | `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `abc-script`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, `unresolved-interfaces`, `clock-gating-min-flops`, `clock-gating-max-flops`, and `abc-persistent`. OpenROAD also accepts `strategy` |
-| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical` (default `metal3` / `metal2`), `placement.*`, `dont-use-cells`, `pdn-config`, `rcx-rules`, `tracks-tcl`, `layer-rc-tcl`, `tapcell-tcl`, and `platform-tcl`. `corners` maps a corner name to its standard-cell Liberty: one path, or a list for cells split across files. `macro-lef` and `cell-gds` each take one path or a list, read in order. Each path resolves on its own from `root_config.yaml` |
+| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical` (both required by `rb pnr`: `place_pins` has no default layers), `placement.*`, `dont-use-cells`, `pdn-config`, `rcx-rules`, `tracks-tcl`, `layer-rc-tcl`, `tapcell-tcl`, and `platform-tcl`. `corners` maps a corner name to its standard-cell Liberty: one path, or a list for cells split across files. `macro-lef` and `cell-gds` each take one path or a list, read in order. Each path resolves on its own from `root_config.yaml` |
 | `cfg-synth-platforms` | `name`, `pdk`; optional `corner` (the first declared corner by default), `dont-use-cells`, `abc-driving-cell` (the Liberty cell ABC assumes drives every primary input), `abc-output-load` (femtofarads on every primary output) and `clock-gating-cell` (`'<cell> <enable>:<clock>:<gated clock>'`, the ICG `clockgate` uses instead of choosing one from the Liberty). The two `abc-*` keys are written to `abc.constr` and passed as `abc -constr` on mapped runs; see [Synthesis](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#give-abc-a-driving-cell-and-output-load) and [clock gating](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#gate-enable-flops-with-clock-gating-cells) |
 | `cfg-pnr-platforms` | `name`, `pdk`; optional `corner` or `corners` (a list, first is primary, excludes `corner`), `routing-layers.signal` / `.clock`, `placement.*`, `dont-use-cells`, and the P&R keys below. See [Place-and-Route](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#configure-the-physical-platform) |
 | `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `yosys.abc-script`, `yosys.clock-gating-min-flops`, `yosys.clock-gating-max-flops`, `openroad.run`, `openroad.pre-sta-tcl`, and `openroad.repair` settings. `openroad.repair` (default `false`) runs `repair_design` (`-pre_placement` when no instance is placed) and `repair_timing -setup` before the synthesis STA reports. The built-in default is `standard`. Precedence is per-run override, then effort, then tool config |
@@ -154,16 +155,19 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 
 | Key | Where | Behavior |
 |---|---|---|
-| `placement.density` | PDK, platform | Global-placement target density, above 0 and at most 1. Default `0.7` |
-| `placement.padding` | PDK, platform | Cell padding in sites on each side. Default `1` |
-| `placement.macro-halo` | PDK, platform | Channel in µm the packer keeps between macros and from the core edge. Default `20.0`; below about 19 fails `PDN-0179` on sky130hd |
-| `placement.macro-cell-halo` | PDK, platform | Standard-cell keep-out in µm around each macro. Default `1.0`; `0` disables |
+| `placement.density` | PDK, platform | Global-placement target density, above 0 and at most 1, and RTL-MP's `-target_util`, as ORFS. Default `0.7` |
+| `placement.padding` | PDK, platform | Cell padding in sites on each side. Default `0`, as `global_placement` and ORFS |
+| `placement.macro-channel` | PDK, platform | RTL-MP's minimum channel in µm between macros and from the core edge: one number for both, or `[width, height]`. Passed as `rtl_macro_placer -min_channel_size`, as ORFS passes its platform's `RTLMP_MIN_CHANNEL_SIZE` (sky130hd `[80, 80]`, Nangate45 `[44.8, 30.24]`, ASAP7 `[20, 20]`). Unset passes none, so RTL-MP keeps its own channels. `macro-channel: null` on a platform or run clears a channel the PDK or platform sets. Needs OpenROAD 26Q4 or newer |
+| `placement.macro-pin-aware-channels` | PDK, platform | `true` (default) adds `-pin_aware_channels`, which trims each channel to the macro pins along it, as ORFS. `false` leaves it out. RTL-MP takes the flag only with a channel, so without one it is not passed |
+| `placement.macro-cell-halo` | PDK, platform | Standard-cell keep-out in µm around each macro: a hard placement blockage that leaves the rows whole. Default `0`, no blockage |
 | `placement.tie-separation` | PDK, platform | Distance in µm between each constant-driven load and its own tie cell. Default `0` |
 | `placement.reference-hpwl` | PDK, platform | Positive number passed as `global_placement -reference_hpwl`. Unset keeps the placer's own |
 | `placement.routability-driven` | PDK, platform | `true` adds `-routability_driven`. Default `false` |
 | `placement.routability-use-grt` | PDK, platform | `true` adds `-routability_use_grt`. Needs `routability-driven: true` after overrides. Default `false` |
 | `placement.timing-driven` | PDK, platform | `true` adds `-timing_driven`; on OpenROAD 26Q4 it also buffers and resizes during placement. Default `false` |
 | `placement.rotated-macro-footprint` | PDK, platform | `block` (default), `diamond-legalizer` or `none`. See [Known Issues](https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint) |
+| `placement.improve-placement` | PDK, platform | `true` (default) runs `improve_placement` after the placement stage's legalization, as ORFS does unless `ENABLE_DPO` is 0. `false` leaves it out |
+| `placement.optimize-mirroring` | PDK, platform | `true` (default) runs `optimize_mirroring` after the placement stage's legalization, as ORFS does. `false` leaves it out |
 | `placement.macro-pin-limits` | PDK, platform | Mapping; unset (default) turns the step off. `buffers` (required): buffer cell names, weakest first. `margin`: fraction of a pin's max-slew limit kept in hand, from 0 up to but not including 1, default `0.05`. `capacitance-margin`: the same for max-capacitance, default `margin`. A block replaces a lower level's whole. See [Tune placement, clock tree and repair](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#tune-placement-clock-tree-and-repair) |
 | `dont-use-cells` | PDK, synth and P&R platforms | Cell names or globs (`*`, `?`), one per entry. Empty by default |
 | `pdn-config` | PDK | Tcl that declares the power grid; the flow calls `pdngen`. Unset means no grid |
@@ -171,10 +175,10 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `layer-rc-tcl` | PDK | `set_layer_rc` / `set_wire_rc` script, sourced after `read_sdc` by `rb pnr`, a `netlist-source: pnr` power run and a synthesis effort with `openroad.repair`. Unset warns `pnr.no_wire_rc` |
 | `platform-tcl` | PDK | Sourced before the Liberty reads of `rb pnr` and `rb power` |
 | `tracks-tcl` | PDK | `make_tracks` script, replacing the bare `make_tracks` |
-| `tapcell-tcl` | PDK, platform, run | Tap and endcap insertion, after macro placement |
-| `routing-layers.signal`, `routing-layers.clock` | platform, run | Layer ranges for `set_routing_layers -signal` / `-clock` |
-| `cts-buffer` | platform, run | One cell or a list, passed as `-buf_list`. Without `cts-root-buffer`, the first entry is also the root buffer (`-root_buf`) |
-| `cts-root-buffer` | platform, run | One cell, passed as `-root_buf`; `cts-buffer` is then the branch list alone. Not checked against `cts-dont-use-cells` or `dont-use-cells` before the run; a `dont-use-cells` match that CTS places fails the routed-design check. Unset makes the first `cts-buffer` the root |
+| `tapcell-tcl` | PDK, platform, run | Tap and endcap insertion, after macro placement. Unset runs `cut_rows`, which cuts the rows 2 µm around each placed macro, as ORFS does |
+| `routing-layers.signal`, `routing-layers.clock` | platform, run | Layer ranges for `set_routing_layers -signal` / `-clock`. Each is passed only when set; with neither, the router keeps the technology's routing layers, as without `set_routing_layers` |
+| `cts-buffer` | platform, run | One cell or a list, passed as `-buf_list`; CTS picks the root buffer from it unless `cts-root-buffer` is set. Unset passes no `-buf_list`, and CTS picks its buffers from the libraries |
+| `cts-root-buffer` | platform, run | One cell, passed as `-root_buf`; `cts-buffer` is then the branch list alone. Not checked against `cts-dont-use-cells` or `dont-use-cells` before the run; a `dont-use-cells` match that CTS places fails the routed-design check. Unset passes no `-root_buf`, and CTS picks the root from the buffer list |
 | `cts-clock-nets` | run | One net or a list: `clock_tree_synthesis -clk_nets`, building trees for those clock nets only. Unset lets CTS find every clock |
 | `cts-latency-balancing` | platform, run | `false` adds `-no_insertion_delay`: CTS does not pad shallow branches of a clock net with delay buffers to match its deepest. Default `true` |
 | `cts-repair-clock-nets` | platform, run | `true` runs `repair_clock_nets` right after CTS and the `before-repair-clock-nets` hooks, before the `after-cts` hooks. A mapping `{max-wire-length: <µm>}`, a positive number, runs it with `-max_wire_length`. A run's value replaces the platform's whole. Default `false` |
@@ -183,12 +187,16 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `cts-obstruction-aware` | platform, run | `false` adds `-no_obstruction_aware`, so CTS does not steer its buffers around macro blockages. Unset (default) leaves OpenROAD's behavior: obstruction-aware on every build whose `clock_tree_synthesis` takes `-no_obstruction_aware` (builds since 20 January 2025, so 25Q2 and newer), off before that. `true` adds no flag on such a build and `-obstruction_aware` on an older one. rb asks OpenROAD at setup, and `false` on a build without `-no_obstruction_aware` fails setup naming the key and the version |
 | `cts-apply-ndr` | platform | `none`, `root_only`, `half` or `full`. Unset keeps OpenROAD's `half` |
 | `port-buffer` | platform, run | Cell `buffer_ports` inserts. Unset lets OpenROAD choose |
-| `post-cts-setup-repair` | platform, run | `true` runs `repair_timing -setup` after CTS. Default `false` |
-| `global-route-hold-repair` | platform, run | `true` is `global-route-repair: {hold-margin: 0}`; not with `global-route-repair` at the same level. On a run, `false` drops the hold repair from the platform's block, and turns the block off when nothing is left. Default `false` |
-| `global-route-repair` | platform, run | Repair after global route. See below |
+| `floorplan-setup-repair` | platform, run | `true` (default) ends the floorplan with ORFS's setup repair before placement, `repair_timing -setup -sequence "unbuffer,sizeup,swap,vt_swap" -skip_last_gasp`: buffer removal and sizing only. `false` leaves it out. Needs wire RC; see [Set wire RC](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#set-wire-rc) |
+| `cts-repair-clock-inverters` | platform, run | `true` (default) runs `repair_clock_inverters` before CTS, after the `before-cts` hooks, as ORFS does: each inverter in the clock tree is cloned next to its register loads, so CTS does not buffer an inverted clock. `false` leaves it out |
+| `post-cts-setup-repair` | platform, run | `true` (default) runs `repair_timing -setup` after CTS, before the hold repair, as ORFS repairs both; `false` repairs hold only. Setup repair needs wire RC: with none, OpenROAD stops with `RSZ-0089`. See [Set wire RC](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#set-wire-rc) |
+| `global-route-hold-repair` | platform, run | `true` is `global-route-repair: {hold-margin: 0}`; not with `global-route-repair` at the same level. On a run, `false` drops the hold repair from the platform's block, or from the default block when nothing writes one, and turns the block off when nothing is left. Default `false` |
+| `global-route-repair` | platform, run | Repair after global route; on by default. See below |
+| `global-route-antenna-repair` | platform, run | `true` (default) runs `repair_antennas -iterations 5` after the global-route repair and the `after-global-route-repair` hooks, then `check_antennas` into `grt_antennas.rpt`, as ORFS does. It inserts diodes and legalizes them. `false` leaves it out |
+| `detailed-route-antenna-repair` | platform, run | `true` (default) repairs antennas after detailed route as ORFS does: while violations remain, `repair_antennas` and a detailed route, at most five more detailed routes, then `check_antennas` into `drt_antennas.rpt`. Each `post-route-repair` round does the same after its detailed route, and `drt_antennas.rpt` is the kept round's. `route.drc.rpt` is the last detailed route's. `false` leaves it out |
 | `post-route-repair` | platform, run | Repair rounds after detailed route. See below |
 | `signoff` | platform, run | Signoff corners and the gates that fail a routed run. See below |
-| `routing-layer-adjustment` | platform, run | 0 to 1: signal-layer capacity withheld from the global router. Unset keeps the router's default |
+| `routing-layer-adjustment` | platform, run | 0 to 1: signal-layer capacity withheld from the global router, over `routing-layers.signal`, or every layer when that is unset. Unset keeps the router's default |
 | `global-route` | platform, run | `global_route` options. See below |
 | `max-fanout` | platform | Positive integer; `set_max_fanout` after each `read_sdc` in `rb pnr` and `rb power` |
 | `keep-sizing-vt` | platform, run | `true` runs `set_opt_config -keep_sizing_vt true` after `set_dont_use` in every OpenROAD session of the run: resizing keeps each cell's threshold-voltage flavour. Default `false` |
@@ -206,7 +214,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `margin-step` | `post-route-repair` only. ns added to the margins each round after the first. Default 0 |
 | `electrical-repair` | `post-route-repair` only. `{slew-margin, cap-margin}` (percent): one more round runs `repair_design` alone when the best round has max-slew or max-capacitance violators. Unset runs none |
 
-The block a run ends up with must set at least one of `repair-design`, `setup-margin` and `hold-margin`. A run's block overrides the platform's field by field; `null` turns a field or the block off. See [Repair timing after routing](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#repair-timing-after-routing).
+When neither the platform nor the run sets `global-route-repair` or `global-route-hold-repair`, the repair after global route is `{repair-design: {}, setup-margin: 0, hold-margin: 0}`: `repair_design`, then setup and hold repair with no margin, as ORFS repairs after global route. A block that is written runs only what it sets, and `global-route-repair: null` runs no repair after global route. `post-route-repair` is off unless set. The block a run ends up with must set at least one of `repair-design`, `setup-margin` and `hold-margin`. A run's block overrides the platform's field by field; `null` turns a field or the block off. See [Repair timing after routing](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#repair-timing-after-routing).
 
 `signoff` takes:
 
@@ -221,7 +229,7 @@ A run's block overrides the platform's field by field; `null` sets a key to its 
 
 | Key | Behavior |
 |---|---|
-| `congestion-iterations` | Positive integer: `-congestion_iterations` of every full global route. Default `20` |
+| `congestion-iterations` | Positive integer: `-congestion_iterations` of every full global route. Default `30`, as ORFS |
 | `congestion-report-iter-step` | Non-negative integer: `-congestion_report_iter_step` of every full global route. An overflowing route writes `congestion-<i>.rpt` beside `congestion.rpt` every that many iterations |
 | `grid-origin` | `[x, y]` in DBU: `-grid_origin` of every `global_route` call, incremental ones included. Before each detailed route the flow writes and reads back the guides, which rebuilds the GCell grid at the origin; in the main flow it does so at the start of the `detailed_route` stage, after the `global_route` checkpoint. `[0, 0]` is set too: it adds the option and the round trip |
 | `layer-adjustment` | Map of routing layer to 0–1: `set_global_routing_layer_adjustment <layer>` after the all-layers `routing-layer-adjustment` |

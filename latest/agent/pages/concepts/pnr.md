@@ -62,7 +62,7 @@ Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previo
 | `routed`, `mode`, `stopped_after`, `global_route_overflow` | `routed: false` means the run stopped early ([probe](#probe-a-floorplan) or `--stop-after`); its numbers are that stage's estimate, with the global-route overflow from `global_route` on. |
 | `signoff` | With [`signoff:`](#gate-signoff): each gate's values and verdict. |
 | `post_route_repair` | The rounds of [post-route repair](#repair-timing-after-routing): `kept_round`, `rounds`, `repaired_rounds`, `stop`, `reason`, `passed_over_round`, and with `electrical-repair` `electrical_round`. |
-| `openroad_threads` | Requested and effective [thread counts](#openroad-threads). |
+| `openroad_threads` | Requested and effective [thread counts](#openroad-threads). `effective` is null when `threads:` is unset. |
 | `gds_status`, `gds_missing_cells` | [Stream-out](#stream-out-gds-and-png) outcome. |
 | `checkpoint_dir`, `checkpoint_stages`, `last_step` | With [checkpoints](#keep-stage-checkpoints): where they are, which stages the run reached and checkpointed (never a failed global route), and the last step reached. |
 | `failed_global_route` | `<run-id>/global_route`: the checkpoint holding a failed global route's database, for `rb pnr-export --checkpoint`. |
@@ -94,8 +94,10 @@ A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in 
 | `<top>.routed.spef` | Extracted parasitics, when the PDK sets `rcx-rules` |
 | `timing.rpt`, `electrical.rpt` | Worst paths and electrical violators, all corners |
 | `route.drc.rpt`, `route.maze.log` | Detailed-route DRCs and router log |
+| `grt_antennas.rpt`, `drt_antennas.rpt` | Antenna violations left after the antenna repair after global route and after detailed route; with `post-route-repair`, `drt_antennas.rpt` is the kept round's |
 | `congestion.rpt` | Overflowing global-route tiles, only when global routing overflows. Loads in the OpenROAD GUI's DRC viewer. |
 | `congestion-<i>.rpt` | The same at iteration `i`, every `global-route.congestion-report-iter-step` iterations of an overflowing route |
+| `rtlmp/` | RTL-MP's reports, when it placed macros |
 | `<top>.gds`, `<top>.png`, `klayout.*.log`, `def2stream.inputs.json` | Stream-out outputs, logs and the inputs it read |
 | `checkpoints/`, `abstract/` | [Stage checkpoints](#keep-stage-checkpoints) and a [hardened block's](#harden-a-block) views |
 
@@ -125,16 +127,17 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `fail_stage: outputs` | rb could not read, decode or rewrite `<top>.routed.pwr.v` or a hardened block's `<top>.lib` to put the supply ports last. The description names the file and error. |
 | `fail_stage: export` | Stream-out failed, under `gds-mode: strict` in `rb pnr` or in any mode in `rb pnr-export`: KLayout, `klayout-tech`, an input file or the render. Fix it and run `rb pnr-export`. |
 | `fail_stage: blocked`, `synth`, `error` | A block this run uses failed, its upstream synthesis failed under `--synth`, or rb crashed (the exception is in the description). Fix the cause first. |
-| `[ERROR PDN-0179] Unable to repair all channels` | Macros too close for the power grid. Raise `placement.macro-halo` (about 19 µm minimum on sky130hd). |
-| `PDN-0008 ... halo overlaps row` | A `pdn-config` macro grid's `-halo` reaches a standard-cell row the macro does not sit on. Cut the rows around each macro at least that far in the PDK's `tapcell-tcl`; see [Plan the power grid](#plan-the-power-grid). |
+| `[ERROR PDN-0179] Unable to repair all channels` | Macros too close for the power grid. Set `placement.macro-channel`. |
+| `macro ... overlaps floorplan.blockages[N]` (or `floorplan.core-cutouts[N]`) | A placed macro sits on a `hard` blockage or core cut-out. Fix the macro with a `floorplan.macros` location, enlarge `placement.macro-channel`, or move the blockage. |
+| `PDN-0008 ... halo overlaps row` | A `pdn-config` macro grid's `-halo` reaches a standard-cell row the macro does not sit on. Cut the rows around each macro at least that far; see [Plan the power grid](#plan-the-power-grid). |
 | `PDN-0233` on a turned macro or a block's grid | The power grid has no via for that macro. See [Place macros](#place-macros) and [Harden a block](#harden-a-block). |
-| `N macros do not fit the W x H um floorplan core` | Lower `utilization`, change `aspect`, or lower `placement.macro-halo`. The message gives the smallest core that fits. |
-| `GRT-0116`, global-route overflow | Too congested. The result's `failed_global_route` names the checkpoint (`<run-id>/global_route`) that holds the failed route's database and a copy of `congestion.rpt`; open it with `rb pnr-export --checkpoint` or `read_db` in OpenROAD. Lower utilization or density, try `placement.routability-driven`, or [tune global routing](#tune-global-routing). |
+| `GRT-0116`, global-route overflow | Too congested. The result's `failed_global_route` names the checkpoint (`<run-id>/global_route`) that holds the failed route's database and a copy of `congestion.rpt`; open it with `rb pnr-export --checkpoint` or `read_db` in OpenROAD. Lower utilization or density, try `placement.routability-driven`, or [tune global routing](#tune-global-routing). Congestion between macros or between a macro and the core edge means RTL-MP left no channel there: set `placement.macro-channel`, such as ORFS's `[80, 80]` on sky130hd. |
 | Large `drc_count` | Try `routing-layer-adjustment`, a lower density, or `post-route-repair` with several rounds. |
 | `RSZ-0090` at a slow corner | A macro with one Liberty limits that corner. Map each corner to the macro's Liberty for it in `lib-paths`; see [Sign off at several corners](#sign-off-at-several-corners). |
 | Macro pins in `electrical.rpt`, or `pnr.macro_pin_limits_unmet` | Set `placement.macro-pin-limits`, add a stronger buffer to it, or lower the macro's `macro-cell-halo`. See [Tune placement](#tune-placement-clock-tree-and-repair). |
 | Output pins over the library's slew limit at signoff, yet no max-slew violators | Ports have no limit unless the SDC sets one, and `repair_design` does not repair them. See [Check and repair slew at output ports](#check-and-repair-slew-at-output-ports). |
 | `RSZ-0074` in a post-route repair round | Set `post-route-repair.reroute: full`. |
+| `RSZ-0089 Could not find a resistance value for any corner` | A setup repair ran on zero wire RC. Set the PDK's `layer-rc-tcl`; see [Set wire RC](#set-wire-rc). The result's description says so. |
 | `CTS-0080 Sink not found` | Set `cts-sink-clustering: false`. On a block with macros, `cts-obstruction-aware: false` also avoids it. |
 | `GRT-0273 Disabled NDR`, large hold violations | Clock nets with non-default rules detour. Set `cts-apply-ndr: none`. |
 | `DPL-0011` | A macro placed off the row grid (`macro-snap: false`). Put its bottom edge on a row. |
@@ -155,14 +158,14 @@ A PDK entry in `cfg-pdks` supplies the files and cell names; a `cfg-pnr-platform
 
 | PDK key | Use |
 | --- | --- |
-| `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers` | Tie cells, filler masters, horizontal and vertical pin layers |
+| `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers` | Tie cells, filler masters, horizontal and vertical pin layers. `pin-layers` is required: `place_pins` has no default layers |
 | `cell-gds`, `klayout-tech`, `klayout-props` | Stream-out layout and KLayout technology and colours |
 | `pdn-config` | Tcl that declares the power grid (no `pdngen` call). Unset means no grid. |
 | `rcx-rules` | OpenRCX rules. Enables extraction, `<top>.routed.spef` and post-route repair. Its `LayerCount` must match the LEF. |
 | `layer-rc-tcl` | `set_layer_rc` / `set_wire_rc` lines. Sourced after `read_sdc`. See [Set wire RC](#set-wire-rc). |
 | `platform-tcl` | Sourced before the first Liberty read, such as `suppress_message` lines |
 | `tracks-tcl` | Replaces the bare `make_tracks` after floorplan initialisation |
-| `tapcell-tcl` | Inserts tap and endcap cells, after macro placement and before the power grid |
+| `tapcell-tcl` | Inserts tap and endcap cells, after macro placement and before the power grid. Unset runs `cut_rows`, which cuts the rows 2 µm around each placed macro |
 | `dont-use-cells` | Cells no step may choose. Also read by synthesis. |
 | `placement.*` | Placement defaults, overridable per platform and per run |
 
@@ -243,7 +246,7 @@ Each output net then ends at a buffer input, which has a Liberty limit, so place
 
 ## Set wire RC
 
-Set the PDK's `layer-rc-tcl`. Without it, placement, clock-tree synthesis and hold repair see the technology LEF's layer RC, which is zero on most open PDKs, and the routed design can fail hold that repair never saw. rb warns `pnr.no_wire_rc` and qualifies the `PASS` when the PDK sets no `layer-rc-tcl` or `pnr.log` has `EST-0018` (zero wire capacitance) or `CTS-0104` (zero clock wire RC).
+Set the PDK's `layer-rc-tcl`. Without it, placement, clock-tree synthesis and hold repair see the technology LEF's layer RC, which is zero on most open PDKs, and the routed design can fail hold that repair never saw. Setup repair cannot run on zero wire RC: OpenROAD stops with `RSZ-0089`, and the failed run's description names the cause and both fixes. Three steps repair setup by default, as ORFS does: `floorplan-setup-repair`, `post-cts-setup-repair` and the setup repair of `global-route-repair`. Without wire RC, all three must be off: `floorplan-setup-repair: false`, `post-cts-setup-repair: false`, and a `global-route-repair` without `setup-margin`, such as `{hold-margin: 0}`, or `null`. rb warns `pnr.no_wire_rc` and qualifies the `PASS` when the PDK sets no `layer-rc-tcl` or `pnr.log` has `EST-0018` (zero wire capacitance) or `CTS-0104` (zero clock wire RC).
 
 For sky130hd, copy the `set_layer_rc` lines of OpenROAD's `test/sky130hd/sky130hd.rc` and pick the wire layers:
 
@@ -254,35 +257,34 @@ set_wire_rc -signal -layer met2
 set_wire_rc -clock -layer met5
 ```
 
-To catch hold problems from wire length before detailed routing, also set `global-route-hold-repair: true` on the platform. See [Repair timing after routing](#repair-timing-after-routing).
+The default [global-route repair](#repair-timing-after-routing) repairs again on the global-route estimate, which sees the wire length that placement estimates miss.
 
 ## PDK setup notes
 
-- **Nangate45.** All defaults are tuned for it. It has no `pdn-config`, so runs have no power grid. For extraction use ORFS `flow/platforms/nangate45/rcx_patterns.rules`.
+- **Nangate45.** Set `pin-layers`, for example `metal3` / `metal2`. It has no `pdn-config`, so runs have no power grid. For extraction use ORFS `flow/platforms/nangate45/rcx_patterns.rules`.
 - **sky130hd.** The template's `sky130hd` entry is a worked example: `pin-layers` `met3` / `met2`, `met*` routing layers, a `pdn-config`, `placement.density: 0.60`, a `dont-use-cells` list for the probe and `lpflow` cells, a `cts-buffer` list, and ORFS `sky130hs/rcx_patterns.rules`. Set `port-buffer` for hardened blocks.
 - **ASAP7.** Set the four Tcl keys to ORFS's `liberty_suppressions.tcl`, `setRC.tcl`, `openRoad/make_tracks.tcl` and a copy of `openRoad/tapcell.tcl` with `TAP_CELL_NAME` and `MACRO_ROWS_HALO_X` / `_Y` filled in. List each corner's split Liberty files under that corner. List each threshold flavour's cell LEF (`asap7sc7p5t_28_R_1x_*.lef`, `..._L_...`) in `macro-lef`, which takes a list read in order, and macro LEFs in `lef-paths`. Give `fill-cells` each flavour's fillers too, or fill insertion fails with `DPL-0050`. In a Tcl hook, `$MACRO_LEF` names only the first LEF of the list. ORFS uses `routing-layer-adjustment: 0.25`.
 
 ## Tune placement, clock tree and repair
 
-Process-dependent knobs live on the PDK, can be overridden on the platform, and most also on a run, so runs of one block on one platform can differ without a platform per variant. Which level takes each key is in the [YAML reference](../reference/yaml.md#synthesis-and-physical-design-tools). Defaults suit Nangate45. Start from the problem:
+Process-dependent knobs live on the PDK, can be overridden on the platform, and most also on a run, so runs of one block on one platform can differ without a platform per variant. Which level takes each key is in the [YAML reference](../reference/yaml.md#synthesis-and-physical-design-tools). A default is OpenROAD's own or the setting ORFS uses, unless it belongs to an rb step without a counterpart, such as `placement.macro-pin-limits`, or works around a [known issue](../known-issues.md). Start from the problem:
 
 | Problem | Knob |
 | --- | --- |
 | Global route overflows | Lower `placement.density` (default 0.7) or `floorplan.utilization`; `placement.routability-driven: true` (add `routability-use-grt: true` for a slower, closer estimate); a fixed `placement.reference-hpwl` such as `446000000` spreads a large design further. |
 | DRCs left in congested areas | `routing-layer-adjustment` (0 to 1) withholds that fraction of each signal layer from the global router; `global-route.layer-adjustment` sets it per layer. See [Tune global routing](#tune-global-routing). |
 | Setup misses on long nets | `placement.timing-driven: true`. On OpenROAD 26Q4 it also buffers and resizes during placement, which grows area. Needs wire RC. |
-| Setup misses after CTS | `post-cts-setup-repair: true` |
 | Timing misses after routing | [`global-route-repair` or `post-route-repair`](#repair-timing-after-routing) |
 | Many fanout buffers on a library without a fanout limit (sky130hd) | `max-fanout: 100000` stops buffering for fanout alone; `repair_design` otherwise uses 50. |
-| Cells too tight | `placement.padding` (sites, default 1) |
-| Clock tree | `cts-buffer` (a list's first entry is the root buffer unless `cts-root-buffer` names it), `cts-sink-clustering`, `cts-obstruction-aware`, `cts-apply-ndr`; `cts-clock-nets` builds trees for the named clocks only |
+| Cells too tight | `placement.padding` (sites, default 0) |
+| Clock tree | `cts-buffer` (CTS picks the root buffer from it unless `cts-root-buffer` names one), `cts-sink-clustering`, `cts-obstruction-aware`, `cts-apply-ndr`; `cts-clock-nets` builds trees for the named clocks only |
 | A strong root buffer with small branch buffers | `cts-root-buffer` names the root; `cts-buffer` lists the branch buffers only |
 | Clock pins far from the nearest leaf buffer, as when many clock-gate cells sit in a small area, with slew violations on them | `cts-sink-clustering` with `size` and `max-diameter` (µm) |
 | Setup misses from flops on a clock branch that CTS padded to match the deepest one (`CTS-0033` and `CTS-0036` in the log), as when a clock drives a buffer as well as flops | `cts-latency-balancing: false` |
 | Long clock wires after CTS | `cts-repair-clock-nets: true`, or `{max-wire-length: <µm>}` to cap the wire length |
 | A block must leave the top layers to its parent | `routing-layers` on the run |
 | A block needs other tap spacing or endcaps than the PDK's | `tapcell-tcl` on the platform or the run |
-| Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm, default 1.0) |
+| Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm, default 0), or a `tapcell-tcl` that cuts the rows around macros |
 | Tie cells too close to their loads | `placement.tie-separation` (µm, default 0) |
 | Macro pins over a tight Liberty limit, such as OpenRAM SKY130 SRAM inputs (0.04 ns) | `placement.macro-pin-limits`, below |
 
@@ -315,6 +317,21 @@ This calls `clock_tree_synthesis -root_buf sky130_fd_sc_hd__clkbuf_16 -buf_list 
 
 Each macro data pin over its limit less the margin gets a buffer fixed on the free row site nearest it (an input also gets a pre-driver), sized from `buffers` weakest first and marked `dont_touch`, so later repair leaves it alone. `pnr.log` has one `>>>` line per pin. The step judges on placement parasitics, so check `electrical.rpt`: a long macro-output net can route to twice its estimated capacitance (hence `capacitance-margin: 0.5` on sky130hd), a large `macro-cell-halo` keeps the buffer too far from the pin (3 µm works with `buf_8` on sky130hd, 20 µm does not), and a pin route that global routing detours around the macro is out of its reach. A block set on the run or platform replaces a lower level's whole.
 
+### Optimisation steps
+
+The flow runs the optimisation steps ORFS runs by default. Each has a key on the platform and the run that turns it off:
+
+| Step | Where | Key |
+| --- | --- | --- |
+| `repair_timing -setup` with buffer removal and sizing only | End of the floorplan, before the `after-floorplan` hooks | `floorplan-setup-repair` |
+| `improve_placement`, then `optimize_mirroring` | After the placement stage's legalization | `placement.improve-placement`, `placement.optimize-mirroring` |
+| `repair_clock_inverters` | Before CTS, after the `before-cts` hooks | `cts-repair-clock-inverters` |
+| `repair_design`, then setup and hold `repair_timing`, on global-route parasitics | After global route | `global-route-repair: null` turns it off, and a written block replaces it; see [Repair timing after routing](#repair-timing-after-routing) |
+| `repair_antennas` (5 iterations), `check_antennas` into `grt_antennas.rpt` | After the global-route repair and its hooks | `global-route-antenna-repair` |
+| `repair_antennas` and a detailed route while violations remain (at most 5), `check_antennas` into `drt_antennas.rpt` | After detailed route, and after each [post-route repair](#repair-timing-after-routing) round's detailed route, before its `stage-end` hooks | `detailed-route-antenna-repair` |
+
+Turning a step off gives up what it does: the floorplan and global-route repairs recover setup slack, `improve_placement` and `optimize_mirroring` shorten wires, `repair_clock_inverters` keeps CTS from buffering inverted clocks, and antenna repair fixes antenna violations, which no other step repairs. Antenna repair inserts the PDK's antenna diode cells, LEF class `CORE ANTENNACELL`. A `probe` run skips the floorplan setup repair, the global-route repair and the antenna repair after global route.
+
 ## Tune global routing
 
 The `global-route` block, on the platform or the run, sets `global_route` options; a run's block overrides the platform's field by field. Each key and the calls it reaches are in the [YAML reference](../reference/yaml.md#synthesis-and-physical-design-tools).
@@ -329,7 +346,7 @@ global-route:
 
 | Problem | Key |
 | --- | --- |
-| Overflow that more rip-up and reroute would clear | `congestion-iterations` (default 20), with `congestion-report-iter-step` to see how it falls |
+| Overflow that more rip-up and reroute would clear | `congestion-iterations` (default 30), with `congestion-report-iter-step` to see how it falls |
 | Long wires low on the stack, or one layer congested | `layer-adjustment` per layer, applied after `routing-layer-adjustment` |
 | Boundary pins centred on a GCell edge fail detailed route (ASAP7 pins on a fine lattice) | `grid-origin`. OpenROAD drops the origin on every call, so rb passes it to each one, including the incremental routes of global-route and post-route repair. OpenROAD 26Q4 offsets only the guides, not the GCell grid, so rb rebuilds the grid from the guides before each detailed route. It does so after the `global_route` checkpoint, so a staged or resumed detailed route starts from the router's own route and rebuilds the grid as a one-session run does |
 | Critical nets routed on resistive layers | `critical-nets-percentage`, `resistance-aware` |
@@ -339,7 +356,7 @@ global-route:
 
 ## Repair timing after routing
 
-Post-CTS repair times the design on placement estimates. Two blocks, on the platform or the run, repair again on routed parasitics. Both cost run time and change QoR.
+Post-CTS repair times the design on placement estimates. Two blocks, on the platform or the run, repair again on routed parasitics. When neither the platform nor the run writes `global-route-repair` or `global-route-hold-repair`, the repair after global route runs as ORFS runs it: `repair_design`, then setup and hold repair with no margin, `{repair-design: {}, setup-margin: 0, hold-margin: 0}`. `post-route-repair` runs only when set. Both cost run time and change QoR.
 
 ```yaml
 cfg-pnr-platforms:
@@ -355,11 +372,11 @@ cfg-pnr-platforms:
       margin-step: 0.02
 ```
 
-Each block runs `repair_design` when `repair-design` is set (`{}` for OpenROAD's defaults), `repair_timing -setup` when `setup-margin` is set and `repair_timing -hold` when `hold-margin` is set. At least one is required. A run's block overrides the platform's field by field, and `null` turns a repair or the whole block off. `global-route-hold-repair: true` is `global-route-repair: {hold-margin: 0}`.
+Each block runs `repair_design` when `repair-design` is set (`{}` for OpenROAD's defaults), `repair_timing -setup` when `setup-margin` is set and `repair_timing -hold` when `hold-margin` is set. At least one is required. A written block runs only what it sets. A run's block overrides the platform's field by field, and `null` turns a repair or the whole block off; `global-route-repair: null` runs no repair after global route. `global-route-hold-repair: true` is `global-route-repair: {hold-margin: 0}`.
 
 **`global-route-repair`** runs after global route on its parasitic estimate, then legalizes and reroutes the changed nets (`reroute: incremental`, default) or the whole design (`full`).
 
-**`post-route-repair`** adds the stage `post_route_repair` after detailed route. It needs the PDK's `rcx-rules`. It extracts and times the detailed route (round 0), then runs up to `rounds` (default 1) repair rounds, each in fresh OpenROAD sessions: repair on the extracted parasitics, route again, extract and time. `reroute: eco` (default) keeps the detailed route and reroutes only the changed nets; `full` routes the whole design again, costing about a global and a detailed route per round. Round k repairs with the margins plus (k − 1) × `margin-step`. `rounds` above 1 needs a margin.
+**`post-route-repair`** adds the stage `post_route_repair` after detailed route. It needs the PDK's `rcx-rules`. It extracts and times the detailed route (round 0), then runs up to `rounds` (default 1) repair rounds, each in fresh OpenROAD sessions: repair on the extracted parasitics, route again, repair antennas as after the detailed route (with `detailed-route-antenna-repair`), extract and time. `reroute: eco` (default) keeps the detailed route and reroutes only the changed nets; `full` routes the whole design again, costing about a global and a detailed route per round. Round k repairs with the margins plus (k − 1) × `margin-step`. `rounds` above 1 needs a margin.
 
 Each round, the electrical round included, starts by running `remove_fillers`, which removes every instance of a `CORE_SPACER` master that is not `LOCKED`. A spacer a hook placed `FIRM` or `FIXED` to reserve sites is gone after the first round; place it `LOCKED` to keep it.
 
@@ -406,18 +423,18 @@ With `electrical-repair` set or an electrical gate, each `pnr.post_route_round` 
 
 ## Probe a floorplan
 
-`mode: probe` on a run checks quickly whether a floorplan places and routes. It skips setup and hold repair, stops after global route and writes the `global_route` checkpoint. The result is a `PASS` with `routed: false`, the global-route overflow and timing on the global-route estimate. `xfail:` does not apply to it, and a `closure` run cannot resume from a probe's checkpoints. A probe publishes no abstract, so `harden: true` with `mode: probe` fails to load.
+`mode: probe` on a run checks quickly whether a floorplan places and routes. It skips setup and hold repair and the antenna repair after global route, stops after global route and writes the `global_route` checkpoint. The result is a `PASS` with `routed: false`, the global-route overflow and timing on the global-route estimate. `xfail:` does not apply to it, and a `closure` run cannot resume from a probe's checkpoints. A probe publishes no abstract, so `harden: true` with `mode: probe` fails to load.
 
 ## Shape the floorplan
 
-By default the die is sized from the netlist's cell area by `floorplan.utilization`, `aspect` and `core-margin`. To fix it exactly, set `die-area` and `core-area` together (`[x0, y0, x1, y1]` in µm); they exclude the other three. `core-cutouts` carves rectangles out of the core for an L- or T-shaped core: they block cells, rows, taps and macros, not routing, and the die stays rectangular. With utilization sizing, lower `utilization` to leave room for cut-outs.
+The die is sized from the netlist's cell area by `floorplan.utilization`, which has no default, `aspect` (default 1.0) and `core-margin` (default 1.0 µm). To fix it exactly, set `die-area` and `core-area` together (`[x0, y0, x1, y1]` in µm); they exclude the other three. `core-cutouts` carves rectangles out of the core for an L- or T-shaped core: they block cells, rows, taps and macros, not routing, and the die stays rectangular. With utilization sizing, lower `utilization` to leave room for cut-outs.
 
 `floorplan.blockages` keep standard cells out of rectangles (die µm):
 
 ```yaml
     floorplan:
       blockages:
-        - rect: [10, 10, 130, 60]                 # hard: no cells, rows cut, macros moved past it
+        - rect: [10, 10, 130, 60]                 # hard: no cells, rows cut
         - rect: [400, 300, 520, 420]
           type: partial                            # global placement caps density here
           max-density: 0.4
@@ -426,11 +443,11 @@ By default the die is sized from the netlist's cell area by `floorplan.utilizati
           lifetime: global-placement               # removed after global placement
 ```
 
-`lifetime: global-placement` makes any type a screen for global placement alone: no rows are cut, macro placement ignores it and no checkpoint holds it. Blockages need OpenROAD 26Q1.
+After macro placement, and again at the end of the floorplan when an `after-pdn`, `after-pins` or `stage-end` hook is set, a macro that overlaps a `hard` blockage or a core cut-out fails the run, naming the macro, the region and the ways out: a `floorplan.macros` location, a larger `placement.macro-channel`, or moving the blockage. RTL-MP treats every blockage as an obstacle and stops with `MPL-0065` or `MPL-0040` when it finds no placement clear of them, but rb checks only `hard` blockages and cut-outs. `lifetime: global-placement` makes any type a screen for global placement alone: no rows are cut, macro placement ignores it and no checkpoint holds it. Blockages need OpenROAD 26Q1.
 
 ## Place macros
 
-A netlist with hard macros (SRAMs, hardened blocks) gets them placed before the power grid. By default rb's packer puts them in rows from the core's lower-left corner, tallest first, `placement.macro-halo` (default 20 µm) apart and from the core edge, on the site grid. `floorplan.macro-anchor` starts from another corner, keeping the opposite edges free for pins. `floorplan.macro-placement: rtl-mp` uses OpenROAD's RTL-MP instead, which places by connectivity and may mirror macros; it keeps out of every blockage type and cannot take a `macro-anchor`.
+A netlist with hard macros (SRAMs, hardened blocks) gets them placed before the power grid by OpenROAD's RTL-MP (`rtl_macro_placer`), as ORFS places them. RTL-MP places by connectivity and may mirror a macro. It reports to `rtlmp/` in the run directory, and `pnr.log` has one `placed` line per macro it places. rb passes it the arguments ORFS does: `-target_util` is `placement.density`, and `placement.macro-channel` is its minimum channel in µm between macros and from the core edge (`-min_channel_size`), which it trims to the macro pins along each channel unless `placement.macro-pin-aware-channels` is `false`. ORFS sets a channel on every platform, such as `[80, 80]` on sky130hd; rb sets none unless configured, and RTL-MP then keeps its own channels, which can leave none. A channel too narrow for the power grid fails `pdngen` with `PDN-0179`, and one too narrow for routing fails global routing with `GRT-0116`; set `placement.macro-channel` then. It needs OpenROAD 26Q4 or newer; on an older one, a run with macros stops at macro placement saying so. To place macros another way, fix them with `floorplan.macros` locations, or place them in a [`macro-placement` hook](#run-tcl-hooks), which replaces RTL-MP. Whichever places them, no macro may overlap a core cut-out or a `hard` [blockage](#shape-the-floorplan); the run fails otherwise.
 
 `floorplan.macros` fixes, orients or haloes individual macros:
 
@@ -442,11 +459,11 @@ A netlist with hard macros (SRAMs, hardened blocks) gets them placed before the 
           orientation: MX
           halo: [3, 3]                     # replaces macro-cell-halo for this macro
         - instance: "*/u_rf*"
-          orientation: R180
+          halo: [2, 2]                     # every macro the glob matches
 ```
 
-- A `location` is snapped to the site and row grid, must be inside the core and clear of other fixed macros, and must match one macro. Placers leave it there.
-- Under `rtl-mp`, an `orientation` needs a `location`.
+- A `location` is snapped to the site and row grid, must be inside the core and clear of other fixed macros, and must match one macro. RTL-MP places the other macros around it, and does not run when every macro is located.
+- An `orientation` needs a `location`, because RTL-MP chooses the orientation of each macro it places. With a `macro-placement` hook, an entry may orient a macro for the hook to place.
 - A pattern that matches nothing fails the run.
 - A turned macro (`R90`, `R270`, `MXR90`, `MYR90`) turns its pins and power pins. Give the `pdn-config` a macro grid for that orientation, or `pdngen` fails (`PDN-0233`). `placement.rotated-macro-footprint` works around OpenROAD's legalizer for turned macros; see [Known Issues](../known-issues.md#openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint).
 
@@ -493,7 +510,7 @@ The PDK's `pdn-config` declares the grid for every run. A run can replace it:
 
 By default each stripe layer connects to the next; `connect: [[met1, met4], ...]` lists the pairs instead. A ring must fit between core and die. Only one always-on power domain is supported. The PDK's global connections are applied again at the end of every stage, so cells added after `pdngen` get supply connections.
 
-A macro grid in the `pdn-config` with a `-halo` needs the standard-cell rows cut at least that far around each macro: `pdngen` fails with `PDN-0008` when a halo reaches a row the macro does not sit on. rb does not cut rows around macros, and its packer puts a macro's bottom edge on a row boundary. Cut them in the PDK's `tapcell-tcl`, which runs after macro placement and before the grid, for example with `cut_rows -halo_width_x 2 -halo_width_y 2` for a 2 µm halo, as ORFS's tap-cell step does. Shrinking the halo instead can leave the core straps ending next to the macro, where they block its pin escapes.
+A macro grid in the `pdn-config` with a `-halo` needs the standard-cell rows cut at least that far around each macro: `pdngen` fails with `PDN-0008` when a halo reaches a row the macro does not sit on. The tap-cell step cuts them, after macro placement and before the grid. Without a `tapcell-tcl` it runs `cut_rows`, which cuts 2 µm around each placed macro, as ORFS does, enough for ORFS's 2 µm macro-grid halos. For a wider halo, cut the rows in the PDK's `tapcell-tcl`, for example `cut_rows -halo_width_x 5 -halo_width_y 5` before `tapcell`. Shrinking the halo instead can leave the core straps ending next to the macro, where they block its pin escapes.
 
 ## Run Tcl hooks
 
@@ -508,19 +525,19 @@ A macro grid in the `pdn-config` with a `-halo` needs the standard-cell rows cut
 | Point | Sourced |
 | --- | --- |
 | `session` | At the start of every OpenROAD session, after the SDC, before the floorplan |
-| `after-floorplan` | After floorplan, tracks, blockages and tie cells |
-| `macro-placement` | Instead of rb's macro placement; only when the netlist has macros. `$rb_movable_macros` lists the unlocated ones. Not with `macro-placement: rtl-mp` or a non-default `macro-anchor`. |
+| `after-floorplan` | After floorplan, tracks, blockages, tie cells and the floorplan setup repair |
+| `macro-placement` | Instead of RTL-MP; only when the netlist has macros. `$rb_movable_macros` lists the unlocated ones. |
 | `after-pdn` | After taps and the power grid |
 | `after-pins` | After pin placement, before port buffering. A hook that buffers ports needs `buffer-ports: false`. |
 | `after-global-placement` | After `global_placement` |
 | `after-repair-design` | After `repair_design`, before legalization and the `placement.macro-pin-limits` step |
-| `before-cts` | After legalization and the `placement.macro-pin-limits` step, immediately before `clock_tree_synthesis`. The `cts-dont-use-cells` are not yet excluded. |
+| `before-cts` | After legalization, `improve_placement`, `optimize_mirroring` and the `placement.macro-pin-limits` step, before `repair_clock_inverters` and `clock_tree_synthesis`. The `cts-dont-use-cells` are not yet excluded. |
 | `before-repair-clock-nets` | Right after `clock_tree_synthesis`, before `cts-repair-clock-nets` runs `repair_clock_nets`. The `cts-dont-use-cells` are still excluded. |
 | `after-cts` | After CTS and any `repair_clock_nets`, before setup and hold repair |
 | `after-cts-repair` | After post-CTS setup and hold repair and their legalization |
 | `after-global-route` | After `global_route`, before global-route repair |
-| `after-global-route-repair` | After global-route repair, in the `global_route` stage, so also in a probe |
-| `before-detailed-route` | Before each detailed route, including each post-route repair round's |
+| `after-global-route-repair` | After global-route repair, before the antenna repair, in the `global_route` stage, so also in a probe |
+| `before-detailed-route` | Before the flow's detailed route and each post-route repair round's; not before the antenna repair's |
 | `after-extraction` | In every session that writes a SPEF (each post-route repair round's extraction and the final one), after `write_spef` and before rb reads it. `$rb_spef` is its path. Needs `rcx-rules`. |
 | `before-reports` | After fill and extraction, before the final reports |
 | `after-reports` | After the final reports, on their parasitics, before rb writes the routed outputs |
@@ -544,7 +561,7 @@ When a run splits into several OpenROAD sessions (`stages: true`, `--resume`, `-
 
 ## OpenROAD threads
 
-OpenROAD uses one thread unless the run sets `threads:` to a count or `auto`. `auto` takes the CPUs of the Slurm allocation or affinity mask the run is in, 1 outside one, never the host's core count. A count above the allocation is clamped with `openroad.threads_capped`. Run `rb pnr` inside an allocation (`srun -c 8 rb pnr ...`) to give it CPUs, or use [`--dispatch slurm`](#dispatch-the-stages-to-slurm). Results can differ slightly between thread counts. `rb power` and `rb synth`'s OpenROAD stage read `threads:` the same way.
+Unset, `threads:` passes nothing and OpenROAD uses its own default: every hardware thread of the host on 26Q4, one thread on older versions. Set `threads:` to a count or `auto` to choose. `auto` takes the CPUs of the Slurm allocation or affinity mask the run is in, 1 outside one, never the host's core count. A count above the allocation is clamped with `openroad.threads_capped`. Run `rb pnr` inside an allocation (`srun -c 8 rb pnr ...`) to give it CPUs, or use [`--dispatch slurm`](#dispatch-the-stages-to-slurm). Results can differ slightly between thread counts. The result's `openroad_threads` gives `requested` and `effective`, the count OpenROAD logged using, or the count rb set. With `threads:` unset OpenROAD logs no count, so `effective` is null, as is the `threads` that a staged run records in each stage's `stage_end` event and manifest entry. A one-session run records no per-stage `threads`. `rb power` and `rb synth`'s OpenROAD stage read `threads:` and report `openroad_threads` the same way.
 
 ## Keep stage checkpoints
 
@@ -555,9 +572,9 @@ A run killed at a wall-time limit leaves only its log. `checkpoints: true` (or o
 | `floorplan` | Floorplan, macros, power grid, pins |
 | `place` | Legalized global placement |
 | `cts` | Clock tree and hold repair |
-| `global_route` | The global route after global-route repair, with route guides and segments; with `global-route.grid-origin`, before the GCell grid is rebuilt from the guides |
-| `detailed_route` | The detailed route, before fill, with its DRC report |
-| `post_route_repair` | The kept repair round (only with `post-route-repair`) |
+| `global_route` | The global route after global-route repair and antenna repair, with route guides and segments and `grt_antennas.rpt`; with `global-route.grid-origin`, before the GCell grid is rebuilt from the guides |
+| `detailed_route` | The detailed route after antenna repair, before fill, with its DRC report and `drt_antennas.rpt` |
+| `post_route_repair` | The kept repair round, with its DRC report and `drt_antennas.rpt` (only with `post-route-repair`) |
 
 On a multi-corner platform the `.sdc` holds every corner's SDC mode, and `<NN>_<stage>.<corner>.sdc` each corner's alone.
 
@@ -604,7 +621,7 @@ rb pnr alu_pnr -c pnr/alu/pnr.yaml --resume latest --from detailed_route
 ```
 
 - `--stop-after <stage>` works on any run, writes that checkpoint and a stage report, and passes with `routed: false`. It writes no routed outputs, GDS or abstract, and `xfail:` does not apply.
-- `--resume <run> --from <stage>` starts a new staged run from a staged run's checkpoint of the stage before. `<run>` is `latest`, a run id or a checkpoint directory. The old run is left unchanged, so detailed routing can be retried from one global route.
+- `--resume <run> --from <stage>` starts a new staged run from a staged run's checkpoint of the stage before. `<run>` is `latest`, a run id or a checkpoint directory. The old run is left unchanged, so detailed routing can be retried from one global route. The reports the inherited checkpoints keep (`grt_antennas.rpt`, `route.drc.rpt`, `route.maze.log`, `drt_antennas.rpt`) are copied into `artefacts/<run>/`.
 - The resume is refused (`fail_stage: resume`) when the earlier stages' generated scripts, their input files or the OpenROAD version changed, or when resuming a probe into a closure run. A `constraints:` path and a map of that path to every corner count as different. Settings read only from `--from` on, such as `detailed-route-verbose`, routing layers or `threads:`, may change. Files sourced by hooks, `platform-tcl`, a `pdn-config` or the SDC are not checked unless listed under [`inputs:`](#run-tcl-hooks), and environment variables are not checked.
 
 ## Dispatch the stages to Slurm
@@ -693,7 +710,7 @@ A top run names its blocks under `blocks:`, in `pnr.yaml` and in the `synth.yaml
 - Build blocks first. `rb pnr -c top/pnr.yaml --synth` runs every block, its synthesis and the top in order from a clean tree; `-j N` hardens independent blocks in parallel. Each run uses its own `threads:`.
 - A run whose block failed is not attempted (`fail_stage: blocked`, with `blocked_by`).
 - The block must use the same technology LEF and corner as the top.
-- An abstract whose inputs changed since hardening is refused, naming what changed. Re-harden it, or pass `--accept-stale`.
+- An abstract whose inputs changed since hardening, or that a major version of rb with different built-in flow steps or defaults hardened, is refused, naming what changed. Re-harden it, or pass `--accept-stale`.
 - A block hardened with `abstract: {gds: false}` has no GDS. A `gds-mode: strict` stream-out of the parent, including the parent's own `harden` and `rb pnr-export --gds-mode strict`, fails at setup naming the block. A `preview` stream-out, `--png` included, treats the block as a cell without GDS: the layout lacks it and the result names it, as in [Stream out GDS and PNG](#stream-out-gds-and-png).
 
 ## Instance a parameterised block
@@ -713,17 +730,17 @@ Use `frontend: slang` for such a parent. rb rewrites each instance to `blk u_blk
 For maintainers and hook authors. The generated `pnr.tcl` runs:
 
 1. `platform-tcl`, Liberty, LEF, a mode and scene per corner on a multi-corner platform, netlist, SDC, `max-fanout`, `layer-rc-tcl`, don't-use cells, `session` hooks. The SDC and `max-fanout` go into every mode.
-2. Floorplan, tracks, blockages and cut-outs, tie cells.
+2. Floorplan, tracks, blockages and cut-outs, tie cells, floorplan setup repair.
 3. Macro placement, tap cells, power grid, pin placement, port buffering.
-4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and the output port buffers `hold-outputs-at-pins` fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, the `placement.macro-pin-limits` step.
-5. CTS, optional post-CTS setup repair, hold repair, legalization.
-6. Global route, optional global-route repair, detailed route, optional post-route repair stage.
+4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and the output port buffers `hold-outputs-at-pins` fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, `improve_placement` and `optimize_mirroring`, the `placement.macro-pin-limits` step.
+5. `repair_clock_inverters`, CTS, post-CTS setup repair, hold repair, legalization.
+6. Global route, global-route repair, antenna repair, detailed route, antenna repair with detailed routes, optional post-route repair stage, whose rounds each repair antennas after their detailed route.
 7. Fill, global connections, extraction with `rcx-rules`, final reports, outputs.
 8. After OpenROAD: the routed-floorplan check, then stream-out and abstract.
 
 The `stage-end` hooks run at the end of each stage, after its last global connection; the stage's checkpoint is written after them.
 
-A `probe` skips the setup and hold repair and stops after global route. Each session must print its end marker (`>>> DONE`, `>>> End of stage <NN>_<stage>`, `>>> STOPPED after <stage>`, or the post-route round markers), or the run fails `incomplete`. This check comes before any check of the design.
+A `probe` skips the setup and hold repairs and the antenna repair after global route, and stops after global route. Each session must print its end marker (`>>> DONE`, `>>> End of stage <NN>_<stage>`, `>>> STOPPED after <stage>`, or the post-route round markers), or the run fails `incomplete`. This check comes before any check of the design.
 
 A staged session starts with a prelude regenerated from the same template: the header, Liberty and LEF, `read_db` and `read_sdc` of the previous checkpoint (every mode), its saved flow variables, then step 1's per-session settings. It keeps only what the database, the checkpoint SDC and the state file hold. A resume compares each earlier stage's script up to its end-of-stage line, ignoring comments, the run-directory lines, `set_thread_count` and header variables the stage does not read.
 

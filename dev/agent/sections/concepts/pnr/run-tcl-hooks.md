@@ -11,19 +11,19 @@
 | Point | Sourced |
 | --- | --- |
 | `session` | At the start of every OpenROAD session, after the SDC, before the floorplan |
-| `after-floorplan` | After floorplan, tracks, blockages and tie cells |
-| `macro-placement` | Instead of rb's macro placement; only when the netlist has macros. `$rb_movable_macros` lists the unlocated ones. Not with `macro-placement: rtl-mp` or a non-default `macro-anchor`. |
+| `after-floorplan` | After floorplan, tracks, blockages, tie cells and the floorplan setup repair |
+| `macro-placement` | Instead of RTL-MP; only when the netlist has macros. `$rb_movable_macros` lists the unlocated ones. |
 | `after-pdn` | After taps and the power grid |
 | `after-pins` | After pin placement, before port buffering. A hook that buffers ports needs `buffer-ports: false`. |
 | `after-global-placement` | After `global_placement` |
 | `after-repair-design` | After `repair_design`, before legalization and the `placement.macro-pin-limits` step |
-| `before-cts` | After legalization and the `placement.macro-pin-limits` step, immediately before `clock_tree_synthesis`. The `cts-dont-use-cells` are not yet excluded. |
+| `before-cts` | After legalization, `improve_placement`, `optimize_mirroring` and the `placement.macro-pin-limits` step, before `repair_clock_inverters` and `clock_tree_synthesis`. The `cts-dont-use-cells` are not yet excluded. |
 | `before-repair-clock-nets` | Right after `clock_tree_synthesis`, before `cts-repair-clock-nets` runs `repair_clock_nets`. The `cts-dont-use-cells` are still excluded. |
 | `after-cts` | After CTS and any `repair_clock_nets`, before setup and hold repair |
 | `after-cts-repair` | After post-CTS setup and hold repair and their legalization |
 | `after-global-route` | After `global_route`, before global-route repair |
-| `after-global-route-repair` | After global-route repair, in the `global_route` stage, so also in a probe |
-| `before-detailed-route` | Before each detailed route, including each post-route repair round's |
+| `after-global-route-repair` | After global-route repair, before the antenna repair, in the `global_route` stage, so also in a probe |
+| `before-detailed-route` | Before the flow's detailed route and each post-route repair round's; not before the antenna repair's |
 | `after-extraction` | In every session that writes a SPEF (each post-route repair round's extraction and the final one), after `write_spef` and before rb reads it. `$rb_spef` is its path. Needs `rcx-rules`. |
 | `before-reports` | After fill and extraction, before the final reports |
 | `after-reports` | After the final reports, on their parasitics, before rb writes the routed outputs |

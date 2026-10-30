@@ -11,4 +11,4 @@ rb mut score mut/demo/artefacts/mut/demo_top/mut_report.json
 - `run` uses the `debug` builder mode by default, evaluates the baseline and the mutants, then writes the report.
 - `score` recomputes the score from an existing report without rerunning verification.
 
-Paths and artefacts anchor to the selected `mut.yaml`, not the shell directory; see [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/execution-context/).
+Paths and artefacts anchor to the selected `mut.yaml`, not the shell directory; see [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/execution-context/).

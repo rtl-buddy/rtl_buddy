@@ -12,4 +12,4 @@ uv run rb axi-profile run basic_traffic
 wrote artefacts/axi/basic_traffic/axi-perf.json (4 bundles, 3210 cycles, clock=tb_axi_2x2.clk).
 ```
 
-For the `in0` bundle of the 2×2 crossbar, the write-data channel reports 55% back-pressure against 4.8% utilization, which is the deliberate stall the testbench injects. `rb axi-profile notebook` opens the same data in a packaged marimo notebook, and the hub overlays it on the schematic. See [AXI Interconnect Profiling](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/axi-profile/).
+For the `in0` bundle of the 2×2 crossbar, the write-data channel reports 55% back-pressure against 4.8% utilization, which is the deliberate stall the testbench injects. `rb axi-profile notebook` opens the same data in a packaged marimo notebook, and the hub overlays it on the schematic. See [AXI Interconnect Profiling](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/axi-profile/).

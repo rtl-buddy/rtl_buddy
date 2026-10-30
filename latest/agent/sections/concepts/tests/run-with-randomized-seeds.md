@@ -6,7 +6,7 @@ rb test smoke --rnd-last
 rb randtest smoke 20
 ```
 
-`--rnd-new` records a generated seed and `--rnd-last` reuses it. `randtest` runs repeated seeded iterations; see the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v7/reference/cli/#randtest) for replay and selection options.
+`--rnd-new` records a generated seed and `--rnd-last` reuses it. `randtest` runs repeated seeded iterations; see the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v8/reference/cli/#randtest) for replay and selection options.
 
 To replay a test or regression without old artefacts, pass one master seed:
 

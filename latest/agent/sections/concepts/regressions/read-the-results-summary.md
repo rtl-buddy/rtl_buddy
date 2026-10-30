@@ -12,4 +12,4 @@ To hide `PASS`, `SKIP`, and `XFAIL` rows:
 rb --print-failures-only regression -c regression.yaml
 ```
 
-Machine mode filters by default. The tally always counts every verdict; stdout results and the log's `summary` event retain all rows. See [Machine mode](https://rtl-buddy.github.io/rtl_buddy/v7/agents/#machine-mode).
+Machine mode filters by default. The tally always counts every verdict; stdout results and the log's `summary` event retain all rows. See [Machine mode](https://rtl-buddy.github.io/rtl_buddy/v8/agents/#machine-mode).

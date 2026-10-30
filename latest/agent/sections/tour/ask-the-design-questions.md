@@ -39,4 +39,4 @@ covitem:demo_tiny_alu#SAND-FUNC-FLAG-C-ADD
   <- covers test:verif/demo_tiny_alu_cocotb#cocotb_flags
 ```
 
-The graph was built from this project in a few seconds: 800 nodes and 1619 links across RTL, config, spec, and cocotb binding tiers. `rb mcp` exposes the same graph, coverage, physical-metrics, and hierarchy queries as MCP tools, and `rb skill install` gives Claude Code or Codex a version-matched skill that knows every command on this page. See [Agent use of rtl-buddy](https://rtl-buddy.github.io/rtl_buddy/v7/agents/) and [Design Knowledge Graph](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/graph/).
+The graph was built from this project in a few seconds: 800 nodes and 1619 links across RTL, config, spec, and cocotb binding tiers. `rb mcp` exposes the same graph, coverage, physical-metrics, and hierarchy queries as MCP tools, and `rb skill install` gives Claude Code or Codex a version-matched skill that knows every command on this page. See [Agent use of rtl-buddy](https://rtl-buddy.github.io/rtl_buddy/v8/agents/) and [Design Knowledge Graph](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/graph/).

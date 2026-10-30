@@ -30,4 +30,4 @@ Payload conventions:
 - `docs list` uses `payload.pages`.
 - Coverage and formal results carry structured metrics and artefact paths.
 
-See [Coverage](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/coverage/) and [Formal Property Verification](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/fpv/) for their payloads, and [Tests](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/tests/#interpret-results) for statuses and exit codes.
+See [Coverage](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/coverage/) and [Formal Property Verification](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/fpv/) for their payloads, and [Tests](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/tests/#interpret-results) for statuses and exit codes.

@@ -24,4 +24,4 @@ cfg-surfer:
 - `editor-sock` enables nvim reuse and annotations.
 - `ctrl-sock` enables editor-to-Surfer actions.
 
-With another editor, omit both sockets to get one-way source navigation. See [YAML Formats](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#root_configyaml) for all fields.
+With another editor, omit both sockets to get one-way source navigation. See [YAML Formats](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#root_configyaml) for all fields.

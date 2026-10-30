@@ -17,4 +17,4 @@ xezim parses, elaborates and simulates in one invocation. The compile runs `xezi
 - xezim stops at `--max-time`, 100 ms of simulated time by default. Raise it in `compile-time` for longer tests.
 - xezim is built from source: `cargo build --release` in a [xezim](https://github.com/aionhw/xezim) checkout (Rust 1.92+). `rb tool-check` lists it as optional.
 
-If a suite must run on Icarus, gate unsupported constructs. Use [expected failures](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/expected-failures/) only when the failure mode is understood.
+If a suite must run on Icarus, gate unsupported constructs. Use [expected failures](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/expected-failures/) only when the failure mode is understood.

@@ -9,4 +9,4 @@ uv run rb wave basic
 
 ![Surfer view of the basic test: op, a, b, the ALU result y, the four flags, and the scoreboard counters](../static/img/tour/wave-tiny-alu-basic.png)
 
-Stimulus, DUT outputs, and the scoreboard's mismatch counter sit in three named groups because `tb_top.surfer` says so; a new engineer opening the test sees the same thing you do. See [Waveform Viewing](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/wave/).
+Stimulus, DUT outputs, and the scoreboard's mismatch counter sit in three named groups because `tb_top.surfer` says so; a new engineer opening the test sees the same thing you do. See [Waveform Viewing](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/wave/).

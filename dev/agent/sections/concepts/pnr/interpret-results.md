@@ -17,7 +17,7 @@
 | `routed`, `mode`, `stopped_after`, `global_route_overflow` | `routed: false` means the run stopped early ([probe](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#probe-a-floorplan) or `--stop-after`); its numbers are that stage's estimate, with the global-route overflow from `global_route` on. |
 | `signoff` | With [`signoff:`](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#gate-signoff): each gate's values and verdict. |
 | `post_route_repair` | The rounds of [post-route repair](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#repair-timing-after-routing): `kept_round`, `rounds`, `repaired_rounds`, `stop`, `reason`, `passed_over_round`, and with `electrical-repair` `electrical_round`. |
-| `openroad_threads` | Requested and effective [thread counts](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#openroad-threads). |
+| `openroad_threads` | Requested and effective [thread counts](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#openroad-threads). `effective` is null when `threads:` is unset. |
 | `gds_status`, `gds_missing_cells` | [Stream-out](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#stream-out-gds-and-png) outcome. |
 | `checkpoint_dir`, `checkpoint_stages`, `last_step` | With [checkpoints](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#keep-stage-checkpoints): where they are, which stages the run reached and checkpointed (never a failed global route), and the last step reached. |
 | `failed_global_route` | `<run-id>/global_route`: the checkpoint holding a failed global route's database, for `rb pnr-export --checkpoint`. |

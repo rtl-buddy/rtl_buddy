@@ -14,4 +14,4 @@ From another directory, name the suite:
 uv run rb test basic --test-config path/to/tests.yaml
 ```
 
-Outputs land beside `tests.yaml`, not in the directory you ran from. See [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/execution-context/).
+Outputs land beside `tests.yaml`, not in the directory you ran from. See [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/execution-context/).

@@ -6,4 +6,4 @@
 4. Verify commands against `uv run rb --help` and relevant subcommand help.
 5. Verify packaging and installer lifecycle tests when files or membership change.
 
-For a full audit, report findings under **Trim** and **Missing**, with one reason and one action per item. Apply [Code Reviews](https://rtl-buddy.github.io/rtl_buddy/v7/development/reviews/) to pull request scope and feedback.
+For a full audit, report findings under **Trim** and **Missing**, with one reason and one action per item. Apply [Code Reviews](https://rtl-buddy.github.io/rtl_buddy/v8/development/reviews/) to pull request scope and feedback.

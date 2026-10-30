@@ -20,4 +20,4 @@ Running simulation basic
    Results: 1 PASS (1 total)
 ```
 
-Artefacts land beside `tests.yaml` under `artefacts/basic/`: the compile and simulation logs, the FST trace, the generated filelist, and a `result.json` that records the verdict, builder, and run token. See [Tests](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/tests/).
+Artefacts land beside `tests.yaml` under `artefacts/basic/`: the compile and simulation logs, the FST trace, the generated filelist, and a `result.json` that records the verdict, builder, and run token. See [Tests](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/tests/).

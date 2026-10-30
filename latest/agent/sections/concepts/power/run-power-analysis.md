@@ -15,4 +15,4 @@ power-configs:
   - power/block_b/power.yaml
 ```
 
-OpenROAD runs on one thread unless the run sets `threads:` to a positive integer or `auto`. See [OpenROAD threads](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#openroad-threads).
+Unset, `threads:` leaves OpenROAD's own thread count; set it to a positive integer or `auto` to choose. See [OpenROAD threads](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#openroad-threads).

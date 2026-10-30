@@ -5,7 +5,7 @@ Each entry is a console message and the action it calls for.
 - **`static-functions` finding, run fails:** add `automatic` to the listed declarations, or set `static-functions: warn|allow`.
 - **`multiple conflicting drivers` warning(s), run fails:** fix the design so each net has one driver style, or set `conflicting-drivers: allow`.
 - **Interface instance could not be bound:** use `frontend: slang`, or accept the fallback with `unresolved-interfaces: warn|allow`.
-- **Yosys stops after ABC, `output.blif` written, no netlist:** set `abc-persistent: false`; see [Run ABC in batch mode](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/synthesis/#run-abc-in-batch-mode).
+- **Yosys stops after ABC, `output.blif` written, no netlist:** set `abc-persistent: false`; see [Run ABC in batch mode](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/synthesis/#run-abc-in-batch-mode).
 - **multi-clock SDC, abc constraint set to minimum:** use `tool: openroad` for multi-clock timing, or split into one run per clock domain.
 - **no `create_clock` found, `create_clock -period` did not evaluate, or `create_clock` is inside a body the tokenizer does not evaluate:** ABC runs unconstrained or skips that clock. Add a literal clock or restore the `tcl` reader.
 - **no Tcl interpreter is reachable, or Tcl refused a line:** the tokenizer reader is in use, so `$variables`, `[expr]`, loops and procs stay unevaluated. Install tkinter, or fix the Tcl error the warning names.

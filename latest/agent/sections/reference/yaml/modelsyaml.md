@@ -17,8 +17,8 @@ models:
 
 | Field | Requirement | Meaning |
 |---|---|---|
-| `name` | Required | Model identifier. Unique across every `models.yaml`, regardless of `graph:`. See [Model names](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#model-names) |
-| `filelist` | Required | Filelist entries resolved from `models.yaml`. See [Filelists](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#filelists) |
+| `name` | Required | Model identifier. Unique across every `models.yaml`, regardless of `graph:`. See [Model names](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#model-names) |
+| `filelist` | Required | Filelist entries resolved from `models.yaml`. See [Filelists](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#filelists) |
 | `desc` | Optional | Human-readable description |
 | `spec` | Optional | `specs.yaml` path for `rb spec`; no simulation effect |
 | `axi_bundles` | Optional | `axi-bundles.yaml` path relative to `models.yaml`, written by `rb axi-profile discover` |
@@ -27,7 +27,7 @@ models:
 | `synth` | Optional | Synthesis ownership pointer, optionally with `#entry`; no current runtime consumer |
 | `tests` | Optional | Test-suite ownership pointer, optionally with `#entry`; no current runtime consumer |
 | `graph` | Optional | `false` opts the model out of the `rb graph build` design tier. Default `true` |
-| `top` | Optional | Root module of the filelist when it is not named after the model. Default `name`. See [Model top](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#model-top) |
+| `top` | Optional | Root module of the filelist when it is not named after the model. Default `name`. See [Model top](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#model-top) |
 | `elaborations` | Optional, default empty | Named pyslang profile deltas used by `rb elab --profile` and `rb elab-regression`. The model stays directly elaborable without them |
 
 ### Model names
@@ -78,7 +78,7 @@ Flows differ in which entries they honor:
 
 - Simulation and model elaboration apply `+incdir+` and `+define+`.
 - Synthesis (`read_verilog -I` and `read_slang -I`, on both yosys backends), FPGA (openXC7's `read_verilog -I`, Vivado's `synth_design -include_dirs`), and the Vivado CDC tool forward every `+incdir+`, each directory resolved against the filelist that declared it.
-- `rb cdc` and the hub's domain-map build pass every `+incdir+` to rtl-buddy-cdc as `--incdir <dir>`, resolved the same way. An rtl-buddy-cdc whose `lint --help` does not list `--incdir` gets none; the run logs `cdc.filelist_incdirs_unsupported` naming the directories, and the analyzer's own `Cannot find include file` error follows if a header resolves only through them. See [Quirks & Known Issues](https://rtl-buddy.github.io/rtl_buddy/v7/known-issues/#filelist-incdir-needs-rtl-buddy-cdc-07-or-later).
+- `rb cdc` and the hub's domain-map build pass every `+incdir+` to rtl-buddy-cdc as `--incdir <dir>`, resolved the same way. An rtl-buddy-cdc whose `lint --help` does not list `--incdir` gets none; the run logs `cdc.filelist_incdirs_unsupported` naming the directories, and the analyzer's own `Cannot find include file` error follows if a header resolves only through them. See [Quirks & Known Issues](https://rtl-buddy.github.io/rtl_buddy/v8/known-issues/#filelist-incdir-needs-rtl-buddy-cdc-07-or-later).
 - `rb synth` applies `+define+` entries. The `synth.yaml` entry's `defines:` win on conflict and log `synth.filelist_defines_overridden`.
 - Renderer-only flows drop definitions.
 
@@ -105,4 +105,4 @@ A profile is a delta on its containing model, not another model reference. Paths
 | `warnings` | Empty; warning controls without the `-W` prefix, such as `all`, `none`, `no-unused`, or `error=unused`. They cannot suppress hard compilation errors |
 | `resources` | Inherits `cfg-dispatch.resources` field by field. `cpus` must be positive and also sets pyslang worker threads |
 
-`rb elab MODEL -c models.yaml` runs the base model. `rb elab MODEL --profile NAME -c models.yaml` applies one profile. Outputs are `artefacts/elab/<model>/<base-or-profile>/elab.f`, `elab.log`, and `result.json`. See [Model Elaboration](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/elaboration/).
+`rb elab MODEL -c models.yaml` runs the base model. `rb elab MODEL --profile NAME -c models.yaml` applies one profile. Outputs are `artefacts/elab/<model>/<base-or-profile>/elab.f`, `elab.log`, and `result.json`. See [Model Elaboration](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/elaboration/).

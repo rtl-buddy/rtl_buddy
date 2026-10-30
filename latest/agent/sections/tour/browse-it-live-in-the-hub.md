@@ -26,4 +26,4 @@ uv run rb hub start --serve-viewer --model demo_tiny_alu_subsys_top \
 
 ![Hub phys pane for the paired Nangate45 synthesis and static power run: cells, area, leakage and dynamic tiles, modules ranked by cell count, instances ranked by total power](../static/img/tour/hub-phy.png)
 
-Every pane is one self-contained HTML file served from the wheel, so the hub needs no network access and no build step. `rb hub send` scripts the same selections from a terminal, and `rb mcp` exposes the hub's state to an agent. See [Hub](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/hub/).
+Every pane is one self-contained HTML file served from the wheel, so the hub needs no network access and no build step. `rb hub send` scripts the same selections from a terminal, and `rb mcp` exposes the hub's state to an agent. See [Hub](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/hub/).

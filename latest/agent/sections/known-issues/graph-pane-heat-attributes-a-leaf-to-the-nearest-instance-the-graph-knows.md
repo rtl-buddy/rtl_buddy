@@ -6,4 +6,4 @@ The `/gph` heat overlay rolls per-instance power up to the enclosing RTL module 
 - A row whose path runs through a level the graph lacks goes to the deepest level it has, which over-attributes that module.
 - A module's power is summed over every instantiation, while its cells and area are counted once.
 
-See [Design Knowledge Graph](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/graph/#physical-heat-on-the-graph).
+See [Design Knowledge Graph](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/graph/#physical-heat-on-the-graph).

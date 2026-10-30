@@ -2669,6 +2669,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/unknown-synthesis-overrides-are-ignored-after-a-warning.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#the-mapped-run-abc-script-leaves-out-two-steps-of-yosys-default",
+          "slug": "the-mapped-run-abc-script-leaves-out-two-steps-of-yosys-default",
+          "title": "The mapped-run ABC script leaves out two steps of Yosys' default",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/the-mapped-run-abc-script-leaves-out-two-steps-of-yosys-default.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#wide-adders-map-as-ripple-chains-unless-synth-args-has-noabc",
           "slug": "wide-adders-map-as-ripple-chains-unless-synth-args-has-noabc",
           "title": "Wide adders map as ripple chains unless `synth-args` has `-noabc`",
@@ -2880,6 +2886,12 @@
           "slug": "v6-to-v7",
           "title": "v6 to v7",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/migrations/v6-to-v7.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/migrations/#v7-to-v8",
+          "slug": "v7-to-v8",
+          "title": "v7 to v8",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/migrations/v7-to-v8.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/migrations/#submodule-to-uv",

@@ -1,6 +1,6 @@
 ## Choose the mapped-run ABC script
 
-A Liberty-mapped run, which is every `tool: openroad` run and a `tool: yosys` run with a `platform` or `lib-paths`, maps logic to cells with one `abc -liberty` command. `abc-script` sets the ABC commands it runs, or names a preset: `default` or `delay`. The `default` preset is Yosys' default Liberty script without `dc2` and `&fraig -x`:
+A Liberty-mapped run, which is every `tool: openroad` run and a `tool: yosys` run with a `platform` or `lib-paths`, maps logic to cells with one `abc -liberty` command. `abc-script` sets the ABC commands it runs, or names a preset: `default` or `delay`. The `default` preset is Yosys' default Liberty script without `dc2` and `&fraig -x`, a workaround listed in [Known Issues](https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#the-mapped-run-abc-script-leaves-out-two-steps-of-yosys-default):
 
 ```text
 strash; scorr; dretime; strash; &get -n; &dch -f; &nf {D}; &put

@@ -18,4 +18,4 @@ cfg-xplr:
 rb xplr --root /path/to/project frontier
 ```
 
-See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v7/reference/cli/) for the full command surface.
+See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v8/reference/cli/) for the full command surface.

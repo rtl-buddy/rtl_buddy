@@ -27,4 +27,4 @@ syntheses:
     reglvl: 0
 ```
 
-Paths resolve from `synth.yaml`. The synthesis top is the model's root module: its `top:` in `models.yaml`, defaulting to the model name. `platform` enables Liberty mapping. Use `lef-paths` and `lib-paths` for block-specific hard macros, and `tool_overrides` for backend options with no portable equivalent. All fields are in [YAML Formats: synth.yaml](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#synthyaml).
+Paths resolve from `synth.yaml`. The synthesis top is the model's root module: its `top:` in `models.yaml`, defaulting to the model name. `platform` enables Liberty mapping. Use `lef-paths` and `lib-paths` for block-specific hard macros, and `tool_overrides` for backend options with no portable equivalent. All fields are in [YAML Formats: synth.yaml](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#synthyaml).

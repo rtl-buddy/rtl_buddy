@@ -23,4 +23,4 @@ demo_tiny_alu_subsys_top
 
 ![Block diagram of demo_tiny_alu_subsys_top: the PeakRDL CSR block on the APB clock feeding a handshake and an async FIFO into the ALU datapath on the compute clock, with results returning through a second handshake](../static/img/tour/subsys-block-diagram.png)
 
-Parameter values on each block come from the elaborated design, not from a drawing. `rb hier-query` answers the same questions as JSON (see [Ask the design questions](https://rtl-buddy.github.io/rtl_buddy/v7/tour/#ask-the-design-questions) below), and `rb hub` serves an interactive schematic of the same hierarchy in the browser. See [Hierarchy Rendering](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/hier/).
+Parameter values on each block come from the elaborated design, not from a drawing. `rb hier-query` answers the same questions as JSON (see [Ask the design questions](https://rtl-buddy.github.io/rtl_buddy/v8/tour/#ask-the-design-questions) below), and `rb hub` serves an interactive schematic of the same hierarchy in the browser. See [Hierarchy Rendering](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/hier/).

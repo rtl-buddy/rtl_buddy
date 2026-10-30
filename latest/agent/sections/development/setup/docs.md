@@ -19,4 +19,4 @@ For CLI help changes, regenerate the reference before building:
 uv run python scripts/gen_cli_reference.py
 ```
 
-Do not edit `docs/reference/cli.md` by hand. See [Documentation Guidelines](https://rtl-buddy.github.io/rtl_buddy/v7/development/docs/).
+Do not edit `docs/reference/cli.md` by hand. See [Documentation Guidelines](https://rtl-buddy.github.io/rtl_buddy/v8/development/docs/).

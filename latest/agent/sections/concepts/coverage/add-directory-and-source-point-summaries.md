@@ -11,7 +11,7 @@ rb -M cov regression --coverage-merge \
   --coverage-dir-summary-file coverage_dirs.txt
 ```
 
-`--coverage-source-summary` adds source-point figures, which differ from the default per-elaboration ones (see [Per-elaboration vs source-point figures](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/coverage/#per-elaboration-vs-source-point-figures)):
+`--coverage-source-summary` adds source-point figures, which differ from the default per-elaboration ones (see [Per-elaboration vs source-point figures](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/coverage/#per-elaboration-vs-source-point-figures)):
 
 ```bash
 rb -M cov regression --coverage-merge --coverage-source-summary

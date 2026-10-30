@@ -10,7 +10,7 @@ If the head process dies (late `Ctrl-C`, dropped SSH session, login node reboot)
 
 The head records each array slice as soon as the scheduler accepts it, and a retry round's jobs before each wait to resubmit a refused `sbatch` and before it waits on the round. `cancel` therefore reaches every job a killed head had queued, except retry jobs accepted since the round's last record when the head was killed during a later `sbatch` of that round. A run that died while still submitting can never be adopted. `--orphans` has no effect for `local` and `local-parallel`; `--orphans adopt` there is a fatal error.
 
-A head can also die while it waits on its [coverage tail job](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/dispatch/#run-the-coverage-tail-as-a-job), which keeps writing `cov_dir/`. `rb test`, `rb randtest` and `rb regression` check the command root's `artefacts/.dispatch/coverage/` records at start-up too:
+A head can also die while it waits on its [coverage tail job](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/dispatch/#run-the-coverage-tail-as-a-job), which keeps writing `cov_dir/`. `rb test`, `rb randtest` and `rb regression` check the command root's `artefacts/.dispatch/coverage/` records at start-up too:
 
 - `cancel` cancels that job before submitting anything, as for a fleet.
 - `warn` logs `dispatch.coverage_orphan_found` and leaves it running. This run's coverage tail then waits for it to leave the queue before writing `cov_dir/` (`coverage.tail_awaiting_orphan`). If `max-wait` expires first, this run's tail fails as `tail_failed` (exit 1) and the job is left running; it may still write its own manifest and model into `cov_dir/` afterwards.

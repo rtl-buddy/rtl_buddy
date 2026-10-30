@@ -30,7 +30,7 @@ budget:
 | `verify.tests` | Default all | Selected simulation tests |
 | `verify.assertions` | Default true | Enables Verilator assertions for the simulation oracle |
 | `name` | Default model | Campaign and artefact name |
-| `top` | Default model | Top module the FPV oracle elaborates. Follows the [same rule](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#model-top) as a model `top` |
+| `top` | Default model | Top module the FPV oracle elaborates. Follows the [same rule](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#model-top) as a model `top` |
 | `budget.max_mutants` | Default 100 | Global campaign cap |
 | `budget.per_file_cap` | Default null | Per-scoped-file cap |
 | `budget.time_budget_minutes` | Default null | Wall-clock cap |
@@ -39,11 +39,11 @@ budget:
 
 At least one oracle is required, and `fpv_config` requires `verification`. `design_file` and every scoped file must stay within the model directory.
 
-- A user mutant whose diff no longer applies is `ERRORED`. The budget does not limit user mutants, and `scope` requires a non-empty `operators`. See [Add curated mutants](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/mut/#add-curated-mutants).
+- A user mutant whose diff no longer applies is `ERRORED`. The budget does not limit user mutants, and `scope` requires a non-empty `operators`. See [Add curated mutants](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/mut/#add-curated-mutants).
 
 - An empty scope mutates `design_file` without the viewer.
 - A non-empty scope requires `rtl-buddy-view`, selects hierarchy source files, and fails if none match.
 - A campaign's `top` wins over the model's and the oracle verification's. It applies to the baseline proof and every mutant proof, since their verdicts are comparable only when elaborated from the same root.
 - Only the FPV oracle elaborates a top. A campaign that configures only the simulation oracle logs `mut_config.top_override_unused` and ignores `top`.
 
-See [Mutation Testing](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/mut/).
+See [Mutation Testing](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/mut/).

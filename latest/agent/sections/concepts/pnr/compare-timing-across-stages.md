@@ -18,7 +18,7 @@ A run that writes `progress.jsonl` (`checkpoints:` set, even to `[]`, `stages: t
 | --- | --- | --- |
 | `floorplan` | `stage_end` | `none` |
 | `place`, `cts` | `stage_end` | `placement` |
-| `global_route` | `before_repair` when [global-route repair](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#tune-placement-clock-tree-and-repair) runs, then `stage_end` after it | `global_route` |
+| `global_route` | `before_repair` when [global-route repair](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#tune-placement-clock-tree-and-repair) runs, then `stage_end` after it | `global_route` |
 | `detailed_route` | `stage_end` | `global_route`, the estimate from the route guides |
 | `post_route_repair` | one `round` per round, then a `stage_end` copied from the kept round | `extracted` |
 | `finish` | `stage_end` | `extracted` with `rcx-rules`, else `global_route` |

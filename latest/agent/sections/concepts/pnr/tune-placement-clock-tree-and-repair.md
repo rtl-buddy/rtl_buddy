@@ -1,24 +1,23 @@
 ## Tune placement, clock tree and repair
 
-Process-dependent knobs live on the PDK, can be overridden on the platform, and most also on a run, so runs of one block on one platform can differ without a platform per variant. Which level takes each key is in the [YAML reference](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#synthesis-and-physical-design-tools). Defaults suit Nangate45. Start from the problem:
+Process-dependent knobs live on the PDK, can be overridden on the platform, and most also on a run, so runs of one block on one platform can differ without a platform per variant. Which level takes each key is in the [YAML reference](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#synthesis-and-physical-design-tools). A default is OpenROAD's own or the setting ORFS uses, unless it belongs to an rb step without a counterpart, such as `placement.macro-pin-limits`, or works around a [known issue](https://rtl-buddy.github.io/rtl_buddy/v8/known-issues/). Start from the problem:
 
 | Problem | Knob |
 | --- | --- |
 | Global route overflows | Lower `placement.density` (default 0.7) or `floorplan.utilization`; `placement.routability-driven: true` (add `routability-use-grt: true` for a slower, closer estimate); a fixed `placement.reference-hpwl` such as `446000000` spreads a large design further. |
-| DRCs left in congested areas | `routing-layer-adjustment` (0 to 1) withholds that fraction of each signal layer from the global router; `global-route.layer-adjustment` sets it per layer. See [Tune global routing](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#tune-global-routing). |
+| DRCs left in congested areas | `routing-layer-adjustment` (0 to 1) withholds that fraction of each signal layer from the global router; `global-route.layer-adjustment` sets it per layer. See [Tune global routing](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#tune-global-routing). |
 | Setup misses on long nets | `placement.timing-driven: true`. On OpenROAD 26Q4 it also buffers and resizes during placement, which grows area. Needs wire RC. |
-| Setup misses after CTS | `post-cts-setup-repair: true` |
-| Timing misses after routing | [`global-route-repair` or `post-route-repair`](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#repair-timing-after-routing) |
+| Timing misses after routing | [`global-route-repair` or `post-route-repair`](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#repair-timing-after-routing) |
 | Many fanout buffers on a library without a fanout limit (sky130hd) | `max-fanout: 100000` stops buffering for fanout alone; `repair_design` otherwise uses 50. |
-| Cells too tight | `placement.padding` (sites, default 1) |
-| Clock tree | `cts-buffer` (a list's first entry is the root buffer unless `cts-root-buffer` names it), `cts-sink-clustering`, `cts-obstruction-aware`, `cts-apply-ndr`; `cts-clock-nets` builds trees for the named clocks only |
+| Cells too tight | `placement.padding` (sites, default 0) |
+| Clock tree | `cts-buffer` (CTS picks the root buffer from it unless `cts-root-buffer` names one), `cts-sink-clustering`, `cts-obstruction-aware`, `cts-apply-ndr`; `cts-clock-nets` builds trees for the named clocks only |
 | A strong root buffer with small branch buffers | `cts-root-buffer` names the root; `cts-buffer` lists the branch buffers only |
 | Clock pins far from the nearest leaf buffer, as when many clock-gate cells sit in a small area, with slew violations on them | `cts-sink-clustering` with `size` and `max-diameter` (µm) |
 | Setup misses from flops on a clock branch that CTS padded to match the deepest one (`CTS-0033` and `CTS-0036` in the log), as when a clock drives a buffer as well as flops | `cts-latency-balancing: false` |
 | Long clock wires after CTS | `cts-repair-clock-nets: true`, or `{max-wire-length: <µm>}` to cap the wire length |
 | A block must leave the top layers to its parent | `routing-layers` on the run |
 | A block needs other tap spacing or endcaps than the PDK's | `tapcell-tcl` on the platform or the run |
-| Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm, default 1.0) |
+| Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm, default 0), or a `tapcell-tcl` that cuts the rows around macros |
 | Tie cells too close to their loads | `placement.tie-separation` (µm, default 0) |
 | Macro pins over a tight Liberty limit, such as OpenRAM SKY130 SRAM inputs (0.04 ns) | `placement.macro-pin-limits`, below |
 
@@ -36,7 +35,7 @@ Each CTS control sits on the platform and on the run, and a run's value replaces
     cts-repair-clock-nets: {max-wire-length: 1000}
 ```
 
-This calls `clock_tree_synthesis -root_buf sky130_fd_sc_hd__clkbuf_16 -buf_list sky130_fd_sc_hd__clkbuf_4 -sink_clustering_enable -sink_clustering_size 20 -sink_clustering_max_diameter 25 -no_obstruction_aware`, then `repair_clock_nets -max_wire_length 1000`. `cts-obstruction-aware: false` needs an OpenROAD whose `clock_tree_synthesis` takes `-no_obstruction_aware`, which rb checks at setup; see the [YAML reference](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#synthesis-and-physical-design-tools).
+This calls `clock_tree_synthesis -root_buf sky130_fd_sc_hd__clkbuf_16 -buf_list sky130_fd_sc_hd__clkbuf_4 -sink_clustering_enable -sink_clustering_size 20 -sink_clustering_max_diameter 25 -no_obstruction_aware`, then `repair_clock_nets -max_wire_length 1000`. `cts-obstruction-aware: false` needs an OpenROAD whose `clock_tree_synthesis` takes `-no_obstruction_aware`, which rb checks at setup; see the [YAML reference](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#synthesis-and-physical-design-tools).
 
 `repair_design` sizes repeaters for the library's target slew, so a macro pin whose own limit is far below it stays in `electrical.rpt`. `placement.macro-pin-limits` buffers such pins at the end of the place stage, after `repair_design`, the `after-repair-design` hook and legalization:
 
@@ -50,3 +49,18 @@ This calls `clock_tree_synthesis -root_buf sky130_fd_sc_hd__clkbuf_16 -buf_list 
 ```
 
 Each macro data pin over its limit less the margin gets a buffer fixed on the free row site nearest it (an input also gets a pre-driver), sized from `buffers` weakest first and marked `dont_touch`, so later repair leaves it alone. `pnr.log` has one `>>>` line per pin. The step judges on placement parasitics, so check `electrical.rpt`: a long macro-output net can route to twice its estimated capacitance (hence `capacitance-margin: 0.5` on sky130hd), a large `macro-cell-halo` keeps the buffer too far from the pin (3 µm works with `buf_8` on sky130hd, 20 µm does not), and a pin route that global routing detours around the macro is out of its reach. A block set on the run or platform replaces a lower level's whole.
+
+### Optimisation steps
+
+The flow runs the optimisation steps ORFS runs by default. Each has a key on the platform and the run that turns it off:
+
+| Step | Where | Key |
+| --- | --- | --- |
+| `repair_timing -setup` with buffer removal and sizing only | End of the floorplan, before the `after-floorplan` hooks | `floorplan-setup-repair` |
+| `improve_placement`, then `optimize_mirroring` | After the placement stage's legalization | `placement.improve-placement`, `placement.optimize-mirroring` |
+| `repair_clock_inverters` | Before CTS, after the `before-cts` hooks | `cts-repair-clock-inverters` |
+| `repair_design`, then setup and hold `repair_timing`, on global-route parasitics | After global route | `global-route-repair: null` turns it off, and a written block replaces it; see [Repair timing after routing](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#repair-timing-after-routing) |
+| `repair_antennas` (5 iterations), `check_antennas` into `grt_antennas.rpt` | After the global-route repair and its hooks | `global-route-antenna-repair` |
+| `repair_antennas` and a detailed route while violations remain (at most 5), `check_antennas` into `drt_antennas.rpt` | After detailed route, and after each [post-route repair](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#repair-timing-after-routing) round's detailed route, before its `stage-end` hooks | `detailed-route-antenna-repair` |
+
+Turning a step off gives up what it does: the floorplan and global-route repairs recover setup slack, `improve_placement` and `optimize_mirroring` shorten wires, `repair_clock_inverters` keeps CTS from buffering inverted clocks, and antenna repair fixes antenna violations, which no other step repairs. Antenna repair inserts the PDK's antenna diode cells, LEF class `CORE ANTENNACELL`. A `probe` run skips the floorplan setup repair, the global-route repair and the antenna repair after global route.

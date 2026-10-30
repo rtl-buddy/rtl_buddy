@@ -5,4 +5,4 @@ Verilator scores each coverage point once per module elaboration. If a suite bui
 - `rb cov summary`, `--coverage-dir-summary` and merged totals report the per-elaboration figure.
 - For the collapsed figure, read `source_totals`: the `run (source)` row of `rb cov summary`, `rb cov summary --by-source`, `--coverage-source-summary` on `test` and `regression`, or the `/cov` pane's `figures` picker.
 
-See [Coverage](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/coverage/#per-elaboration-vs-source-point-figures).
+See [Coverage](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/coverage/#per-elaboration-vs-source-point-figures).

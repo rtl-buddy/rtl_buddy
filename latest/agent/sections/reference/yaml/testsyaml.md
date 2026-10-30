@@ -31,8 +31,8 @@ Top-level fields:
 | `tests` | Required | Test definitions |
 | `builder` | Optional | Suite default builder name |
 | `compile-opts` | Optional | Compile options per simulator family, optionally per builder mode, appended after the builder mode's `compile-time`. See below |
-| `filelist-modes` | Optional | Filelist entries per builder mode, compiled for every testbench in that mode only. See [Per-mode compile inputs](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#per-mode-compile-inputs) |
-| `compile` | Optional | This suite's whole-job dispatch compile reservation: `cpus`, `mem`, quoted `time`, `parallel`, `split-verilate`, a `verilate` sub-block, and a [`modes`](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#per-mode-reservations) sub-block. See below |
+| `filelist-modes` | Optional | Filelist entries per builder mode, compiled for every testbench in that mode only. See [Per-mode compile inputs](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#per-mode-compile-inputs) |
+| `compile` | Optional | This suite's whole-job dispatch compile reservation: `cpus`, `mem`, quoted `time`, `parallel`, `split-verilate`, a `verilate` sub-block, and a [`modes`](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#per-mode-reservations) sub-block. See below |
 | `preproc-sets-plusdefines` | Default true | Suite default for the test field of the same name |
 
 `compile-opts` maps a simulator family (`verilator`, `vcs`, `icarus`, `xezim`, or a builder's `simulator-family`) to options for every test in the suite:
@@ -43,7 +43,7 @@ compile-opts:
   vcs: [-kdb]
 ```
 
-A string splits on whitespace as `compile-time` does; a list is taken token by token. Only the family of the builder doing the compile applies, so `--builder vcs` on the suite above passes no Verilator option. The options come after the builder mode's, get the same expansion (see [Simulator builders](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#simulator-builders)), and are part of the compile command, so they are part of the shared-build key. Use them for a choice that belongs to one suite, such as a lower optimisation level for a testbench whose generated code is slow to compile and quick to run; keep project-wide options in `cfg-rtl-builder`.
+A string splits on whitespace as `compile-time` does; a list is taken token by token. Only the family of the builder doing the compile applies, so `--builder vcs` on the suite above passes no Verilator option. The options come after the builder mode's, get the same expansion (see [Simulator builders](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#simulator-builders)), and are part of the compile command, so they are part of the shared-build key. Use them for a choice that belongs to one suite, such as a lower optimisation level for a testbench whose generated code is slow to compile and quick to run; keep project-wide options in `cfg-rtl-builder`.
 
 A family's value may instead map builder modes (the `builder-opts` keys `--builder-mode` names) to options, with an optional `default`:
 
@@ -66,19 +66,19 @@ Testbench fields:
 |---|---|---|
 | `name` | Required | Testbench identifier |
 | `filelist` | Required | Sources appended to the model filelist |
-| `filelist-modes` | Optional | Filelist entries per builder mode, compiled for this testbench in that mode only. See [Per-mode compile inputs](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#per-mode-compile-inputs) |
-| `resources` | Optional | Dispatch `cpus`, `mem`, and quoted `time`, plus a [`modes`](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#per-mode-reservations) sub-block. Inherited by tests |
+| `filelist-modes` | Optional | Filelist entries per builder mode, compiled for this testbench in that mode only. See [Per-mode compile inputs](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#per-mode-compile-inputs) |
+| `resources` | Optional | Dispatch `cpus`, `mem`, and quoted `time`, plus a [`modes`](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#per-mode-reservations) sub-block. Inherited by tests |
 | `compile` | Optional | This testbench's per-build dispatch compile reservation. See below |
-| `toplevel` | Required for cocotb and SystemC, optional otherwise | Module the compile elaborates from. Not defaulted to `name`. See [Elaboration top](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#elaboration-top) |
+| `toplevel` | Required for cocotb and SystemC, optional otherwise | Module the compile elaborates from. Not defaulted to `name`. See [Elaboration top](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#elaboration-top) |
 | `cocotb.module` | Required for cocotb | Python module name or list, passed as `COCOTB_TEST_MODULES` |
 
-A testbench `compile` holds `cpus`, `mem`, quoted `time`, a `verilate` sub-block of the same three fields, and a [`modes`](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#per-mode-reservations) sub-block.
+A testbench `compile` holds `cpus`, `mem`, quoted `time`, a `verilate` sub-block of the same three fields, and a [`modes`](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#per-mode-reservations) sub-block.
 
 - It layers field by field over the suite's `compile`, then `cfg-dispatch.compile`. Every field must be greater than zero.
 - `parallel` and `split-verilate` are rejected here and inside any `modes` block, because both are job-wide.
 - The suite's build job aggregates these blocks over the builds its plan runs (largest `cpus`, summed `mem` across overlapping builds, `time` as the makespan of a `parallel`-worker queue) and floors the result at the suite-level value. Each phase of a split build aggregates its own fields the same way. A simulation job that compiles for itself uses its own testbench's value.
 
-See [Set compile resources per suite and testbench](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/dispatch/#set-compile-resources-per-suite-and-testbench) for the aggregation rules.
+See [Set compile resources per suite and testbench](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/dispatch/#set-compile-resources-per-suite-and-testbench) for the aggregation rules.
 
 Test fields:
 
@@ -102,7 +102,7 @@ Test fields:
 | `preproc-sets-plusdefines` | Default true; boolean | `false` declares that the `preproc` hook does not change the compile key (plusdefines, builder, model, assertions). The dispatch head then counts the test's build once with identical tests in the build job's reservation, instead of once per test. Overrides the suite value. The build job compares that key before and after the hook; a hook that changes any part of it anyway logs `build_job.preproc_changed_compile_key`, naming the changed fields |
 | `postproc.path` | Accepted, not executed | Custom postprocessing is unavailable |
 | `covers` | Optional list | Specification coverage IDs; no simulation effect |
-| `resources` | Optional | Per-test dispatch reservation layered over testbench and root defaults; quote `time`. A [`modes`](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#per-mode-reservations) sub-block is the most specific such layer |
+| `resources` | Optional | Per-test dispatch reservation layered over testbench and root defaults; quote `time`. A [`modes`](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#per-mode-reservations) sub-block is the most specific such layer |
 | `assertions` | Default false | Enables Verilator `--assert` and user coverage. Other builders warn and ignore it |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 | `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
@@ -130,7 +130,7 @@ testbenches:
 
 Each level takes the compiling mode's entry, else its `default`, else nothing; an entry present but empty selects nothing. Mode names match exactly. Entries take the same filelist syntax as `filelist` (sources, `.vlt` files, `+incdir+`, `+define+`, `-v`, `-y`, `-F`) and resolve against the suite directory. They follow the testbench `filelist` in `run.f`, suite entries before the testbench's.
 
-The entries are compile inputs of that mode's build only, so they are in that mode's shared-build key and in no other's: adding a `cov` entry leaves the `reg` build and its key unchanged. Entries are not keyed by simulator family, so a mode that more than one builder defines passes them to each; name a Verilator-only file under a mode only Verilator builders use. Options per mode go in [`compile-opts`](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#testsyaml) instead. Tools that read a testbench's sources without compiling it, such as the hierarchy view and the waveform source resolver, read only `filelist`.
+The entries are compile inputs of that mode's build only, so they are in that mode's shared-build key and in no other's: adding a `cov` entry leaves the `reg` build and its key unchanged. Entries are not keyed by simulator family, so a mode that more than one builder defines passes them to each; name a Verilator-only file under a mode only Verilator builders use. Options per mode go in [`compile-opts`](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#testsyaml) instead. Tools that read a testbench's sources without compiling it, such as the hierarchy view and the waveform source resolver, read only `filelist`.
 
 ### Elaboration top
 
@@ -140,7 +140,7 @@ A testbench `toplevel:` roots the compile at that module. It is passed as Verila
 
 - Without `toplevel:`, the simulator elects a top from filelist order. Verilator takes the first ordinary (non-`-v`) entry, so recomposing a model filelist renames the model and every emitted C++ file, and an ordinary input carrying a module nothing instantiates fails the build with `MULTITOP`.
 - With `toplevel:`, a testbench missing from the composed filelist fails at compile.
-- For a plain SystemVerilog testbench, `toplevel:` names the testbench, not the DUT it instantiates. A `toplevel:` that points at the DUT compiles and runs but reports `NA`; see [Known Issues](https://rtl-buddy.github.io/rtl_buddy/v7/known-issues/).
+- For a plain SystemVerilog testbench, `toplevel:` names the testbench, not the DUT it instantiates. A `toplevel:` that points at the DUT compiles and runs but reports `NA`; see [Known Issues](https://rtl-buddy.github.io/rtl_buddy/v8/known-issues/).
 - A top pinned in the builder's `compile-time` opts wins, in any spelling the family accepts. Verilator takes `--top-module`, `-top-module`, `--top`, and `-top`, and Icarus and xezim accept the module glued to the flag (`-stb`). A disagreement logs `compile.toplevel_conflict` once per run, naming both tops. SystemC and cocotb follow the same rule.
 - The flag is part of the compile fingerprint, so two testbenches over one model with different `toplevel:` values do not share a build.
 
@@ -148,4 +148,4 @@ A testbench `toplevel:` roots the compile at that module. It is passed as Verila
 
 Cocotb supports Verilator, Icarus, xezim, and VCS. `cocotb` must be installed and `cocotb-config` available. An unsupported family or a missing `toplevel` is fatal. rtl_buddy reads `cocotb_results.xml`, so cocotb tests do not need PASS/FAIL console markers.
 
-Hooks receive the paths and variables documented in [Test plugins](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/plugins/). Generated outputs, logs, and artefacts use the directory containing `tests.yaml` as the command root. The invocation cwd does not change YAML path meaning.
+Hooks receive the paths and variables documented in [Test plugins](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/plugins/). Generated outputs, logs, and artefacts use the directory containing `tests.yaml` as the command root. The invocation cwd does not change YAML path meaning.

@@ -1,0 +1,3 @@
+## The mapped-run ABC script leaves out two steps of Yosys' default
+
+The `default` ABC script of a Liberty-mapped Yosys run is Yosys' own default Liberty script without `&fraig -x` and `dc2`. ABC's `&fraig -x` SAT sweep does not finish on deep arithmetic, such as a combinational floating-point datapath, and `dc2` rebuilds the log-depth adders, negates and incrementers that `techmap` produces as ripple chains. To run Yosys' default, set `abc-script: "strash; &get -n; &fraig -x; &put; scorr; dc2; dretime; strash; &get -n; &dch -f; &nf {D}; &put"`. rtl_buddy#973 tracks returning to it. See [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/synthesis/#choose-the-mapped-run-abc-script).

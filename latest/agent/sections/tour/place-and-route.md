@@ -25,4 +25,4 @@ uv run rb pnr-export demo_tiny_alu_subsys_pnr_nangate45 -c pnr/demo_tiny_alu_sub
 
 ![KLayout render of the routed demo_tiny_alu_subsys GDS on Nangate45](../static/img/tour/subsys-nangate45-routed.png)
 
-The description column names the warnings the flow saw (here, pre-route steps estimated without wire RC) and points at the concept page that explains each one. The routed DEF, ODB, netlist, SDC, and reports stay in the run's artefact directory for the next step. See [Place-and-Route](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/).
+The description column names the warnings the flow saw (here, pre-route steps estimated without wire RC) and points at the concept page that explains each one. The routed DEF, ODB, netlist, SDC, and reports stay in the run's artefact directory for the next step. See [Place-and-Route](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/).

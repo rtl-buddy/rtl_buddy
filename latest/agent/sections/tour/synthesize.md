@@ -27,4 +27,4 @@ uv run rb synth demo_tiny_alu_subsys_synth_nangate45 -c synth/demo_tiny_alu_subs
 └──────────────────────────────────────┴────────┴──────────────────┴───────┴─────────────┴───────────┘
 ```
 
-The Nangate45 run is the input to the next two sections. Per-module cell counts and areas from every synthesis run are kept in a physical model that `rb phys` queries later without rerunning the tool. See [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/synthesis/) and [Physical Metrics](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/phys/).
+The Nangate45 run is the input to the next two sections. Per-module cell counts and areas from every synthesis run are kept in a physical model that `rb phys` queries later without rerunning the tool. See [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/synthesis/) and [Physical Metrics](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/phys/).

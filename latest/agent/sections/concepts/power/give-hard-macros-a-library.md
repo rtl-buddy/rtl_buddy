@@ -13,7 +13,7 @@ The power run inherits the libraries of the run it references, so the usual case
 | `pnr` | `lib-paths` |
 | `synth` | `lib-paths` and `lef-paths` |
 
-A hardened block named under [`blocks:`](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#assemble-hardened-blocks) is resolved too. A block with no abstract fails the run before OpenROAD starts and names the block. Do not add the abstract's `.lib` to `lib-paths`: it has timing arcs but no power tables, and loading it makes OpenROAD ignore SAIF, VCD and `set_power_activity` values on the block's outputs. Without it the block reports 0 W and appears in the [unpowered-cell warning](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/power/#read-the-unpowered-cell-warning).
+A hardened block named under [`blocks:`](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#assemble-hardened-blocks) is resolved too. A block with no abstract fails the run before OpenROAD starts and names the block. Do not add the abstract's `.lib` to `lib-paths`: it has timing arcs but no power tables, and loading it makes OpenROAD ignore SAIF, VCD and `set_power_activity` values on the block's outputs. Without it the block reports 0 W and appears in the [unpowered-cell warning](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/power/#read-the-unpowered-cell-warning).
 
 To add a library only the analysis needs, such as a corner the upstream run was not routed against, set `lib-paths` on the `power.yaml` entry:
 

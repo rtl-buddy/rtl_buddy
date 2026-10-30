@@ -22,4 +22,4 @@ uv run rb power -c power/demo_tiny_alu_subsys/power.yaml -l 1000
                                           Results: 4 PASS (4 total)
 ```
 
-Four activity sources, one table. The jump in switching power from the synthetic run to the SAIF run is the real traffic from `csr_smoke`; the further jump after P&R is the clock tree and estimated wire parasitics. See [Power Analysis](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/power/).
+Four activity sources, one table. The jump in switching power from the synthetic run to the SAIF run is the real traffic from `csr_smoke`; the further jump after P&R is the clock tree and estimated wire parasitics. See [Power Analysis](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/power/).

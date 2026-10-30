@@ -14,4 +14,4 @@ Every `module` declaration carries its synthesized cell count and area, read fro
 
 ![Neovim showing demo_tiny_alu_subsys_compute with 84 cells and 468.4 µm² rendered inline after the module declaration](../static/img/tour/nvim-phys-annotation.png)
 
-With the hub connected, a click on a schematic instance opens its file at the right line, `:RtlBuddyShow` pans the schematic and Surfer to the cursor, and `:RtlBuddyToWave` adds the symbol under the cursor to the waveform. Both captures above are the real Neovim screen grid, rendered through the UI protocol. See [Install the nvim integration](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/wave/#install-the-nvim-integration).
+With the hub connected, a click on a schematic instance opens its file at the right line, `:RtlBuddyShow` pans the schematic and Surfer to the cursor, and `:RtlBuddyToWave` adds the symbol under the cursor to the waveform. Both captures above are the real Neovim screen grid, rendered through the UI protocol. See [Install the nvim integration](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/wave/#install-the-nvim-integration).

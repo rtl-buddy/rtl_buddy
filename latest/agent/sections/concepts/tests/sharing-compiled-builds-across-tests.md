@@ -36,7 +36,7 @@ If a Verilator build directory was compiled by a different Verilator (an upgrade
 basic: dropped 12 stale object/dependency files from … (built by …, now …); the C++ build starts clean
 ```
 
-An ordinary source edit keeps the objects and stays incremental unless [intermediate pruning](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/tests/#pruning-verilator-intermediates) is enabled.
+An ordinary source edit keeps the objects and stays incremental unless [intermediate pruning](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/tests/#pruning-verilator-intermediates) is enabled.
 
 ### Failed or killed C++ build
 
@@ -59,5 +59,5 @@ basic: reusing the verilation in obj_dir_c6d5c70100b51c6d; only the C++ build ru
 - The copy rewrites only files whose content changed, so after a source edit make recompiles only what the new verilation changed.
 - A verilation whose make failed is still recorded, so after a link failure (for example, a model too large for the default code model) adding a flag such as `-CFLAGS -mcmodel=large` does not verilate again.
 - In YAML, compile options are split on whitespace, so give each flag its own option: `-CFLAGS -O2 -CFLAGS -g`, not `-CFLAGS "-O2 -g"`.
-- The full compile runs as before under `--rebuild`, with `--hierarchical`, with a Verilator without `--no-verilate`, when a `-f` file or a library or object named on the compile line precedes a `-CFLAGS`/`-LDFLAGS` option (the flag order could differ from Verilator's), and when the verilation belongs to another checkout sharing a [persistent cache](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/tests/#persistent-build-cache).
+- The full compile runs as before under `--rebuild`, with `--hierarchical`, with a Verilator without `--no-verilate`, when a `-f` file or a library or object named on the compile line precedes a `-CFLAGS`/`-LDFLAGS` option (the flag order could differ from Verilator's), and when the verilation belongs to another checkout sharing a [persistent cache](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/tests/#persistent-build-cache).
 - Only `-CFLAGS` and `-LDFLAGS` are treated this way. `-MAKEFLAGS` and every other option still key the verilation.

@@ -22,4 +22,4 @@ rb spec check-coverage --block ip_fifo --block ip_arbiter
 - An unknown block is a configuration error.
 - If a discovered `tests.yaml` cannot load, `check-coverage` reports the suite failure and exits nonzero rather than counting its items as uncovered. Machine output lists these under `suite_load_failures`.
 
-Use `--machine` for structured output. See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v7/reference/cli/) for all options and [YAML formats](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/) for schemas.
+Use `--machine` for structured output. See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v8/reference/cli/) for all options and [YAML formats](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/) for schemas.

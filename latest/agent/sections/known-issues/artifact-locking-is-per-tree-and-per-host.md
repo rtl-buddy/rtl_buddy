@@ -6,4 +6,4 @@ Artifact-writing commands take `<artifact_root>/.rtl-buddy.lock` and fail at onc
 - The lock does not coordinate different NFS hosts. Dispatched worker jobs skip it, so do not start another command against a tree with a dispatch run in flight.
 - A filesystem that cannot `flock` fails with `cannot lock this artefact tree`.
 
-Give concurrent runs of one suite a [`--run-tag`](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/execution-context/#namespace-concurrent-runs) so each locks its own tree.
+Give concurrent runs of one suite a [`--run-tag`](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/execution-context/#namespace-concurrent-runs) so each locks its own tree.

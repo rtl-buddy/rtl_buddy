@@ -13,4 +13,4 @@ print(res.stdout, end="")
 
 The captured `sys.stdout` has no usable `fileno()` or `.buffer`. If a third-party generator can only write relative to its working directory, `os.chdir(suite_dir)` for the call and restore the previous directory in `finally`.
 
-See [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/execution-context/) for path ownership.
+See [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/execution-context/) for path ownership.

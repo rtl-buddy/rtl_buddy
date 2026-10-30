@@ -7,4 +7,4 @@ out = os.path.join(artifact_dir, "gen.sv")  # correct
 out = os.path.join(os.getcwd(), "gen.sv")  # wrong: invocation cwd
 ```
 
-A configured `postproc` script is accepted but not executed; built-in post-processing decides results. See [Hook execution context](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/plugins/#handle-hook-execution-context).
+A configured `postproc` script is accepted but not executed; built-in post-processing decides results. See [Hook execution context](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/plugins/#handle-hook-execution-context).

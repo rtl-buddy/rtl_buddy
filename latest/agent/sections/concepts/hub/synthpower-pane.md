@@ -1,6 +1,6 @@
 ## Synth+power pane
 
-Open `/phy` after `rb synth` or `rb power`. `GET /phy.json` uses the same builder as `rb phys summary`, so numbers agree with the CLI, but it never truncates: the pane sorts and filters the whole model in the browser. It returns 404 with a command hint when the project has no `phys-manifest.json`. Model and CLI verbs are in [Physical Metrics](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/phys/).
+Open `/phy` after `rb synth` or `rb power`. `GET /phy.json` uses the same builder as `rb phys summary`, so numbers agree with the CLI, but it never truncates: the pane sorts and filters the whole model in the browser. It returns 404 with a command hint when the project has no `phys-manifest.json`. Model and CLI verbs are in [Physical Metrics](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/phys/).
 
 The metrics are `cells`, `area`, `leakage`, `dynamic` and `total`. `dynamic` is internal plus switching. The totals header shows the flow's own total beside the sum of the rows and flags a disagreement instead of reconciling it.
 

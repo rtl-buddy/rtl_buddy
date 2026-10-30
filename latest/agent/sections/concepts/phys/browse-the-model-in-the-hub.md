@@ -13,4 +13,4 @@ rb hub start --serve-viewer
 - **Large tables.** The instance table shows 500 rows at a time (`show more`, `show all`). Sorting, filtering and totals cover the whole set.
 - **Totals.** `dynamic` is internal plus switching power, summed in the browser. The header shows the flow's own scraped total beside the sum of the rows and says when they disagree.
 
-See [Hub](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/hub/#synthpower-pane) for the routes and the peer contract.
+See [Hub](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/hub/#synthpower-pane) for the routes and the peer contract.

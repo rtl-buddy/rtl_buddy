@@ -1,6 +1,6 @@
 ## Read a model with only one half
 
-A synthesis fills the model's `modules` half and a power run fills its `instances` half. The halves meet in one artefact directory, for the same top and netlist, in either order. To pair them, set `phys-run: <synth run>` in `power.yaml` so the power run publishes beside that synthesis. See [Pair the model with a synthesis run](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/power/#pair-the-model-with-a-synthesis-run), [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/synthesis/#inspect-artefacts) and [Power Analysis](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/power/#inspect-artefacts).
+A synthesis fills the model's `modules` half and a power run fills its `instances` half. The halves meet in one artefact directory, for the same top and netlist, in either order. To pair them, set `phys-run: <synth run>` in `power.yaml` so the power run publishes beside that synthesis. See [Pair the model with a synthesis run](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/power/#pair-the-model-with-a-synthesis-run), [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/synthesis/#inspect-artefacts) and [Power Analysis](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/power/#inspect-artefacts).
 
 With one half absent, every verb still answers from the half present and names the command that produces the other.
 

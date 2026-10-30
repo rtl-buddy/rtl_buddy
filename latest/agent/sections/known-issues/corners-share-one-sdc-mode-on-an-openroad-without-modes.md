@@ -7,4 +7,4 @@
 - `STA-1140 library ... already exists` is logged once per extra corner for a macro with one Liberty. Per-corner Liberty files of one macro that share a `library` name log it in every session, with or without modes; it is harmless there, because each file is named only by its own corner's scene.
 - Every `<top>.<corner>.routed.sdc` holds that one mode, and checkpoints write no per-corner SDC.
 
-Upgrade OpenROAD, or run each corner on a single-corner platform. See [Sign off at several corners](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/pnr/#sign-off-at-several-corners).
+Upgrade OpenROAD, or run each corner on a single-corner platform. See [Sign off at several corners](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#sign-off-at-several-corners).

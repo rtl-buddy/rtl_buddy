@@ -229,6 +229,10 @@ The OpenROAD synthesis backend passes a `(* blackbox *)` module that has no LEF 
 
 `synth.yaml` `tool_overrides` uses snake_case keys such as `plugin_path` and `single_unit`, unlike the kebab-case names under `cfg-synth-tools.opts`. An unknown key logs the warning `synth_tool_config.unknown_override` and the default is used. A non-mapping block, or a non-boolean `single_unit` or `best_effort_hierarchy`, is fatal. See [Synthesis](concepts/synthesis.md).
 
+## The mapped-run ABC script leaves out two steps of Yosys' default
+
+The `default` ABC script of a Liberty-mapped Yosys run is Yosys' own default Liberty script without `&fraig -x` and `dc2`. ABC's `&fraig -x` SAT sweep does not finish on deep arithmetic, such as a combinational floating-point datapath, and `dc2` rebuilds the log-depth adders, negates and incrementers that `techmap` produces as ripple chains. To run Yosys' default, set `abc-script: "strash; &get -n; &fraig -x; &put; scorr; dc2; dretime; strash; &get -n; &dch -f; &nf {D}; &put"`. rtl_buddy#973 tracks returning to it. See [Synthesis](concepts/synthesis.md#choose-the-mapped-run-abc-script).
+
 ## Wide adders map as ripple chains unless `synth-args` has `-noabc`
 
 Yosys `synth` runs its generic `abc` pass before the mapped-run ABC step, and that pass's script includes `dc2`, which rebuilds log-depth adders, negates and incrementers as ripple chains. The mapped-run default script omits `dc2`, but it cannot restore depth the earlier pass removed. Add `-noabc` to the effort's `synth-args` for timing-critical datapaths. See [Synthesis](concepts/synthesis.md#choose-the-mapped-run-abc-script).

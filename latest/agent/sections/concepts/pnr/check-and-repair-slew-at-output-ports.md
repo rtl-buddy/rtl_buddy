@@ -16,4 +16,4 @@ Each output net then ends at a buffer input, which has a Liberty limit, so place
 
 `buffer_ports` also buffers an output that carries a clock: a forwarded clock on the clock network, or an output a generated clock is defined on. `skip-clock-outputs: true` leaves every such output unbuffered and names each in `pnr.log`.
 
-`buffer-ports: true`, and the default of a `harden: true` run, buffer every input and output as OpenROAD and ORFS do, without the two options. `inputs` and `outputs` map to `buffer_ports -inputs` and `-outputs`. See [YAML Formats](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#pnryaml).
+`buffer-ports: true`, and the default of a `harden: true` run, buffer every input and output as OpenROAD and ORFS do, without the two options. `inputs` and `outputs` map to `buffer_ports -inputs` and `-outputs`. See [YAML Formats](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#pnryaml).

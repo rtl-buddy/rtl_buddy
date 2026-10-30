@@ -28,4 +28,4 @@ uv run rb regression -c regression.yaml
                                        Builder Mode: reg
 ```
 
-Rows above are a subset; the full run lists every suite. The same manifest runs a SystemVerilog suite, a SystemC cosimulation, and (at level 1000) cocotb suites, with one result table. Add `--dispatch local-parallel` or a Slurm backend to fan the suites out. See [Regressions](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/regressions/) and [Parallel dispatch](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/dispatch/).
+Rows above are a subset; the full run lists every suite. The same manifest runs a SystemVerilog suite, a SystemC cosimulation, and (at level 1000) cocotb suites, with one result table. Add `--dispatch local-parallel` or a Slurm backend to fan the suites out. See [Regressions](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/regressions/) and [Parallel dispatch](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/dispatch/).

@@ -1,6 +1,6 @@
 ## release.yaml
 
-Required keys are `rtl-buddy-filetype: release_config`, `name`, `version`, `design` and `encryption`. Unknown keys are errors, so a misspelt protection setting cannot ship a file unprotected. Paths resolve relative to `release.yaml`. See [Customer releases](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/release/).
+Required keys are `rtl-buddy-filetype: release_config`, `name`, `version`, `design` and `encryption`. Unknown keys are errors, so a misspelt protection setting cannot ship a file unprotected. Paths resolve relative to `release.yaml`. See [Customer releases](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/release/).
 
 ```yaml
 rtl-buddy-filetype: release_config

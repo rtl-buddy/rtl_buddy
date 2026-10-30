@@ -2,7 +2,7 @@
 
 You need OpenROAD 25Q1 or newer on `PATH` (or named in `cfg-pnr-tools`) and a synthesis run that has written its netlist. KLayout is needed only for GDS and PNG output. An older OpenROAD logs a warning and runs unvalidated.
 
-Add a P&R platform to `root_config.yaml`. It picks a PDK from `cfg-pdks` (see [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/synthesis/#configure-tools-and-the-pdk)), a corner and the clock-tree buffer:
+Add a P&R platform to `root_config.yaml`. It picks a PDK from `cfg-pdks` (see [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/synthesis/#configure-tools-and-the-pdk)), a corner and the clock-tree buffer:
 
 ```yaml
 cfg-pnr-platforms:

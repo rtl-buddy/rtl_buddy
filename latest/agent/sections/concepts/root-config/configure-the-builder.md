@@ -7,4 +7,4 @@ Each `cfg-rtl-builder` entry sets:
 - named compile-time and run-time option sets;
 - optionally, timeout allowances and the waveform format.
 
-A test's builder comes from the CLI, then the test or suite config, then the platform default. See [Simulation Backends](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/simulators/#select-a-builder) and the [root config schema](https://rtl-buddy.github.io/rtl_buddy/v7/reference/yaml/#root_configyaml). Surfer editor and socket settings live under `cfg-surfer`; see [Waveform Viewer](https://rtl-buddy.github.io/rtl_buddy/v7/concepts/wave/#configure-surfer-and-the-editor).
+A test's builder comes from the CLI, then the test or suite config, then the platform default. See [Simulation Backends](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/simulators/#select-a-builder) and the [root config schema](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#root_configyaml). Surfer editor and socket settings live under `cfg-surfer`; see [Waveform Viewer](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/wave/#configure-surfer-and-the-editor).
