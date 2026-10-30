@@ -207,6 +207,40 @@ def attach_file_log(log_path: str | Path) -> None:
     root_logger.addHandler(file_handler)
 
 
+class _HoldingHandler(logging.Handler):
+    def __init__(self, records: list):
+        super().__init__(logging.NOTSET)
+        self.records = records
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@contextmanager
+def held_log_records():
+    """Keep the records logged in the ``with`` body, for a command that attaches its file log only after them.
+
+    Yields the list; :func:`write_held_records` writes it to the file log once attached.
+    """
+    records: list = []
+    handler = _HoldingHandler(records)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    try:
+        yield records
+    finally:
+        root_logger.removeHandler(handler)
+
+
+def write_held_records(records) -> None:
+    """Write records kept by :func:`held_log_records` to the attached file log."""
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, logging.FileHandler):
+            for record in records:
+                if record.levelno >= handler.level:
+                    handler.handle(record)
+
+
 def get_stderr_console() -> Console:
     if _STATE is None:
         setup_logging()

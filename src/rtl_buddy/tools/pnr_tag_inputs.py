@@ -100,53 +100,56 @@ def mark_attempt(artefact_dir: str) -> None:
     Path(artefact_dir, ATTEMPT_MARKER_NAME).touch()
 
 
-def read_consumed_blocks(artefact_dir: str, tag_root: str) -> dict | None:
+def read_consumed_blocks(artefact_dir: str, project_root: str | None) -> dict | None:
     """Return the block copies a saved tagged run consumed, by (pnr.yaml real path, run), or None without a record.
 
-    Project-relative paths resolve against the project `artefact_dir` is in now. Raises `BlockResolutionError` when a record names a copy outside `tag_root`, the tag's tree, which an absolute path does once the project has moved.
+    Relative paths are against `project_root`, the project of the run's suite. Raises `BlockResolutionError` for a malformed record, and for one naming a copy outside that project, as an absolute path does once the project has moved.
     """
+    record = Path(artefact_dir, CONSUMED_BLOCKS_NAME)
     try:
-        data = json.loads(Path(artefact_dir, CONSUMED_BLOCKS_NAME).read_text())
+        data = json.loads(record.read_text())
     except (OSError, ValueError):
         return None
-    root = project_root_or_none(artefact_dir)
-
-    def _here(path: str) -> str:
-        return path if os.path.isabs(path) or root is None else os.path.join(root, path)
-
+    rerun = f"re-run the P&R run under --run-tag {data.get('run_tag')}"
     blocks = {}
-    for b in data.get("blocks") or []:
-        if not isinstance(b, dict):
-            continue
-        b = {
-            **b,
-            "pnr_path": _here(b.get("pnr_path") or ""),
-            "abstract_dir": _here(b.get("abstract_dir") or ""),
-        }
-        if (
-            not Path(b["abstract_dir"])
-            .resolve()
-            .is_relative_to(Path(tag_root).resolve())
+    for index, b in enumerate(data.get("blocks") or []):
+        paths = {}
+        for key in ("pnr_path", "abstract_dir"):
+            path = b.get(key) if isinstance(b, dict) else None
+            if not isinstance(path, str) or not path:
+                raise pnr_abstract.BlockResolutionError(
+                    f"{record} is malformed: blocks[{index}] has no {key} — {rerun}"
+                )
+            if not os.path.isabs(path):
+                if project_root is None:
+                    raise pnr_abstract.BlockResolutionError(
+                        f"{record} names {key} {path} relative to a project, and the "
+                        f"run's suite is in none — {rerun}"
+                    )
+                path = os.path.normpath(os.path.join(project_root, path))
+            paths[key] = path
+        if project_root is not None and not Path(paths["abstract_dir"]).is_relative_to(
+            os.path.normpath(project_root)
         ):
             raise pnr_abstract.BlockResolutionError(
-                f"{Path(artefact_dir, CONSUMED_BLOCKS_NAME)} names the copy of block "
-                f"{b.get('name')!r} at {b['abstract_dir']}, outside the tag's tree "
-                f"{tag_root} — re-run the P&R run under --run-tag "
-                f"{data.get('run_tag')}"
+                f"{record} names the copy of block {b.get('name')!r} at "
+                f"{paths['abstract_dir']}, outside the project {project_root} — {rerun}"
             )
+        b = {**b, **paths}
         blocks[(os.path.realpath(b["pnr_path"]), b.get("pnr"))] = b
     return blocks
 
 
-def write_consumed_blocks(artefact_dir: str, run_tag: str, blocks) -> None:
+def write_consumed_blocks(
+    artefact_dir: str, run_tag: str, blocks, project_root: str | None
+) -> None:
     """Record `blocks` (`ResolvedBlock`s) in the run directory for a later `rb pnr-export --run-tag`.
 
-    Paths are project-relative, so the record still reads after the project moves.
+    Paths are relative to `project_root`, the project of the run's suite, so the record still reads after the project moves.
     """
-    root = project_root_or_none(artefact_dir)
 
     def _portable(path: str) -> str:
-        return project_relative(path, root) if root else path
+        return project_relative(path, project_root) if project_root else path
 
     Path(artefact_dir, CONSUMED_BLOCKS_NAME).write_text(
         json.dumps(
@@ -184,10 +187,21 @@ class TagInputs:
     run_tag: str
     root: str
     pinned: dict | None = None
+    #: The project of the suite whose tree `root` is; the copies' records are relative to it.
+    project_root: str | None = None
     _copies: dict = field(default_factory=dict, repr=False)
-    _held_warnings: list | None = field(default=None, repr=False)
     _key_locks: dict = field(default_factory=dict, repr=False)
     _mutex: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    @classmethod
+    def for_suite(cls, suite_dir, run_tag: str, *, pinned: dict | None = None):
+        """The inputs of a call under `run_tag` on the suite in `suite_dir`, copied into its tagged tree."""
+        return cls(
+            run_tag,
+            str(run_artifact_root(suite_dir, run_tag)),
+            pinned=pinned,
+            project_root=project_root_or_none(suite_dir),
+        )
 
     def _once(self, key, compute, keep):
         """Return `compute()` for `key`, computed once while `keep` holds for its result.
@@ -233,28 +247,16 @@ class TagInputs:
             ref, (os.path.realpath(ref.pnr_suite_path), ref.pnr_run), where
         )
 
-    def prefetch(self, refs, *, hold_warnings: bool = False) -> None:
+    def prefetch(self, refs) -> None:
         """Resolve `refs` now, so a later resolution under another tree's lock waits for no block tree.
 
-        With `hold_warnings` the warnings are logged by `emit_held_warnings` instead, for a call that has not opened its log yet.
+        A block that does not resolve is reported by the run that reads it.
         """
-        if hold_warnings:
-            self._held_warnings = []
-        try:
-            for ref in refs:
-                try:
-                    pnr_abstract.resolve_block(ref, source=self)
-                except pnr_abstract.BlockResolutionError:
-                    pass
-        finally:
-            if not hold_warnings:
-                self.emit_held_warnings()
-
-    def emit_held_warnings(self) -> None:
-        """Log the warnings `prefetch(hold_warnings=True)` held."""
-        held, self._held_warnings = self._held_warnings or [], None
-        for fields in held:
-            log_event(logger, logging.WARNING, "pnr.block_untagged_abstract", **fields)
+        for ref in refs:
+            try:
+                pnr_abstract.resolve_block(ref, source=self)
+            except pnr_abstract.BlockResolutionError:
+                pass
 
     def _pinned(self, ref, key, where: str) -> tuple[str, str | None]:
         record = self.pinned.get(key)
@@ -321,12 +323,11 @@ class TagInputs:
                 partial.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(source, partial)
                 self._check_copy(partial, manifest_bytes, source, where)
-                project = project_root_or_none(self.root)
                 Path(partial, pnr_abstract.COPY_SOURCE_NAME).write_text(
                     json.dumps(
                         {
-                            "abstract_dir": project_relative(source, project)
-                            if project
+                            "abstract_dir": project_relative(source, self.project_root)
+                            if self.project_root
                             else source
                         }
                     )
@@ -346,19 +347,16 @@ class TagInputs:
                         f"since it was copied — remove {dest} to have it copied again"
                     )
         if source_tag is None:
-            fields = dict(
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.block_untagged_abstract",
                 block=ref.name,
                 pnr_run=ref.pnr_run,
                 run_tag=self.run_tag,
                 source=source,
                 copy=str(dest),
             )
-            if self._held_warnings is not None:
-                self._held_warnings.append(fields)
-            else:
-                log_event(
-                    logger, logging.WARNING, "pnr.block_untagged_abstract", **fields
-                )
         return str(dest), source_tag
 
     @staticmethod

@@ -6,6 +6,7 @@ invocation keeps the flat layout and the whole-tree lock.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -237,7 +238,7 @@ def _tag_abstract(tmp_path, tag):
 
 
 def _source(tmp_path, tag="t", **kw):
-    return TagInputs(tag, str(run_artifact_root(tmp_path / "top", tag)), **kw)
+    return TagInputs.for_suite(tmp_path / "top", tag, **kw)
 
 
 def _root_cfg(tmp_path):
@@ -442,10 +443,10 @@ def test_a_saved_tagged_run_is_exported_with_the_copy_it_consumed(tmp_path):
     run_dir = tmp_path / "top/artefacts" / RUNS_DIRNAME / "t" / "top_pnr"
     run_dir.mkdir(parents=True)
     consumed = resolve_block(_ref(suite), source=_source(tmp_path))
-    pnr_tag_inputs.write_consumed_blocks(str(run_dir), "t", [consumed])
+    pnr_tag_inputs.write_consumed_blocks(str(run_dir), "t", [consumed], None)
 
     _re_harden(tmp_path)
-    pinned = pnr_tag_inputs.read_consumed_blocks(str(run_dir), str(run_dir.parent))
+    pinned = pnr_tag_inputs.read_consumed_blocks(str(run_dir), None)
     exported = resolve_block(_ref(suite), source=_source(tmp_path, pinned=pinned))
 
     assert exported.abstract_dir == consumed.abstract_dir
@@ -468,14 +469,14 @@ def test_a_saved_tagged_run_is_exported_whatever_became_of_the_block_run(
     run_dir = tmp_path / "top/artefacts" / RUNS_DIRNAME / "t" / "top_pnr"
     run_dir.mkdir(parents=True)
     consumed = resolve_block(_ref(suite), source=_source(tmp_path))
-    pnr_tag_inputs.write_consumed_blocks(str(run_dir), "t", [consumed])
+    pnr_tag_inputs.write_consumed_blocks(str(run_dir), "t", [consumed], None)
     if edit == "deleted":
         suite.unlink()
     elif edit == "renamed":
         suite.write_text(suite.read_text().replace("name: blk_pnr", "name: other"))
     else:
         suite.write_text(suite.read_text().replace("harden: true", "harden: false"))
-    pinned = pnr_tag_inputs.read_consumed_blocks(str(run_dir), str(run_dir.parent))
+    pinned = pnr_tag_inputs.read_consumed_blocks(str(run_dir), None)
 
     exported = resolve_block(_ref(suite), source=_source(tmp_path, pinned=pinned))
 
@@ -512,7 +513,7 @@ def test_a_tagged_checkpoint_is_exported_with_the_blocks_its_invocation_consumed
 
     read = []
 
-    def _read(directory, _tag_root):
+    def _read(directory, _project_root):
         read.append(directory)
         raise RuntimeError("read")
 
@@ -669,11 +670,11 @@ def test_a_copy_whose_view_was_edited_in_place_is_refused(tmp_path, pinned):
     run_dir = tmp_path / "top/artefacts" / RUNS_DIRNAME / "t" / "top_pnr"
     run_dir.mkdir(parents=True)
     consumed = resolve_block(_ref(suite), source=_source(tmp_path))
-    pnr_tag_inputs.write_consumed_blocks(str(run_dir), "t", [consumed])
+    pnr_tag_inputs.write_consumed_blocks(str(run_dir), "t", [consumed], None)
     Path(consumed.gds).write_text("another layout\n")
     source = _source(
         tmp_path,
-        pinned=pnr_tag_inputs.read_consumed_blocks(str(run_dir), str(run_dir.parent))
+        pinned=pnr_tag_inputs.read_consumed_blocks(str(run_dir), None)
         if pinned
         else None,
     )
@@ -740,7 +741,7 @@ def test_a_tagged_export_refuses_a_block_its_run_consumed_that_blocks_no_longer_
     suite = _block_suite(tmp_path)
     backend, _ = _backend(tmp_path, monkeypatch, stages=True, run_tag="t")
     consumed = resolve_block(_ref(suite), source=backend.tag_inputs)
-    pnr_tag_inputs.write_consumed_blocks(backend.artefact_dir, "t", [consumed])
+    pnr_tag_inputs.write_consumed_blocks(backend.artefact_dir, "t", [consumed], None)
 
     res = backend.export_only().results
 
@@ -992,8 +993,9 @@ def test_a_reused_synthesis_copy_whose_files_changed_is_refused(tmp_path, edit):
 
     assert failure.results["fail_stage"] == "setup"
     assert f"the {name} of the copy {copy} has changed" in failure.results["desc"]
-    assert backend._synth_copy() is None
-    assert not Path(backend._resolve_netlist_path()).exists()
+    for reader in (backend._synth_copy, backend._resolve_netlist_path):
+        with pytest.raises(pnr_tag_inputs.SynthCopyChanged):
+            reader()
     assert sorted(copy.parent.iterdir()) == [copy]
 
 
@@ -1015,9 +1017,16 @@ def test_a_changed_synthesis_copy_fails_the_tagged_synth_run_at_setup(
     assert results[0]["results"].results["synth"]["result"] == "PASS"
 
 
-def _project_with_a_tagged_consumer(project):
-    """A project whose `top_pnr` read a copy of `blk_pnr`'s abstract under tag `t`, recorded in its run directory."""
+def _project_with_a_tagged_consumer(project, *, copier="top", scratch=None):
+    """A project whose `top_pnr` read a copy of `blk_pnr`'s abstract under tag `t`, recorded in its run directory.
+
+    The copy is in the tag's tree of the suite in `copier`, the suite of the call that ran `top_pnr`. With `scratch`, `top/artefacts` is a symlink to it.
+    """
     _write(project / "root_config.yaml", "")
+    if scratch is not None:
+        scratch.mkdir(parents=True)
+        (project / "top").mkdir(parents=True)
+        (project / "top/artefacts").symlink_to(scratch)
     suite = _block_suite(project)
     manifest = project / "blk/artefacts/blk_pnr/abstract/abstract.manifest.json"
     record = json.loads(manifest.read_text())
@@ -1030,8 +1039,10 @@ def _project_with_a_tagged_consumer(project):
     _synth_yaml(project / "top/synth.yaml", "s")
     run_dir = run_artifact_root(project / "top", "t") / "top_pnr"
     run_dir.mkdir(parents=True)
-    consumed = resolve_block(_ref(suite), source=_source(project))
-    pnr_tag_inputs.write_consumed_blocks(str(run_dir), "t", [consumed])
+    consumed = resolve_block(
+        _ref(suite), source=TagInputs.for_suite(project / copier, "t")
+    )
+    pnr_tag_inputs.write_consumed_blocks(str(run_dir), "t", [consumed], str(project))
     return consumed
 
 
@@ -1104,7 +1115,7 @@ def test_a_record_naming_its_copies_by_absolute_path_reads_until_the_project_mov
     shutil.move(old, new)
     res = _export_blocks(new, monkeypatch).results
     assert res["fail_stage"] == "setup"
-    assert f"at {consumed.abstract_dir}, outside the tag's tree" in res["desc"]
+    assert f"at {consumed.abstract_dir}, outside the project {new}" in res["desc"]
     assert "re-run the P&R run under --run-tag t" in res["desc"]
 
 
@@ -1131,7 +1142,22 @@ from rtl_buddy.runner.pnr_results import PnrPassResults
 from rtl_buddy.tools import pnr_abstract
 
 artifact_lock.TREE_LOCK_POLL_SEC = 0.05
-me, other, *args = sys.argv[1:]
+me, other, own_tree, *args = sys.argv[1:]
+real_acquire = artifact_lock.ArtifactLocks.acquire
+synced = []
+
+
+def acquire(self, root, **kw):
+    # Each call holds its own tree before either reaches for the other's.
+    is_own = pathlib.Path(root).resolve() == pathlib.Path(own_tree).resolve()
+    if not is_own and ".runs" in str(root) and not synced:
+        synced.append(True)
+        deadline = time.monotonic() + 5
+        while not pathlib.Path(other).exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+    real_acquire(self, root, **kw)
+    if is_own:
+        pathlib.Path(me).touch()
 
 
 class Runner:
@@ -1139,16 +1165,12 @@ class Runner:
         self.name, self.cfg, self.tag_inputs = name, pnr_cfg, tag_inputs
 
     def run(self):
-        # Both calls are inside their run before either reads its block.
-        pathlib.Path(me).touch()
-        deadline = time.monotonic() + 5
-        while not pathlib.Path(other).exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
         blocks = pnr_abstract.resolve_blocks(self.cfg.get_blocks(), source=self.tag_inputs)
         assert [b.run_tag for b in blocks] == ["t"], blocks
         return PnrPassResults(name=f"{self.name}/results")
 
 
+artifact_lock.ArtifactLocks.acquire = acquire
 rb_module.PnrRunner = Runner
 sys.argv = ["rb", "--machine", *args]
 raise SystemExit(rb_module.RtlBuddy(name="cross").run())
@@ -1182,6 +1204,7 @@ def test_same_tag_calls_whose_tops_consume_each_others_blocks_complete(
                 _CROSS_CALL,
                 str(ready / mine),
                 str(ready / theirs),
+                str(run_artifact_root(minimal_project / mine, "t")),
                 "pnr",
                 f"top_{mine}",
                 "-c",
@@ -1285,3 +1308,94 @@ def test_a_call_whose_tree_is_busy_is_refused_without_waiting_for_a_block_tree(
     assert "another rtl-buddy run" in str(result.exception)
     assert took < 30
     assert not (run_artifact_root(minimal_project, "t") / BLOCK_COPIES_DIRNAME).exists()
+
+
+def test_a_pulled_in_run_exports_with_the_copies_its_calls_tree_holds(
+    tmp_path, monkeypatch
+):
+    """A run pulled in by a call on another suite read copies from that call's tree; its export finds them there."""
+    project = tmp_path / "proj"
+    consumed = _project_with_a_tagged_consumer(project, copier="a")
+    assert Path(consumed.abstract_dir).is_relative_to(
+        run_artifact_root(project / "a", "t")
+    )
+
+    [block] = _export_blocks(project, monkeypatch)
+
+    assert block.abstract_dir == consumed.abstract_dir
+    assert block.changes == ()
+
+
+def test_a_record_reads_through_a_symlinked_artefact_tree(tmp_path, monkeypatch):
+    """Relative paths resolve against the suite's project, not one found again from the record's real path."""
+    project = tmp_path / "proj"
+    consumed = _project_with_a_tagged_consumer(project, scratch=tmp_path / "scratch")
+    run_dir = run_artifact_root(project / "top", "t") / "top_pnr"
+
+    pinned = pnr_tag_inputs.read_consumed_blocks(
+        os.path.realpath(run_dir), str(project)
+    )
+    [block] = _export_blocks(project, monkeypatch)
+
+    [record] = pinned.values()
+    assert record["abstract_dir"] == consumed.abstract_dir
+    assert block.abstract_dir == consumed.abstract_dir
+    assert block.changes == ()
+
+
+@pytest.mark.parametrize("missing", ["pnr_path", "abstract_dir"])
+def test_a_malformed_record_is_reported_as_such(tmp_path, missing):
+    project = tmp_path / "proj"
+    _project_with_a_tagged_consumer(project)
+    run_dir = run_artifact_root(project / "top", "t") / "top_pnr"
+    record = run_dir / pnr_tag_inputs.CONSUMED_BLOCKS_NAME
+    data = json.loads(record.read_text())
+    del data["blocks"][0][missing]
+    record.write_text(json.dumps(data))
+
+    with pytest.raises(
+        BlockResolutionError, match=f"malformed: blocks\\[0\\] has no {missing}"
+    ):
+        pnr_tag_inputs.read_consumed_blocks(str(run_dir), str(project))
+
+
+def test_a_tagged_export_reports_a_changed_synthesis_copy(tmp_path, monkeypatch):
+    backend, _ = _backend(tmp_path, monkeypatch, stages=True, run_tag="t")
+    from rtl_buddy.tools import pnr_openroad
+
+    _write(Path(pnr_openroad.synth_netlist_path(backend.pnr_cfg)), "module x;\n")
+    copy = Path(backend._synth_dir())
+    (copy / "synth_netlist.v").write_text("// edited\n")
+    backend, _ = _backend(tmp_path, monkeypatch, stages=True, run_tag="t")
+
+    res = backend.export_only().results
+
+    assert res["fail_stage"] == "setup"
+    assert f"the synth_netlist.v of the copy {copy} has changed" in res["desc"]
+    with pytest.raises(pnr_tag_inputs.SynthCopyChanged):
+        backend._synth_dir()
+
+
+def test_waiting_for_another_suites_tree_is_in_the_calls_log(
+    minimal_project, monkeypatch
+):
+    """Waits taken before the call opens its log reach that log."""
+    monkeypatch.setattr(artifact_lock, "TREE_LOCK_POLL_SEC", 0.05)
+    _top_consuming_an_untagged_block(minimal_project)
+    monkeypatch.setattr(_ResolvingRunner, "tags", [])
+    monkeypatch.setattr("rtl_buddy.rtl_buddy.PnrRunner", _ResolvingRunner)
+    holder = _hold(
+        run_artifact_root(minimal_project / "blk", "t") / LOCK_FILENAME,
+        "time.sleep(1)\n",
+        mkdir=True,
+    )
+    try:
+        result = _rb("pnr", "top", "--run-tag", "t")
+    finally:
+        holder.wait(timeout=10)
+
+    assert result.exit_code == 0, result.output
+    log = (run_artifact_root(minimal_project, "t") / "rtl_buddy.log").read_text()
+    blk_tree = run_artifact_root(minimal_project / "blk", "t")
+    assert f"to release {blk_tree}" in log, log
+    assert log.count("has not run pnr run blk_pnr") == 1

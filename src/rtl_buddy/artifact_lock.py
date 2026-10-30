@@ -42,6 +42,8 @@ BUILD_LOCK_POLL_SEC = 0.2
 BUILD_LOCK_ANNOUNCE_SEC = 300.0
 
 TREE_LOCK_POLL_SEC = 1.0
+# How long a holder's record may lag its lock before a waiter reads it again.
+HOLDER_RECORD_SETTLE_SEC = 0.2
 TREE_LOCK_ANNOUNCE_SEC = 300.0
 
 # Lock files this process holds through any ArtifactLocks, and one mutex per tree for `tree_lock`.
@@ -106,8 +108,9 @@ class ArtifactLocks:
 
         Raises :class:`ArtifactLockContended` naming the holder when another process has it,
         and :class:`FatalRtlBuddyError` when the filesystem cannot lock. ``copying`` records
-        the hold as a :func:`tree_lock` copy; ``wait_for_copying`` waits out such a holder
-        instead of failing, since a copy holds no other lock it waits for.
+        the hold as a copy (:meth:`acquire_waiting`); ``wait_for_copying`` waits out such a
+        holder instead of failing. A holder writes its record just after it locks, so a
+        record that does not say ``copying`` is read again once before failing.
         """
         artifact_root = Path(artifact_root)
         lock_path = artifact_root / LOCK_FILENAME
@@ -117,6 +120,7 @@ class ArtifactLocks:
         artifact_root.mkdir(parents=True, exist_ok=True)
         started = time.monotonic()
         announced = None
+        looked_again = False
         while True:
             fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
             try:
@@ -138,16 +142,18 @@ class ArtifactLocks:
                         holder_host=holder.get("host"),
                     )
                     break
-                if (
-                    wait_for_copying
-                    and holder.get("copying")
-                    and exc.errno in _CONTENTION_ERRNOS
-                ):
-                    announced = _announce_wait(
-                        artifact_root, holder, started, announced
-                    )
-                    time.sleep(TREE_LOCK_POLL_SEC)
-                    continue
+                if wait_for_copying and exc.errno in _CONTENTION_ERRNOS:
+                    if holder.get("copying"):
+                        looked_again = False
+                        announced = _announce_wait(
+                            artifact_root, holder, started, announced
+                        )
+                        time.sleep(TREE_LOCK_POLL_SEC)
+                        continue
+                    if not looked_again:
+                        looked_again = True
+                        time.sleep(HOLDER_RECORD_SETTLE_SEC)
+                        continue
                 log_event(
                     logger,
                     logging.ERROR if log_contention else logging.DEBUG,
@@ -193,6 +199,40 @@ class ArtifactLocks:
             command=command,
         )
 
+    def acquire_waiting(
+        self, artifact_root: Path, *, command: str | None = None
+    ) -> None:
+        """Take ``artifact_root``'s lock as a copy, waiting while another process holds it.
+
+        Logs ``artifact_lock.wait`` every ``TREE_LOCK_ANNOUNCE_SEC`` while waiting.
+        """
+        started = time.monotonic()
+        announced = None
+        while True:
+            try:
+                self.acquire(
+                    artifact_root, command=command, log_contention=False, copying=True
+                )
+                return
+            except ArtifactLockContended as exc:
+                announced = _announce_wait(
+                    artifact_root, exc.holder, started, announced
+                )
+                time.sleep(TREE_LOCK_POLL_SEC)
+
+    def release(self, artifact_root: Path) -> None:
+        """Drop the lock of ``artifact_root`` if held; never raises."""
+        lock_path = Path(artifact_root) / LOCK_FILENAME
+        fd = self._held.pop(lock_path, None)
+        if fd is None:
+            return
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        with _PROCESS_LOCK:
+            _PROCESS_HELD.discard(_lock_key(lock_path.parent))
+
     def release_all(self) -> None:
         """Drop every held lock. Idempotent and never raises, so it is safe inside ``finally``."""
         for lock_path, fd in self._held.items():
@@ -224,23 +264,54 @@ def tree_lock(artifact_root: Path, *, command: str | None = None) -> Iterator[No
             yield
             return
         locks = ArtifactLocks()
-        started = time.monotonic()
-        announced = None
-        while True:
-            try:
-                locks.acquire(
-                    artifact_root, command=command, log_contention=False, copying=True
-                )
-                break
-            except ArtifactLockContended as exc:
-                announced = _announce_wait(
-                    artifact_root, exc.holder, started, announced
-                )
-                time.sleep(TREE_LOCK_POLL_SEC)
+        locks.acquire_waiting(artifact_root, command=command)
         try:
             yield
         finally:
             locks.release_all()
+
+
+def acquire_in_order(
+    locks: ArtifactLocks, own: Path, others, *, command: str | None = None
+) -> ArtifactLocks:
+    """Take ``own`` into ``locks`` and wait for each of ``others`` as a copy, returning the manager that holds them.
+
+    ``own`` fails as :meth:`ArtifactLocks.acquire` does, waiting out only a copy's hold, and is
+    tried first, so a busy one fails before anything is waited for. Trees are ordered by
+    resolved path, and no tree is waited for while one ordered after it is held, so callers
+    that take their trees this way never wait for each other in a cycle. When a tree ordered
+    before ``own`` is busy, ``own`` is let go and everything is taken again in order.
+    """
+    own = Path(own)
+    own_key = _lock_key(own)
+    ordered = sorted(
+        {_lock_key(p): Path(p) for p in others if _lock_key(p) != own_key}.items()
+    )
+    held = ArtifactLocks()
+    locks.acquire(own, command=command, wait_for_copying=True)
+    try:
+        for key, path in ordered:
+            if key > own_key:
+                held.acquire_waiting(path, command=command)
+            else:
+                held.acquire(path, command=command, log_contention=False, copying=True)
+        return held
+    except ArtifactLockContended:
+        held.release_all()
+        locks.release(own)
+    except BaseException:
+        held.release_all()
+        raise
+    try:
+        for key, path in sorted([*ordered, (own_key, own)]):
+            if key == own_key:
+                locks.acquire(own, command=command, wait_for_copying=True)
+            else:
+                held.acquire_waiting(path, command=command)
+        return held
+    except BaseException:
+        held.release_all()
+        raise
 
 
 @contextlib.contextmanager

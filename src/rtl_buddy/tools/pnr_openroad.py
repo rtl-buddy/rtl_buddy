@@ -3122,9 +3122,7 @@ class OpenRoadPnr:
         # `--run-tag`: the run writes under `artefacts/.runs/<tag>/` and reads its block abstracts and synthesis netlist from copies `tag_inputs` takes.
         self.run_tag = run_tag
         if tag_inputs is None and run_tag is not None:
-            tag_inputs = pnr_tag_inputs.TagInputs(
-                run_tag, str(run_artifact_root(suite_dir, run_tag))
-            )
+            tag_inputs = pnr_tag_inputs.TagInputs.for_suite(suite_dir, run_tag)
         self.tag_inputs = tag_inputs
         self.accept_stale = accept_stale
         self._mode = pnr_cfg.get_mode()
@@ -3227,16 +3225,14 @@ class OpenRoadPnr:
         """A tagged run's setup FAIL when its synthesis had no netlist to copy or its copy has changed, else None."""
         if self.tag_inputs is None:
             return None
-        try:
-            if self._take_synth_copy() is not None:
-                return None
-            event, desc = "pnr.no_netlist", self._missing_netlist_desc()
-        except pnr_tag_inputs.SynthCopyChanged as e:
-            event, desc = "pnr.synth_copy_changed", str(e)
+        failure = self._changed_synth_copy_failure()
+        if failure is not None or self._synth_copy() is not None:
+            return failure
+        desc = self._missing_netlist_desc()
         log_event(
             logger,
             logging.ERROR,
-            event,
+            "pnr.no_netlist",
             pnr=self.pnr_cfg.get_name(),
             desc=desc,
         )
@@ -3244,20 +3240,34 @@ class OpenRoadPnr:
             name=self.name + "/results", desc=desc, fail_stage="setup"
         )
 
-    def _take_synth_copy(self) -> str | None:
+    def _changed_synth_copy_failure(self) -> PnrFailResults | None:
+        """A setup FAIL when the `--run-tag` copy of the synthesis exists but its files have changed, else None."""
+        try:
+            self._synth_copy()
+        except pnr_tag_inputs.SynthCopyChanged as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.synth_copy_changed",
+                pnr=self.pnr_cfg.get_name(),
+                desc=str(e),
+            )
+            return PnrFailResults(
+                name=self.name + "/results", desc=str(e), fail_stage="setup"
+            )
+        return None
+
+    def _synth_copy(self) -> str | None:
+        """The `--run-tag` copy of the upstream synthesis's netlist and filelist, or None without a netlist.
+
+        Raises `SynthCopyChanged` when that copy's files have changed.
+        """
+        if self.tag_inputs is None:
+            return None
         return self.tag_inputs.synth_dir(
             self.pnr_cfg.get_synth_suite_path(),
             self.pnr_cfg.resolve_synth_cfg().get_name(),
         )
-
-    def _synth_copy(self) -> str | None:
-        """The `--run-tag` copy of the upstream synthesis's netlist and filelist, or None, also when that copy has changed."""
-        if self.tag_inputs is None:
-            return None
-        try:
-            return self._take_synth_copy()
-        except pnr_tag_inputs.SynthCopyChanged:
-            return None
 
     def _synth_dir(self) -> str:
         """The directory the synthesis netlist and filelist are read from: the synthesis's own, or its `--run-tag` copy."""
@@ -5377,7 +5387,7 @@ class OpenRoadPnr:
                 pinned = (
                     pnr_tag_inputs.read_consumed_blocks(
                         ckpt.run_dir if ckpt is not None else self.artefact_dir,
-                        self.tag_inputs.root,
+                        project_root_or_none(self.suite_dir),
                     )
                     or {}
                 )
@@ -5410,9 +5420,12 @@ class OpenRoadPnr:
                 return PnrFailResults(
                     name=self.name + "/results", desc=desc, fail_stage="setup"
                 )
-            self.tag_inputs = pnr_tag_inputs.TagInputs(
-                self.run_tag, self.tag_inputs.root, pinned=pinned
+            self.tag_inputs = pnr_tag_inputs.TagInputs.for_suite(
+                self.suite_dir, self.run_tag, pinned=pinned
             )
+            synth_failure = self._changed_synth_copy_failure()
+            if synth_failure is not None:
+                return synth_failure
         blocks_failure = self._resolve_blocks(
             platform,
             "the gds-mode: strict stream-out"
@@ -6054,7 +6067,10 @@ class OpenRoadPnr:
         """Under `--run-tag`, record the block copies this run reads in its directory, once its previous outputs are cleared, or in its checkpoint run `directory`."""
         if self.run_tag is not None and self._blocks:
             pnr_tag_inputs.write_consumed_blocks(
-                directory or self.artefact_dir, self.run_tag, self._blocks
+                directory or self.artefact_dir,
+                self.run_tag,
+                self._blocks,
+                project_root_or_none(self.suite_dir),
             )
 
     def _blocks_fields(self) -> dict:

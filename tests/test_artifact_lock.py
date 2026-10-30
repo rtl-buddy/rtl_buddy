@@ -699,3 +699,73 @@ def test_verible_filelist_into_the_tree_fails_while_another_run_holds_it(
     )
     assert result.exit_code != 0
     assert "another rtl-buddy run" in str(result.exception)
+
+
+def test_a_copy_hold_whose_record_is_not_written_yet_is_still_waited_out(
+    tmp_path, locks, monkeypatch
+):
+    """A holder writes its record just after it locks; a waiter that reads before then looks again."""
+    monkeypatch.setattr(artifact_lock_module, "TREE_LOCK_POLL_SEC", 0.05)
+    root = tmp_path / "artefacts"
+    copier = locks()
+    copier.acquire(root, command="pnr", copying=True)
+    real_read = artifact_lock_module._read_holder
+    reads = []
+
+    def _read_before_the_record(fd):
+        reads.append(fd)
+        return {} if len(reads) == 1 else real_read(fd)
+
+    monkeypatch.setattr(artifact_lock_module, "_read_holder", _read_before_the_record)
+    threading.Timer(0.3, copier.release_all).start()
+
+    locks().acquire(root, command="pnr", wait_for_copying=True)
+
+    assert len(reads) >= 2
+
+
+def test_acquire_in_order_fails_on_a_busy_own_tree_before_waiting_for_any_other(
+    tmp_path, locks
+):
+    own, other = tmp_path / "b/artefacts", tmp_path / "a/artefacts"
+    locks().acquire(own, command="pnr")
+    held_other = locks()
+    held_other.acquire(other, command="pnr")
+    started = time.monotonic()
+    with pytest.raises(ArtifactLockContended):
+        artifact_lock_module.acquire_in_order(locks(), own, [other], command="pnr")
+    assert time.monotonic() - started < 1
+
+
+@pytest.mark.parametrize("busy", ["before", "after"])
+def test_acquire_in_order_waits_for_a_busy_tree_and_keeps_only_its_own(
+    tmp_path, locks, monkeypatch, busy
+):
+    """A busy tree ordered before the own tree is waited for holding nothing ordered after it."""
+    monkeypatch.setattr(artifact_lock_module, "TREE_LOCK_POLL_SEC", 0.05)
+    own = tmp_path / "m/artefacts"
+    other = tmp_path / ("a" if busy == "before" else "z") / "artefacts"
+    holder = locks()
+    holder.acquire(other, command="pnr")
+    mine = locks()
+    seen = {}
+
+    def _release():
+        # While the other tree is waited for, the own tree is held only when it is ordered first.
+        probe = ArtifactLocks()
+        try:
+            probe.acquire(own, command="probe", log_contention=False)
+            seen["own_free"] = True
+        except ArtifactLockContended:
+            seen["own_free"] = False
+        probe.release_all()
+        holder.release_all()
+
+    threading.Timer(0.3, _release).start()
+    sources = artifact_lock_module.acquire_in_order(mine, own, [other], command="pnr")
+
+    assert seen["own_free"] is (busy == "before")
+    sources.release_all()
+    locks().acquire(other, command="pnr")
+    with pytest.raises(ArtifactLockContended):
+        locks().acquire(own, command="pnr")

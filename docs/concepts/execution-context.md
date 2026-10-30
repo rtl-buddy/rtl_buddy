@@ -99,7 +99,7 @@ Every artefact-writing command takes a non-blocking advisory lock on `<artifact_
 - A lock naming this host and a dead process, or a PID since reused by another process, is reclaimed by the next run, which logs `artifact_lock.reclaimed`.
 - A lock recorded on another host is never judged by PID. On a shared filesystem, clear a cross-machine lock deliberately.
 - The lock covers the whole artefact tree, so different commands anchored to the same directory contend even when they write different subdirectories. Runs with different artefact roots do not, which is what [`--run-tag`](#namespace-concurrent-runs) provides. Two runs naming the same tag still contend.
-- A tagged `rb pnr` that copies a block abstract or synthesis netlist out of another tree, or runs `--synth` into an untagged tree, holds that tree's lock only for that step, and waits for it rather than failing, logging `artifact_lock.wait`. A tagged command whose own tree is held for such a step waits for the step to end instead of failing. See [P&R](pnr.md#run-several-pr-calls-at-once).
+- A tagged `rb pnr` that copies a block abstract or synthesis netlist out of another tree, or runs `--synth` into an untagged tree, holds that tree's lock only for that step, and waits for it rather than failing, logging `artifact_lock.wait`. A tagged command whose own tree another `rb pnr` holds only to copy out of it waits for the copy to end instead of failing. See [P&R](pnr.md#run-several-pr-calls-at-once).
 - The lock is host-local. Do not run the same suite from several machines on a shared filesystem without your own coordination.
 
 ## Find the log
