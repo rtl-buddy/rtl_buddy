@@ -1,6 +1,6 @@
 ## Namespace concurrent runs
 
-`rb test`, `rb randtest`, `rb regression` and `rb graph results` accept `--run-tag <name>`, which moves that invocation's whole artefact tree under `artefacts/.runs/<tag>/`. Use it to run the same suite twice at once, for example one run per simulator:
+`rb test`, `rb randtest`, `rb regression`, `rb pnr`, `rb pnr-export` and `rb graph results` accept `--run-tag <name>`, which moves that invocation's whole artefact tree under `artefacts/.runs/<tag>/`. Use it to run the same suite twice at once, for example one run per simulator, or one P&R variant per tag (see [P&R](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#run-several-pr-calls-at-once)):
 
 ```bash
 rb -B verilator regression --run-tag verilator &

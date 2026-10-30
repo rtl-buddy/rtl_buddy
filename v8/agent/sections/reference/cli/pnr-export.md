@@ -42,6 +42,9 @@ Usage: rtl-buddy pnr-export [OPTIONS] [PNR_NAME]
 │                                         preview keeps the incomplete layout and      │
 │                                         reports the cells                            │
 │                                         [default: (each run's gds-mode (preview))]   │
+│ --run-tag             TEXT              export the result an rb pnr --run-tag <tag>  │
+│                                         wrote under artefacts/.runs/<tag>/, with the │
+│                                         block copies that run read                   │
 │ --help                                  Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

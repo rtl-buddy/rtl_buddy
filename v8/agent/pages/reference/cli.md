@@ -756,6 +756,14 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 │                                               stage ends; Ctrl-C, SIGTERM or SIGHUP  │
 │                                               cancels the jobs. local runs here      │
 │                                               [default: (local)]                     │
+│ --run-tag               TEXT                  namespace this invocation's P&R output │
+│                                               under artefacts/.runs/<tag>/ with its  │
+│                                               own tree lock and log, so concurrent   │
+│                                               rb pnr calls on one pnr.yaml do not    │
+│                                               collide; block abstracts (the tag's,   │
+│                                               else the untagged ones) and the        │
+│                                               synthesis netlist are read from copies │
+│                                               taken into that tree                   │
 │ --help                                        Show this message and exit.            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -804,6 +812,9 @@ Usage: rtl-buddy pnr-export [OPTIONS] [PNR_NAME]
 │                                         preview keeps the incomplete layout and      │
 │                                         reports the cells                            │
 │                                         [default: (each run's gds-mode (preview))]   │
+│ --run-tag             TEXT              export the result an rb pnr --run-tag <tag>  │
+│                                         wrote under artefacts/.runs/<tag>/, with the │
+│                                         block copies that run read                   │
 │ --help                                  Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

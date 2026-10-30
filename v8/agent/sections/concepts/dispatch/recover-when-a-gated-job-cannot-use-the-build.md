@@ -1,6 +1,6 @@
 ## Recover when a gated job cannot use the build
 
-When a simulation job finds the build unusable, the outcome depends on what the build job recorded for that test. The job keeps its simulation reservation.
+When a simulation job finds the build unusable, the outcome depends on what the build job recorded for that test, or, for a job the verilate job released before the build job recorded anything, what the verilate job recorded. The job keeps its simulation reservation.
 
 - **The build failed on the same inputs.** The job does not recompile. Its row reports the build job's exit status and error lines.
 - **The build succeeded but is missing or does not match.** The job does not recompile. The row and `compile.build_stamp_rejected` say what was found. A mismatch usually means `preproc` generates different bytes on this node, or an edit landed mid-run.

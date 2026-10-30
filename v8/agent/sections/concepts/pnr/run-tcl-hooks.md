@@ -10,7 +10,7 @@
 
 | Point | Sourced |
 | --- | --- |
-| `session` | At the start of every OpenROAD session, after the SDC, before the floorplan |
+| `session` | At the start of every OpenROAD session, after the SDC, before the floorplan. Also in a [`netlist-source: pnr` power run](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/power/#extracted-parasitics) of the run |
 | `after-floorplan` | After floorplan, tracks, blockages, tie cells and the floorplan setup repair |
 | `macro-placement` | Instead of RTL-MP; only when the netlist has macros. `$rb_movable_macros` lists the unlocated ones. |
 | `after-pdn` | After taps and the power grid |
@@ -35,7 +35,7 @@ Each point belongs to the stage it runs in, `before-cts` to `cts`: a staged run 
 
 Every later `read_spef` of a SPEF reads what the `after-extraction` hooks left: the next post-route repair round's, the final reports' and `rb power`'s. A multi-corner platform writes one SPEF and reads it once per corner, so one edit covers every corner.
 
-rb writes into `$OUT_DIR` and replaces a file of the same name a hook wrote there: `timing.rpt` and `electrical.rpt` in the final reports, then, after the `after-reports` hooks, `<top>.def`, `<top>.routed.v`, `<top>.routed.pwr.v`, `<top>.routed.sdc`, `<top>.<corner>.routed.sdc` and `<top>.routed.odb`, and with `harden: true` the `abstract/` views. The other names are in [Inspect artefacts](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#inspect-artefacts). Every run first deletes the files ending in `.def`, `.routed.v`, `.routed.pwr.v`, `.routed.sdc`, `.routed.odb`, `.routed.spef`, `.gds` or `.png`, so give a hook's own files other names.
+rb writes into `$OUT_DIR` and replaces a file of the same name a hook wrote there: `timing.rpt` and `electrical.rpt` in the final reports, then, after the `after-reports` hooks, `<top>.def`, `<top>.routed.v`, `<top>.routed.pwr.v`, `<top>.routed.sdc`, `<top>.<corner>.routed.sdc` and `<top>.routed.odb`, and with `harden: true` the `abstract/` views. After OpenROAD exits, rb writes `worst_paths.rpt` and `fanout.rpt`. The other names are in [Inspect artefacts](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#inspect-artefacts). Every run first deletes the files ending in `.def`, `.routed.v`, `.routed.pwr.v`, `.routed.sdc`, `.routed.odb`, `.routed.spef`, `.gds` or `.png`, so give a hook's own files other names.
 
 rb does not read the Tcl for `source` targets. List the files the SDC or a hook sources under `inputs:`, relative to `pnr.yaml`. Each is fingerprinted by path and content with the hook files, so editing one or listing another in its place refuses a `--resume` and makes a hardened block's abstract stale. `rb pnr` fails before any run starts when a run it would run lists a missing file:
 

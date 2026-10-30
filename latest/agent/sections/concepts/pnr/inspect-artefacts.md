@@ -9,6 +9,7 @@
 | `<top>.<corner>.routed.sdc` | Each corner's constraints, on a [multi-corner platform](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#sign-off-at-several-corners) |
 | `<top>.routed.spef` | Extracted parasitics, when the PDK sets `rcx-rules` |
 | `timing.rpt`, `electrical.rpt` | Worst paths and electrical violators, all corners |
+| `worst_paths.rpt`, `fanout.rpt` | Each path group's worst setup path and the highest-fanout signal nets, with RTL names. See [Find the critical path and loaded nets in the RTL](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#find-the-critical-path-and-loaded-nets-in-the-rtl). |
 | `route.drc.rpt`, `route.maze.log` | Detailed-route DRCs and router log |
 | `grt_antennas.rpt`, `drt_antennas.rpt` | Antenna violations left after the antenna repair after global route and after detailed route; with `post-route-repair`, `drt_antennas.rpt` is the kept round's |
 | `congestion.rpt` | Overflowing global-route tiles, only when global routing overflows. Loads in the OpenROAD GUI's DRC viewer. |

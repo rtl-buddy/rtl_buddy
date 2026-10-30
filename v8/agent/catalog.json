@@ -1139,6 +1139,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v8/agent/sections/concepts/pnr/run-pr-on-a-block.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#run-several-pr-calls-at-once",
+          "slug": "run-several-pr-calls-at-once",
+          "title": "Run several P&R calls at once",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v8/agent/sections/concepts/pnr/run-several-pr-calls-at-once.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#interpret-results",
           "slug": "interpret-results",
           "title": "Interpret results",
@@ -2501,6 +2507,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v8/agent/sections/known-issues/toplevel-must-name-the-testbench-in-a-plain-systemverilog-test.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v8/known-issues/#an-error-after-pass-fails-the-test-only-through-the-exit-status",
+          "slug": "an-error-after-pass-fails-the-test-only-through-the-exit-status",
+          "title": "An error after `PASS` fails the test only through the exit status",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v8/agent/sections/known-issues/an-error-after-pass-fails-the-test-only-through-the-exit-status.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v8/known-issues/#narrow-vcs-access-flags-suppress-cocotb-defaults",
           "slug": "narrow-vcs-access-flags-suppress-cocotb-defaults",
           "title": "Narrow VCS access flags suppress cocotb defaults",
@@ -2531,10 +2543,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v8/agent/sections/known-issues/artifact-locking-is-per-tree-and-per-host.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v8/known-issues/#run-tag-covers-the-test-flows-not-every-reader",
-          "slug": "run-tag-covers-the-test-flows-not-every-reader",
-          "title": "`--run-tag` covers the test flows, not every reader",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/v8/agent/sections/known-issues/run-tag-covers-the-test-flows-not-every-reader.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v8/known-issues/#run-tag-covers-the-test-and-pr-flows-not-every-reader",
+          "slug": "run-tag-covers-the-test-and-pr-flows-not-every-reader",
+          "title": "`--run-tag` covers the test and P&R flows, not every reader",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v8/agent/sections/known-issues/run-tag-covers-the-test-and-pr-flows-not-every-reader.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v8/known-issues/#tool-flows-delete-their-previous-outputs-before-running",
@@ -2721,6 +2733,12 @@
           "slug": "post-route-repair-works-around-openroad-routing-failures",
           "title": "Post-route repair works around OpenROAD routing failures",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v8/agent/sections/known-issues/post-route-repair-works-around-openroad-routing-failures.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v8/known-issues/#post-route-repairdesign-sizes-its-buffering-on-the-placement-estimate",
+          "slug": "post-route-repairdesign-sizes-its-buffering-on-the-placement-estimate",
+          "title": "Post-route `repair_design` sizes its buffering on the placement estimate",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v8/agent/sections/known-issues/post-route-repairdesign-sizes-its-buffering-on-the-placement-estimate.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v8/known-issues/#corners-share-one-sdc-mode-on-an-openroad-without-modes",

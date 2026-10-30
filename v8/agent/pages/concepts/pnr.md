@@ -43,6 +43,28 @@ rb pnr alu_pnr -c pnr/alu/pnr.yaml --png    # also stream out GDS and render a P
 
 Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previous run's outputs first, except a refused `--resume`, which stops before that and leaves them in place. With no run name, `rb pnr` runs every entry whose `reglvl` is within `-l`, hardened blocks before the runs that use them.
 
+## Run several P&R calls at once
+
+`rb pnr` locks the suite's whole `artefacts/` tree, so a second untagged `rb pnr` on the same `pnr.yaml` is refused, even for a different run. Give each concurrent call its own `--run-tag`, for example to sweep one block's settings:
+
+```bash
+rb pnr alu_pnr -c pnr/alu/pnr.yaml --run-tag util55 &
+rb pnr alu_pnr -c pnr/alu/pnr.yaml --run-tag util60 &
+wait
+rb pnr-export alu_pnr -c pnr/alu/pnr.yaml --run-tag util60 --png
+```
+
+- A tagged call writes each run under `artefacts/.runs/<tag>/<run>/`, with its own tree lock and `rtl_buddy.log` in `artefacts/.runs/<tag>/`. Tag rules are in [Namespace concurrent runs](execution-context.md#namespace-concurrent-runs).
+- Two calls under the same tag, or two untagged, contend for one lock: the second is refused. Calls under different tags run side by side, and so do a tagged call and an untagged one, except while the tagged call copies an input from the untagged tree (below). It then waits for that tree's lock, logging `artifact_lock.wait` every five minutes.
+- A tagged call reads nothing in place from a tree it does not own. It copies each block abstract and the upstream synthesis netlist and filelist into its own tree while holding the lock of the tree they are in, checks a block copy's views against the abstract's manifest whenever it reads the copy, and reads only the copies. Synthesis and P&R in one call read the same copies. Besides its own tree, it holds one other tree's lock at a time, so a tagged `--synth` copies its synthesis's block abstracts before it locks the synthesis tree. A tagged run whose synthesis has no netlist to copy fails at setup. A block copy's manifest paths are checked against the project the block came from.
+- A run's `blocks:` are copied from the abstract their block run published under the same tag. Only when `rb pnr` under the tag has never started that block run (checked under the lock of the tag's tree, so a block run that is starting is waited for) is the untagged abstract copied instead, with the warning `pnr.block_untagged_abstract`. A block run that the tag ran but that failed, was cleared, or was skipped by `reglvl` in a whole-suite call fails its consumers.
+- Copies live in `artefacts/.runs/<tag>/.block-abstracts/` and `artefacts/.runs/<tag>/.synth/`, one directory per source and content digest, and are never overwritten. They take disk space until you remove the tag's tree (`rm -r artefacts/.runs/<tag>`), which also removes the results that read them.
+- Each result's `blocks` entries, and a hardened block's `abstract.manifest.json` `blocks`, record the `run_tag` the consumed abstract was published under (null for untagged) and its `manifest_sha256`. A tagged run also writes them to `blocks.consumed.json` in its directory. Fix-it commands in block errors carry `--run-tag <tag>` when the abstract they name is a tagged one.
+- With no run name, the tag also applies to runs pulled in from another `pnr.yaml`: they write and lock that suite's `artefacts/.runs/<tag>/`.
+- Synthesis is not namespaced: it writes the untagged `artefacts/<synth>/`. Untagged, `--synth` locks the synthesis suite's tree for the whole call. Tagged, it locks it while each synthesis runs and its netlist is copied. When `synth.yaml` shares the directory of `pnr.yaml`, that tree is the untagged P&R tree, so a tagged `--synth` waits for any untagged call there to end before synthesizing.
+- `--resume latest` and `--dispatch slurm` work inside the tag's tree: checkpoints, stage jobs and orphan checks are per tag.
+- `rb pnr-export --run-tag <tag>` exports a tagged result with the block copies that run consumed, recorded in its `blocks.consumed.json`, and fails when `blocks:` no longer lists one of them. It needs only those copies, so the block's `pnr.yaml` may have changed or gone since. Each checkpoint run directory keeps the record of the call that wrote it, which `--checkpoint` reads. `rb power` and other readers read the untagged `artefacts/<run>/` only; see [`--run-tag` readers](../known-issues.md#--run-tag-covers-the-test-and-pr-flows-not-every-reader).
+
 ## Interpret results
 
 `PASS` means OpenROAD ran the flow to its end and wrote its outputs, or, for `mode: probe` and `--stop-after`, to the stage it stops after, with `routed: false` and no routed outputs. Check `routed` before treating a `PASS` as a routed result. It does not mean the design meets timing or routes clean unless [signoff gates](#gate-signoff) are set. Judge the design on these fields:
@@ -53,6 +75,8 @@ Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previo
 | `tns_ps`, `tns_hold_ps` | Total negative setup and hold slack. |
 | `drc_count` | Violations left in `route.drc.rpt`. 0 is a clean route. |
 | `max_slew_violation_count`, `max_capacitance_violation_count`, `max_fanout_violation_count` | Pins over a Liberty or SDC limit at any corner, listed in `electrical.rpt`. |
+| `worst_path_startpoint`, `worst_path_endpoint`, `worst_path_levels`, `worst_path_resolved` | The worst setup path over every path group, at the setup-critical corner: its ends as RTL names where the netlist keeps them, its combinational cells, and whether both ends resolved. See [Find the critical path and loaded nets in the RTL](#find-the-critical-path-and-loaded-nets-in-the-rtl). |
+| `max_net_fanout` | Sink pins of the signal net of highest fanout, clock, reset-tree and supply nets excluded. |
 | `macro_pin_buffered_count`, `macro_pin_unmet_count` | With `placement.macro-pin-limits`: macro pins it buffered, and those still over their limit less the margin on placement parasitics. |
 | `area_um2` | Design area. |
 | `routed_cell_count` | Instances of the finished design, including added tie, buffer and clock cells, excluding physical-only cells. Compare experiments on this. |
@@ -61,7 +85,7 @@ Outputs go to `artefacts/<run>/` next to `pnr.yaml`; each run deletes the previo
 | `worst_setup_corner`, `worst_hold_corner`, `corners` | Multi-corner platforms: the corner behind each WNS, and each corner's four timing values. |
 | `routed`, `mode`, `stopped_after`, `global_route_overflow` | `routed: false` means the run stopped early ([probe](#probe-a-floorplan) or `--stop-after`); its numbers are that stage's estimate, with the global-route overflow from `global_route` on. |
 | `signoff` | With [`signoff:`](#gate-signoff): each gate's values and verdict. |
-| `post_route_repair` | The rounds of [post-route repair](#repair-timing-after-routing): `kept_round`, `rounds`, `repaired_rounds`, `stop`, `reason`, `passed_over_round`, and with `electrical-repair` `electrical_round`. |
+| `post_route_repair` | The rounds of [post-route repair](#repair-timing-after-routing): `kept_round`, `rounds`, `repaired_rounds`, `stop`, `reason`, `passed_over_round`, and with `electrical-repair` `electrical_round`, which, when the round is kept, lists in `unseen` the violators its `repair_design` judged within limits on the placement estimate. |
 | `openroad_threads` | Requested and effective [thread counts](#openroad-threads). `effective` is null when `threads:` is unset. |
 | `gds_status`, `gds_missing_cells` | [Stream-out](#stream-out-gds-and-png) outcome. |
 | `checkpoint_dir`, `checkpoint_stages`, `last_step` | With [checkpoints](#keep-stage-checkpoints): where they are, which stages the run reached and checkpointed (never a failed global route), and the last step reached. |
@@ -82,6 +106,24 @@ A passing run's description carries qualifiers worth reading:
 
 A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in a post-route repair session rb sets aside), stops before the end of its flow, or a check below fails. It is `SKIP` when `-l` filters it out or `tool:` is not `openroad`.
 
+### Find the critical path and loaded nets in the RTL
+
+The final reports write two reports that point into the RTL:
+
+- `worst_paths.rpt`: the worst setup path of each path group (one per capture clock, plus `asynchronous` for recovery and removal checks and any `group_path` groups), with its slack, its logic levels and its startpoint and endpoint. On a multi-corner platform every group is timed at the setup-critical corner, the corner with the worst setup slack, which the file names. When each corner has its own SDC mode, the groups are those of that corner's mode. Logic levels count the cells on the path between the startpoint's cell and the endpoint's, neither counted, buffers and inverters included; the file gives how many of them are buffers or inverters. `timing.rpt` holds the full path.
+- `fanout.rpt`: the signal nets of highest fanout, `report-fanout-nets` of them (default 10), highest first, each with its driver. Fanout is the net's sink pins: instance inputs and output ports. Fanout is a pin count, so it compares across PDKs where delays do not. Excluded are supply nets, clock nets (the STA clock network and nets CTS built), and reset-tree nets: those reaching a register's asynchronous set or clear pin, through any buffers and inverters before it.
+
+Each point and driver is given by its RTL name where the synthesis netlist keeps one, tried in this order:
+
+1. A top-level port, by its name.
+2. A pin of an instance the netlist names itself, such as a macro or a hardened block: `u_core.u_sram.din0[3]`.
+3. The net that names the pin, when the netlist declares it under a name of its own. For a startpoint or a driver that is the net its pin drives. For an endpoint it is the register's output when the cell has exactly one (Liberty clock-to-output arc) that is not a clock, so a register's endpoint reads as the register, such as `u_core.state_q[3]`; otherwise it is the net on the endpoint pin.
+4. An instance with a Yosys `src` attribute, by its scope and source lines: `u_core (alu.sv:42)`.
+
+A name made up by Yosys (`_123_`, a name with `$`) is not one of the netlist's own. A driver that P&R inserted is traced back through buffers and inverters to the first driver that resolves, and the file says how many it is behind, and `inverted` when an odd number of them are inverters. A name that does not resolve stays as OpenROAD prints it, marked `(unresolved)`, and the file gives the raw name and `src` beside every resolved one. `worst_path_resolved` is `false` unless both ends of the worst path resolve. If the reports cannot be written, `pnr.path_report_failed` warns and their fields are left out; the run's verdict does not change.
+
+A value that cannot be computed, because a report's commands failed or found nothing, is left out of the result and is `unavailable` in its file, with the reason, never 0. A report whose commands failed part way lists nothing, since its entries would be incomplete. After the timing the final reports already run, the reports take about 0.4 s on a routed design of 373,000 instances and 60,000 nets: the fanout scan grows with the net count and the path search with the number of path groups.
+
 ## Inspect artefacts
 
 | File in `artefacts/<run>/` | Contents |
@@ -93,6 +135,7 @@ A run fails when OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in 
 | `<top>.<corner>.routed.sdc` | Each corner's constraints, on a [multi-corner platform](#sign-off-at-several-corners) |
 | `<top>.routed.spef` | Extracted parasitics, when the PDK sets `rcx-rules` |
 | `timing.rpt`, `electrical.rpt` | Worst paths and electrical violators, all corners |
+| `worst_paths.rpt`, `fanout.rpt` | Each path group's worst setup path and the highest-fanout signal nets, with RTL names. See [Find the critical path and loaded nets in the RTL](#find-the-critical-path-and-loaded-nets-in-the-rtl). |
 | `route.drc.rpt`, `route.maze.log` | Detailed-route DRCs and router log |
 | `grt_antennas.rpt`, `drt_antennas.rpt` | Antenna violations left after the antenna repair after global route and after detailed route; with `post-route-repair`, `drt_antennas.rpt` is the kept round's |
 | `congestion.rpt` | Overflowing global-route tiles, only when global routing overflows. Loads in the OpenROAD GUI's DRC viewer. |
@@ -246,7 +289,7 @@ Each output net then ends at a buffer input, which has a Liberty limit, so place
 
 ## Set wire RC
 
-Set the PDK's `layer-rc-tcl`. Without it, placement, clock-tree synthesis and hold repair see the technology LEF's layer RC, which is zero on most open PDKs, and the routed design can fail hold that repair never saw. Setup repair cannot run on zero wire RC: OpenROAD stops with `RSZ-0089`, and the failed run's description names the cause and both fixes. Three steps repair setup by default, as ORFS does: `floorplan-setup-repair`, `post-cts-setup-repair` and the setup repair of `global-route-repair`. Without wire RC, all three must be off: `floorplan-setup-repair: false`, `post-cts-setup-repair: false`, and a `global-route-repair` without `setup-margin`, such as `{hold-margin: 0}`, or `null`. rb warns `pnr.no_wire_rc` and qualifies the `PASS` when the PDK sets no `layer-rc-tcl` or `pnr.log` has `EST-0018` (zero wire capacitance) or `CTS-0104` (zero clock wire RC).
+Set the PDK's `layer-rc-tcl`. Without it, placement, clock-tree synthesis and hold repair see the technology LEF's layer RC, which is zero on most open PDKs, and the routed design can fail hold that repair never saw. Setup repair cannot run on zero wire RC: OpenROAD stops with `RSZ-0089`, and the failed run's description names the cause and both fixes. Three steps repair setup by default, as ORFS does: `floorplan-setup-repair`, `post-cts-setup-repair` and the setup repair of `global-route-repair`. Without wire RC, all three must be off: `floorplan-setup-repair: false`, `post-cts-setup-repair: false`, and a `global-route-repair` without `setup-margin`, such as `{hold-margin: 0}`, or `null`. rb warns `pnr.no_wire_rc` and qualifies the `PASS` when the PDK sets no `layer-rc-tcl` or `pnr.log` has `EST-0018` (zero wire capacitance) or `CTS-0104` (zero clock wire RC). Without `layer-rc-tcl`, `session` hooks may set the wire RC instead: each session then checks after the hooks that every corner has signal and clock wire capacitance, and the run is not qualified for the missing `layer-rc-tcl` when every check passes.
 
 For sky130hd, copy the `set_layer_rc` lines of OpenROAD's `test/sky130hd/sky130hd.rc` and pick the wire layers:
 
@@ -275,6 +318,7 @@ Process-dependent knobs live on the PDK, can be overridden on the platform, and 
 | DRCs left in congested areas | `routing-layer-adjustment` (0 to 1) withholds that fraction of each signal layer from the global router; `global-route.layer-adjustment` sets it per layer. See [Tune global routing](#tune-global-routing). |
 | Setup misses on long nets | `placement.timing-driven: true`. On OpenROAD 26Q4 it also buffers and resizes during placement, which grows area. Needs wire RC. |
 | Timing misses after routing | [`global-route-repair` or `post-route-repair`](#repair-timing-after-routing) |
+| Long nets that placement's `repair_design` leaves for routing to push over their slew limit | `placement.repair-design: {max-wire-length: <µm>}`, below |
 | Many fanout buffers on a library without a fanout limit (sky130hd) | `max-fanout: 100000` stops buffering for fanout alone; `repair_design` otherwise uses 50. |
 | Cells too tight | `placement.padding` (sites, default 0) |
 | Clock tree | `cts-buffer` (CTS picks the root buffer from it unless `cts-root-buffer` names one), `cts-sink-clustering`, `cts-obstruction-aware`, `cts-apply-ndr`; `cts-clock-nets` builds trees for the named clocks only |
@@ -292,6 +336,8 @@ A platform that ends up with `routability-use-grt` but not `routability-driven` 
 
 On a library with several threshold-voltage flavours, such as ASAP7 RVT and LVT with both flavours' Liberty in each corner and both cell LEFs in `macro-lef`, resizing moves cells between flavours freely. `keep-sizing-vt: true` keeps each cell's flavour when `repair_design` or `repair_timing` resizes it, so a cell changes flavour only through timing repair's threshold-voltage swap. `cts-dont-use-cells` keeps cells out of the clock tree only: CTS and `repair_clock_nets` skip them, and post-CTS repair may still place them on data paths. After `repair_clock_nets` the flow frees only the cells the list made dont-use; a matching cell that Liberty `dont_use`, `dont-use-cells` or an earlier hook excluded stays excluded. Neither CTS nor `repair_clock_nets` checks the `cts-buffer` or `cts-root-buffer` cells against either list. The list governs the cells CTS picks itself: dummy-load inverters, and delay buffers it infers. Name the buffer flavour in `cts-buffer` and `cts-root-buffer`. To keep a flavour out of every step, list it in `dont-use-cells`.
 
+`match-cell-footprint: true` on the PDK or platform adds `-match_cell_footprint` to every `repair_design` and `repair_timing` the run emits: after placement, the floorplan and post-CTS repairs, global-route repair, and each post-route repair round, the electrical round included. Resizing then picks only cells with the same footprint, as ORFS does for platforms that set `MATCH_CELL_FOOTPRINT`, sky130hd and ihp-sg13g2 among them. It does not reach a `repair_design` or `repair_timing` a hook runs; pass the flag there yourself. rb runs no `repair_timing -recover_power`, which ORFS also gives the flag.
+
 Each CTS control sits on the platform and on the run, and a run's value replaces the platform's whole:
 
 ```yaml
@@ -304,6 +350,15 @@ Each CTS control sits on the platform and on the run, and a run's value replaces
 
 This calls `clock_tree_synthesis -root_buf sky130_fd_sc_hd__clkbuf_16 -buf_list sky130_fd_sc_hd__clkbuf_4 -sink_clustering_enable -sink_clustering_size 20 -sink_clustering_max_diameter 25 -no_obstruction_aware`, then `repair_clock_nets -max_wire_length 1000`. `cts-obstruction-aware: false` needs an OpenROAD whose `clock_tree_synthesis` takes `-no_obstruction_aware`, which rb checks at setup; see the [YAML reference](../reference/yaml.md#synthesis-and-physical-design-tools).
 
+`placement.repair-design` passes `slew-margin`, `cap-margin` (percent) and `max-wire-length` (µm) to the place stage's `repair_design`, as `global-route-repair.repair-design` does after global route. Unset, it runs with OpenROAD's defaults, as ORFS does. The block merges field by field from the PDK through the platform to the run, and `null` clears the levels below:
+
+```yaml
+    placement:
+      repair-design: {max-wire-length: 600, slew-margin: 10}
+```
+
+`repair_design` judges wires on the placement estimate, which a long routed net can exceed. `max-wire-length` splits any wire longer than it with a buffer, so one driver does not carry a long chain to routing, where post-route repair may not see it (see [Known Issues](../known-issues.md#post-route-repair_design-sizes-its-buffering-on-the-placement-estimate)).
+
 `repair_design` sizes repeaters for the library's target slew, so a macro pin whose own limit is far below it stays in `electrical.rpt`. `placement.macro-pin-limits` buffers such pins at the end of the place stage, after `repair_design`, the `after-repair-design` hook and legalization:
 
 ```yaml
@@ -315,7 +370,7 @@ This calls `clock_tree_synthesis -root_buf sky130_fd_sc_hd__clkbuf_16 -buf_list 
         capacitance-margin: 0.5   # of each max-capacitance limit; default: margin
 ```
 
-Each macro data pin over its limit less the margin gets a buffer fixed on the free row site nearest it (an input also gets a pre-driver), sized from `buffers` weakest first and marked `dont_touch`, so later repair leaves it alone. `pnr.log` has one `>>>` line per pin. The step judges on placement parasitics, so check `electrical.rpt`: a long macro-output net can route to twice its estimated capacitance (hence `capacitance-margin: 0.5` on sky130hd), a large `macro-cell-halo` keeps the buffer too far from the pin (3 µm works with `buf_8` on sky130hd, 20 µm does not), and a pin route that global routing detours around the macro is out of its reach. A block set on the run or platform replaces a lower level's whole.
+Each macro data pin over its limit less the margin gets a buffer fixed on the free row site nearest it (an input also gets a pre-driver), sized from `buffers` weakest first and marked `dont_touch`, so later repair leaves it alone. When no pair meets the limit less the margin, the pair closest to it stays (for an input, the lowest slew), which is not always the strongest, and the pin counts in `macro_pin_unmet_count`. `pnr.log` has one `>>>` line per pin. The step judges on placement parasitics, so check `electrical.rpt`: a long macro-output net can route to twice its estimated capacitance (hence `capacitance-margin: 0.5` on sky130hd), a large `macro-cell-halo` keeps the buffer too far from the pin (3 µm works with `buf_8` on sky130hd, 20 µm does not), and a pin route that global routing detours around the macro is out of its reach. A block set on the run or platform replaces a lower level's whole.
 
 ### Optimisation steps
 
@@ -418,6 +473,7 @@ post-route-repair:
 - When the best round has max-slew or max-capacitance violators, the electrical round runs `repair_design` alone at these margins on that round's database and SPEF, at `repair-design.wire-rc` when that is set. It then legalizes, reroutes per `reroute`, extracts and times like any round, and becomes the kept round only if it [beats the best](#repair-timing-after-routing): better timing, fewer DRCs, a smaller worst violation when it trades sides, or a tie on timing and DRCs with fewer electrical violators.
 - When the best round has no such violators, the round is skipped and `pnr.log` says so.
 - Its number is `rounds` + 1. `post_route_repair.electrical_round` gives the round it repaired (`source_round`), its `status` (`kept`, `not_kept`, `skipped` or `failed`) and `reason`. A failed session is set aside like a round's.
+- `repair_design` finds violators on the SPEF but sizes the buffers that repair them on the placement estimate at the round's signal wire RC, so it leaves a net whose estimate is within its limit less the margin, however far over the extraction is (see [Known Issues](../known-issues.md#post-route-repair_design-sizes-its-buffering-on-the-placement-estimate)). When the round is kept, its extraction lists each violator still on its SPEF that the estimate judges within the limit less the margin, at the scene where its extracted violation is worst. It leaves out ports and pins on constant-driven, clock, dont_touch, special or abutment nets, which `repair_design` does not repair on any parasitics. rb warns `pnr.electrical_round_unseen` naming them, and `electrical_round.unseen` lists each one's `check` (`slew` or `capacitance`), `pin`, `limit`, `extracted` and `estimated` value. Raise `repair-design.wire-rc` toward the extracted RC, or bound placement's wire length with `placement.repair-design.max-wire-length`.
 
 With `electrical-repair` set or an electrical gate, each `pnr.post_route_round` event in `progress.jsonl` carries `max_slew_violation_count` and `max_capacitance_violation_count` over every corner and, on a multi-corner platform, each corner's in `corners`. Without either, the rounds count no violators and their scripts are unchanged.
 
@@ -524,7 +580,7 @@ A macro grid in the `pdn-config` with a `-halo` needs the standard-cell rows cut
 
 | Point | Sourced |
 | --- | --- |
-| `session` | At the start of every OpenROAD session, after the SDC, before the floorplan |
+| `session` | At the start of every OpenROAD session, after the SDC, before the floorplan. Also in a [`netlist-source: pnr` power run](power.md#extracted-parasitics) of the run |
 | `after-floorplan` | After floorplan, tracks, blockages, tie cells and the floorplan setup repair |
 | `macro-placement` | Instead of RTL-MP; only when the netlist has macros. `$rb_movable_macros` lists the unlocated ones. |
 | `after-pdn` | After taps and the power grid |
@@ -549,7 +605,7 @@ Each point belongs to the stage it runs in, `before-cts` to `cts`: a staged run 
 
 Every later `read_spef` of a SPEF reads what the `after-extraction` hooks left: the next post-route repair round's, the final reports' and `rb power`'s. A multi-corner platform writes one SPEF and reads it once per corner, so one edit covers every corner.
 
-rb writes into `$OUT_DIR` and replaces a file of the same name a hook wrote there: `timing.rpt` and `electrical.rpt` in the final reports, then, after the `after-reports` hooks, `<top>.def`, `<top>.routed.v`, `<top>.routed.pwr.v`, `<top>.routed.sdc`, `<top>.<corner>.routed.sdc` and `<top>.routed.odb`, and with `harden: true` the `abstract/` views. The other names are in [Inspect artefacts](#inspect-artefacts). Every run first deletes the files ending in `.def`, `.routed.v`, `.routed.pwr.v`, `.routed.sdc`, `.routed.odb`, `.routed.spef`, `.gds` or `.png`, so give a hook's own files other names.
+rb writes into `$OUT_DIR` and replaces a file of the same name a hook wrote there: `timing.rpt` and `electrical.rpt` in the final reports, then, after the `after-reports` hooks, `<top>.def`, `<top>.routed.v`, `<top>.routed.pwr.v`, `<top>.routed.sdc`, `<top>.<corner>.routed.sdc` and `<top>.routed.odb`, and with `harden: true` the `abstract/` views. After OpenROAD exits, rb writes `worst_paths.rpt` and `fanout.rpt`. The other names are in [Inspect artefacts](#inspect-artefacts). Every run first deletes the files ending in `.def`, `.routed.v`, `.routed.pwr.v`, `.routed.sdc`, `.routed.odb`, `.routed.spef`, `.gds` or `.png`, so give a hook's own files other names.
 
 rb does not read the Tcl for `source` targets. List the files the SDC or a hook sources under `inputs:`, relative to `pnr.yaml`. Each is fingerprinted by path and content with the hook files, so editing one or listing another in its place refuses a `--resume` and makes a hardened block's abstract stale. `rb pnr` fails before any run starts when a run it would run lists a missing file:
 
