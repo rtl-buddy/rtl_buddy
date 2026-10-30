@@ -4,10 +4,11 @@
 #
 """Gates manifest: which sim job holds which plan index.
 
-The head writes it after submitting a suite; the build job reads it to release
-the ``afterok`` dependency of a compile key's sim jobs as soon as that key is
-built (see :func:`..slurm.release_dependency`). It is an optimization on top of
-plain ``afterok``, so nothing here raises; failures come back as reason strings.
+The head writes it after submitting a suite; the verilate and build jobs read it
+to release the ``afterok`` dependency of a compile key's sim jobs as soon as that
+key is built (see :func:`..slurm.release_dependency`). It is an optimization on
+top of plain ``afterok``, so nothing here raises; failures come back as reason
+strings.
 """
 
 import json
@@ -21,7 +22,7 @@ GATES_WAIT_S = 120.0
 GATES_POLL_S = 2.0
 
 
-def write_gates(path, *, run_token, entries) -> Path:
+def write_gates(path, *, run_token, entries, build_job=None) -> Path:
     """Write the plan-index to job-id manifest; return ``path``.
 
     ``entries`` is an iterable of ``(plan index, test name, job id, cluster)``,
@@ -29,6 +30,9 @@ def write_gates(path, *, run_token, entries) -> Path:
     stored per entry (``None`` = local cluster, omitted) because job ids are
     unique only within a cluster. ``run_token`` lets the build job reject a
     manifest left by an earlier run.
+
+    ``build_job`` is ``(job id, cluster, cpus, mem)`` of the suite's build job, so a
+    verilate job that leaves it nothing to compile can shrink its reservation.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -45,6 +49,14 @@ def write_gates(path, *, run_token, entries) -> Path:
             for index, test, job_id, cluster in entries
         ],
     }
+    if build_job is not None:
+        job_id, cluster, cpus, mem = build_job
+        payload["build_job"] = {
+            "job_id": str(job_id),
+            **({} if cluster is None else {"cluster": str(cluster)}),
+            "cpus": int(cpus),
+            **({} if mem is None else {"mem": str(mem)}),
+        }
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2))
     tmp.replace(path)  # atomic: the build job polls this file
@@ -138,3 +150,20 @@ def release_batches(payload, indices) -> list[tuple[str | None, list[str]]]:
             seen.add((cluster, job_id))
             batches.setdefault(cluster, []).append(job_id)
     return list(batches.items())
+
+
+def build_job_of(payload) -> dict | None:
+    """The manifest's ``build_job`` record, or ``None`` if absent or malformed."""
+    record = payload.get("build_job") if isinstance(payload, dict) else None
+    if not isinstance(record, dict):
+        return None
+    job_id, cpus = record.get("job_id"), record.get("cpus")
+    if not isinstance(job_id, str) or not job_id or not isinstance(cpus, int):
+        return None
+    cluster, mem = record.get("cluster"), record.get("mem")
+    return {
+        "job_id": job_id,
+        "cluster": cluster if isinstance(cluster, str) else None,
+        "cpus": cpus,
+        "mem": mem if isinstance(mem, str) else None,
+    }

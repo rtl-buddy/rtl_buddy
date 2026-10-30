@@ -44,6 +44,18 @@ def job_log_path(result_json: str | Path) -> Path:
     return path.parent / name
 
 
+def verilate_result_path(build_result_json: str | Path) -> Path | None:
+    """The verilate job's envelope beside a build job's, or ``None`` for other names.
+
+    ``…/.dispatch/build-result-<pid>.json`` → ``…/.dispatch/verilate-result-<pid>.json``.
+    The file exists only where the suite's compile was split.
+    """
+    path = Path(build_result_json)
+    if not path.name.startswith("build-result-"):
+        return None
+    return path.with_name("verilate-" + path.name.removeprefix("build-"))
+
+
 def _rb_argv(spec) -> list[str]:
     """The common ``rb`` prefix, including builder selection."""
     argv = [sys.executable, "-m", "rtl_buddy", "--machine"]

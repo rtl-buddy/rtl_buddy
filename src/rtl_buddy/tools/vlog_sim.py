@@ -70,6 +70,7 @@ from ..logging_utils import (
     log_event,
     task_status,
 )
+from ..dispatch.argv import verilate_result_path
 from ..runner.result_io import build_compile_fail_desc, load_build_result_json
 from ..process_utils import run_managed_process
 from .vcs_license import VcsLicenseQueueMonitor, has_license_queue_marker
@@ -3562,6 +3563,10 @@ class VlogSim:
           envelope, config never reached, or inputs moved). The retry runs and writes
           ``compile.retry.log``.
 
+        A job the verilate job released may run before the build job has written
+        anything; where the build envelope says nothing about this test, a stamped
+        build in the verilate job's envelope beside it counts as ``built``.
+
         Best-effort: an unreadable envelope falls back to the retry.
         """
         if not self.expect_prebuilt or self.build_result_json is None:
@@ -3571,7 +3576,7 @@ class VlogSim:
         except Exception:  # noqa: BLE001 - advisory; never costs a run
             return None, None
         if not envelope:
-            return None, None
+            return self._verilate_job_verdict()
         record = next(
             (
                 entry
@@ -3583,7 +3588,7 @@ class VlogSim:
         if self.test_name not in set(envelope.get("failed") or ()):
             if self.test_name in set(envelope.get("built") or ()):
                 return "built", (record or {})
-            return None, None
+            return self._verilate_job_verdict()
         # Compiler evidence or nothing: no record, or one without a returncode,
         # describes a failure that never reached a builder.
         if record is None or record.get("returncode") is None:
@@ -3605,6 +3610,33 @@ class VlogSim:
                 )
                 return None, None
         return "failed", record
+
+    def _verilate_job_verdict(self):
+        """``("built", record)`` if the verilate job left this test built and stamped.
+
+        Only a stamped build counts: the verilate job releases nothing else, and a
+        verilation alone is not a build. ``(None, None)`` otherwise.
+        """
+        verilate_json = verilate_result_path(self.build_result_json)
+        if verilate_json is None:
+            return None, None
+        try:
+            envelope = load_build_result_json(verilate_json)
+        except Exception:  # noqa: BLE001 - advisory; never costs a run
+            return None, None
+        if not envelope or self.test_name not in set(envelope.get("built") or ()):
+            return None, None
+        record = next(
+            (
+                entry
+                for entry in envelope.get("builds") or ()
+                if entry.get("test") == self.test_name
+            ),
+            None,
+        )
+        if record is None or record.get("fingerprint_sha") is None:
+            return None, None
+        return "built", record
 
     def _decline_gated_recompile(self, record, fingerprint, build_dir):
         """Fail a gated job whose build job built this test.
@@ -3672,6 +3704,14 @@ class VlogSim:
         if self._compile_plan_cache is None:
             self._compile_plan_cache = self._build_compile_plan()
         return self._compile_plan_cache
+
+    def compile_inputs_sha(self):
+        """Digest of this test's compile inputs, as :func:`_fingerprint_sha` gives it.
+
+        Equal for configs whose builds are interchangeable. Raises
+        :class:`FilelistError` as :meth:`compile` does.
+        """
+        return _fingerprint_sha(self._compile_plan().fingerprint)
 
     def compile_group_dir(self):
         """The directory this test's compile will write into.

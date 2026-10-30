@@ -26,6 +26,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple
 
+from ..config.dispatch import mem_to_bytes
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..process_utils import signals_blocked
@@ -376,6 +377,59 @@ def release_dependency(
             continue
         released.append(job_id)
     return ReleaseOutcome(released, failures, pending, systemic)
+
+
+# What a build job keeps once its verilate job has built every key: it starts, copies
+# the verilate job's records and exits, which needs one core and the head's footprint.
+IDLE_BUILD_JOB_CPUS = 1
+IDLE_BUILD_JOB_MEM = "1G"
+
+
+def shrink_pending_job(
+    job_id: str,
+    *,
+    cpus: int,
+    mem: str | None,
+    current_cpus: int,
+    current_mem: str | None,
+    cluster: str | None = None,
+    cwd: str | None = None,
+) -> tuple[list[str], str | None]:
+    """Lower a pending job's reservation; return ``(fields changed, error)``.
+
+    Runs ``scontrol update JobId=<id>`` with ``CPUsPerTask`` and ``MinCPUsNode``, then
+    ``MinMemoryNode`` in a second call, so a site that refuses the memory change still
+    keeps the cpu change. Only lowers: a field already at or below its target is left
+    alone, since Slurm refuses an owner's increase. Never raises; a job left as it was
+    only starts later.
+    """
+    cluster_argv = [] if cluster is None else ["-M", cluster]
+    updates = []
+    if current_cpus > cpus:
+        updates.append(("cpus", [f"CPUsPerTask={cpus}", f"MinCPUsNode={cpus}"]))
+    target_mem = mem_to_bytes(mem)
+    reserved_mem = mem_to_bytes(current_mem)
+    if target_mem is not None and (reserved_mem is None or reserved_mem > target_mem):
+        updates.append(("mem", [f"MinMemoryNode={math.ceil(target_mem / 2**20)}"]))
+    changed: list[str] = []
+    for field, assignments in updates:
+        try:
+            proc = subprocess.run(
+                ["scontrol", *cluster_argv, "update", f"JobId={job_id}", *assignments],
+                capture_output=True,
+                text=True,
+                cwd=cwd,
+                timeout=_SCONTROL_TIMEOUT_S,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            return changed, str(e)[:200]
+        if proc.returncode != 0:
+            return changed, (
+                proc.stderr.strip()
+                or f"`scontrol update` failed (rc={proc.returncode})"
+            )[:200]
+        changed.append(field)
+    return changed, None
 
 
 # `MaxRSS` is a peak over samples, so a job shorter than the sampling interval reports a

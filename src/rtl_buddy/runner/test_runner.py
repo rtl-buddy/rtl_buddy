@@ -227,6 +227,16 @@ class TestRunner:
         except Exception:  # noqa: BLE001 - telemetry must never raise
             return None
 
+    def compile_inputs_sha(self):
+        """Return the digest of the prepared sim's compile inputs, or ``None``.
+
+        The build job records it so a later phase can tell same-key configs with identical inputs apart from drifted ones. Telemetry: it never raises.
+        """
+        try:
+            return self._vlog_sim.compile_inputs_sha()
+        except Exception:  # noqa: BLE001 - telemetry must never raise
+            return None
+
     def compile_group_dir(self):
         """Return ``(group_dir, None)`` or ``(None, Results)`` for the prepared sim.
 

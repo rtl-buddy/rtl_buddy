@@ -117,7 +117,7 @@ from .dispatch import (
     create_dispatch_backend,
     validate_backend_name,
 )
-from .dispatch.argv import job_log_path
+from .dispatch.argv import job_log_path, verilate_result_path
 from .dispatch.base import (
     BUILD_PHASE_BUILD,
     BUILD_PHASE_FULL,
@@ -137,7 +137,12 @@ from .dispatch.coverage_tail import (
     write_tail_result,
     write_tail_spec,
 )
-from .dispatch.gates import release_batches, wait_for_gates, write_gates
+from .dispatch.gates import (
+    build_job_of,
+    release_batches,
+    wait_for_gates,
+    write_gates,
+)
 from .dispatch.plan import (
     PLAN_SCHEMA_VERSION,
     read_plan_config,
@@ -175,7 +180,13 @@ from .dispatch.rightsize import (
     analyze_build_reservation,
     analyze_suite_reservations,
 )
-from .dispatch.slurm import RELEASE_BUDGET_S, release_dependency
+from .dispatch.slurm import (
+    IDLE_BUILD_JOB_CPUS,
+    IDLE_BUILD_JOB_MEM,
+    RELEASE_BUDGET_S,
+    release_dependency,
+    shrink_pending_job,
+)
 from .runner.result_io import (
     BUILD_COMPILE_FAIL_PREFIX,
     COMPILE_ERROR_TAIL_LINES,
@@ -3404,15 +3415,22 @@ class RtlBuddy:
         sim jobs still run; the exit code is 0 unless setup is fatal.
 
         With ``--parallel 1`` or a one-config plan, PRE then COMPILE runs per config.
-        Above that, every PRE runs first and distinct builds compile concurrently, so
-        one config's preproc hook must not mutate another config's inputs.
+        Above that, PRE runs on this thread config by config and each build compiles
+        on a worker as soon as its first config is through PRE, so one config's preproc
+        hook must not mutate another config's inputs.
+
+        The build half of a split compile reads the verilate job's envelope beside its
+        own. A config the verilate job left built and stamped is recorded as it is,
+        with no PRE. Of the configs it verilated, one per compile key runs PRE and the
+        make; the rest take that build without PRE when their recorded inputs match it.
 
         With ``--result-json`` (always set under dispatch) the job logs beside that
         envelope; without it, it logs to the suite log.
 
         With ``--gates`` (Slurm only) it releases each compile key's sim jobs as the key
-        finishes; see ``dispatch.gates``. Every sim job keeps its ``afterok`` on this
-        job.
+        finishes; see ``dispatch.gates``. Every sim job keeps its ``afterok`` on the
+        build job. A verilate job releases a key it finds built and stamped, and shrinks
+        the build job when it leaves that job nothing to compile.
         """
         if phase not in BUILD_PHASES:
             # Rejected before anything is written: an unimplemented phase would compile
@@ -3535,6 +3553,10 @@ class RtlBuddy:
                 group_dir = None
                 if res is None:
                     group_dir, res = runner.compile_group_dir()
+                if res is None:
+                    inputs_sha = getattr(runner, "compile_inputs_sha", None)
+                    if callable(inputs_sha):
+                        inputs_shas[index] = inputs_sha()
                 if declared_key is not None:
                     changed = [
                         field
@@ -3645,18 +3667,15 @@ class RtlBuddy:
             """Clear the `afterok` of this key's sims. Never raises.
 
             ``members`` is ``[(plan index, test name), …]`` for the rows this group
-            built. Called from the worker right after the group's last member returns.
+            built and stamped. Called from the worker right after the group's last
+            member returns. In a verilate job those are keys it found already built, or
+            compiled whole because the line had no separate build step.
 
             ``verdict_error`` is why the build record did not reach disk; the key then
             keeps its gate, since released jobs could not read the file that says the
             build exists.
             """
             if gates_path is None or not members or cancellation_has_started():
-                return
-            if phase == BUILD_PHASE_VERILATE:
-                # No build to release onto: this half emitted sources and a Makefile.
-                # The head passes no `--gates` to a verilate job, so this is the second
-                # guard.
                 return
             if verdict_error is not None:
                 # The envelope these jobs would consult is not on disk, so releasing
@@ -3728,6 +3747,7 @@ class RtlBuddy:
                     group=group_dir,
                     tests=[name for _, name in members],
                     job_ids=released,
+                    phase=phase,
                 )
             for position, (job_id, error) in enumerate(failures):
                 # A failed release only means the job starts when this one ends, so it
@@ -3755,6 +3775,44 @@ class RtlBuddy:
                     group=group_dir,
                     error=systemic,
                     skipped=len(skipped),
+                )
+
+        def _shrink_build_job():
+            """Lower the pending build job to an idle reservation. Never raises."""
+            with release_lock:
+                payload = _resolve_gates_locked()
+                disabled = release_state["disabled"]
+            build = build_job_of(payload) if payload is not None else None
+            if build is None or disabled is not None:
+                return
+            try:
+                changed, error = shrink_pending_job(
+                    build["job_id"],
+                    cpus=IDLE_BUILD_JOB_CPUS,
+                    mem=IDLE_BUILD_JOB_MEM,
+                    current_cpus=build["cpus"],
+                    current_mem=build["mem"],
+                    cluster=build["cluster"],
+                    cwd=suite_dir,
+                )
+            except Exception as exc:  # noqa: BLE001 - see exit-0 contract
+                changed, error = [], str(exc)
+            if changed:
+                log_console_event(
+                    logger,
+                    logging.INFO,
+                    "dispatch.build_job_shrunk",
+                    job_id=build["job_id"],
+                    cpus=IDLE_BUILD_JOB_CPUS if "cpus" in changed else None,
+                    mem=IDLE_BUILD_JOB_MEM if "mem" in changed else None,
+                )
+            if error is not None:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.build_job_shrink_failed",
+                    job_id=build["job_id"],
+                    error=error,
                 )
 
         def _build_entry(name, ok, worker_error, runner, group_dir):
@@ -3844,11 +3902,18 @@ class RtlBuddy:
             """
             entries = {
                 index: (
-                    _build_entry(name, ok, worker_error, runner, group_dir),
+                    (
+                        _build_entry(name, ok, worker_error, runner, group_dir)
+                        if runner is not None
+                        else followed_entries[index]
+                    ),
                     ok,
                 )
                 for index, name, ok, worker_error, runner, group_dir in rows
             }
+            for index, (entry, _ok) in entries.items():
+                if inputs_shas.get(index) is not None:
+                    entry["inputs_sha"] = inputs_shas[index]
             with recorded_lock:
                 for index, (entry, ok) in entries.items():
                     recorded_entries[index] = entry
@@ -3884,7 +3949,34 @@ class RtlBuddy:
                     return str(exc)
                 return None
 
-        def _compile_group(group):
+        def _follow_leader(index, name, group_dir, leader_row):
+            """Take the leader's build for a follower that ran no PRE here, or ``None``.
+
+            A follower is a config the verilate job verilated under the leader's key.
+            Its recorded inputs must equal the inputs of the leader's stamped build;
+            otherwise it is returned to the caller as needing PRE and its own compile.
+            """
+            if leader_row is None or not leader_row[2]:
+                return None
+            leader_runner = leader_row[4]
+            stamp = getattr(leader_runner, "last_build_stamp", None)
+            if (
+                not stamp
+                or stamp.get("fingerprint_sha") is None
+                or stamp.get("fingerprint_sha") != followers[index][1]
+                or getattr(leader_runner, "stamp_write_failed", False)
+            ):
+                return None
+            entry = _build_entry(leader_row[1], True, None, leader_runner, group_dir)
+            for half in ("verilate_sec", "build_sec"):
+                entry.pop(half, None)
+            # Recorded like an adoption: this config cost no build of its own.
+            entry.update(test=name, duration_sec=0.0, reused=True)
+            followed_entries[index] = entry
+            inputs_shas[index] = followers[index][1]
+            return (index, name, True, None, None, group_dir)
+
+        def _compile_members(group_dir, members):
             """Compile one group's configs serially; return rows for the caller.
 
             The first member compiles; the rest adopt what it built. Members share one
@@ -3908,10 +4000,27 @@ class RtlBuddy:
             next group, which could start a compiler the signal sweep cannot see. The
             latch makes that worker a no-op; the handler cannot cancel directly because
             it runs between bytecodes with the pool's internals mid-flight.
+
+            A member with no runner is a follower (:func:`_follow_leader`). One that
+            cannot follow produces no row and joins ``refollow``.
             """
-            group_dir, members = group
             rows = []
             for index, name, runner in members:
+                if runner is None:
+                    leader = followers[index][0]
+                    row = _follow_leader(
+                        index,
+                        name,
+                        group_dir,
+                        member_rows.get(leader)
+                        or next((r for r in rows if r[0] == leader), None),
+                    )
+                    if row is None:
+                        with recorded_lock:
+                            refollow.append(index)
+                    else:
+                        rows.append(row)
+                    continue
                 if cancellation_has_started():
                     # Reported failed like anything that never reached a builder:
                     # `failed` is all the envelope can say about a compile that did not
@@ -4019,8 +4128,16 @@ class RtlBuddy:
                     ):
                         group_failures[group_dir] = (name, failure)
                 rows.append((index, name, built, None, runner, group_dir))
-            # Outside the loop, so outside every build-directory lock `compile_prepared`
-            # took: this key is built and stamped.
+            member_rows.update((row[0], row) for row in rows)
+            return rows
+
+        def _settle_group(group_dir, rows):
+            """Record a group's rows, then release the sims of those built and stamped.
+
+            Called outside every build-directory lock `compile_prepared` took.
+            """
+            if not rows:
+                return
             # Envelope first, release second: a job released before its verdict is on
             # disk would recompile into the directory it was gated on.
             verdict_error = _record_group(rows)
@@ -4036,42 +4153,242 @@ class RtlBuddy:
                 ],
                 verdict_error=verdict_error,
             )
+
+        def _compile_group(group):
+            group_dir, members = group
+            rows = _compile_members(group_dir, members)
+            _settle_group(group_dir, rows)
             return rows
 
-        # ---- serial phase: construct, PRE, and probe the compile key.
+        # ---- what the verilate job settled (the build half of a split compile).
+        # A config it left built and stamped is recorded as it is, with no PRE. Of the
+        # configs it verilated, the first of each key leads: it runs PRE and the make,
+        # and the rest follow without PRE when their recorded inputs match its build.
+        # Anything else, and every config when the envelope is unusable, goes the
+        # full way. The verilate job ran every PRE, so it is the one that reports
+        # `build_job.preproc_changed_compile_key`.
+        settled = {}  # plan index -> the verilate job's record
+        followers = {}  # plan index -> (leader plan index, recorded inputs sha)
+        verilate_envelope = None
+        if phase == BUILD_PHASE_BUILD and result_json_path is not None:
+            verilate_json = verilate_result_path(result_json_path)
+            verilate_envelope = (
+                load_build_result_json(verilate_json)
+                if verilate_json is not None
+                else None
+            )
+            if verilate_envelope is not None and verilate_envelope["partial"]:
+                verilate_envelope = None
+            if verilate_envelope is None:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "build_job.verilate_result_unusable",
+                    path=str(verilate_json) if verilate_json is not None else None,
+                )
+        if verilate_envelope is not None:
+            verilated = set(verilate_envelope["built"])
+            records = {
+                entry.get("test"): entry
+                for entry in verilate_envelope["builds"]
+                if entry.get("test") in verilated
+            }
+            leaders = {}  # verilate group -> leader plan index
+            for index, cfg in enumerate(configs):
+                record = records.get(cfg.get_name())
+                if record is None:
+                    continue
+                if record.get("fingerprint_sha") is not None:
+                    settled[index] = record
+                elif record.get("inputs_sha") is not None and record.get("group"):
+                    leader = leaders.setdefault(record["group"], index)
+                    if leader != index:
+                        followers[index] = (leader, record["inputs_sha"])
+
+        # Per-config state the passes below share with the workers.
+        inputs_shas = {}  # plan index -> compile inputs digest, once probed
+        followed_entries = {}  # plan index -> envelope record of a follower
+        member_rows = {}  # plan index -> outcome row, once its group has it
+        prepared_groups = {}  # plan index -> group dir, for a prepared config
+        refollow = []  # followers that could not follow; they go the full way
+
+        # ---- PRE and compile.
         # PRE stays on the main thread whatever --parallel says: hook execution is
         # process-global-serial (see hooks.py), preproc code may write suite-level files
         # configs would race on, and a preproc may mutate test_cfg, so the compile key
         # exists only after pre().
         # Outcome rows are (plan index, test name, built?, worker error, runner, group
         # dir), replayed in plan order so identical runs log identically.
-        # `streaming` (default) runs PRE then COMPILE per config; batching every PRE
-        # first would let a preproc hook that rewrites a suite-level input clobber an
-        # earlier config's before it compiled. `parallel > 1` opts into batching; see
-        # docs/known-issues.md.
+        # `streaming` (default) runs PRE then COMPILE per config, so a preproc hook that
+        # rewrites a suite-level input cannot clobber an earlier config's before it
+        # compiled. `parallel > 1` opts into overlap: a group compiles on a worker as
+        # soon as a config of it is through PRE, while PRE goes on here for the rest;
+        # see docs/known-issues.md.
         streaming = min(parallel, len(configs)) <= 1
+        pool_size = max(1, min(parallel, len(configs)))
         outcomes = []
         groups = {}
-        for index, cfg in enumerate(configs):
+        unprepared = 0
+
+        def _admit(index, *, follow):
+            """Turn one config into an outcome row or a group member.
+
+            Returns ``(row, group dir, member)`` with exactly one of row and member set.
+            """
+            nonlocal unprepared
+            cfg = configs[index]
+            if index in settled:
+                with recorded_lock:
+                    recorded_entries[index] = dict(settled[index])
+                    recorded_ok[index] = True
+                return (index, cfg.get_name(), True, None, None, None), None, None
+            leader_group = (
+                prepared_groups.get(followers[index][0])
+                if follow and index in followers
+                else None
+            )
+            if leader_group is not None:
+                # No PRE: the leader's worker decides once the leader is built.
+                return None, leader_group, (index, cfg.get_name(), None)
             row, group_dir, member = _prepare_config(index, cfg)
             if row is not None:
-                outcomes.append(row)
-                continue
-            # Group by the directory the compile will write, not by config: configs with
-            # one compile key share a build dir, and later ones short-circuit on the
-            # first's stamp.
-            # Test names in a plan are assumed unique (two configs with one name share a
-            # per-test `run.f`).
-            groups.setdefault(group_dir, []).append(member)
-            if streaming:
-                # Compile now, before the next config's hook runs. The group still
-                # records membership so telemetry reads the same in both shapes.
-                outcomes.extend(_compile_group((group_dir, [member])))
+                unprepared += 1
+                return row, None, None
+            prepared_groups[index] = group_dir
+            return None, group_dir, member
 
-        # ---- parallel phase: one worker per distinct build.
-        pool_size = max(1, min(parallel, len(groups)))
+        def _run_pass(indices, *, follow):
+            """PRE every config in ``indices`` here and compile its group."""
+            if streaming:
+                for index in indices:
+                    row, group_dir, member = _admit(index, follow=follow)
+                    if row is not None:
+                        outcomes.append(row)
+                        continue
+                    # Group by the directory the compile will write, not by config:
+                    # configs with one compile key share a build dir, and later ones
+                    # short-circuit on the first's stamp.
+                    # Test names in a plan are assumed unique (two configs with one name
+                    # share a per-test `run.f`).
+                    groups.setdefault(group_dir, []).append(member)
+                    # Compile now, before the next config's hook runs. The group still
+                    # records membership so telemetry reads the same in both shapes.
+                    outcomes.extend(_compile_group((group_dir, [member])))
+                return
+
+            # One drain per group at a time, so a group is still one worker's unit and
+            # no lock guards `group_leaders` or `group_failures`. A drain takes what is
+            # queued and returns, so a worker never idles on a group whose next config
+            # is still in PRE; the last drain after PRE is done settles the group.
+            pipeline_lock = threading.Lock()
+            queues = {}  # group dir -> {"queue", "active", "settled", "rows"}
+            pre_done = False
+            futures = []
+
+            def _drain(group_dir):
+                state = queues[group_dir]
+                while True:
+                    with pipeline_lock:
+                        batch = list(state["queue"])
+                        state["queue"].clear()
+                        if not batch:
+                            state["active"] = False
+                            settle = pre_done and not state["settled"]
+                            if settle:
+                                state["settled"] = True
+                            break
+                    state["rows"].extend(_compile_members(group_dir, batch))
+                if settle:
+                    _settle_group(group_dir, state["rows"])
+
+            with ThreadPoolExecutor(max_workers=pool_size) as pool:
+                for index in indices:
+                    row, group_dir, member = _admit(index, follow=follow)
+                    if row is not None:
+                        outcomes.append(row)
+                        continue
+                    groups.setdefault(group_dir, []).append(member)
+                    with pipeline_lock:
+                        state = queues.setdefault(
+                            group_dir,
+                            {
+                                "queue": [],
+                                "active": False,
+                                "settled": False,
+                                "rows": [],
+                            },
+                        )
+                        state["queue"].append(member)
+                        start = not state["active"]
+                        state["active"] = True
+                    if start:
+                        futures.append(pool.submit(_drain, group_dir))
+                with pipeline_lock:
+                    pre_done = True
+                    idle = [
+                        group_dir
+                        for group_dir, state in queues.items()
+                        if not state["active"] and not state["settled"]
+                    ]
+                    for group_dir in idle:
+                        queues[group_dir]["active"] = True
+                futures.extend(pool.submit(_drain, group_dir) for group_dir in idle)
+                for future in futures:
+                    future.result()
+            for state in queues.values():
+                outcomes.extend(state["rows"])
+
+        def _run_passes():
+            _run_pass(range(len(configs)), follow=True)
+            if refollow:
+                # Followers whose leader failed or built other inputs: PRE and compile
+                # them as any other config, after the first pass settled their group.
+                _run_pass(sorted(refollow), follow=False)
+
+        if streaming:
+            _run_passes()
+        else:
+            # Threads, not processes: the work is a subprocess wait, and prepared
+            # TestRunners would not survive a fork/spawn.
+            # Worker threads install no signal handlers and each compiler runs in its
+            # own session, so SIGTERM to this job would orphan in-flight Verilations.
+            # While the pool runs, the main thread owns SIGINT/SIGTERM and sweeps live
+            # compilers by hand. Streaming needs none of it: run_managed_process is on
+            # the main thread.
+            # The handler follows run_managed_process (chain, then KeyboardInterrupt /
+            # SystemExit(128+signum)) and does no logging: a worker may hold the
+            # logging lock.
+            previous_handlers = {}
+
+            def _sweep_compilers_and_reraise(signum, frame):
+                terminate_live_managed_processes()
+                previous = previous_handlers.get(signum)
+                if callable(previous):
+                    previous(signum, frame)
+                if signum == signal.SIGINT:
+                    raise KeyboardInterrupt
+                raise SystemExit(128 + signum)
+
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                try:
+                    previous_handlers[signum] = signal.getsignal(signum)
+                    signal.signal(signum, _sweep_compilers_and_reraise)
+                except ValueError:
+                    # Only reachable off the main thread; the exit-0 contract outranks
+                    # the cleanup, so an escaping ValueError must not fail the build
+                    # job.
+                    previous_handlers.pop(signum, None)
+            try:
+                _run_passes()
+            finally:
+                # Restored on every exit, including the re-raise above: the tail below
+                # runs on the main thread with no pool to protect.
+                for signum, handler in previous_handlers.items():
+                    signal.signal(signum, handler)
+
         prepared = sum(len(members) for members in groups.values())
-        if pool_size > 1 or parallel > pool_size:
+        effective = max(1, min(parallel, len(groups)))
+        if effective > 1 or parallel > effective:
             # Liveness on a CI console (INFO shows only under -v). The second condition
             # flags over-reservation (the plan collapsed to fewer compile keys than
             # `parallel`); it is not an error, so it stays INFO.
@@ -4082,13 +4399,14 @@ class RtlBuddy:
                 groups=len(groups),
                 # Why the group count can be below `parallel`: configs sharing a compile
                 # key are one group and siblings adopt the leader's build.
-                # Counts cover configs that reached the pool only; one whose PRE or
+                # Counts cover configs that reached a group only; one whose PRE or
                 # filelist probe failed never joined a group.
                 configs=prepared,
-                # ...and the ones that did not. Derived from the plan, because
-                # `outcomes` also holds the streaming shape's already-compiled rows.
-                unprepared=len(configs) - prepared,
-                parallel=pool_size,
+                # ...and the ones that did not.
+                unprepared=unprepared,
+                # ...and the ones the verilate job had already built.
+                settled=len(settled) or None,
+                parallel=effective,
                 parallel_requested=parallel,
                 # The config value, which is `parallel_requested` unless the head's plan
                 # cap lowered it: quote the number the named key holds.
@@ -4097,54 +4415,6 @@ class RtlBuddy:
                 # is not moved by cfg-dispatch.
                 parallel_origin=parallel_origin,
             )
-
-        # Streaming shape: every group was compiled as it was prepared.
-        if not streaming:
-            if pool_size > 1:
-                # Threads, not processes: the work is a subprocess wait, and prepared
-                # TestRunners would not survive a fork/spawn.
-                # Worker threads install no signal handlers and each compiler runs in
-                # its own session, so SIGTERM to this job would orphan in-flight
-                # Verilations. While the pool runs, the main thread owns SIGINT/SIGTERM
-                # and sweeps live compilers by hand. Streaming needs none of it:
-                # run_managed_process is on the main thread.
-                # The handler follows run_managed_process (chain, then KeyboardInterrupt
-                # / SystemExit(128+signum)) and does no logging: a worker may hold the
-                # logging lock.
-                previous_handlers = {}
-
-                def _sweep_compilers_and_reraise(signum, frame):
-                    terminate_live_managed_processes()
-                    previous = previous_handlers.get(signum)
-                    if callable(previous):
-                        previous(signum, frame)
-                    if signum == signal.SIGINT:
-                        raise KeyboardInterrupt
-                    raise SystemExit(128 + signum)
-
-                for signum in (signal.SIGINT, signal.SIGTERM):
-                    try:
-                        previous_handlers[signum] = signal.getsignal(signum)
-                        signal.signal(signum, _sweep_compilers_and_reraise)
-                    except ValueError:
-                        # Only reachable off the main thread; the exit-0 contract
-                        # outranks the cleanup, so an escaping ValueError must not fail
-                        # the build job.
-                        previous_handlers.pop(signum, None)
-                try:
-                    with ThreadPoolExecutor(max_workers=pool_size) as pool:
-                        for rows in pool.map(_compile_group, list(groups.items())):
-                            outcomes.extend(rows)
-                finally:
-                    # Restored on every exit, including the re-raise above: the tail
-                    # below runs on the main thread with no pool to protect.
-                    for signum, handler in previous_handlers.items():
-                        signal.signal(signum, handler)
-            else:
-                # `parallel` exceeded the group count: one group, but the plan held
-                # several configs, so the batched shape was already chosen.
-                for group in groups.items():
-                    outcomes.extend(_compile_group(group))
 
         built, failed, builds = [], [], []
         for index, name, ok, worker_error, runner, group_dir in sorted(
@@ -4184,12 +4454,16 @@ class RtlBuddy:
             # Both numbers: `parallel_requested` is the budget the head reserved CPUs
             # for; `parallel` is what the job could use once the plan collapsed to
             # distinct builds.
-            parallel=pool_size,
+            parallel=effective,
             parallel_requested=parallel,
             parallel_configured=parallel_configured,
             parallel_origin=parallel_origin,
             groups=len(groups),
             phase=phase,
+            # The build half's configs that ran no PRE: built by the verilate job, or
+            # following a same-key leader's build.
+            settled=len(settled) if phase == BUILD_PHASE_BUILD else None,
+            followed=len(followed_entries) if phase == BUILD_PHASE_BUILD else None,
         )
         if result_json_path is not None:
             # Persist the outcome so the head can map a compile failure to a CompileFail
@@ -4225,6 +4499,18 @@ class RtlBuddy:
                         path=str(result_json_path),
                         error=str(exc2),
                     )
+        if (
+            phase == BUILD_PHASE_VERILATE
+            and gates_path is not None
+            and builds
+            and not failed
+            and all(entry.get("fingerprint_sha") is not None for entry in builds)
+            and not cancellation_has_started()
+        ):
+            # Every config is built and stamped, so the build job will only copy these
+            # records. Its compile-sized reservation would hold the end of the run in
+            # the queue for nothing.
+            _shrink_build_job()
         if self.machine:
             # Reporting only, so it must not change the exit status: a non-zero build
             # job makes the scheduler cancel every afterok dependent.
@@ -5935,6 +6221,14 @@ class RtlBuddy:
             splits = self._suite_splits_verilate(
                 backend, dispatch_cfg, suite_compile, entries
             )
+            # One manifest for both compile jobs: either releases the keys it leaves
+            # built and stamped.
+            gates_json = self._suite_gates_path(
+                backend,
+                dispatch_root=dispatch_root,
+                run_token=run_token,
+                suite_dir=suite_dir,
+            )
             verilate_handle = (
                 self._submit_dispatch_build(
                     suite_cfg,
@@ -5951,6 +6245,7 @@ class RtlBuddy:
                     compile_resources=verilate_resources,
                     parallel=build_parallel,
                     phase=BUILD_PHASE_VERILATE,
+                    gates_json=gates_json,
                 )
                 if splits
                 else None
@@ -5981,6 +6276,7 @@ class RtlBuddy:
                     dependency=(
                         verilate_handle.job_id if verilate_handle is not None else None
                     ),
+                    gates_json=gates_json,
                 )
             except BaseException:
                 # A verilate job with no build job behind it would verilate and never be
@@ -6257,7 +6553,17 @@ class RtlBuddy:
         gates_json = getattr(getattr(build_handle, "spec", None), "gates_json", None)
         if gates_json is not None:
             try:
-                write_gates(gates_json, run_token=run_token, entries=gate_entries)
+                write_gates(
+                    gates_json,
+                    run_token=run_token,
+                    entries=gate_entries,
+                    build_job=(
+                        build_handle.job_id,
+                        build_cluster,
+                        build_handle.spec.resources.cpus,
+                        build_handle.spec.resources.mem,
+                    ),
+                )
             except OSError as e:
                 log_event(
                     logger,
@@ -6433,6 +6739,7 @@ class RtlBuddy:
         parallel=None,
         phase=BUILD_PHASE_FULL,
         dependency=None,
+        gates_json=None,
     ):
         """Submit the suite's compile as a Slurm build job on a compute node.
         - ``phase`` is which half of the compile this job runs, and ``dependency`` the
@@ -6453,6 +6760,8 @@ class RtlBuddy:
           compile keys, so the cap is an upper bound on concurrency. The pre-cap value
           travels as ``parallel_configured``, the one a reader can find in a config
           file.
+        - ``gates_json`` is the suite's gates manifest (see :meth:`_suite_gates_path`),
+          shared by both halves of a split compile.
         """
         dispatch_root = Path(dispatch_root)
         dispatch_root.mkdir(parents=True, exist_ok=True)
@@ -6460,13 +6769,6 @@ class RtlBuddy:
         # the build job's names.
         tag = "verilate" if phase == BUILD_PHASE_VERILATE else "build"
         configured_parallel = compile_parallel(dispatch_cfg, suite_compile)
-        # Asked only for the job that could release anything: the verilate half gets no
-        # gates manifest, and probing twice would log `dispatch.gates_skipped` twice.
-        configured_dependency = (
-            self._release_blocking_dependency(backend, suite_dir=suite_dir)
-            if phase != BUILD_PHASE_VERILATE
-            else None
-        )
         if parallel is None:
             parallel = max(1, min(configured_parallel, planned))
         # `parallel` layers like the reservation fields beside it: this job belongs to
@@ -6507,18 +6809,8 @@ class RtlBuddy:
             # collect.
             result_json=run_scoped_path(dispatch_root, f"{tag}-result", run_token),
             # ...and where the head records which sim job waits on which planned config,
-            # so the build job can release a compile key's sims once built.
-            # Keyed on the head pid like the envelope beside it, and only for a backend
-            # whose jobs can be released: `local-parallel` has no pending queue.
-            gates_json=(
-                run_scoped_path(dispatch_root, "gates", run_token)
-                # ...and never for the verilate half: it leaves sources and a Makefile,
-                # so a released simulation would find no build.
-                if backend.name == "slurm"
-                and configured_dependency is None
-                and phase != BUILD_PHASE_VERILATE
-                else None
-            ),
+            # so the job can release a compile key's sims once built.
+            gates_json=gates_json,
             # The head's artefact namespace. The shared build it populates stays keyed
             # on the compile fingerprint; the tag only moves this job's per-test outputs
             # and transcripts.
@@ -6532,6 +6824,20 @@ class RtlBuddy:
         if spec.gates_json is not None:
             Path(spec.gates_json).unlink(missing_ok=True)
         return backend.submit_build(spec, dependency=dependency)
+
+    def _suite_gates_path(self, backend, *, dispatch_root, run_token, suite_dir):
+        """Where the head records which sim job waits on which planned config, or None.
+
+        Keyed on the head pid like the envelopes beside it, and only for a backend whose
+        jobs can be released (`local-parallel` has no pending queue) and a suite whose
+        `sbatch-args` sets no dependency of its own. Probed once per suite, so
+        `dispatch.gates_skipped` is logged once.
+        """
+        if backend.name != "slurm":
+            return None
+        if self._release_blocking_dependency(backend, suite_dir=suite_dir) is not None:
+            return None
+        return run_scoped_path(Path(dispatch_root), "gates", run_token)
 
     @staticmethod
     def _release_blocking_dependency(backend, *, suite_dir):
