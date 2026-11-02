@@ -759,7 +759,7 @@ Test fields:
 | `postproc.path` | Accepted, not executed | Custom postprocessing is unavailable |
 | `covers` | Optional list | Specification coverage IDs; no simulation effect |
 | `resources` | Optional | Per-test dispatch reservation layered over testbench and root defaults; quote `time`. A [`modes`](#per-mode-reservations) sub-block is the most specific such layer |
-| `assertions` | Default false | Enables Verilator `--assert` and user coverage. Other builders warn and ignore it |
+| `assertions` | Default false | Enables Verilator `--assert` and user coverage, and counts failed assertions and `$error` reports into the Assertions column. xezim checks SVA without a flag, so only the count applies there. Other builders warn and ignore it |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 | `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 
