@@ -15,56 +15,66 @@ from ..runner.xfail import FAIL_STAGE_KEY, FIRST_ERROR_KEY
 from ..logging_utils import log_event
 
 
-# Matches immediate and concurrent SVA failures, e.g. Verilator's
+# Matches immediate and concurrent SVA failures and `$error`, e.g. Verilator's
 # `%Error: dut.sv:42: Assertion failed in top.dut: 'signal == expected'`.
 # `--timing` adds a leading `[<time>] `, so it is optional.
-# xezim reports a failed assertion without an action block as
-# `** Error: Assertion error.`, with the time and scope on the next line.
-_ASSERTION_FAILED_RE = re.compile(
-    r"^(?:(?:\[\d+\]\s+)?%Error[^:]*:\s*[^:]+:\s*\d+:\s*Assertion failed"
-    r"|\*\* Error: Assertion error\.)",
+_VERILATOR_ASSERTION_FAILED_RE = re.compile(
+    r"^(?:\[\d+\]\s+)?%Error[^:]*:\s*[^:]+:\s*\d+:\s*Assertion failed"
 )
+
+# xezim reports every error-severity message (`$error`, a failed assertion with
+# or without an action block) as `** Error: <message>`, or a bare `** Error` for
+# `$error` with no message, with the time and scope on the next line, e.g.
+# `   Time: 32500  Scope: tb.dut.ap` (`$timeformat` may make it `32.50 ns`). The
+# second line tells it from a testbench `$display` that starts `** Error:` and
+# from xezim's one-line timing-check violations, which are not assertions.
+_XEZIM_ERROR_RE = re.compile(r"^\*\* Error(?::|$)")
+_XEZIM_REPORT_TAIL_RE = re.compile(r"^\s+Time: .+?\s+Scope: ")
+
+
+def _assertion_failures(path):
+    """Yield each assertion-failure line in one file, stripped; a missing or unreadable file yields nothing."""
+    if not path or not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", errors="replace") as f:
+            pending = None
+            for line in f:
+                if pending is not None and _XEZIM_REPORT_TAIL_RE.match(line):
+                    yield pending
+                pending = None
+                if _VERILATOR_ASSERTION_FAILED_RE.match(line):
+                    yield line.strip()
+                elif _XEZIM_ERROR_RE.match(line):
+                    pending = line.strip()
+    except OSError:
+        return
 
 
 def count_assertion_failures(*paths) -> int:
-    """Count Verilator `%Error: <file>:<line>: Assertion failed` and xezim `** Error: Assertion error.` lines in the given files, skipping missing ones."""
-    total = 0
-    for path in paths:
-        if not path or not os.path.exists(path):
-            continue
-        try:
-            with open(path, "r", errors="replace") as f:
-                for line in f:
-                    if _ASSERTION_FAILED_RE.match(line):
-                        total += 1
-        except OSError:
-            continue
-    return total
+    """Count Verilator `%Error: <file>:<line>: Assertion failed` lines and xezim `** Error:` reports in the given files, skipping missing ones."""
+    return sum(1 for path in paths for _ in _assertion_failures(path))
 
 
 def first_assertion_failure(*paths) -> str | None:
     """Return the first Verilator or xezim assertion-failure line in the given files, stripped, or None; missing files are skipped."""
     for path in paths:
-        if not path or not os.path.exists(path):
-            continue
-        try:
-            with open(path, "r", errors="replace") as f:
-                for line in f:
-                    if _ASSERTION_FAILED_RE.match(line):
-                        return line.strip()
-        except OSError:
-            continue
+        for line in _assertion_failures(path):
+            return line
     return None
 
 
-# A Verilator error or fatal message, e.g. `%Error: tb.sv:12: Verilog $stop`.
-_VERILATOR_ERROR_LINE_RE = re.compile(r"^(?:\[\d+\]\s+)?%(?:Error|Fatal)\b")
+# A Verilator error or fatal message, e.g. `%Error: tb.sv:12: Verilog $stop`,
+# or a xezim one, e.g. `** Fatal: msg` from `$fatal` or a timing-check violation.
+_SIM_ERROR_LINE_RE = re.compile(
+    r"^(?:(?:\[\d+\]\s+)?%(?:Error|Fatal)\b|\*\* (?:Error|Fatal)(?::|$))"
+)
 
 
 def first_sim_error(*paths) -> str | None:
     """Return the line that best names why a simulator exited nonzero, stripped, or None.
 
-    The first assertion failure (see :func:`first_assertion_failure`) wins; otherwise the first Verilator ``%Error``/``%Fatal`` line. Missing files are skipped.
+    The first assertion failure (see :func:`first_assertion_failure`) wins; otherwise the first Verilator ``%Error``/``%Fatal`` or xezim ``** Error:``/``** Fatal:`` line. Missing files are skipped.
     """
     first = first_assertion_failure(*paths)
     if first is not None:
@@ -75,7 +85,7 @@ def first_sim_error(*paths) -> str | None:
         try:
             with open(path, "r", errors="replace") as f:
                 for line in f:
-                    if _VERILATOR_ERROR_LINE_RE.match(line):
+                    if _SIM_ERROR_LINE_RE.match(line):
                         return line.strip()
         except OSError:
             continue

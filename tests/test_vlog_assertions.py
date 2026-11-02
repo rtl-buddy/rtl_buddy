@@ -30,20 +30,89 @@ def test_count_assertion_failures_matches_timing_prefixed_lines(tmp_path):
     assert vlog_post.count_assertion_failures(str(log)) == 1
 
 
-def test_count_assertion_failures_matches_xezim_error_lines(tmp_path):
-    # xezim prints `** Error: Assertion error.` for an SVA failure with no action block, and `** Error: <msg>` for `$error`, which is not an assertion line.
+# xezim 0.11.3 output for `$error`, an assertion with an `else $error(...)`
+# action block, a bare assertion, `$warning` and a concurrent assertion with an
+# action block, followed by the testbench's own PASS marker.
+XEZIM_ERRORS_LOG = """\
+=== xezim 0.11.3 ===
+** Error: plain error 7
+   Time: 0  Scope: t
+** Error: imm assert with action
+   Time: 1  Scope: t
+** Error: Assertion error.
+   Time: 2  Scope: t.lbl
+** Warning: a warning
+   Time: 2  Scope: t
+** Error: [ASSERT FAILED] [t.ap] more_than_1_bit_set: 3
+   Time: 32500  Scope: t.ap
+PASS done
+Simulation finished at time 32600 ($finish called)
+"""
+
+
+def test_count_assertion_failures_matches_xezim_error_reports(tmp_path):
+    # Every xezim error-severity report counts, as Verilator's `%Error: ... Assertion failed` does for `$error` and action blocks alike; warnings do not.
+    log = tmp_path / "test.log"
+    log.write_text(XEZIM_ERRORS_LOG)
+    assert vlog_post.count_assertion_failures(str(log)) == 4
+    assert vlog_post.first_assertion_failure(str(log)) == "** Error: plain error 7"
+
+
+def test_count_assertion_failures_needs_xezim_time_scope_line(tmp_path):
+    # A `** Error:` line without xezim's `Time: … Scope: …` line under it is testbench output, not a simulator report.
     log = tmp_path / "test.log"
     log.write_text(
-        "** Error: imm fail\n"
-        "   Time: 0  Scope: tb_err\n"
+        "** Error: printed by the testbench\n"
+        "** Error: also printed\n"
+        "PASS\n"
+        "** Error: last line of the file\n",
+    )
+    assert vlog_post.count_assertion_failures(str(log)) == 0
+    assert vlog_post.first_assertion_failure(str(log)) is None
+
+
+def test_count_assertion_failures_xezim_report_after_unpaired_line(tmp_path):
+    log = tmp_path / "test.log"
+    log.write_text(
+        "** Error: printed by the testbench\n"
         "** Error: Assertion error.\n"
-        "   Time: 1  Scope: tb_err.ap2\n"
-        "** Error: Assertion error.\n"
-        "   Time: 3  Scope: tb_err.ap2\n"
-        "PASS done\n",
+        "   Time: 5  Scope: t.ap2\n",
+    )
+    assert vlog_post.count_assertion_failures(str(log)) == 1
+    assert vlog_post.first_assertion_failure(str(log)) == "** Error: Assertion error."
+
+
+def test_count_assertion_failures_xezim_bare_error_and_timeformat(tmp_path):
+    # `$error;` with no message prints `** Error` with no colon; `$timeformat` puts a fraction and a unit in the time.
+    log = tmp_path / "test.log"
+    log.write_text(
+        "** Error\n"
+        "   Time: 1.50 ns  Scope: g\n"
+        "** Error: with timeformat\n"
+        "   Time: 1.50 ns  Scope: g\n"
+        "** Errors are listed below\n"
+        "   Time: 2  Scope: g\n"
+        "PASS\n",
     )
     assert vlog_post.count_assertion_failures(str(log)) == 2
-    assert vlog_post.first_assertion_failure(str(log)) == "** Error: Assertion error."
+    assert vlog_post.first_assertion_failure(str(log)) == "** Error"
+
+
+def test_xezim_timing_check_violation_is_not_an_assertion(tmp_path):
+    # xezim's timing-check violations are one-line `** Error:` reports: not counted, but they name a nonzero exit.
+    line = "** Error: $setup violation in tb.dut.ff at time 1200 (ff.v:12)"
+    log = tmp_path / "test.log"
+    log.write_text(f"{line}\nPASS\n")
+    assert vlog_post.count_assertion_failures(str(log)) == 0
+    assert vlog_post.first_sim_error(str(log)) == line
+
+
+def test_first_sim_error_names_xezim_fatal(tmp_path):
+    # `$fatal` is not counted as an assertion failure (nor is Verilator's `%Fatal`), but it names the nonzero exit.
+    log = tmp_path / "test.log"
+    log.write_text("PASS\n** Fatal: fatal msg\n   Time: 0  Scope: f\n")
+    assert vlog_post.count_assertion_failures(str(log)) == 0
+    assert vlog_post.first_sim_error(str(log)) == "** Fatal: fatal msg"
 
 
 def test_count_assertion_failures_handles_missing_file(tmp_path):
@@ -106,6 +175,20 @@ def test_vlog_post_flips_pass_to_fail_when_assertion_fires(tmp_path):
     assert results["result"] == "FAIL"
     assert results["assertions"] == {"enabled": True, "fired": 1}
     assert "SVA assertion failure" in results["desc"]
+
+
+def test_vlog_post_counts_xezim_action_block_reports(tmp_path):
+    # rtl-buddy/rtl_buddy#981: assertion macros with `else $error(...)` fired under xezim, the testbench still printed PASS, and the Assertions column stayed empty.
+    log = tmp_path / "test.log"
+    log.write_text(XEZIM_ERRORS_LOG)
+    post = vlog_post.VlogPost(
+        name="t", path=str(log), err_path=None, assertions_enabled=True
+    )
+    results = post.get_results().results
+    assert results["result"] == "FAIL"
+    assert results["assertions"] == {"enabled": True, "fired": 4}
+    assert results["desc"] == "4 SVA assertion failure(s) (was PASS: done)"
+    assert results["first_error"] == "** Error: plain error 7"
 
 
 def test_vlog_post_flips_na_to_fail_on_timing_abort(tmp_path):
