@@ -2016,11 +2016,11 @@ def _session_events(run_dir: str | None, since: int | None = None) -> list[dict]
     return events[begins[-1] :] if begins else events
 
 
-def _stage_end_hook_failed(run_dir: str, since: int) -> bool:
-    """Whether a `stage-end` hook failed in the session whose progress events start at index `since` of `run_dir`'s."""
+def _round_hook_failed(run_dir: str, since: int) -> bool:
+    """Whether a `stage-end` or `after-timing-repair` hook failed in the session whose progress events start at index `since` of `run_dir`'s."""
     return any(
         e.get("event") == "hook_end"
-        and e.get("point") == "stage-end"
+        and e.get("point") in ("stage-end", "after-timing-repair")
         and e.get("status") == "error"
         for e in _session_events(run_dir, since)
     )
@@ -2557,7 +2557,7 @@ def run_post_route_repair(
 
     Rounds count those violators only on a run that gates on electrical violators (`gate_electrical` in the plan) or sets `electrical-repair`; a gated run's stop reason also names the kept round's violators. With `electrical-repair` (`electrical` in the plan) one more round runs after the others when the best round has such violators: rb links the best round's checkpoint and SPEF as `POST_ROUTE_ELECTRICAL_SOURCE`, and the round's `repair_design` runs on them. It is timed and compared as any round; `electrical_round` in the done event says whether it was kept, not kept, skipped or failed, and why. When the round is kept, `unseen` lists the violators its extraction found within limits on the placement estimate (`_unseen_tcl`), which rb also warns about.
 
-    A failed session of round k from 1 is set aside: rb warns, notes it after the session's part of the log, whose `[ERROR` lines then do not fail the run (`_error_lines`), and the stage keeps the best round. A repair session whose `stage-end` hook failed fails the stage instead. Round 0's extraction failing fails the stage, as does a failed stage report: a `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint the stage kept.
+    A failed session of round k from 1 is set aside: rb warns, notes it after the session's part of the log, whose `[ERROR` lines then do not fail the run (`_error_lines`), and the stage keeps the best round. A repair session whose `stage-end` or `after-timing-repair` hook failed fails the stage instead. Round 0's extraction failing fails the stage, as does a failed stage report: a `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint the stage kept.
     """
     plan = json.loads(Path(run_dir, POST_ROUTE_PLAN).read_text())
     stage = _checkpoint_name(POST_ROUTE_REPAIR_STAGE)
@@ -2690,16 +2690,16 @@ def run_post_route_repair(
         pnr_checkpoints.record_event(run_dir, "post_route_round_failed", **fields)
         return "session_failed", f"round {round_}'s {kind} session failed: {failure}"
 
-    # A failed `stage-end` hook fails the stage instead of setting its round aside.
+    # A failed `stage-end` or `after-timing-repair` hook fails the stage instead of setting its round aside.
     hook_failed: list[PostRouteOutcome] = []
 
     def _repair(round_: int, script: str, label: str):
-        """Run round `round_`'s repair session; return its checkpoint files, or None after setting it aside, and the stop a set-aside round gives. A session whose `stage-end` hook failed returns None twice and leaves the stage's outcome in `hook_failed`."""
+        """Run round `round_`'s repair session; return its checkpoint files, or None after setting it aside, and the stop a set-aside round gives. A session whose `stage-end` or `after-timing-repair` hook failed returns None twice and leaves the stage's outcome in `hook_failed`."""
         since = len(pnr_checkpoints.read_progress(run_dir))
         code, stderr, problem, failure, section = _run(
             script, label, f"{_ROUND_DONE_MARKER}{round_} repair"
         )
-        if failure is not None and _stage_end_hook_failed(run_dir, since):
+        if failure is not None and _round_hook_failed(run_dir, since):
             hook_failed.append(_outcome(code, stderr, problem))
             return None, None
         if failure is None:

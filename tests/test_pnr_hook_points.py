@@ -463,15 +463,26 @@ def test_a_failing_stage_end_hook_fails_the_run_naming_the_stage(
         assert written == ["floorplan", "place"]
 
 
-def test_a_failing_stage_end_hook_in_a_repair_round_fails_the_run(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    "point, body, named",
+    [
+        (
+            "stage-end",
+            'if {$rb_stage eq "post_route_repair"} { error "grid broken" }\n',
+            "Stage post_route_repair: Hook stage-end",
+        ),
+        (
+            "after-timing-repair",
+            'if {$rb_repair eq "post_route"} { error "grid broken" }\n',
+            "Hook after-timing-repair",
+        ),
+    ],
+)
+def test_a_failing_hook_in_a_repair_round_fails_the_run(
+    tmp_path, monkeypatch, point, body, named
 ):
     """A repair round whose session fails is otherwise set aside, and the stage keeps the best round."""
-    hooks = _hooks(
-        tmp_path,
-        ("stage-end",),
-        'if {$rb_stage eq "post_route_repair"} { error "grid broken" }\n',
-    )
+    hooks = _hooks(tmp_path, (point,), body)
     backend, artefacts = _run_backend(
         tmp_path,
         monkeypatch,
@@ -487,7 +498,7 @@ def test_a_failing_stage_end_hook_in_a_repair_round_fails_the_run(
     assert isinstance(res, PnrFailResults)
     desc = res.results["desc"]
     assert desc.startswith("stage 06_post_route_repair: ")
-    assert "Stage post_route_repair: Hook stage-end" in desc
+    assert named in desc
     assert not any(e == "pnr.post_route_round_failed" for _l, e, _f in logged)
     (run_dir,) = _runs(artefacts)
     assert not (run_dir / "06_post_route_repair.r1.extract.log").exists()
