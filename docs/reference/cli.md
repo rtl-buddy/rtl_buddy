@@ -753,8 +753,7 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 │                                                names, differs from the resumed run:  │
 │                                                script:STAGE for a stage script,      │
 │                                                script for every stage script, or an  │
-│                                                input file's path, relative to the    │
-│                                                pnr.yaml or absolute. Repeatable. The │
+│                                                input file's path. Repeatable. The    │
 │                                                run records each accepted change; a   │
 │                                                value that names no difference        │
 │                                                refuses the resume                    │

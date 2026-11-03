@@ -164,7 +164,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `fail_stage: routed_check` | A located macro or exact pin moved between floorplan and the routed DEF, usually because a `pin-constraints` file or hook moved it. |
 | `fail_stage: pins_complete` | `pins-complete: true` found a port with no pin entry, or with conflicting entries. Add or remove entries. |
 | `fail_stage: checkpoint` | A checkpoint could not be written (disk full; see the `checkpoint` event in `progress.jsonl`), or a hook wrapped `global_placement`, `clock_tree_synthesis`, `global_route` or `detailed_route` with `rename` in a one-session run. Free space, or remove the wrapper or set `stages: true`. |
-| `fail_stage: resume` | `--resume` refused: a stage script, input file, checkpoint or OpenROAD version differs. The description lists every difference; a changed script or input file names the `--accept-change` value that accepts it (see [Accept a change on resume](#accept-a-change-on-resume)). Otherwise rerun from an earlier stage. |
+| `fail_stage: resume` | `--resume` refused: a stage script, input file, checkpoint or OpenROAD version differs. The description lists every script and input difference, each one a value accepts with its `--accept-change` value (see [Accept a change on resume](#accept-a-change-on-resume)). Otherwise rerun from an earlier stage. |
 | `fail_stage: dispatch` | A Slurm stage job ended `OUT_OF_MEMORY`, `TIMEOUT`, `CANCELLED` or similar, never started, or was refused. Read `dispatch/<NN>_<stage>.slurm.log`; raise that stage's `resources:`. See [Dispatch](#dispatch-the-stages-to-slurm). |
 | `fail_stage: abstract` | A hardened block's view could not be written. Read `pnr.log`. |
 | `fail_stage: outputs` | rb could not read, decode or rewrite `<top>.routed.pwr.v` or a hardened block's `<top>.lib` to put the supply ports last. The description names the file and error. |
@@ -699,16 +699,17 @@ A resumed run equals a fresh run of the current configuration unless it records 
 
 ```bash
 rb pnr alu_pnr -c pnr/alu/pnr.yaml --resume latest --from global_route \
-  --accept-change hooks/session.tcl
+  --accept-change pnr/alu/hooks/session.tcl
 ```
 
-- The refusal lists every difference and ends each changed script or input file with the value that accepts it. Only differences a value names are accepted.
+- The refusal lists every script and input difference and ends each one a value accepts with that value. Only differences a value names are accepted. The checks of the OpenROAD version, the manifest, a probe and the stage before `--from` come first, and each refuses alone.
 - `script:<stage>` accepts that stage's script, and `script` every stage script that differs, such as all those a `pnr.yaml` setting like `placement.rotated-macro-footprint` changes.
-- An input file is named by its path, relative to `pnr.yaml` or absolute; rb compares resolved paths. The refusal prints the path relative to `pnr.yaml` when the file is under its directory.
-- No value accepts another OpenROAD version, a probe resumed into a closure run, a missing or changed checkpoint file, a stage before `--from` that did not finish, an unreadable `manifest.json`, or an input configured or dropped since: a file added to or removed from a list, or an `inputs:` entry at another path.
-- A value that names no difference refuses the resume, listing what does differ.
+- An input file is named by its path, relative to the directory rb runs in or absolute; rb compares resolved paths. The refusal prints the path relative to that directory when the file is under it, else absolute.
+- Only an input a stage from `--from` on reads can be accepted. The floorplan inputs (netlist, SDC, pin constraints, planner files, `pdn-config`, `tracks-tcl`, `tapcell-tcl`) are read by the floorplan session alone, and a hook point only by the stages it runs in: a changed `after-cts` hook cannot be accepted from `--from global_route`. The refusal says to resume from the first stage that reads the file instead. `session`, `stage-end`, Liberty, LEF, the other PDK Tcl files and the files under `inputs:` count as read by every stage.
+- No value accepts another OpenROAD version, a probe resumed into a closure run, a missing or changed checkpoint file, a stage before `--from` that did not finish, an unreadable `manifest.json`, a missing or unreadable input file, or an input configured or dropped since: a file added to or removed from a list, or an `inputs:` entry at another path.
+- A value that names no difference, or only one no value accepts, refuses the resume and says which, listing what does differ.
 - The run records each accepted change under `accepted_changes` in its `manifest.json` and its result, and warns `pnr.resume_accepted_change` for each. A script record names the stage and the first line that differs; an input record names the role and the file's old and new path and digest. A hardened block's `abstract.manifest.json` records them too. They do not make the abstract stale: its staleness check compares the files and configuration the run read.
-- Resuming the resumed run needs no value again while the script or file is as accepted; the new run records the change with `inherited_from` naming the run that accepted it. Otherwise the refusal names it again.
+- Resuming the resumed run needs no value again while the script or file is as accepted; the new run records the change with `inherited_from` naming the run that accepted it. Otherwise the refusal names it again, and the earlier record is dropped.
 
 ## Dispatch the stages to Slurm
 
