@@ -500,8 +500,8 @@ def run_platform(pnr_cfg, root_cfg):
     platform = platform.with_run_repairs(
         pnr_cfg.global_route_repair,
         pnr_cfg.post_route_repair,
-        pnr_cfg.get_name(),
         pnr_cfg.post_cts_repair,
+        pnr_cfg.get_name(),
     )
     return platform.with_run_overrides(pnr_cfg.get_overrides())
 
@@ -845,12 +845,13 @@ def _repair_steps_tcl(
     legalize: str | None,
     platform=None,
     *,
-    setup_repair: bool = True,
+    sides: tuple[str, ...] | None = None,
+    log_prefix: str | None = None,
     after_timing: str = "",
 ) -> str:
     """Return `repair_design`, then setup and hold `repair_timing`, each after a log line naming it, each with `platform`'s repair options (`_repair_command`), then `after_timing` (the `after-timing-repair` hooks, `_after_timing_repair_block`) when a `repair_timing` ran.
 
-    Without `setup_repair` no setup repair runs, and a set `setup_ns` is still passed to the hold repair.
+    `sides` are the `repair_timing` sides that run, by default each whose margin is set; a side that runs without a margin passes no margin option, and a set `setup_ns` is still passed to the hold repair when the setup side does not run. Each log line starts with `log_prefix`, by default `title` and a colon, and names only the margins that are set.
 
     Margins are given in ns and passed in the Liberty time unit (`ps_per_unit` picoseconds), which is what `repair_timing` reads; the log line gives both. A zero margin is the tool's default and passes no option. The hold repair also passes a set setup margin, as ORFS's `repair_timing_helper` does, so it keeps that much setup slack on the paths it delays.
 
@@ -876,12 +877,19 @@ def _repair_steps_tcl(
         value = _fmt_number(margin * 1000.0 / ps_per_unit)
         return f" -{kind}_margin {value}", f"{kind} margin {_fmt_number(margin)} ns"
 
+    if sides is None:
+        sides = tuple(
+            kind
+            for kind, margin in (("setup", setup_ns), ("hold", hold_ns))
+            if margin is not None
+        )
+    prefix = f"{title}: " if log_prefix is None else log_prefix
     timed = False
     for kind, margin in (("setup", setup_ns), ("hold", hold_ns)):
-        if margin is None or (kind == "setup" and not setup_repair):
+        if kind not in sides:
             continue
         timed = True
-        options = [_option(kind, margin)]
+        options = [] if margin is None else [_option(kind, margin)]
         if kind == "hold" and setup_ns is not None:
             options.append(_option("setup", setup_ns))
         command = _repair_command(
@@ -892,7 +900,8 @@ def _repair_steps_tcl(
             note += f" in Liberty time unit {format_time_unit(ps_per_unit)}"
         if design is not None and design.wire_rc is not None:
             note += ", signal wire RC [rb::rc::describe] for the nets it changes"
-        lines += [f'puts ">>> {title}: {command} ({note})"', command]
+        note = f" ({note.removeprefix(', ')})" if note else ""
+        lines += [f'puts ">>> {prefix}{command}{note}"', command]
     if timed and after_timing:
         lines.append(after_timing.rstrip("\n"))
     if design is not None and design.after_timing:
@@ -903,13 +912,16 @@ def _repair_steps_tcl(
 def _after_timing_repair_block(
     hooks: dict, repair: str, round_: int | None = None
 ) -> str:
-    """Return the `after-timing-repair` hook lines that follow the `repair_timing` calls of `repair` (`post_cts`, `global_route` or `post_route`), with `$rb_repair` naming it and, in post-route round `round_`, `$rb_repair_round` its number; `""` when the run has none."""
+    """Return the `after-timing-repair` hook lines that follow the `repair_timing` calls of `repair` (`post_cts`, `global_route` or `post_route`), with `$rb_repair` naming it and, in post-route round `round_`, `$rb_repair_round` its number, both unset after them; `""` when the run has none."""
     paths = hooks.get("after-timing-repair")
     if not paths:
         return ""
+    names = "rb_repair" if round_ is None else "rb_repair rb_repair_round"
     round_line = f"set rb_repair_round {round_}\n" if round_ is not None else ""
-    return f"set rb_repair {repair}\n{round_line}" + _run_hook_lines(
-        "after-timing-repair", paths
+    return (
+        f"set rb_repair {repair}\n{round_line}"
+        + _run_hook_lines("after-timing-repair", paths)
+        + f"unset -nocomplain {names}\n"
     )
 
 
@@ -921,7 +933,7 @@ def _post_cts_repair_tcl(
 ) -> str:
     """Return the post-CTS timing repair on placement parasitics: setup unless `post-cts-setup-repair` is false, then hold, then `after_timing` (`_after_timing_repair_block`). A probe skips it.
 
-    Without `post-cts-repair` margins the commands are bare; with them the repair runs as `_repair_steps_tcl` renders it, a margin left unset as 0, and the hold repair also passes a set setup margin, `post-cts-setup-repair: false` or not.
+    Without `post-cts-repair` margins (a zero margin is none) the commands are bare; with them the repair runs as `_repair_steps_tcl` renders it under the block's own log line, and the hold repair also passes a set setup margin, `post-cts-setup-repair: false` or not.
 
     The block carries its own leading newline, as the template once held the text itself.
     """
@@ -933,12 +945,15 @@ def _post_cts_repair_tcl(
         return head + _repair_steps_tcl(
             "Post-CTS timing repair",
             None,
-            margins.setup_margin or 0.0,
-            margins.hold_margin or 0.0,
+            margins.setup_margin,
+            margins.hold_margin,
             ps_per_unit,
             None,
             platform,
-            setup_repair=platform.get_post_cts_setup_repair(),
+            sides=("setup", "hold")
+            if platform.get_post_cts_setup_repair()
+            else ("hold",),
+            log_prefix="  ",
             after_timing=after_timing,
         )
     setup = (
@@ -7214,8 +7229,8 @@ class OpenRoadPnr:
             platform = platform.with_run_repairs(
                 self.pnr_cfg.global_route_repair,
                 self.pnr_cfg.post_route_repair,
-                self.pnr_cfg.get_name(),
                 self.pnr_cfg.post_cts_repair,
+                self.pnr_cfg.get_name(),
             )
             platform.get_global_route_repair()
             platform.get_post_route_repair()

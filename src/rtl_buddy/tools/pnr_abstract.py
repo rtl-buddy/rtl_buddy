@@ -381,8 +381,8 @@ def abstract_config(pnr_cfg, platform) -> dict:
     platform = platform.with_run_repairs(
         pnr_cfg.global_route_repair,
         pnr_cfg.post_route_repair,
-        pnr_cfg.get_name(),
         pnr_cfg.post_cts_repair,
+        pnr_cfg.get_name(),
     )
     platform = platform.with_run_overrides(pnr_cfg.get_overrides())
     hooks = platform.get_tcl_hooks()

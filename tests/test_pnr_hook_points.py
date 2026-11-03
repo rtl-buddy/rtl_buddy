@@ -129,7 +129,7 @@ def _scripts(artefacts) -> dict[str, str]:
     }
 
 
-#: A new point's block: a `before-cts` one ends a one-session run's `place` stage first, unless `repair_clock_inverters` follows and that ends it, an `after-extraction` one names its SPEF, an `after-timing-repair` one its repair and round.
+#: A new point's block: a `before-cts` one ends a one-session run's `place` stage first, unless `repair_clock_inverters` follows and that ends it, an `after-extraction` one names its SPEF, an `after-timing-repair` one sets and unsets its repair and round.
 _NEW_BLOCK_RE = re.compile(
     r"(?:\n|(?<=\n)set rb_repair \w+\n(?:set rb_repair_round \d+\n)?)"
     r"(?:rb::ckpt::checkpoint_for clock_tree_synthesis enter\n"
@@ -137,6 +137,7 @@ _NEW_BLOCK_RE = re.compile(
     r"(?:set rb_spef [^\n]*\n)?"
     r'puts ">>> Hook (?:' + "|".join(map(re.escape, _NEW_POINTS)) + r")[^\n]*\n"
     r"rb::hook::(?:run|stage_end) [^\n]*\n"
+    r"(?:unset -nocomplain rb_repair(?: rb_repair_round)?\n)?"
 )
 
 
@@ -853,3 +854,45 @@ def test_a_resume_after_cts_refuses_an_edited_after_timing_repair_hook(
         tmp_path, monkeypatch, hooks, stages=True, resume="latest", resume_from="cts"
     )
     assert isinstance(backend.run(), PnrPassResults)
+
+
+@pytest.mark.parametrize("stages", [True, False], ids=["staged", "one-session"])
+def test_rb_repair_exists_only_for_the_after_timing_repair_hooks(
+    tmp_path, monkeypatch, stages
+):
+    points = (
+        "after-timing-repair",
+        "after-cts-repair",
+        "after-global-route",
+        "after-global-route-repair",
+        "before-detailed-route",
+        "stage-end",
+    )
+    hooks = {
+        point: _hooks(
+            tmp_path,
+            (point,),
+            f'puts "SEES {point} [info exists rb_repair] '
+            '[info exists rb_repair_round]"\n',
+        )[point]
+        for point in points
+    }
+    backend, artefacts = _run_backend(
+        tmp_path,
+        monkeypatch,
+        hooks,
+        stages=stages,
+        post_route={**_ROUNDS, "rounds": 1},
+        env={"RB_STUB_SETUP": "-0.2 0.05"},
+    )
+
+    assert isinstance(backend.run(), PnrPassResults)
+    seen = [
+        line
+        for line in (artefacts / "pnr.log").read_text().splitlines()
+        if line.startswith("SEES ")
+    ]
+    assert seen.count("SEES after-timing-repair 1 0") == 2
+    assert seen.count("SEES after-timing-repair 1 1") == 1
+    others = [line for line in seen if "after-timing-repair" not in line]
+    assert others and all(line.endswith(" 0 0") for line in others)

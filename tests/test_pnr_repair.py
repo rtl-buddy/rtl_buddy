@@ -142,7 +142,7 @@ def test_a_run_overrides_the_platform_field_by_field():
     )
     run_pr = read_post_route_repair("run", {"rounds": 4, "reroute": "eco"})
 
-    resolved = platform.with_run_repairs(run_gr, run_pr, "r")
+    resolved = platform.with_run_repairs(run_gr, run_pr, UNSET, "r")
 
     assert resolved.get_global_route_repair() == GlobalRouteRepair(
         repair_design=RepairDesign(slew_margin=20.0, cap_margin=30.0),
@@ -161,11 +161,11 @@ def test_a_run_overrides_the_platform_field_by_field():
 def test_a_run_turns_a_platform_repair_off_with_null_and_on_without_one():
     platform = _platform(global_route_repair={"hold-margin": 0.0})
     off = platform.with_run_repairs(
-        None, read_post_route_repair("run", {"setup-margin": 0.0}), "r"
+        None, read_post_route_repair("run", {"setup-margin": 0.0}), UNSET, "r"
     )
     assert off.get_global_route_repair() is None
     assert off.get_post_route_repair() == PostRouteRepair(setup_margin=0.0)
-    alone = platform.with_run_repairs(UNSET, UNSET, "r")
+    alone = platform.with_run_repairs(UNSET, UNSET, UNSET, "r")
     assert alone.get_global_route_repair() == platform.get_global_route_repair()
 
 
@@ -188,13 +188,13 @@ def test_a_block_that_repairs_nothing_is_refused_where_a_run_uses_it():
         FatalRtlBuddyError,
         match="pnr run 'r' on platform 'pl': post-route-repair repairs nothing",
     ):
-        platform.with_run_repairs(UNSET, UNSET, "r")
+        platform.with_run_repairs(UNSET, UNSET, UNSET, "r")
     with pytest.raises(FatalRtlBuddyError, match="pnr platform 'pl': post-route"):
         platform.get_post_route_repair()
     platform = _platform(global_route_repair={"setup-margin": 0.1})
     with pytest.raises(FatalRtlBuddyError, match="global-route-repair repairs nothing"):
         platform.with_run_repairs(
-            read_global_route_repair("run", {"setup-margin": None}), UNSET, "r"
+            read_global_route_repair("run", {"setup-margin": None}), UNSET, UNSET, "r"
         )
 
 
@@ -206,6 +206,7 @@ def test_a_partial_platform_block_loads_and_a_run_completes_it():
     resolved = platform.with_run_repairs(
         read_global_route_repair("run", {"hold-margin": 0.01}),
         read_post_route_repair("run", {"setup-margin": 0.1}),
+        UNSET,
         "r",
     )
     assert resolved.get_global_route_repair() == GlobalRouteRepair(
@@ -248,7 +249,7 @@ def test_several_rounds_need_a_margin():
         FatalRtlBuddyError,
         match="post-route-repair.rounds is 2, but the block sets no setup-margin",
     ):
-        platform.with_run_repairs(UNSET, UNSET, "r")
+        platform.with_run_repairs(UNSET, UNSET, UNSET, "r")
     one = _platform(post_route_repair={"repair-design": {}})
     assert one.get_post_route_repair().sides() == ()
     both = _platform(post_route_repair={"hold-margin": 0, "rounds": 2})
@@ -586,7 +587,7 @@ def test_a_full_reroute_routes_again_after_legalizing(tmp_path):
 def test_a_run_repair_overrides_the_platform_in_the_flow(tmp_path):
     platform = _real_platform(tmp_path, global_route_hold_repair=True)
     gr = read_global_route_repair("run", {"setup-margin": 0.1})
-    text = _render(tmp_path, platform.with_run_repairs(gr, UNSET, "r"))
+    text = _render(tmp_path, platform.with_run_repairs(gr, UNSET, UNSET, "r"))
     setup = text.index("repair_timing -setup -setup_margin 100\n")
     assert setup < text.index("repair_timing -hold -setup_margin 100\n", setup)
 
@@ -3159,7 +3160,7 @@ def test_wire_rc_and_after_timing_default_off_and_a_run_overrides_them():
     run = read_post_route_repair(
         "run", {"repair-design": {"wire-rc": None, "after-timing": None}}
     )
-    resolved = platform.with_run_repairs(UNSET, run, "r").get_post_route_repair()
+    resolved = platform.with_run_repairs(UNSET, run, UNSET, "r").get_post_route_repair()
     assert resolved.repair_design == RepairDesign(slew_margin=20.0)
     plain = _platform(post_route_repair={"repair-design": {}, "hold-margin": 0})
     design = plain.get_post_route_repair().repair_design
@@ -3207,9 +3208,9 @@ def test_after_timing_without_timing_repair_is_refused_where_a_run_uses_it():
         "after-timing runs repair_design again after timing repair, but the block "
         "sets no setup-margin or hold-margin",
     ):
-        platform.with_run_repairs(UNSET, UNSET, "r")
+        platform.with_run_repairs(UNSET, UNSET, UNSET, "r")
     completed = platform.with_run_repairs(
-        UNSET, read_post_route_repair("run", {"hold-margin": 0.0}), "r"
+        UNSET, read_post_route_repair("run", {"hold-margin": 0.0}), UNSET, "r"
     )
     assert completed.get_post_route_repair().repair_design.after_timing is True
 
@@ -3592,10 +3593,10 @@ def test_electrical_repair_takes_margins_a_run_overrides_field_by_field():
         slew_margin=20.0
     )
     run = read_post_route_repair("run", {"electrical-repair": {"cap-margin": 10}})
-    resolved = platform.with_run_repairs(UNSET, run, "r").get_post_route_repair()
+    resolved = platform.with_run_repairs(UNSET, run, UNSET, "r").get_post_route_repair()
     assert resolved.electrical_repair == RepairDesign(slew_margin=20.0, cap_margin=10.0)
     off = read_post_route_repair("run", {"electrical-repair": None})
-    resolved = platform.with_run_repairs(UNSET, off, "r").get_post_route_repair()
+    resolved = platform.with_run_repairs(UNSET, off, UNSET, "r").get_post_route_repair()
     assert resolved.electrical_repair is None
     unset = _platform(post_route_repair={"setup-margin": 0})
     assert unset.get_post_route_repair().electrical_repair is None
@@ -4316,15 +4317,19 @@ def test_a_run_overrides_the_post_cts_margins_field_by_field():
     assert platform.get_post_cts_repair() == PostCtsRepair(0.05, 0.01)
     run = read_post_cts_repair("run", {"hold-margin": 0.02})
     assert platform.with_run_repairs(
-        UNSET, UNSET, "r", run
+        UNSET, UNSET, run, "r"
     ).get_post_cts_repair() == PostCtsRepair(0.05, 0.02)
     cleared = read_post_cts_repair("run", {"setup-margin": None})
     assert platform.with_run_repairs(
-        UNSET, UNSET, "r", cleared
+        UNSET, UNSET, cleared, "r"
     ).get_post_cts_repair() == PostCtsRepair(None, 0.01)
+    zero = read_post_cts_repair("run", {"hold-margin": 0})
+    assert platform.with_run_repairs(
+        UNSET, UNSET, zero, "r"
+    ).get_post_cts_repair() == PostCtsRepair(0.05, None)
     off = read_post_cts_repair("run", None)
     assert (
-        platform.with_run_repairs(UNSET, UNSET, "r", off).get_post_cts_repair()
+        platform.with_run_repairs(UNSET, UNSET, off, "r").get_post_cts_repair()
         == PostCtsRepair()
     )
 
@@ -4341,7 +4346,7 @@ def test_a_run_reads_its_post_cts_repair(tmp_path):
     ).initialise(str(tmp_path))
     assert cfg.post_cts_repair == {"setup_margin": 0.1}
     platform = _platform().with_run_repairs(
-        cfg.global_route_repair, cfg.post_route_repair, cfg.name, cfg.post_cts_repair
+        cfg.global_route_repair, cfg.post_route_repair, cfg.post_cts_repair, cfg.name
     )
     assert platform.get_post_cts_repair() == PostCtsRepair(setup_margin=0.1)
 
@@ -4368,8 +4373,18 @@ def _post_cts(text: str) -> str:
     return text[start : text.index('puts ">>> Detail placement (legalize', start)]
 
 
-@pytest.mark.parametrize("block", [{}, {"setup-margin": None, "hold-margin": None}])
+@pytest.mark.parametrize(
+    "block",
+    [
+        {},
+        {"setup-margin": None, "hold-margin": None},
+        {"setup-margin": 0, "hold-margin": 0},
+        {"hold-margin": 0},
+        None,
+    ],
+)
 def test_post_cts_repair_without_a_margin_renders_as_unset(tmp_path, block):
+    """A zero margin passes no option, so it renders as no margin, and the stage script and its checkpoints compare equal."""
     unset = _render(tmp_path, _real_platform(tmp_path))
     assert _render(tmp_path, _real_platform(tmp_path, post_cts_repair=block)) == unset
     assert _post_cts(unset) == (
@@ -4397,10 +4412,10 @@ def test_post_cts_repair_passes_margins_in_the_liberty_unit(
     assert _post_cts(text) == (
         'puts ">>> Post-CTS timing repair"\n'
         "estimate_parasitics -placement\n"
-        f'puts ">>> Post-CTS timing repair: repair_timing -setup -setup_margin {setup} '
+        f'puts ">>>   repair_timing -setup -setup_margin {setup} '
         f'(setup margin 0.05 ns in Liberty time unit {unit})"\n'
         f"repair_timing -setup -setup_margin {setup}\n"
-        f'puts ">>> Post-CTS timing repair: repair_timing -hold -hold_margin {hold} '
+        f'puts ">>>   repair_timing -hold -hold_margin {hold} '
         f"-setup_margin {setup} (hold margin 0.01 ns, setup margin 0.05 ns in "
         f'Liberty time unit {unit})"\n'
         f"repair_timing -hold -hold_margin {hold} -setup_margin {setup}\n"
@@ -4421,8 +4436,8 @@ def test_without_post_cts_setup_repair_the_hold_repair_keeps_the_setup_margin(
     block = _post_cts(_render(tmp_path, platform))
     assert "repair_timing -setup" not in block
     assert (
-        'puts ">>> Post-CTS timing repair: repair_timing -hold -setup_margin 50 '
-        '(hold margin 0 ns, setup margin 0.05 ns in Liberty time unit 1ps)"\n'
+        'puts ">>>   repair_timing -hold -setup_margin 50 '
+        '(setup margin 0.05 ns in Liberty time unit 1ps)"\n'
         "repair_timing -hold -setup_margin 50\n"
     ) in block
 
@@ -4430,8 +4445,11 @@ def test_without_post_cts_setup_repair_the_hold_repair_keeps_the_setup_margin(
 def test_a_hold_margin_alone_repairs_setup_without_a_margin(tmp_path):
     platform = _real_platform(tmp_path, post_cts_repair={"hold-margin": 0.01})
     block = _post_cts(_render(tmp_path, platform))
-    assert "\nrepair_timing -setup\n" in block
-    assert "\nrepair_timing -hold -hold_margin 10\n" in block
+    assert 'puts ">>>   repair_timing -setup"\nrepair_timing -setup\n' in block
+    assert (
+        'puts ">>>   repair_timing -hold -hold_margin 10 (hold margin 0.01 ns in '
+        'Liberty time unit 1ps)"\nrepair_timing -hold -hold_margin 10\n'
+    ) in block
 
 
 def test_post_cts_margins_take_the_repair_options(tmp_path):
@@ -4469,10 +4487,11 @@ def test_the_abstract_digest_names_post_cts_margins_only_when_set(tmp_path):
     pnr_cfg = _pnr_cfg(tmp_path, ())
     plain = pnr_abstract.abstract_config(pnr_cfg, _real_platform(tmp_path))
     assert "post_cts_repair" not in plain
-    emptied = pnr_abstract.abstract_config(
-        pnr_cfg, _real_platform(tmp_path, post_cts_repair={})
-    )
-    assert emptied == plain
+    for block in ({}, {"setup-margin": 0, "hold-margin": 0}, {"hold-margin": 0}):
+        emptied = pnr_abstract.abstract_config(
+            pnr_cfg, _real_platform(tmp_path, post_cts_repair=block)
+        )
+        assert emptied == plain
     hold = pnr_abstract.abstract_config(
         replace(pnr_cfg, post_cts_repair={"setup_margin": 0.05}),
         _real_platform(tmp_path, post_cts_repair={"hold-margin": 0.01}),

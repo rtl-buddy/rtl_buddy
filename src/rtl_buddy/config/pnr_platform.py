@@ -3,7 +3,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 from serde import serde, field
 
@@ -235,6 +235,14 @@ class PnrRunOverrides:
 
     def is_empty(self) -> bool:
         return self == PnrRunOverrides()
+
+
+class _Repairs(NamedTuple):
+    """A platform's repair blocks with a run's layers merged over them."""
+
+    global_route: GlobalRouteRepair | None
+    post_route: PostRouteRepair | None
+    post_cts: PostCtsRepair
 
 
 def read_run_overrides(
@@ -506,22 +514,21 @@ class PnrPlatformConfig:
             where, cfg.post_route_repair
         )
         # Resolved on first use, or by `with_run_repairs`.
-        self._repairs: (
-            tuple[GlobalRouteRepair | None, PostRouteRepair | None, PostCtsRepair]
-            | None
-        ) = None
+        self._repairs: _Repairs | None = None
 
     def _resolve_repairs(self, gr_run, pr_run, pc_run, where: str) -> None:
-        self._repairs = (
-            resolve_global_route_repair(
+        self._repairs = _Repairs(
+            global_route=resolve_global_route_repair(
                 where, [self._global_route_repair_layer, gr_run]
             ),
-            resolve_post_route_repair(where, [self._post_route_repair_layer, pr_run]),
-            resolve_post_cts_repair([self._post_cts_repair_layer, pc_run]),
+            post_route=resolve_post_route_repair(
+                where, [self._post_route_repair_layer, pr_run]
+            ),
+            post_cts=resolve_post_cts_repair([self._post_cts_repair_layer, pc_run]),
         )
 
     def with_run_repairs(
-        self, global_route_repair, post_route_repair, run: str, post_cts_repair=UNSET
+        self, global_route_repair, post_route_repair, post_cts_repair, run: str
     ) -> "PnrPlatformConfig":
         """Return this platform with a P&R run's repair layers (see `pnr_repair`) over its own, field by field; raise when the merged block is incomplete."""
         resolved = copy.copy(self)
@@ -533,7 +540,7 @@ class PnrPlatformConfig:
         )
         return resolved
 
-    def _resolved_repairs(self):
+    def _resolved_repairs(self) -> "_Repairs":
         if self._repairs is None:
             self._resolve_repairs(UNSET, UNSET, UNSET, f"pnr platform '{self._name}'")
         return self._repairs
@@ -920,7 +927,7 @@ class PnrPlatformConfig:
 
     def get_post_cts_repair(self) -> PostCtsRepair:
         """The post-CTS repair's margins, platform under run."""
-        return self._resolved_repairs()[2]
+        return self._resolved_repairs().post_cts
 
     def get_floorplan_setup_repair(self) -> bool:
         """Whether the floorplan ends with ORFS's sizing-only setup repair."""
@@ -940,11 +947,11 @@ class PnrPlatformConfig:
 
     def get_global_route_repair(self) -> GlobalRouteRepair | None:
         """The repair after global route, platform under run, or None when off."""
-        return self._resolved_repairs()[0]
+        return self._resolved_repairs().global_route
 
     def get_post_route_repair(self) -> PostRouteRepair | None:
         """The repair rounds after detailed route, platform under run, or None when off."""
-        return self._resolved_repairs()[1]
+        return self._resolved_repairs().post_route
 
     def get_routing_layer_adjustment(self) -> float | None:
         """Global-route capacity adjustment, 0 to 1, or `None` for the router's default."""

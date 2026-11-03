@@ -156,7 +156,7 @@ class RepairDesign:
 
 @dataclass(frozen=True)
 class PostCtsRepair:
-    """The margins of the post-CTS repair on placement parasitics, in ns; `None` passes none. Which sides it repairs is `post-cts-setup-repair`'s."""
+    """The margins of the post-CTS repair on placement parasitics, in ns; `None` (also for a zero margin) passes none. Which sides it repairs is `post-cts-setup-repair`'s."""
 
     setup_margin: float | None = None
     hold_margin: float | None = None
@@ -539,11 +539,11 @@ def resolve_global_route_repair(where: str, layers) -> GlobalRouteRepair | None:
 
 
 def resolve_post_cts_repair(layers) -> PostCtsRepair:
-    """The post-CTS repair's margins `layers` (platform first, then run) set; a block turned off sets none."""
+    """The post-CTS repair's margins `layers` (platform first, then run) set; a block turned off sets none. A zero margin is none: it passes no option, so the repair renders as without the block."""
     merged = _merge(layers) or {}
     return PostCtsRepair(
-        setup_margin=merged.get("setup_margin"),
-        hold_margin=merged.get("hold_margin"),
+        setup_margin=merged.get("setup_margin") or None,
+        hold_margin=merged.get("hold_margin") or None,
     )
 
 

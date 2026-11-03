@@ -409,9 +409,9 @@ global-route:
 
 `allow-congestion` is for diagnosis: global route keeps its overflow and the flow goes on to detailed route. The result is a `PASS` qualified `global-route.allow-congestion (diagnosis only)` with `allow_congestion: true` and `global_route_overflow`, never a clean pass. Such a run cannot be `harden: true`.
 
-## Repair timing after routing
+## Repair timing after CTS
 
-Post-CTS repair times the design on placement estimates. `post-cts-repair` sets its margins, in ns:
+After CTS the flow repairs setup, unless `post-cts-setup-repair` is false, then hold, on placement parasitics. `post-cts-repair` sets the margins of that repair, in ns:
 
 ```yaml
     post-cts-repair:
@@ -419,9 +419,11 @@ Post-CTS repair times the design on placement estimates. `post-cts-repair` sets 
       hold-margin: 0.01
 ```
 
-`setup-margin` goes to `repair_timing -setup`, and `hold-margin` and a set `setup-margin` go to `repair_timing -hold`, as in the repairs after routing and in ORFS. Unset, a margin is not passed. The setup margin keeps that much setup slack, on placement parasitics, on the paths the hold repair delays: set it when the hold buffers the post-CTS repair inserts leave setup-critical paths failing after routing, since later repairs do not remove them. With `post-cts-setup-repair: false` the setup repair does not run, and a `setup-margin` still goes to the hold repair. A run's block overrides the platform's field by field, and `null` clears the margins. A probe skips the post-CTS repair.
+`setup-margin` goes to `repair_timing -setup`, and `hold-margin` and a set `setup-margin` go to `repair_timing -hold`, as in the repairs after routing and in ORFS. Unset or 0, a margin is not passed, as OpenROAD's default is 0. The setup margin keeps that much setup slack, on placement parasitics, on the paths the hold repair delays: set it when the hold buffers the post-CTS repair inserts leave setup-critical paths failing after routing, since later repairs do not remove them. With `post-cts-setup-repair: false` the setup repair does not run, and a `setup-margin` still goes to the hold repair. A run's block overrides the platform's field by field, and `null` clears the margins. A probe skips the post-CTS repair.
 
-Two blocks, on the platform or the run, repair again on routed parasitics. When neither the platform nor the run writes `global-route-repair` or `global-route-hold-repair`, the repair after global route runs as ORFS runs it: `repair_design`, then setup and hold repair with no margin, `{repair-design: {}, setup-margin: 0, hold-margin: 0}`. `post-route-repair` runs only when set. Both cost run time and change QoR.
+## Repair timing after routing
+
+Post-CTS repair times the design on placement estimates. Two blocks, on the platform or the run, repair again on routed parasitics. When neither the platform nor the run writes `global-route-repair` or `global-route-hold-repair`, the repair after global route runs as ORFS runs it: `repair_design`, then setup and hold repair with no margin, `{repair-design: {}, setup-margin: 0, hold-margin: 0}`. `post-route-repair` runs only when set. Both cost run time and change QoR.
 
 ```yaml
 cfg-pnr-platforms:
