@@ -2875,6 +2875,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             if known:
                 msg += f" (valid keys: {', '.join(str(k) for k in known)})"
             return msg
+        case "spec_config.unknown_key":
+            hint = f"; {fields.get('hint')}" if fields.get("hint") else ""
+            return (
+                f"{fields.get('path')}: {fields.get('where')} has unknown key "
+                f"{fields.get('key')!r}, ignored{hint}"
+            )
         case "root_config.reg_cfg_unknown_keys":
             return (
                 f"{fields.get('path')}: cfg-rtl-reg has unknown key(s) "
