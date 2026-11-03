@@ -29,6 +29,7 @@ from ..config.pnr import (
     PnrAbstract,
     PortBuffers,
 )
+from . import pnr_checkpoints
 from .artifact_paths import project_relative, project_root_or_none, run_artifact_root
 
 ABSTRACT_DIR_NAME = "abstract"
@@ -670,10 +671,11 @@ def write_manifest(
     config: dict,
     gds: bool = True,
     blocks: list | None = None,
+    accepted_changes: list[dict] | None = None,
 ) -> str:
     """Write `abstract.manifest.json` into the staging directory and return its path.
 
-    `inputs` maps a role to an absolute path, a list of paths, or None. `technology` names the technology LEF and corner Liberty a parent must share; it is fingerprinted the same way. Output paths are recorded at their published location, not the staging one. Without `gds` the GDS output is recorded as null. `blocks` are the `ResolvedBlock`s the run consumed; each is recorded with the tag its abstract came from and the abstract manifest's digest.
+    `inputs` maps a role to an absolute path, a list of paths, or None. `technology` names the technology LEF and corner Liberty a parent must share; it is fingerprinted the same way. Output paths are recorded at their published location, not the staging one. Without `gds` the GDS output is recorded as null. `blocks` are the `ResolvedBlock`s the run consumed; each is recorded with the tag its abstract came from and the abstract manifest's digest. `accepted_changes` are the differences from a fresh run that the resumed run accepted (see `pnr_stages.check_resume`); they are provenance only, and no staleness check reads them.
     """
     root = project_root_or_none(artefact_dir)
     published = abstract_dir(artefact_dir)
@@ -719,6 +721,11 @@ def write_manifest(
         "config": {**config, "sha256": config_digest(config)},
         "outputs": outputs,
         **({"blocks": [b.manifest_entry() for b in blocks]} if blocks else {}),
+        **(
+            {"accepted_changes": pnr_checkpoints._relativise(accepted_changes, root)}
+            if accepted_changes
+            else {}
+        ),
     }
     path = os.path.join(staging, ABSTRACT_MANIFEST_NAME)
     Path(path).write_text(json.dumps(document, indent=2) + "\n")

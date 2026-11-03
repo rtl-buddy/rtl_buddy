@@ -3177,6 +3177,7 @@ class OpenRoadPnr:
         stop_after: str | None = None,
         resume: str | None = None,
         resume_from: str | None = None,
+        accept_changes: tuple[str, ...] = (),
         dispatch=None,
         run_tag: str | None = None,
         tag_inputs: pnr_tag_inputs.TagInputs | None = None,
@@ -3201,6 +3202,8 @@ class OpenRoadPnr:
         # `--resume` and `--from`: the run to resume (a run id or directory) and the first stage to run.
         self.resume = resume
         self.resume_from = resume_from
+        # `--accept-change`: the differences from a fresh run the resume accepts.
+        self.accept_changes = tuple(accept_changes)
         # `--dispatch`: the backend that runs each stage as a job, or None to run here.
         self._dispatch = dispatch
         # Why submitting or waiting on the stage jobs failed; the scheduler's account of a failed stage job.
@@ -5981,7 +5984,14 @@ class OpenRoadPnr:
                 step_status=(summary["last_step"] or {}).get("status"),
             )
         resumed_from = self._resumed_from()
-        return {**summary, "resumed_from": resumed_from} if resumed_from else summary
+        if resumed_from is None:
+            return summary
+        accepted = self._accepted_changes()
+        return {
+            **summary,
+            "resumed_from": resumed_from,
+            **({"accepted_changes": accepted} if accepted else {}),
+        }
 
     def _resolve_blocks(
         self, platform, gds_needed_by: str | None = None
@@ -6376,6 +6386,7 @@ class OpenRoadPnr:
                     config=pnr_abstract.abstract_config(self._configured_cfg, platform),
                     gds=with_gds,
                     blocks=self._blocks,
+                    accepted_changes=self._accepted_changes(),
                 )
                 published = pnr_abstract.publish(self.artefact_dir)
             except OSError as e:
@@ -6442,7 +6453,10 @@ class OpenRoadPnr:
 
     def _stage_option_error(self) -> str | None:
         return pnr_stages.option_error(
-            self._requested_stop_after, self.resume, self.resume_from
+            self._requested_stop_after,
+            self.resume,
+            self.resume_from,
+            self.accept_changes,
         )
 
     def _ckpt_stages(self) -> tuple[str, ...]:
@@ -6485,10 +6499,20 @@ class OpenRoadPnr:
             },
             inputs=inputs,
             fingerprint=_file_fingerprint,
+            accept=self.accept_changes,
+            base_dir=self.suite_dir,
         )
         if isinstance(checked, str):
             return checked
         self._resume_source = checked
+        for change in checked.accepted:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.resume_accepted_change",
+                pnr=self.pnr_cfg.get_name(),
+                **change,
+            )
         return None
 
     def _restore_inherited_reports(self) -> None:
@@ -6517,6 +6541,11 @@ class OpenRoadPnr:
             "checkpoint": _checkpoint_name(self._predecessor(source.from_stage)),
         }
 
+    def _accepted_changes(self) -> list[dict] | None:
+        """The differences from a fresh run this resumed run accepted, or None when there are none."""
+        source = self._resume_source
+        return list(source.accepted) if source and source.accepted else None
+
     def _manifest_staging(self) -> dict:
         """The manifest's staged-run entries (see `pnr_checkpoints.begin_run`)."""
         if not self._staged:
@@ -6530,6 +6559,7 @@ class OpenRoadPnr:
             "staged": True,
             "stop_after": self.stop_after,
             "resumed_from": self._resumed_from(),
+            "accepted_changes": self._accepted_changes(),
             "chain": self._chain_records(),
             "inherited_checkpoints": source.checkpoints if source else None,
             "dispatch": self._dispatch_record(),

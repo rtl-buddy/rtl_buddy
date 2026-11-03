@@ -2338,6 +2338,28 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'P&R "{fields.get("pnr")}" failed {where}; {saved}; '
                 f"checkpoints kept in {fields.get('dir')}"
             )
+        case "pnr.resume_accepted_change":
+            if fields.get("stage"):
+                what = f"stage {fields.get('stage')} script"
+                if fields.get("first_difference"):
+                    what += f", {fields.get('first_difference')}"
+            else:
+                old = (fields.get("old") or {}).get("sha256") or "missing"
+                new = (fields.get("new") or {}).get("sha256") or "missing"
+                what = (
+                    f"input {fields.get('role')} "
+                    f"{(fields.get('new') or {}).get('path')}, "
+                    f"{old[:12]} then, {new[:12]} now"
+                )
+            by = (
+                f" (accepted by run {fields.get('inherited_from')})"
+                if fields.get("inherited_from")
+                else ""
+            )
+            return (
+                f'P&R "{fields.get("pnr")}": resumed with an accepted change '
+                f"(--accept-change {fields.get('change')}): {what}{by}"
+            )
         case "pnr.resume_refused":
             return (
                 f'P&R "{fields.get("pnr")}": --resume {fields.get("resume")} '

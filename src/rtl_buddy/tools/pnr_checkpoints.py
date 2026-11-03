@@ -672,7 +672,7 @@ def begin_run(
 ) -> str:
     """Write the manifest and first event, point `latest` here, and return the manifest path.
 
-    Call after the flow scripts exist and just before OpenROAD starts, so `inputs.script` hashes the exact `pnr.tcl` OpenROAD runs. A staged run passes `staged`: its `chain` of stage sessions (script and log per stage, including stages a resume inherits), `resumed_from`, the checkpoints it inherits, which `finish_run` keeps beside the ones it writes, and for a dispatched run its `dispatch` backend and stage reservations. `stop_after` is recorded for either kind of run, and `chain` for the sessions after detailed route of a one-session run with post-route repair. `mode` is the run's mode.
+    Call after the flow scripts exist and just before OpenROAD starts, so `inputs.script` hashes the exact `pnr.tcl` OpenROAD runs. A staged run passes `staged`: its `chain` of stage sessions (script and log per stage, including stages a resume inherits), `resumed_from`, the differences from a fresh run it accepted (`accepted_changes`), the checkpoints it inherits, which `finish_run` keeps beside the ones it writes, and for a dispatched run its `dispatch` backend and stage reservations. `stop_after` is recorded for either kind of run, and `chain` for the sessions after detailed route of a one-session run with post-route repair. `mode` is the run's mode.
     """
     root = project_root_or_none(artefact_dir)
     staged = staged or {}
@@ -697,7 +697,14 @@ def begin_run(
         "inputs": _relativise(inputs, root),
         **{
             key: _relativise(staged[key], root)
-            for key in ("staged", "stop_after", "resumed_from", "chain", "dispatch")
+            for key in (
+                "staged",
+                "stop_after",
+                "resumed_from",
+                "accepted_changes",
+                "chain",
+                "dispatch",
+            )
             if staged.get(key) is not None
         },
         # Set by `finish_run`; stays None if rb itself is killed.

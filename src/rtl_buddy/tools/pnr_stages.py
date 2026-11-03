@@ -6,7 +6,7 @@
 import hashlib
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..config.pnr import CHECKPOINT_STAGES, PNR_STAGES, POST_ROUTE_REPAIR_STAGE
 from ..config.pnr_repair import PnrMode
@@ -102,9 +102,12 @@ class FlowTemplate:
 
 
 def option_error(
-    stop_after: str | None, resume: str | None, resume_from: str | None
+    stop_after: str | None,
+    resume: str | None,
+    resume_from: str | None,
+    accept_changes: tuple[str, ...] = (),
 ) -> str | None:
-    """Return why `--stop-after`, `--resume` and `--from` cannot be combined as given, or None."""
+    """Return why `--stop-after`, `--resume`, `--from` and `--accept-change` cannot be combined as given, or None."""
     if stop_after is not None and stop_after not in CHECKPOINT_STAGES:
         return (
             f"--stop-after {stop_after}: name a stage with a checkpoint "
@@ -112,6 +115,8 @@ def option_error(
         )
     if (resume is None) != (resume_from is None):
         return "--resume and --from go together"
+    if accept_changes and resume is None:
+        return "--accept-change needs --resume"
     if resume_from is not None and resume_from not in PNR_STAGES[1:]:
         return (
             f"--from {resume_from}: name a stage after the first "
@@ -320,6 +325,8 @@ class ResumeSource:
     chain: list[dict]
     #: Checkpoints of the inherited stages, paths absolute, each naming the run that wrote it.
     checkpoints: dict[str, dict]
+    #: The differences from a fresh run that `--accept-change` accepted, paths absolute; one an earlier resume accepted names that run in `inherited_from`.
+    accepted: list[dict] = field(default_factory=list)
 
 
 def _absolute(path, root: str | None) -> str | None:
@@ -399,10 +406,14 @@ def check_resume(
     scripts: dict[str, str],
     inputs: dict,
     fingerprint,
+    accept: tuple[str, ...] = (),
+    base_dir: str = ".",
 ) -> ResumeSource | str:
     """Return the run to resume from `from_stage`, or why it cannot be.
 
     `stages` are the resuming run's stages and `mode` its mode. The run must be staged, must not be a probe when the resuming run is a closure, and its stage before `from_stage` must have finished with its checkpoint written and unchanged since. Every stage before `from_stage` must regenerate the same script today (`scripts`, stage -> text) and read the same input files (`inputs`, the manifest roles, project-relative), and OpenROAD must be the same version. `fingerprint` hashes a file the way the manifest does.
+
+    A stage script or input file that differs is refused unless an `accept` value names it: `script` or `script:<stage>` a script, a path relative to `base_dir` or absolute an input file. A difference an earlier resume of the run accepted needs no value while the script or file is as it accepted. The refusal lists every difference with the value that accepts it; a value that names none refuses too.
     """
     run_id = os.path.basename(run_dir)
     where = f"run {run_id} ({run_dir})"
@@ -445,10 +456,15 @@ def check_resume(
         )
 
     inherited = stages[: stages.index(from_stage)]
+    old_accepted = _absolutise(manifest.get("accepted_changes") or [], root)
+    # Each difference as a refusal reason, with what accepts it; None for one nothing accepts.
+    found: list[tuple[str, _Difference | None]] = []
+    carried: list[_Difference] = []
     for stage in inherited:
         entry = chain.get(stage)
         if entry is None:
-            return f"{where} records no script for stage {stage}"
+            found.append((f"it records no script for stage {stage}", None))
+            continue
         recorded = (entry.get("script") or {}).get("identity")
         path = (entry.get("script") or {}).get("path")
         ran = None
@@ -457,35 +473,127 @@ def check_resume(
                 ran = f.read()
         now = script_identity(scripts[stage])
         # The recorded script is compared again, so a run recorded by another rtl_buddy that compares less of a script still resumes.
-        if now not in (recorded, ran is not None and script_identity(ran)):
-            name = f"{pnr_checkpoints.STAGE_INDEX[stage]}_{stage}.tcl"
-            detail = f": {first_difference(ran, scripts[stage])}" if ran else ""
-            return (
-                f"the {name} script generated now differs from the one {where} "
-                f"ran{detail}"
+        if now in (recorded, ran is not None and script_identity(ran)):
+            continue
+        earlier = next(
+            (
+                r
+                for r in old_accepted
+                if r.get("stage") == stage and r.get("new_identity") == now
+            ),
+            None,
+        )
+        if earlier is not None:
+            carried.append(_Difference.carried(earlier, run_id))
+            continue
+        name = f"{pnr_checkpoints.STAGE_INDEX[stage]}_{stage}.tcl"
+        first = first_difference(ran, scripts[stage]) if ran else None
+        change = script_change(stage)
+        found.append(
+            (
+                f"the {name} script generated now differs from the one it ran"
+                + (f": {first}" if first else "")
+                + f" ({ACCEPT_FLAG} {change})",
+                _Difference(
+                    change,
+                    {
+                        "change": change,
+                        "stage": stage,
+                        "script": name,
+                        "old_identity": recorded,
+                        "new_identity": now,
+                        "first_difference": first,
+                    },
+                ),
             )
+        )
 
     old_inputs = _absolutise(manifest.get("inputs") or {}, root)
-    for role, value in inputs.items():
+    for role in [*inputs, *(r for r in old_inputs if r not in inputs)]:
         if not input_read_before(role, from_stage, stages):
             continue
+        old, new = old_inputs.get(role), inputs.get(role)
         with_path = role in _PATH_COMPARED_INPUTS
-        if _content(old_inputs.get(role), with_path) != _content(value, with_path):
-            return (
-                f"input {role} differs from what {where} read: "
-                f"{_describe(old_inputs.get(role))} then, {_describe(value)} now"
+        if _content(old, with_path) == _content(new, with_path):
+            continue
+        files = _changed_files(old, new, with_path)
+        if files is None:
+            if new is None:
+                reason = f"input {role} is no longer configured"
+            elif old is None:
+                reason = f"input {role} is newly configured: {_describe(new)}"
+            else:
+                reason = (
+                    f"input {role} lists other files: "
+                    f"{_describe(old)} then, {_describe(new)} now"
+                )
+            found.append((reason, None))
+            continue
+        for was, now_file in files:
+            change = input_change(now_file["path"], base_dir)
+            found.append(
+                (
+                    f"input {role} differs: {_describe(was)} then, "
+                    f"{_describe(now_file)} now ({ACCEPT_FLAG} {change})",
+                    _Difference(
+                        change,
+                        {
+                            "change": change,
+                            "role": role,
+                            "old": _digest(was),
+                            "new": _digest(now_file),
+                        },
+                        os.path.realpath(now_file["path"]),
+                    ),
+                )
             )
-    for role in old_inputs:
-        if role not in inputs and input_read_before(role, from_stage, stages):
-            return f"input {role} that {where} read is no longer configured"
+    carried += [
+        _Difference.carried(r, run_id)
+        for r in old_accepted
+        if r.get("role") and input_read_before(r["role"], from_stage, stages)
+    ]
 
     for kind, file in (record.get("files") or {}).items():
         path = (file or {}).get("path")
         if not path or not os.path.isfile(path):
-            return f"checkpoint file {kind} of stage {pred} is missing: {path}"
+            found.append(
+                (f"checkpoint file {kind} of stage {pred} is missing: {path}", None)
+            )
+            continue
         now = fingerprint(path) or {}
         if file.get("sha256") and now.get("sha256") != file.get("sha256"):
-            return f"checkpoint file {path} changed since {where} wrote it"
+            found.append(
+                (f"checkpoint file {path} changed since the run wrote it", None)
+            )
+
+    differences = [d for _reason, d in found if d is not None]
+    unmatched = [
+        v
+        for v in accept
+        if not any(d.named_by(v, base_dir) for d in differences + carried)
+    ]
+    if unmatched:
+        named = ", ".join(f"{ACCEPT_FLAG} {v}" for v in unmatched)
+        listed = [reason for reason, _d in found] or [
+            "no inherited script or input differs"
+        ]
+        return f"{where}: {named} names no difference; " + "; ".join(listed)
+    refused = [
+        reason
+        for reason, d in found
+        if d is None or not any(d.named_by(v, base_dir) for v in accept)
+    ]
+    if refused:
+        scripts_refused = sum(
+            1
+            for _reason, d in found
+            if d is not None
+            and d.path is None
+            and not any(d.named_by(v, base_dir) for v in accept)
+        )
+        if scripts_refused > 1:
+            refused.append(f"{ACCEPT_FLAG} {ACCEPT_SCRIPTS} accepts every stage script")
+        return f"{where}: " + "; ".join(refused)
 
     pred_dir = os.path.dirname(next(iter(record["files"].values()))["path"])
     return ResumeSource(
@@ -499,7 +607,72 @@ def check_resume(
             for stage in inherited
             if stage in checkpoints and stage in CHECKPOINT_STAGES
         },
+        accepted=[d.record for d in carried + differences],
     )
+
+
+#: The `--resume` option that accepts a named difference.
+ACCEPT_FLAG = "--accept-change"
+#: The `--accept-change` value that accepts every inherited stage script that differs; `script:<stage>` accepts one stage's.
+ACCEPT_SCRIPTS = "script"
+
+
+def script_change(stage: str) -> str:
+    """The `--accept-change` value that accepts a difference in `stage`'s script."""
+    return f"{ACCEPT_SCRIPTS}:{stage}"
+
+
+def input_change(path: str, base_dir: str) -> str:
+    """The `--accept-change` value that names input file `path`: relative to `base_dir`, the directory of `pnr.yaml`, when under it, else absolute."""
+    path = os.path.abspath(path)
+    relative = os.path.relpath(path, base_dir)
+    return path if relative.split(os.sep)[0] == os.pardir else relative
+
+
+@dataclass
+class _Difference:
+    """A difference from a fresh run that `--accept-change <change>` accepts: its manifest `record`, and for an input file its resolved `path`."""
+
+    change: str
+    record: dict
+    path: str | None = None
+
+    @classmethod
+    def carried(cls, record: dict, run_id: str) -> "_Difference":
+        """A difference an earlier resume accepted that still holds, recorded by run `run_id` or the run it names."""
+        record = {**record, "inherited_from": record.get("inherited_from") or run_id}
+        new = (record.get("new") or {}).get("path")
+        return cls(record.get("change"), record, new and os.path.realpath(new))
+
+    def named_by(self, value: str, base_dir: str) -> bool:
+        if self.path is None:
+            return value in (ACCEPT_SCRIPTS, self.change)
+        if value == ACCEPT_SCRIPTS or value.startswith(f"{ACCEPT_SCRIPTS}:"):
+            return False
+        return os.path.realpath(os.path.join(base_dir, value)) == self.path
+
+
+def _changed_files(old, new, with_path: bool) -> list[tuple[dict, dict]] | None:
+    """The `(old, new)` file records of a manifest input whose content differs, or None when the input names other files: configured or dropped, another number of files, or for `with_path` another file."""
+    if isinstance(old, dict) and isinstance(new, dict):
+        olds, news = [old], [new]
+    elif isinstance(old, list) and isinstance(new, list) and len(old) == len(new):
+        olds, news = old, new
+    else:
+        return None
+    pairs = list(zip(olds, news))
+    if not all(isinstance(a, dict) and isinstance(b, dict) for a, b in pairs):
+        return None
+    if with_path and any(
+        os.path.realpath(a.get("path") or "") != os.path.realpath(b.get("path") or "")
+        for a, b in pairs
+    ):
+        return None
+    return [(a, b) for a, b in pairs if a.get("sha256") != b.get("sha256")]
+
+
+def _digest(record: dict) -> dict:
+    return {"path": record.get("path"), "sha256": record.get("sha256")}
 
 
 #: Manifest input roles whose paths appear in no stage script, so a resume compares each file's resolved path as well as its digest.

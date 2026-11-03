@@ -27,6 +27,7 @@ class PnrRunner:
         stop_after: str | None = None,
         resume: str | None = None,
         resume_from: str | None = None,
+        accept_changes: tuple[str, ...] = (),
         dispatch=None,
         run_tag: str | None = None,
         tag_inputs=None,
@@ -37,10 +38,11 @@ class PnrRunner:
         self.suite_dir = suite_dir
         self.reglvl_filter = reglvl_filter
         self.accept_stale = accept_stale
-        # `--stop-after`, `--resume` and `--from`; see `OpenRoadPnr`.
+        # `--stop-after`, `--resume`, `--from` and `--accept-change`; see `OpenRoadPnr`.
         self.stop_after = stop_after
         self.resume = resume
         self.resume_from = resume_from
+        self.accept_changes = accept_changes
         # `--dispatch`: the backend that runs each stage as a job; see `OpenRoadPnr`.
         self.dispatch = dispatch
         self.emit_gds = emit_gds
@@ -93,6 +95,7 @@ class PnrRunner:
             stop_after=self.stop_after,
             resume=self.resume,
             resume_from=self.resume_from,
+            accept_changes=self.accept_changes,
             dispatch=self.dispatch,
             run_tag=self.run_tag,
             tag_inputs=self.tag_inputs,
