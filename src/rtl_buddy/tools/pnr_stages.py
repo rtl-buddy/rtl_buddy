@@ -575,7 +575,7 @@ def check_resume(
                 found.append(
                     _Difference(
                         f"{what}, but only the stages before --from {from_stage} "
-                        f"read it; {_rerun_from(readers[0], stages)}",
+                        f"read it, so {_rerun_from(readers[0], stages)}",
                         paths=paths,
                     )
                 )

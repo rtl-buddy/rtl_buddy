@@ -56,7 +56,9 @@ def _diamond(backend):
 
 
 def _resume(tmp_path, monkeypatch, run, from_stage="global_route", platform=None, **kw):
+    """A resume of `run` invoked from `tmp_path`, the directory of the run's config."""
     kw.setdefault("pnr_cfg", _hooked_cfg(tmp_path))
+    kw.setdefault("invocation_dir", str(tmp_path))
     backend, artefacts = _backend(
         tmp_path, monkeypatch, resume=run, resume_from=from_stage, **kw
     )
@@ -178,35 +180,132 @@ def test_only_the_named_script_is_accepted(tmp_path, monkeypatch):
     assert "accepts every stage script" not in desc
 
 
-def test_a_refusal_lists_every_difference_with_its_value(tmp_path, monkeypatch):
+def test_a_refusal_lists_every_script_and_input_difference(tmp_path, monkeypatch):
     first = _first_run(tmp_path, monkeypatch)
     _edit_hook(tmp_path)
     sdc = tmp_path / "constraints.sdc"
+    original = sdc.read_text()
     cfg = _hooked_cfg(tmp_path)
     cfg = replace(cfg, floorplan=replace(cfg.floorplan, utilization=0.6))
-    sdc.write_text(sdc.read_text() + "set_input_delay 0.1 [all_inputs]\n")
+    sdc.write_text(original + "set_input_delay 0.1 [all_inputs]\n")
 
     desc = _refused(*_resume(tmp_path, monkeypatch, first.name, pnr_cfg=cfg))
 
-    reasons = desc.split("; ")
-    assert "01_floorplan.tcl" in reasons[0]
-    assert reasons[0].endswith("(--accept-change script:floorplan)")
-    assert [r.split(" (--accept-change ")[-1] for r in reasons[1:]] == [
-        "constraints.sdc)",
-        "hooks/session.tcl)",
-    ]
+    floorplan, sdc_reason, hook = desc.split("; ")
+    assert "01_floorplan.tcl" in floorplan
+    assert floorplan.endswith("(--accept-change script:floorplan)")
+    # Only the floorplan session reads the SDC; later ones read its checkpoint copy.
+    assert sdc_reason.startswith("input sdc differs")
+    assert sdc_reason.endswith(
+        "but only the stages before --from global_route read it, so run without --resume"
+    )
+    assert hook.endswith("(--accept-change hooks/session.tcl)")
 
+    sdc.write_text(original)
     backend, _ = _resume(
         tmp_path,
         monkeypatch,
         first.name,
         pnr_cfg=cfg,
-        accept_changes=("script:floorplan", "constraints.sdc", "hooks/session.tcl"),
+        accept_changes=("script:floorplan", "hooks/session.tcl"),
     )
     assert backend.run().results["result"] == "PASS"
 
 
-def test_an_input_outside_the_pnr_yaml_directory_is_named_by_its_absolute_path(
+@pytest.mark.parametrize(
+    "point, from_stage, accepted",
+    [
+        ("after-cts", "global_route", False),
+        ("after-timing-repair", "global_route", True),
+        ("after-timing-repair", "detailed_route", False),
+        ("stage-end", "detailed_route", True),
+    ],
+)
+def test_a_hook_is_accepted_only_when_a_resumed_stage_runs_it(
+    tmp_path, monkeypatch, point, from_stage, accepted
+):
+    hook = tmp_path / "hooks" / f"{point}.tcl"
+    hook.parent.mkdir(exist_ok=True)
+    hook.write_text('puts "MARK hook"\n')
+    cfg = replace(_pnr_cfg(tmp_path, stages=True), hooks={point: (str(hook),)})
+    first = _first_run(tmp_path, monkeypatch, cfg=cfg, stop_after="detailed_route")
+    hook.write_text('puts "MARK hook edited"\n')
+    value = f"hooks/{point}.tcl"
+
+    backend, artefacts = _resume(
+        tmp_path,
+        monkeypatch,
+        first.name,
+        from_stage=from_stage,
+        pnr_cfg=cfg,
+        accept_changes=(value,),
+    )
+
+    if accepted:
+        res = backend.run()
+        assert res.results["result"] == "PASS", res.results
+        assert [c["change"] for c in res.results["accepted_changes"]] == [value]
+    else:
+        desc = _refused(backend, artefacts)
+        assert f"--accept-change {value} names a difference no value accepts" in desc
+        assert f"only the stages before --from {from_stage} read it" in desc
+        assert "(--accept-change" not in desc
+
+
+def test_an_unreadable_input_is_never_accepted(tmp_path, monkeypatch):
+    first = _first_run(tmp_path, monkeypatch)
+    hook = _edit_hook(tmp_path)
+    hook.chmod(0)
+    try:
+        desc = _refused(
+            *_resume(
+                tmp_path,
+                monkeypatch,
+                first.name,
+                accept_changes=("hooks/session.tcl",),
+            )
+        )
+    finally:
+        hook.chmod(0o644)
+
+    assert "names a difference no value accepts" in desc
+    assert f"input hook_session {hook} is missing or unreadable" in desc
+    assert "(--accept-change" not in desc
+
+
+@pytest.mark.parametrize(
+    "invoked_from, printed",
+    [
+        ("", "hooks/session.tcl"),
+        ("hooks", "session.tcl"),
+        ("elsewhere", None),
+    ],
+)
+def test_input_values_are_relative_to_the_invocation_directory(
+    tmp_path, monkeypatch, invoked_from, printed
+):
+    first = _first_run(tmp_path, monkeypatch)
+    hook = _edit_hook(tmp_path)
+    where = tmp_path / invoked_from
+    where.mkdir(exist_ok=True)
+    printed = printed or str(hook)
+
+    desc = _refused(
+        *_resume(tmp_path, monkeypatch, first.name, invocation_dir=str(where))
+    )
+    assert desc.endswith(f"(--accept-change {printed})")
+
+    backend, _ = _resume(
+        tmp_path,
+        monkeypatch,
+        first.name,
+        invocation_dir=str(where),
+        accept_changes=(printed,),
+    )
+    assert backend.run().results["result"] == "PASS"
+
+
+def test_an_input_outside_the_invocation_directory_is_named_by_its_absolute_path(
     tmp_path, monkeypatch
 ):
     outside = tmp_path / "shared" / "session.tcl"
@@ -399,14 +498,48 @@ def test_a_resume_of_a_resume_keeps_its_accepted_changes(tmp_path, monkeypatch, 
     assert "script:place" not in desc and "script:cts" not in desc
     assert "(--accept-change script:global_route)" in desc
     assert "(--accept-change script:detailed_route)" in desc
-    _edit_hook(tmp_path, 'puts "MARK session edited again"\n')
-    desc = _refused(
-        *_resume(
-            tmp_path, monkeypatch, second.name, from_stage="finish", platform=_diamond
-        )
+
+
+@pytest.mark.parametrize(
+    "hook_now",
+    ['puts "MARK session"\n', 'puts "MARK session edited again"\n'],
+    ids=["reverted", "edited-again"],
+)
+def test_an_input_change_is_carried_only_while_the_file_is_as_accepted(
+    tmp_path, monkeypatch, hook_now
+):
+    first = _first_run(tmp_path, monkeypatch)
+    hook = _edit_hook(tmp_path)
+    accepted_digest = hashlib.sha256(hook.read_bytes()).hexdigest()
+    backend, artefacts = _resume(
+        tmp_path,
+        monkeypatch,
+        first.name,
+        accept_changes=("hooks/session.tcl",),
+        stop_after="detailed_route",
     )
+    assert backend.run().results["result"] == "PASS"
+    second = next(r for r in _runs(artefacts) if r != first)
+    hook.write_text(hook_now)
+
+    desc = _refused(*_resume(tmp_path, monkeypatch, second.name, from_stage="finish"))
     assert "input hook_session differs" in desc
-    assert "script" not in desc
+    assert desc.endswith("(--accept-change hooks/session.tcl)")
+
+    backend, _ = _resume(
+        tmp_path,
+        monkeypatch,
+        second.name,
+        from_stage="finish",
+        accept_changes=("hooks/session.tcl",),
+    )
+    res = backend.run()
+    assert res.results["result"] == "PASS", res.results
+    # Only this run's record: `second`'s no longer holds.
+    (record,) = res.results["accepted_changes"]
+    assert "inherited_from" not in record
+    assert record["old"]["sha256"] == accepted_digest
+    assert record["new"]["sha256"] == hashlib.sha256(hook_now.encode()).hexdigest()
 
 
 def test_the_abstract_records_accepted_changes_without_going_stale(tmp_path):
@@ -458,6 +591,31 @@ def test_accept_change_needs_resume():
     assert pnr_stages.option_error(None, "latest", "cts", ("script",)) is None
 
 
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("a", "--accept-change needs --resume"),
+        (None, "--accept-change need a single named pnr run"),
+    ],
+)
+def test_a_lone_accept_change_fails_before_any_run(
+    tmp_path, monkeypatch, name, expected
+):
+    from test_pnr_plan import _run, _suite
+    from test_pnr_stages import _stage_driver
+
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    suite = _suite(tmp_path / "pnr.yaml", _run("a"))
+    rb, seen = _stage_driver(monkeypatch)
+
+    with pytest.raises(FatalRtlBuddyError, match=expected):
+        rb._do_pnr_suite(
+            suite, pnr_name=name, run_synth=True, accept_changes=("script",)
+        )
+    assert seen == {}
+
+
 def test_rb_pnr_passes_each_accept_change_value(minimal_project, monkeypatch):
     from typer.testing import CliRunner
 
@@ -496,6 +654,7 @@ def test_rb_pnr_passes_each_accept_change_value(minimal_project, monkeypatch):
         rb._artifact_locks.release_all()
 
     assert seen.get("accept_changes") == ("script", "hooks/session.tcl"), result.output
+    assert seen["invocation_dir"] == str(minimal_project.resolve())
 
 
 def test_result_rows_carry_the_accepted_changes():
