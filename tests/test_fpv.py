@@ -86,19 +86,35 @@ def test_fpv_tool_config_none_override_returns_base():
     assert cfg.get_opts({}).timeout == 120
 
 
-def test_fpv_config_top_defaults_to_model_name():
-    cfg = _make_fpv_cfg(model_name="my_top", top=None)
-    assert cfg.get_top() == "my_top"
-
-
-def test_fpv_config_top_explicit_wins_over_model_name():
-    cfg = _make_fpv_cfg(model_name="my_top", top="inner_block")
-    assert cfg.get_top() == "inner_block"
-
-
-def test_fpv_config_engines_default_to_yices_smtbmc():
-    cfg = _make_fpv_cfg()
-    assert cfg.get_engines() == ["smtbmc yices"]
+@pytest.mark.parametrize(
+    ("options", "expected_top", "expected_engines"),
+    [
+        pytest.param("", "mod_a", ["smtbmc yices"], id="defaults"),
+        pytest.param(
+            "    top: inner_block\n    engines: ['smtbmc z3', 'abc pdr']\n",
+            "inner_block",
+            ["smtbmc z3", "abc pdr"],
+            id="explicit",
+        ),
+    ],
+)
+def test_fpv_suite_loads_top_and_engines(
+    tmp_path, options, expected_top, expected_engines
+):
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    suite = tmp_path / "fpv.yaml"
+    suite.write_text(
+        "rtl-buddy-filetype: fpv_config\n"
+        "verifications:\n"
+        "  - name: proof\n"
+        "    desc: Proof\n"
+        "    model: mod_a\n"
+        "    model_path: models.yaml\n"
+        "    tool: sby\n" + options
+    )
+    cfg = FpvSuiteConfig(str(suite)).get_verifications("proof")[0]
+    assert cfg.get_top() == expected_top
+    assert cfg.get_engines() == expected_engines
 
 
 def test_fpv_config_reglvl_int():
@@ -305,6 +321,7 @@ _COVERS_SUITE_YAML = dedent("""\
 
 def _write_covers_project(tmp_path):
     """A minimal project root with an fpv flow claiming coverage items."""
+    (tmp_path / "root_config.yaml").write_text("rtl-buddy-filetype: root_config\n")
     (tmp_path / "models.yaml").write_text(_MODELS_YAML)
     (tmp_path / "fpv.yaml").write_text(_COVERS_SUITE_YAML)
     (tmp_path / "fpv_regression.yaml").write_text(

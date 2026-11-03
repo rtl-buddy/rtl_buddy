@@ -216,8 +216,7 @@ def test_render_sby_slang_without_plugin_path_errors(tmp_path, monkeypatch):
     monkeypatch.delenv(SLANG_PLUGIN_ENV, raising=False)
     sby = _sby_with_frontend(tmp_path, frontend="slang", plugin_path=None)
     out_path = str(tmp_path / "fpv.sby")
-    # The error names both configuration channels.
-    with pytest.raises(FatalRtlBuddyError, match="plugin-path"):
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
         sby._render_sby(
             output_path=out_path,
             sources=["/abs/dut.sv"],
@@ -225,14 +224,8 @@ def test_render_sby_slang_without_plugin_path_errors(tmp_path, monkeypatch):
             mode="bmc",
             extra_property_files=[],
         )
-    with pytest.raises(FatalRtlBuddyError, match=SLANG_PLUGIN_ENV):
-        sby._render_sby(
-            output_path=out_path,
-            sources=["/abs/dut.sv"],
-            incdirs=[],
-            mode="bmc",
-            extra_property_files=[],
-        )
+    assert "plugin-path" in str(excinfo.value)
+    assert SLANG_PLUGIN_ENV in str(excinfo.value)
 
 
 def test_render_sby_slang_env_fallback(tmp_path, monkeypatch):

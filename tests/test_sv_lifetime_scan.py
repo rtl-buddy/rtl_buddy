@@ -1124,26 +1124,6 @@ def _include_chain(tmp_path, length, *, leaf_body):
     return str(tmp_path / "f0.sv")
 
 
-def test_a_deep_acyclic_include_chain_is_followed(tmp_path):
-    """The leaf of a long include chain is scanned."""
-    top = _include_chain(
-        tmp_path, 60, leaf_body="function int deep; return 1; endfunction\n"
-    )
-    findings = scan_files([str(top)])
-    assert [f.name for f in findings] == ["deep"]
-    assert findings[0].path.endswith("f60.svh")
-
-
-def test_a_600_deep_include_chain_does_not_exhaust_the_python_stack(tmp_path):
-    """A 600-deep include chain raises a structured fatal error, not RecursionError."""
-    top = _include_chain(
-        tmp_path, 600, leaf_body="function int deep; return 1; endfunction\n"
-    )
-    findings = scan_files([str(top)])
-    assert [f.name for f in findings] == ["deep"]
-    assert findings[0].path.endswith("f600.svh")
-
-
 def test_the_advertised_include_depth_is_the_one_that_fires(tmp_path):
     """At `MAX_INCLUDE_DEPTH` the leaf is still scanned; one level deeper raises the structured fatal error."""
     from rtl_buddy.errors import FatalRtlBuddyError
@@ -1151,15 +1131,18 @@ def test_the_advertised_include_depth_is_the_one_that_fires(tmp_path):
 
     depth = sv_lifetime_scan.MAX_INCLUDE_DEPTH
     at_cap = _include_chain(
-        tmp_path / "at_cap",
+        tmp_path,
         depth,
         leaf_body="function int deep; return 1; endfunction\n",
     )
-    assert [f.name for f in scan_files([str(at_cap)])] == ["deep"]
+    findings = scan_files([at_cap])
+    assert [f.name for f in findings] == ["deep"]
+    assert findings[0].path == str(tmp_path / f"f{depth}.svh")
 
-    over = _include_chain(tmp_path / "over", depth + 1, leaf_body="// nothing\n")
+    (tmp_path / f"f{depth}.svh").write_text(f'`include "f{depth + 1}.svh"\n')
+    (tmp_path / f"f{depth + 1}.svh").write_text("// nothing\n")
     with pytest.raises(FatalRtlBuddyError, match="include nesting deeper than"):
-        scan_files([str(over)])
+        scan_files([at_cap])
 
 
 def test_exceeding_the_include_depth_raises_instead_of_dropping(tmp_path):

@@ -534,7 +534,10 @@ def test_a_per_corner_sdc_edit_makes_a_block_stale(tmp_path):
 
     sdc.write_text("create_clock -period 5\n")
 
-    assert pnr_abstract.block_changes(block, root_cfg) == [f"sdc {sdc} changed"]
+    recorded_path = written["inputs"]["sdc"]["typ"]["path"]
+    assert pnr_abstract.block_changes(block, root_cfg) == [
+        f"sdc {recorded_path} changed"
+    ]
 
 
 def test_a_block_hardened_by_an_earlier_flow_generation_is_stale(tmp_path, monkeypatch):

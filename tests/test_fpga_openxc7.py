@@ -644,46 +644,33 @@ def test_openxc7_non_7series_part_still_clears_artefacts(tmp_path, monkeypatch):
     assert not stale_bit.exists()
 
 
-def test_openxc7_clear_spares_the_test_runners_result_json(tmp_path, monkeypatch):
-    """The `.json` suffix clear spares the test runner's `result.json`, which shares
-    `artefacts/<name>/` with a same-named `rb fpga` run.
-    """
-    from rtl_buddy.tools.artifact_paths import RESULT_JSON_NAME
-
-    backend = _make_backend(
-        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
+def test_openxc7_clear_spares_sibling_flow_artefacts(tmp_path, monkeypatch):
+    from rtl_buddy.cov.manifest import MANIFEST_FILENAME
+    from rtl_buddy.cov.model import MODEL_FILENAME
+    from rtl_buddy.graph.config_tier import GRAPH_JSON_NAME, GRAPH_META_NAME
+    from rtl_buddy.graph.results import RESULTS_OVERLAY_NAME
+    from rtl_buddy.tools.artifact_paths import (
+        RESULT_JSON_NAME,
+        SHARED_BUILD_STAMP_NAME,
     )
-    artefacts = Path(backend.artefact_dir)
-    result_json = artefacts / RESULT_JSON_NAME
-    result_json.write_text('{"result": "PASS", "name": "demo_fpga"}')
-    dispatch_envelope = artefacts / "result-1234.json"
-    dispatch_envelope.write_text('{"result": "PASS"}')
-    # The backend's own output still goes.
-    stale_netlist = artefacts / "old_top.json"
-    stale_netlist.write_text('{"stale": true}')
 
-    _mock_toolchain(monkeypatch, _fake_pipeline())
-    res = backend.run()
-
-    assert isinstance(res, FpgaPassResults), res.results["desc"]
-    assert result_json.read_text() == '{"result": "PASS", "name": "demo_fpga"}'
-    assert dispatch_envelope.exists()
-    assert not stale_netlist.exists()
-
-
-def test_openxc7_clear_spares_a_co_named_cdc_analysis(tmp_path, monkeypatch):
-    """The `.json` suffix clear spares a same-named CDC analysis's report and domain
-    maps.
-    """
     backend = _make_backend(
         tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
     )
     artefacts = Path(backend.artefact_dir)
     siblings = {
+        RESULT_JSON_NAME: '{"result": "PASS", "name": "demo_fpga"}',
+        "result-1234.json": '{"result": "PASS"}',
         "cdc.json": '{"summary": {"violations": 3}}',
         "cdc.txt": "3 violations\n",
         "domain_map.json": '{"clocks": []}',
         "reset_map.json": '{"reset_synchronizers": []}',
+        SHARED_BUILD_STAMP_NAME: '{"compile_key": "abc123"}',
+        GRAPH_JSON_NAME: '{"schema_version": 1, "nodes": []}',
+        GRAPH_META_NAME: '{"fingerprint": "abc123"}',
+        RESULTS_OVERLAY_NAME: '{"results": {}}',
+        MANIFEST_FILENAME: '{"kept": true}',
+        MODEL_FILENAME: '{"kept": true}',
     }
     for name, body in siblings.items():
         (artefacts / name).write_text(body)
@@ -725,77 +712,6 @@ def test_openxc7_stage_failure_removes_the_earlier_stages_outputs(
     assert not (artefacts / "demo_top.json").exists()
     assert not (artefacts / "demo_top.fasm").exists()
     assert not (artefacts / "demo_top.bit").exists()
-
-
-def test_openxc7_clear_spares_a_co_named_tests_build_stamp(tmp_path, monkeypatch):
-    """The `.json` suffix clear spares a same-named test's `rb-compile-stamp.json`, so
-    the build cache stays valid.
-    """
-    from rtl_buddy.tools.artifact_paths import SHARED_BUILD_STAMP_NAME
-
-    backend = _make_backend(
-        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
-    )
-    stamp = Path(backend.artefact_dir) / SHARED_BUILD_STAMP_NAME
-    stamp.write_text('{"compile_key": "abc123"}')
-
-    _mock_toolchain(monkeypatch, _fake_pipeline())
-    res = backend.run()
-
-    assert isinstance(res, FpgaPassResults), res.results["desc"]
-    assert stamp.read_text() == '{"compile_key": "abc123"}'
-
-
-def test_openxc7_clear_spares_a_co_named_graph_build(tmp_path, monkeypatch):
-    """The `.json` suffix clear spares `graph.json`, `graph-meta.json` and the results
-    overlay of a same-named `rb graph` build.
-    """
-    from rtl_buddy.graph.config_tier import GRAPH_JSON_NAME, GRAPH_META_NAME
-    from rtl_buddy.graph.results import RESULTS_OVERLAY_NAME
-
-    backend = _make_backend(
-        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
-    )
-    artefacts = Path(backend.artefact_dir)
-    graph_outputs = {
-        GRAPH_JSON_NAME: '{"schema_version": 1, "nodes": []}',
-        GRAPH_META_NAME: '{"fingerprint": "abc123"}',
-        RESULTS_OVERLAY_NAME: '{"results": {}}',
-    }
-    for name, body in graph_outputs.items():
-        (artefacts / name).write_text(body)
-    stale_netlist = artefacts / "old_top.json"
-    stale_netlist.write_text('{"stale": true}')
-
-    _mock_toolchain(monkeypatch, _fake_pipeline())
-    res = backend.run()
-
-    assert isinstance(res, FpgaPassResults), res.results["desc"]
-    for name, body in graph_outputs.items():
-        assert (artefacts / name).read_text() == body, name
-    assert not stale_netlist.exists()
-
-
-def test_openxc7_clear_spares_a_co_named_cov_and_xplr_output(tmp_path, monkeypatch):
-    """The `.json` suffix clear spares `rb cov`'s manifest and model in a user-named
-    coverage directory.
-    """
-    from rtl_buddy.cov.manifest import MANIFEST_FILENAME
-    from rtl_buddy.cov.model import MODEL_FILENAME
-
-    backend = _make_backend(
-        tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
-    )
-    artefacts = Path(backend.artefact_dir)
-    for name in (MANIFEST_FILENAME, MODEL_FILENAME):
-        (artefacts / name).write_text('{"kept": true}')
-
-    _mock_toolchain(monkeypatch, _fake_pipeline())
-    res = backend.run()
-
-    assert isinstance(res, FpgaPassResults), res.results["desc"]
-    for name in (MANIFEST_FILENAME, MODEL_FILENAME):
-        assert (artefacts / name).exists(), name
 
 
 def test_openxc7_clears_its_own_netlist_when_the_top_collides(tmp_path, monkeypatch):

@@ -56,9 +56,6 @@ def test_parse_utilization_canonical_resources():
         "util_pct": 0.06,
     }
 
-
-def test_parse_utilization_carries_all_site_type_rows():
-    util = parse_utilization(_fixture("util.rpt"))
     resources = util["resources"]
 
     assert resources["Bonded IOB"] == {
@@ -97,15 +94,9 @@ def test_parse_timing_summary_pass():
     assert timing["tpws_ns"] == 0.0
     assert timing["timing_met"] is True
 
-
-def test_parse_timing_summary_pass_has_no_failing_paths():
-    timing = parse_timing_summary(_fixture("timing_summary.rpt"))
     assert timing["failing_endpoints"] == 0
     assert timing["failing_paths"] == []
 
-
-def test_parse_timing_summary_per_clock_rows():
-    timing = parse_timing_summary(_fixture("timing_summary.rpt"))
     assert len(timing["clocks"]) == 1
     clk = timing["clocks"][0]
     assert clk["clock"] == "clk"
@@ -132,11 +123,6 @@ def test_parse_timing_summary_failing():
     clk = timing["clocks"][0]
     assert clk["clock"] == "clk"
     assert clk["wns_ns"] == -0.882
-
-
-def test_parse_timing_summary_failing_carries_loop_fields():
-    """The timing-closure loop fields: endpoint counts and worst paths."""
-    timing = parse_timing_summary(_fixture("timing_summary_fail.rpt"))
 
     # Setup (101) and hold (0) endpoints with negative slack.
     assert timing["failing_endpoints"] == 101

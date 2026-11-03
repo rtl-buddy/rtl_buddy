@@ -87,17 +87,11 @@ def test_prove_unknown_from_failed_induction_is_an_xfail_eligible_verdict(
     assert "fail_stage" not in res.results
     assert res.results["desc"].startswith("induction failed: ")
     assert "not k-inductive" in res.results["desc"]
+    assert res.is_pass() is False
 
     apply_xfail(res, strict=strict)
     assert res.results["result"] == "XFAIL"
     assert res.is_pass() is True
-
-
-def test_prove_unknown_from_failed_induction_without_marker_still_fails(
-    tmp_path, monkeypatch
-):
-    res = _run_with_fixture(tmp_path, monkeypatch, "prove_induction_unknown")
-    assert res.is_pass() is False
 
 
 @pytest.mark.parametrize("case", ["prove_unknown_no_induction", "prove_error"])

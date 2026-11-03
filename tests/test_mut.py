@@ -347,8 +347,10 @@ def test_list_candidates(tmp_path, stub_xeno):
     assert sites[0]["line"] == 2
 
 
-def test_run_scores_mutants(tmp_path, stub_xeno):
+def test_campaign_scores_reports_and_preserves_source(tmp_path, stub_xeno):
     mut_path = _write_project(tmp_path)
+    source = tmp_path / "design" / "leaf" / "leaf.sv"
+    original = source.read_text()
     runner = _runner(tmp_path, mut_path)
     with patch("rtl_buddy.runner.mut_runner.FpvRunner", _FakeFpvRunner):
         results = runner.run()
@@ -366,26 +368,20 @@ def test_run_scores_mutants(tmp_path, stub_xeno):
     assert outcomes["cond_const"] == SURVIVED
     assert outcomes["assign_drop"] == ERRORED
 
-
-def test_run_flags_predicted_observable_miss(tmp_path, stub_xeno):
-    mut_path = _write_project(tmp_path)
-    runner = _runner(tmp_path, mut_path)
-    with patch("rtl_buddy.runner.mut_runner.FpvRunner", _FakeFpvRunner):
-        results = runner.run()
     misses = results.predicted_observable_misses()
     # The survived COND_CONST mutant predicted perturbs_signals={cnt}.
     assert len(misses) == 1
     assert misses[0].operator == "cond_const"
     assert misses[0].predicted_signals == ["cnt"]
 
+    report = results.as_report()
+    restored = MutResults.from_report(report)
+    assert restored.killed() == results.killed()
+    assert restored.survived() == results.survived()
+    assert restored.errored() == results.errored()
+    assert restored.score() == results.score()
 
-def test_run_does_not_touch_original_source(tmp_path, stub_xeno):
-    mut_path = _write_project(tmp_path)
-    original = (tmp_path / "design" / "leaf" / "leaf.sv").read_text()
-    runner = _runner(tmp_path, mut_path)
-    with patch("rtl_buddy.runner.mut_runner.FpvRunner", _FakeFpvRunner):
-        runner.run()
-    assert (tmp_path / "design" / "leaf" / "leaf.sv").read_text() == original
+    assert source.read_text() == original
 
 
 def _recording_fpv_runner():
@@ -491,19 +487,6 @@ def test_design_file_outside_model_dir_errors(tmp_path, stub_xeno):
     with patch("rtl_buddy.runner.mut_runner.FpvRunner", _FakeFpvRunner):
         with pytest.raises(FatalRtlBuddyError, match="must live within the model"):
             runner.run()
-
-
-def test_report_round_trip(tmp_path, stub_xeno):
-    mut_path = _write_project(tmp_path)
-    runner = _runner(tmp_path, mut_path)
-    with patch("rtl_buddy.runner.mut_runner.FpvRunner", _FakeFpvRunner):
-        results = runner.run()
-    report = results.as_report()
-    restored = MutResults.from_report(report)
-    assert restored.killed() == results.killed()
-    assert restored.survived() == results.survived()
-    assert restored.errored() == results.errored()
-    assert restored.score() == results.score()
 
 
 from dataclasses import dataclass as _dataclass  # noqa: E402
