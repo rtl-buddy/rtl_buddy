@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import subprocess
 import sys
@@ -7,6 +8,22 @@ from rtl_buddy.docs_access import get_page, list_pages
 
 
 REPO_ROOT = Path(__file__).parent.parent
+SPEC = importlib.util.spec_from_file_location(
+    "export_agent_docs", REPO_ROOT / "scripts/export_agent_docs.py"
+)
+assert SPEC is not None and SPEC.loader is not None
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+
+
+def _export(output, docs, *, version="v2"):
+    return MODULE.export(
+        output,
+        docs_dir=docs,
+        version=version,
+        site_url="https://rtl-buddy.github.io",
+        base_url=f"/rtl_buddy/{version}/",
+    )
 
 
 def test_export_matches_bundled_docs_contract(tmp_path):
@@ -25,6 +42,7 @@ def test_export_matches_bundled_docs_contract(tmp_path):
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
 
     assert result.returncode == 0, result.stderr
@@ -53,20 +71,13 @@ def test_export_replaces_stale_output(tmp_path):
     stale = output / "stale.txt"
     stale.write_text("old")
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(REPO_ROOT / "scripts/export_agent_docs.py"),
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.md").write_text("# Test documentation\n")
+    _export(output, docs)
     assert not stale.exists()
+    catalog = json.loads((output / "agent/catalog.json").read_text())
+    assert [page["slug"] for page in catalog["pages"]] == ["index"]
 
 
 def test_export_uses_requested_historical_docs_tree(tmp_path):
@@ -85,25 +96,7 @@ This behavior belongs to the old release.
     (docs / "index.md").write_text(content)
     output = tmp_path / "agent-static"
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(REPO_ROOT / "scripts/export_agent_docs.py"),
-            "--docs-dir",
-            str(docs),
-            "--output",
-            str(output),
-            "--version",
-            "v2",
-            "--base-url",
-            "/rtl_buddy/v2/",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
+    _export(output, docs)
     catalog = json.loads((output / "agent/catalog.json").read_text())
     assert [page["slug"] for page in catalog["pages"]] == ["index"]
     assert catalog["pages"][0]["description"] == "Historical release documentation."
@@ -131,25 +124,7 @@ def test_section_export_rebases_relative_links_and_preserves_code(tmp_path):
     (docs / "install.md").write_text("# Install\n")
     output = tmp_path / "agent-static"
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(REPO_ROOT / "scripts/export_agent_docs.py"),
-            "--docs-dir",
-            str(docs),
-            "--output",
-            str(output),
-            "--version",
-            "v2",
-            "--base-url",
-            "/rtl_buddy/v2/",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
+    _export(output, docs)
     section = (output / "agent/sections/concepts/example/linked-section.md").read_text()
     assert (
         "https://rtl-buddy.github.io/rtl_buddy/v2/concepts/sibling/#details" in section

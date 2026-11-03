@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Iterator
 
 import pytest
+
+from cli_helpers import run_cli
 
 from rtl_buddy import tool_manifest as tm
 from rtl_buddy.errors import FatalRtlBuddyError
@@ -953,14 +954,30 @@ def test_root_cfg_unknown_pin_is_ignored(
 # CLI integration
 
 
-def _run_rb(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    cmd = [sys.executable, "-m", "rtl_buddy", *args]
-    return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, check=False)
+def _run_rb(
+    *args: str, cwd: Path | None = None, available_tools: tuple[str, ...] = ()
+) -> subprocess.CompletedProcess:
+    def detect(spec, project_root=None):
+        return tm.DetectionResult(
+            found=spec.name in available_tools,
+            kind="python",
+            version=spec.minimum_version or "1.0",
+        )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(tm, "detect_tool", detect)
+        return run_cli(*args, cwd=cwd)
 
 
 def test_cli_tool_check_runs_outside_project(tmp_path: Path):
     """tool-check does not require a root_config.yaml."""
-    result = _run_rb("tool-check", "--no-probe-versions", cwd=tmp_path)
+    result = subprocess.run(
+        [sys.executable, "-m", "rtl_buddy", "tool-check", "--no-probe-versions"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
     assert result.returncode == 0
     assert "Tools (" in result.stdout
     assert "Subcommand readiness" in result.stdout
@@ -998,15 +1015,6 @@ def test_cli_tool_check_machine_emits_envelope(tmp_path: Path):
 
 def test_cli_tool_check_machine_required_for_missing_exits_2(tmp_path: Path):
     """--machine with --required-for reports the gate verdict in the envelope."""
-    if shutil.which("axi-profiler") is not None:
-        pytest.skip("axi-profiler is installed; cannot exercise miss path")
-    try:
-        from importlib import metadata as md
-
-        md.version("rtl-buddy-axi-profiler")
-        pytest.skip("rtl-buddy-axi-profiler is installed; cannot exercise miss path")
-    except md.PackageNotFoundError:
-        pass
 
     result = _run_rb(
         "--machine", "tool-check", "--required-for", "axi-profile", cwd=tmp_path
@@ -1125,34 +1133,18 @@ def test_cli_tool_check_machine_explain_unknown_carries_aliases(tmp_path: Path):
 
 
 def test_cli_tool_check_required_for_present(tmp_path: Path):
-    # Pick a subcommand whose required tools are all present (pytest is always installed here).
-    statuses = tm.check_all(
-        tm.get_manifest(), probe_versions=False, include_optional=True
+    result = _run_rb(
+        "tool-check",
+        "--required-for",
+        "elab",
+        cwd=tmp_path,
+        available_tools=("pyslang",),
     )
-    readiness = tm.subcommand_readiness(statuses, tm.get_manifest())
-    ok_sub = next(
-        (sub for sub, info in readiness.items() if info["status"] == "ok"),
-        None,
-    )
-    if ok_sub is None:
-        pytest.skip("no subcommand has all required tools installed")
-
-    result = _run_rb("tool-check", "--required-for", ok_sub, cwd=tmp_path)
     assert result.returncode == 0
 
 
 def test_cli_tool_check_required_for_missing_exits_2(tmp_path: Path):
     """--required-for exits 2 if any required tool is missing."""
-    # axi-profile needs rtl-buddy-axi-profiler, which the CI venv does not install; skip if it is present.
-    if shutil.which("axi-profiler") is not None:
-        pytest.skip("axi-profiler is installed; cannot exercise miss path")
-    try:
-        from importlib import metadata as md
-
-        md.version("rtl-buddy-axi-profiler")
-        pytest.skip("rtl-buddy-axi-profiler is installed; cannot exercise miss path")
-    except md.PackageNotFoundError:
-        pass
 
     result = _run_rb("tool-check", "--required-for", "axi-profile", cwd=tmp_path)
     assert result.returncode == 2
@@ -1160,16 +1152,6 @@ def test_cli_tool_check_required_for_missing_exits_2(tmp_path: Path):
 
 def test_cli_tool_check_strict_exits_1_on_miss(tmp_path: Path):
     """--strict exits 1 if any required tool is missing."""
-    # axi-profiler is the most reliably missing tool in CI.
-    if shutil.which("axi-profiler") is not None:
-        pytest.skip("axi-profiler is installed; cannot exercise miss path")
-    try:
-        from importlib import metadata as md
-
-        md.version("rtl-buddy-axi-profiler")
-        pytest.skip("rtl-buddy-axi-profiler is installed; cannot exercise miss path")
-    except md.PackageNotFoundError:
-        pass
 
     result = _run_rb("tool-check", "--strict", "--no-probe-versions", cwd=tmp_path)
     assert result.returncode == 1

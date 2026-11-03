@@ -1251,7 +1251,7 @@ dev = [
     { name = "pyslang", specifier = ">=10.0.0,<12" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
-    { name = "pytest-cov", specifier = ">=6.0.0" },
+    { name = "pytest-cov", specifier = ">=7.0.0" },
     { name = "ruff", specifier = ">=0.11.0" },
     { name = "systemrdl-compiler", specifier = ">=1.32" },
 ]
@@ -1263,7 +1263,7 @@ test = [
     { name = "pyslang", specifier = ">=10.0.0,<12" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
-    { name = "pytest-cov", specifier = ">=6.0.0" },
+    { name = "pytest-cov", specifier = ">=7.0.0" },
     { name = "systemrdl-compiler", specifier = ">=1.32" },
 ]
 
