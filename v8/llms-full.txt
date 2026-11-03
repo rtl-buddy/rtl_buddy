@@ -1366,7 +1366,7 @@ Every artefact-writing command takes a non-blocking advisory lock on `<artifact_
 - A lock naming this host and a dead process, or a PID since reused by another process, is reclaimed by the next run, which logs `artifact_lock.reclaimed`.
 - A lock recorded on another host is never judged by PID. On a shared filesystem, clear a cross-machine lock deliberately.
 - The lock covers the whole artefact tree, so different commands anchored to the same directory contend even when they write different subdirectories. Runs with different artefact roots do not, which is what [`--run-tag`](#namespace-concurrent-runs) provides. Two runs naming the same tag still contend.
-- A tagged `rb pnr` that copies a block abstract or synthesis netlist out of another tree, or runs `--synth` into an untagged tree, holds that tree's lock only for that step, and waits for it rather than failing, logging `artifact_lock.wait`. See [P&R](pnr.md#run-several-pr-calls-at-once).
+- A tagged `rb pnr` that copies a block abstract or synthesis netlist out of another tree, or runs `--synth` into an untagged tree, holds that tree's lock only for that step, and waits for it rather than failing, logging `artifact_lock.wait`. A tagged command whose own tree another `rb pnr` holds only to copy out of it waits for the copy to end instead of failing. See [P&R](pnr.md#run-several-pr-calls-at-once).
 - The lock is host-local. Do not run the same suite from several machines on a shared filesystem without your own coordination.
 
 ## Find the log
@@ -2884,15 +2884,15 @@ rb pnr-export alu_pnr -c pnr/alu/pnr.yaml --run-tag util60 --png
 ```
 
 - A tagged call writes each run under `artefacts/.runs/<tag>/<run>/`, with its own tree lock and `rtl_buddy.log` in `artefacts/.runs/<tag>/`. Tag rules are in [Namespace concurrent runs](execution-context.md#namespace-concurrent-runs).
-- Two calls under the same tag, or two untagged, contend for one lock: the second is refused. Calls under different tags run side by side, and so do a tagged call and an untagged one, except while the tagged call copies an input from the untagged tree (below). It then waits for that tree's lock, logging `artifact_lock.wait` every five minutes.
-- A tagged call reads nothing in place from a tree it does not own. It copies each block abstract and the upstream synthesis netlist and filelist into its own tree while holding the lock of the tree they are in, checks a block copy's views against the abstract's manifest whenever it reads the copy, and reads only the copies. Synthesis and P&R in one call read the same copies. Besides its own tree, it holds one other tree's lock at a time, so a tagged `--synth` copies its synthesis's block abstracts before it locks the synthesis tree. A tagged run whose synthesis has no netlist to copy fails at setup. A block copy's manifest paths are checked against the project the block came from.
+- Two calls under the same tag, or two untagged, contend for one lock: the second is refused. A tagged call whose tree another call holds only to copy a block abstract out of it waits for that copy instead. Calls under different tags run side by side, and so do a tagged call and an untagged one, except while the tagged call copies an input from the untagged tree (below). It then waits for that tree's lock, logging `artifact_lock.wait` every five minutes.
+- A tagged call reads nothing in place from a tree it does not own. It copies each block abstract and the upstream synthesis netlist and filelist into its own tree while holding the lock of the tree they are in, and reads only the copies. Whenever it reads a copy it checks the copy's files against the content the copy was taken from, and refuses a copy whose files have changed, naming the directory to remove so it is copied again. Synthesis and P&R in one call read the same copies. When it starts, a tagged `rb pnr` locks its own tree, then waits for the tagged tree of each other suite whose block it reads and copies those blocks before letting those trees go. It takes these trees in one fixed order, letting go of its own tree while it waits for one ordered before it, so a consumer may wait for a same-tag call that holds the block's tree, which is producing that block, but same-tag calls never wait for each other in a cycle. Its own tree is tried first, so a duplicate call is refused before it waits for anything. Later it holds one other tree's lock at a time, and a tagged `--synth` copies its synthesis's block abstracts before it locks the synthesis tree. A whole-suite call that pulls in a run from a suite whose tagged tree another call holds is refused, naming that tree. A tagged run whose synthesis has no netlist to copy fails at setup. A block copy's manifest paths are checked against the project the block came from.
 - A run's `blocks:` are copied from the abstract their block run published under the same tag. Only when `rb pnr` under the tag has never started that block run (checked under the lock of the tag's tree, so a block run that is starting is waited for) is the untagged abstract copied instead, with the warning `pnr.block_untagged_abstract`. A block run that the tag ran but that failed, was cleared, or was skipped by `reglvl` in a whole-suite call fails its consumers.
 - Copies live in `artefacts/.runs/<tag>/.block-abstracts/` and `artefacts/.runs/<tag>/.synth/`, one directory per source and content digest, and are never overwritten. They take disk space until you remove the tag's tree (`rm -r artefacts/.runs/<tag>`), which also removes the results that read them.
-- Each result's `blocks` entries, and a hardened block's `abstract.manifest.json` `blocks`, record the `run_tag` the consumed abstract was published under (null for untagged) and its `manifest_sha256`. A tagged run also writes them to `blocks.consumed.json` in its directory. Fix-it commands in block errors carry `--run-tag <tag>` when the abstract they name is a tagged one.
+- Each result's `blocks` entries, and a hardened block's `abstract.manifest.json` `blocks`, record the `run_tag` the consumed abstract was published under (null for untagged) and its `manifest_sha256`. A tagged run also writes them to `blocks.consumed.json` in its directory, with paths relative to the project root. Fix-it commands in block errors carry `--run-tag <tag>` when the abstract they name is a tagged one.
 - With no run name, the tag also applies to runs pulled in from another `pnr.yaml`: they write and lock that suite's `artefacts/.runs/<tag>/`.
 - Synthesis is not namespaced: it writes the untagged `artefacts/<synth>/`. Untagged, `--synth` locks the synthesis suite's tree for the whole call. Tagged, it locks it while each synthesis runs and its netlist is copied. When `synth.yaml` shares the directory of `pnr.yaml`, that tree is the untagged P&R tree, so a tagged `--synth` waits for any untagged call there to end before synthesizing.
 - `--resume latest` and `--dispatch slurm` work inside the tag's tree: checkpoints, stage jobs and orphan checks are per tag.
-- `rb pnr-export --run-tag <tag>` exports a tagged result with the block copies that run consumed, recorded in its `blocks.consumed.json`, and fails when `blocks:` no longer lists one of them. It needs only those copies, so the block's `pnr.yaml` may have changed or gone since. Each checkpoint run directory keeps the record of the call that wrote it, which `--checkpoint` reads. `rb power` and other readers read the untagged `artefacts/<run>/` only; see [`--run-tag` readers](../known-issues.md#--run-tag-covers-the-test-and-pr-flows-not-every-reader).
+- `rb pnr-export --run-tag <tag>` exports a tagged result with the block copies that run consumed, recorded in its `blocks.consumed.json`, and fails when `blocks:` no longer lists one of them. It needs only those copies, so the block's `pnr.yaml` may have changed or gone since, and the project may have moved or been copied elsewhere. The copies may be in the tagged tree of the suite whose call pulled the run in, which the record names, even in another project. A record that names a copy outside the project and outside that tree, as an absolute path does once the project has moved, is refused: re-run the P&R run under the tag. Each checkpoint run directory keeps the record of the call that wrote it, which `--checkpoint` reads. `rb power` and other readers read the untagged `artefacts/<run>/` only; see [`--run-tag` readers](../known-issues.md#--run-tag-covers-the-test-and-pr-flows-not-every-reader).
 
 ## Interpret results
 
@@ -2993,7 +2993,7 @@ Read the row's description and `fail_stage` first, then `pnr.log`. A result with
 | `fail_stage: routed_check` | A located macro or exact pin moved between floorplan and the routed DEF, usually because a `pin-constraints` file or hook moved it. |
 | `fail_stage: pins_complete` | `pins-complete: true` found a port with no pin entry, or with conflicting entries. Add or remove entries. |
 | `fail_stage: checkpoint` | A checkpoint could not be written (disk full; see the `checkpoint` event in `progress.jsonl`), or a hook wrapped `global_placement`, `clock_tree_synthesis`, `global_route` or `detailed_route` with `rename` in a one-session run. Free space, or remove the wrapper or set `stages: true`. |
-| `fail_stage: resume` | `--resume` refused: a stage script, input file, checkpoint or OpenROAD version differs. Rerun from an earlier stage. |
+| `fail_stage: resume` | `--resume` refused: a stage script, input file, checkpoint or OpenROAD version differs. The description lists every script and input difference, each one a value accepts with its `--accept-change` value (see [Accept a change on resume](#accept-a-change-on-resume)). Otherwise rerun from an earlier stage. |
 | `fail_stage: dispatch` | A Slurm stage job ended `OUT_OF_MEMORY`, `TIMEOUT`, `CANCELLED` or similar, never started, or was refused. Read `dispatch/<NN>_<stage>.slurm.log`; raise that stage's `resources:`. See [Dispatch](#dispatch-the-stages-to-slurm). |
 | `fail_stage: abstract` | A hardened block's view could not be written. Read `pnr.log`. |
 | `fail_stage: outputs` | rb could not read, decode or rewrite `<top>.routed.pwr.v` or a hardened block's `<top>.lib` to put the supply ports last. The description names the file and error. |
@@ -3238,6 +3238,18 @@ global-route:
 
 `allow-congestion` is for diagnosis: global route keeps its overflow and the flow goes on to detailed route. The result is a `PASS` qualified `global-route.allow-congestion (diagnosis only)` with `allow_congestion: true` and `global_route_overflow`, never a clean pass. Such a run cannot be `harden: true`.
 
+## Repair timing after CTS
+
+After CTS the flow repairs setup, unless `post-cts-setup-repair` is false, then hold, on placement parasitics. `post-cts-repair` sets the margins of that repair, in ns:
+
+```yaml
+    post-cts-repair:
+      setup-margin: 0.05
+      hold-margin: 0.01
+```
+
+`setup-margin` goes to `repair_timing -setup`, and `hold-margin` and a set `setup-margin` go to `repair_timing -hold`, as in the repairs after routing and in ORFS. Unset or 0, a margin is not passed, as OpenROAD's default is 0. The setup margin keeps that much setup slack, on placement parasitics, on the paths the hold repair delays: set it when the hold buffers the post-CTS repair inserts leave setup-critical paths failing after routing, since later repairs do not remove them. With `post-cts-setup-repair: false` the setup repair does not run, and a `setup-margin` still goes to the hold repair. A run's block overrides the platform's field by field, and `null` clears the margins. A probe skips the post-CTS repair.
+
 ## Repair timing after routing
 
 Post-CTS repair times the design on placement estimates. Two blocks, on the platform or the run, repair again on routed parasitics. When neither the platform nor the run writes `global-route-repair` or `global-route-hold-repair`, the repair after global route runs as ORFS runs it: `repair_design`, then setup and hold repair with no margin, `{repair-design: {}, setup-margin: 0, hold-margin: 0}`. `post-route-repair` runs only when set. Both cost run time and change QoR.
@@ -3419,6 +3431,7 @@ A macro grid in the `pdn-config` with a `-halo` needs the standard-cell rows cut
 | `before-cts` | After legalization, `improve_placement`, `optimize_mirroring` and the `placement.macro-pin-limits` step, before `repair_clock_inverters` and `clock_tree_synthesis`. The `cts-dont-use-cells` are not yet excluded. |
 | `before-repair-clock-nets` | Right after `clock_tree_synthesis`, before `cts-repair-clock-nets` runs `repair_clock_nets`. The `cts-dont-use-cells` are still excluded. |
 | `after-cts` | After CTS and any `repair_clock_nets`, before setup and hold repair |
+| `after-timing-repair` | Right after the `repair_timing` calls of the post-CTS repair, the global-route repair and each post-route repair round, on the parasitics they repaired on and before the legalization that follows them. `$rb_repair` names the repair: `post_cts`, `global_route` or `post_route`; in a post-route round `$rb_repair_round` is the round's number. In an `eco` round it runs inside the round's incremental global route, before `repair-design.after-timing`'s `repair_design`. Not after the floorplan setup repair, and not where a repair is skipped or runs no `repair_timing`: a probe, a `global-route-repair` or `post-route-repair` without a margin, and the electrical round |
 | `after-cts-repair` | After post-CTS setup and hold repair and their legalization |
 | `after-global-route` | After `global_route`, before global-route repair |
 | `after-global-route-repair` | After global-route repair, before the antenna repair, in the `global_route` stage, so also in a probe |
@@ -3428,9 +3441,9 @@ A macro grid in the `pdn-config` with a `-halo` needs the standard-cell rows cut
 | `after-reports` | After the final reports, on their parasitics, before rb writes the routed outputs |
 | `stage-end` | At the end of every stage, before its checkpoint, with `$rb_stage` naming the stage and `$rb_mode` the run's `mode` (`closure` or `probe`). In post-route repair, at the end of each repair round, including the electrical round; when round 0 stops the rounds, the stage keeps the detailed route and runs none. |
 
-Hooks run at Tcl global scope in `artefacts/<run>/`, with `$OUT_DIR` and `$DESIGN` set. A Tcl error, `exit` or stray `return` in a hook fails the run naming the point and file; a `stage-end` hook's error also names the stage, and fails the run in a post-route repair round too, where other failures only set the round aside. Results come from the final reports, so a report a hook prints before or after them does not change them. Hook files are inputs of checkpoints and hardened abstracts. On a multi-corner platform an SDC command in a hook constrains the primary corner only; see [Sign off at several corners](#sign-off-at-several-corners).
+Hooks run at Tcl global scope in `artefacts/<run>/`, with `$OUT_DIR` and `$DESIGN` set. A Tcl error, `exit` or stray `return` in a hook fails the run naming the point and file; a `stage-end` hook's error also names the stage. A `stage-end` or `after-timing-repair` hook's error fails the run in a post-route repair round too, where other failures only set the round aside. Results come from the final reports, so a report a hook prints before or after them does not change them. Hook files are inputs of checkpoints and hardened abstracts. On a multi-corner platform an SDC command in a hook constrains the primary corner only; see [Sign off at several corners](#sign-off-at-several-corners).
 
-Each point belongs to the stage it runs in, `before-cts` to `cts`: a staged run runs it in that stage's session where a one-session run runs it, and `--resume` from that stage runs it again.
+Each point belongs to the stage it runs in, `before-cts` to `cts`: a staged run runs it in that stage's session where a one-session run runs it, and `--resume` from that stage runs it again. `after-timing-repair` runs in `cts`, `global_route` and each post-route repair round, and belongs to `cts`: a `--resume` from a later stage is refused when its files changed.
 
 Every later `read_spef` of a SPEF reads what the `after-extraction` hooks left: the next post-route repair round's, the final reports' and `rb power`'s. A multi-corner platform writes one SPEF and reads it once per corner, so one edit covers every corner.
 
@@ -3507,7 +3520,25 @@ rb pnr alu_pnr -c pnr/alu/pnr.yaml --resume latest --from detailed_route
 
 - `--stop-after <stage>` works on any run, writes that checkpoint and a stage report, and passes with `routed: false`. It writes no routed outputs, GDS or abstract, and `xfail:` does not apply.
 - `--resume <run> --from <stage>` starts a new staged run from a staged run's checkpoint of the stage before. `<run>` is `latest`, a run id or a checkpoint directory. The old run is left unchanged, so detailed routing can be retried from one global route. The reports the inherited checkpoints keep (`grt_antennas.rpt`, `route.drc.rpt`, `route.maze.log`, `drt_antennas.rpt`) are copied into `artefacts/<run>/`.
-- The resume is refused (`fail_stage: resume`) when the earlier stages' generated scripts, their input files or the OpenROAD version changed, or when resuming a probe into a closure run. A `constraints:` path and a map of that path to every corner count as different. Settings read only from `--from` on, such as `detailed-route-verbose`, routing layers or `threads:`, may change. Files sourced by hooks, `platform-tcl`, a `pdn-config` or the SDC are not checked unless listed under [`inputs:`](#run-tcl-hooks), and environment variables are not checked.
+- The resume is refused (`fail_stage: resume`) when the earlier stages' generated scripts, their input files or the OpenROAD version changed, or when resuming a probe into a closure run. `--accept-change` accepts a named script or input file change; see [Accept a change on resume](#accept-a-change-on-resume). A `constraints:` path and a map of that path to every corner count as different. Settings read only from `--from` on, such as `detailed-route-verbose`, routing layers or `threads:`, may change. Files sourced by hooks, `platform-tcl`, a `pdn-config` or the SDC are not checked unless listed under [`inputs:`](#run-tcl-hooks), and environment variables are not checked.
+
+### Accept a change on resume
+
+A resumed run equals a fresh run of the current configuration unless it records accepted changes. `--accept-change <change>`, repeatable, lets a resume go ahead although an earlier stage's script or input file differs, for example a `session` hook edited to change only the stages from `--from` on:
+
+```bash
+rb pnr alu_pnr -c pnr/alu/pnr.yaml --resume latest --from global_route \
+  --accept-change pnr/alu/hooks/session.tcl
+```
+
+- The refusal lists every script and input difference and ends each one a value accepts with that value. Only differences a value names are accepted. The checks of the OpenROAD version, the manifest, a probe and the stage before `--from` come first, and each refuses alone.
+- `script:<stage>` accepts that stage's script, and `script` every stage script that differs, such as all those a `pnr.yaml` setting like `placement.rotated-macro-footprint` changes.
+- An input file is named by its path, relative to the directory rb runs in or absolute; rb compares resolved paths. The refusal prints the path relative to that directory when the file is under it, else absolute.
+- Only an input a stage from `--from` on reads can be accepted. The floorplan inputs (netlist, SDC, pin constraints, planner files, `pdn-config`, `tracks-tcl`, `tapcell-tcl`) are read by the floorplan session alone, and a hook point only by the stages it runs in: a changed `after-cts` hook cannot be accepted from `--from global_route`. The refusal says to resume from the first stage that reads the file instead. `session`, `stage-end`, Liberty, LEF, the other PDK Tcl files and the files under `inputs:` count as read by every stage.
+- No value accepts another OpenROAD version, a probe resumed into a closure run, a missing or changed checkpoint file, a stage before `--from` that did not finish, an unreadable `manifest.json`, a missing or unreadable input file, or an input configured or dropped since: a file added to or removed from a list, or an `inputs:` entry at another path.
+- A value that names no difference, or only one no value accepts, refuses the resume and says which, listing what does differ.
+- The run records each accepted change under `accepted_changes` in its `manifest.json` and its result, and warns `pnr.resume_accepted_change` for each. A script record names the stage and the first line that differs; an input record names the role and the file's old and new path and digest. A hardened block's `abstract.manifest.json` records them too. They do not make the abstract stale: its staleness check compares the files and configuration the run read.
+- Resuming the resumed run needs no value again while the script or file is as accepted; the new run records the change with `inherited_from` naming the run that accepted it. Otherwise the refusal names it again, and the earlier record is dropped.
 
 ## Dispatch the stages to Slurm
 
@@ -4320,6 +4351,16 @@ blocks:
 ```
 
 IDs are arbitrary strings; a block prefix keeps them unique across the project. One file may define several blocks.
+
+An item may carry project metadata, such as the test tier that must own it, under `meta`:
+
+```yaml
+      - id: MYBLK-COV-01
+        desc: Normal operation
+        meta: {tier: pr}
+```
+
+`meta` is a free-form mapping that rtl-buddy does not interpret. `rb --machine spec check-coverage` reports it as `meta` on each item that sets it, so a project script can group or filter items without re-reading `specs.yaml`. Dates and other non-JSON values in `meta` are reported as strings. Other keys beside `id`, `desc` and `meta` are ignored with a warning.
 
 ## Link the design model
 
@@ -7794,83 +7835,94 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 │                             before the runs that consume it)]                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --pnr-config    -c      TEXT                  pnr.yaml to use [default: pnr.yaml]    │
-│ --list                                        list pnr runs in the selected config   │
-│                                               and exit                               │
-│ --reg-level     -l      INTEGER               run only entries with reglvl at or     │
-│                                               below this value                       │
-│                                               [default: 0]                           │
-│ --gds                                         stream out GDS via KLayout after a     │
-│                                               successful P&R                         │
-│ --png                                         render a PNG of the routed GDS via     │
-│                                               KLayout (implies --gds)                │
-│ --gds-mode              [strict|preview]      override each run's gds-mode (implies  │
-│                                               --gds): strict fails the run when a    │
-│                                               cell has no layout, preview keeps the  │
-│                                               incomplete layout and reports the      │
-│                                               cells                                  │
-│                                               [default: (each run's gds-mode         │
-│                                               (preview))]                            │
-│ --accept-stale                                consume blocks: abstracts whose        │
-│                                               recorded inputs changed since they     │
-│                                               were hardened, qualifying the result   │
-│                                               instead of failing                     │
-│ --jobs          -j      INTEGER RANGE [x>=1]  P&R runs at once: independent blocks   │
-│                                               harden side by side, and a top waits   │
-│                                               for all of its own. Each run is a full │
-│                                               OpenROAD session sized by its          │
-│                                               `threads:` setting, so size the two    │
-│                                               together                               │
-│                                               [default: 1]                           │
-│ --synth                                       run each P&R run's upstream synthesis  │
-│                                               just before it, once per synthesis —   │
-│                                               so a top built from blocks: is         │
-│                                               synthesized after its blocks are       │
-│                                               hardened                               │
-│ --stop-after            STAGE                 end the run after STAGE (floorplan,    │
-│                                               place, cts, global_route,              │
-│                                               detailed_route, or post_route_repair   │
-│                                               when the run sets post-route-repair):  │
-│                                               write its checkpoint and a stage       │
-│                                               report; the result is a PASS with      │
-│                                               routed: false, and no routed outputs   │
-│                                               or abstract. Needs a single named run  │
-│                                               [default: (run to the end)]            │
-│ --resume                RUN                   resume a staged run (stages: true) in  │
-│                                               a new checkpoint run directory:        │
-│                                               latest, a run id under the run's       │
-│                                               checkpoints/, or a checkpoint run      │
-│                                               directory. Needs --from and a single   │
-│                                               named run; refused when the scripts,   │
-│                                               input files or OpenROAD of the stages  │
-│                                               before --from have changed. Files that │
-│                                               hooks, platform-tcl, a pdn-config or   │
-│                                               the SDC source themselves, and         │
-│                                               environment variables, are not checked │
-│ --from                  STAGE                 the first stage a --resume runs        │
-│                                               (place, cts, global_route,             │
-│                                               detailed_route, post_route_repair when │
-│                                               the run sets post-route-repair,        │
-│                                               finish); it starts from the resumed    │
-│                                               run's checkpoint of the stage before   │
-│ --dispatch              BACKEND               slurm: run each stage as its own job,  │
-│                                               each held until the one before         │
-│                                               succeeds, sized by the run's           │
-│                                               resources: block over                  │
-│                                               cfg-dispatch.resources; implies        │
-│                                               stages: true. Blocks until the last    │
-│                                               stage ends; Ctrl-C, SIGTERM or SIGHUP  │
-│                                               cancels the jobs. local runs here      │
-│                                               [default: (local)]                     │
-│ --run-tag               TEXT                  namespace this invocation's P&R output │
-│                                               under artefacts/.runs/<tag>/ with its  │
-│                                               own tree lock and log, so concurrent   │
-│                                               rb pnr calls on one pnr.yaml do not    │
-│                                               collide; block abstracts (the tag's,   │
-│                                               else the untagged ones) and the        │
-│                                               synthesis netlist are read from copies │
-│                                               taken into that tree                   │
-│ --help                                        Show this message and exit.            │
+│ --pnr-config     -c      TEXT                  pnr.yaml to use [default: pnr.yaml]   │
+│ --list                                         list pnr runs in the selected config  │
+│                                                and exit                              │
+│ --reg-level      -l      INTEGER               run only entries with reglvl at or    │
+│                                                below this value                      │
+│                                                [default: 0]                          │
+│ --gds                                          stream out GDS via KLayout after a    │
+│                                                successful P&R                        │
+│ --png                                          render a PNG of the routed GDS via    │
+│                                                KLayout (implies --gds)               │
+│ --gds-mode               [strict|preview]      override each run's gds-mode (implies │
+│                                                --gds): strict fails the run when a   │
+│                                                cell has no layout, preview keeps the │
+│                                                incomplete layout and reports the     │
+│                                                cells                                 │
+│                                                [default: (each run's gds-mode        │
+│                                                (preview))]                           │
+│ --accept-stale                                 consume blocks: abstracts whose       │
+│                                                recorded inputs changed since they    │
+│                                                were hardened, qualifying the result  │
+│                                                instead of failing                    │
+│ --jobs           -j      INTEGER RANGE [x>=1]  P&R runs at once: independent blocks  │
+│                                                harden side by side, and a top waits  │
+│                                                for all of its own. Each run is a     │
+│                                                full OpenROAD session sized by its    │
+│                                                `threads:` setting, so size the two   │
+│                                                together                              │
+│                                                [default: 1]                          │
+│ --synth                                        run each P&R run's upstream synthesis │
+│                                                just before it, once per synthesis —  │
+│                                                so a top built from blocks: is        │
+│                                                synthesized after its blocks are      │
+│                                                hardened                              │
+│ --stop-after             STAGE                 end the run after STAGE (floorplan,   │
+│                                                place, cts, global_route,             │
+│                                                detailed_route, or post_route_repair  │
+│                                                when the run sets post-route-repair): │
+│                                                write its checkpoint and a stage      │
+│                                                report; the result is a PASS with     │
+│                                                routed: false, and no routed outputs  │
+│                                                or abstract. Needs a single named run │
+│                                                [default: (run to the end)]           │
+│ --resume                 RUN                   resume a staged run (stages: true) in │
+│                                                a new checkpoint run directory:       │
+│                                                latest, a run id under the run's      │
+│                                                checkpoints/, or a checkpoint run     │
+│                                                directory. Needs --from and a single  │
+│                                                named run; refused when the scripts,  │
+│                                                input files or OpenROAD of the stages │
+│                                                before --from have changed. Files     │
+│                                                that hooks, platform-tcl, a           │
+│                                                pdn-config or the SDC source          │
+│                                                themselves, and environment           │
+│                                                variables, are not checked            │
+│ --from                   STAGE                 the first stage a --resume runs       │
+│                                                (place, cts, global_route,            │
+│                                                detailed_route, post_route_repair     │
+│                                                when the run sets post-route-repair,  │
+│                                                finish); it starts from the resumed   │
+│                                                run's checkpoint of the stage before  │
+│ --accept-change          CHANGE                let a --resume go ahead although      │
+│                                                CHANGE, a difference its refusal      │
+│                                                names, differs from the resumed run:  │
+│                                                script:STAGE for a stage script,      │
+│                                                script for every stage script, or an  │
+│                                                input file's path. Repeatable. The    │
+│                                                run records each accepted change; a   │
+│                                                value that names no difference        │
+│                                                refuses the resume                    │
+│ --dispatch               BACKEND               slurm: run each stage as its own job, │
+│                                                each held until the one before        │
+│                                                succeeds, sized by the run's          │
+│                                                resources: block over                 │
+│                                                cfg-dispatch.resources; implies       │
+│                                                stages: true. Blocks until the last   │
+│                                                stage ends; Ctrl-C, SIGTERM or SIGHUP │
+│                                                cancels the jobs. local runs here     │
+│                                                [default: (local)]                    │
+│ --run-tag                TEXT                  namespace this invocation's P&R       │
+│                                                output under artefacts/.runs/<tag>/   │
+│                                                with its own tree lock and log, so    │
+│                                                concurrent rb pnr calls on one        │
+│                                                pnr.yaml do not collide; block        │
+│                                                abstracts (the tag's, else the        │
+│                                                untagged ones) and the synthesis      │
+│                                                netlist are read from copies taken    │
+│                                                into that tree                        │
+│ --help                                         Show this message and exit.           │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -10268,6 +10320,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `floorplan-setup-repair` | platform, run | `true` (default) ends the floorplan with ORFS's setup repair before placement, `repair_timing -setup -sequence "unbuffer,sizeup,swap,vt_swap" -skip_last_gasp`: buffer removal and sizing only. `false` leaves it out. Needs wire RC; see [Set wire RC](../concepts/pnr.md#set-wire-rc) |
 | `cts-repair-clock-inverters` | platform, run | `true` (default) runs `repair_clock_inverters` before CTS, after the `before-cts` hooks, as ORFS does: each inverter in the clock tree is cloned next to its register loads, so CTS does not buffer an inverted clock. `false` leaves it out |
 | `post-cts-setup-repair` | platform, run | `true` (default) runs `repair_timing -setup` after CTS, before the hold repair, as ORFS repairs both; `false` repairs hold only. Setup repair needs wire RC: with none, OpenROAD stops with `RSZ-0089`. See [Set wire RC](../concepts/pnr.md#set-wire-rc) |
+| `post-cts-repair` | platform, run | Margins of the post-CTS repair: `setup-margin` and `hold-margin`, in ns, at least 0. `setup-margin` goes to `repair_timing -setup`; `hold-margin` and a set `setup-margin` go to `repair_timing -hold`. Unset or 0 passes none. With `post-cts-setup-repair: false`, a `setup-margin` still goes to the hold repair. A run overrides it field by field; `null` clears the margins. See [Repair timing after CTS](../concepts/pnr.md#repair-timing-after-cts) |
 | `global-route-hold-repair` | platform, run | `true` is `global-route-repair: {hold-margin: 0}`; not with `global-route-repair` at the same level. On a run, `false` drops the hold repair from the platform's block, or from the default block when nothing writes one, and turns the block off when nothing is left. Default `false` |
 | `global-route-repair` | platform, run | Repair after global route; on by default. See below |
 | `global-route-antenna-repair` | platform, run | `true` (default) runs `repair_antennas -iterations 5` after the global-route repair and the `after-global-route-repair` hooks, then `check_antennas` into `grt_antennas.rpt`, as ORFS does. It inserts diodes and legalizes them. `false` leaves it out |
@@ -10950,14 +11003,14 @@ runs:
 | `gds-mode` | `preview` | `strict` fails the run when a requested export is incomplete. `--gds-mode` overrides. See [Stream out GDS and PNG](../concepts/pnr.md#stream-out-gds-and-png) |
 | `gds-allow-empty` | — | Cell names or case-sensitive globs that have no layout on purpose |
 | `pin-constraints` | — | Tcl sourced just before pin placement |
-| `hooks` | — | Map of hook point to a Tcl path or list. Points, in flow order: `session`, `after-floorplan`, `macro-placement`, `after-pdn`, `after-pins`, `after-global-placement`, `after-repair-design`, `before-cts`, `before-repair-clock-nets`, `after-cts`, `after-cts-repair`, `after-global-route`, `after-global-route-repair`, `before-detailed-route`, `after-extraction`, `before-reports`, `after-reports`, and `stage-end` at the end of every stage. See [Run Tcl hooks](../concepts/pnr.md#run-tcl-hooks) |
+| `hooks` | — | Map of hook point to a Tcl path or list. Points, in flow order: `session`, `after-floorplan`, `macro-placement`, `after-pdn`, `after-pins`, `after-global-placement`, `after-repair-design`, `before-cts`, `before-repair-clock-nets`, `after-cts`, `after-timing-repair`, `after-cts-repair`, `after-global-route`, `after-global-route-repair`, `before-detailed-route`, `after-extraction`, `before-reports`, `after-reports`, and `stage-end` at the end of every stage. See [Run Tcl hooks](../concepts/pnr.md#run-tcl-hooks) |
 | `inputs` | — | Files the SDC or hooks `source`, relative to `pnr.yaml`. Fingerprinted for `--resume` and hardened-block staleness. See [Run Tcl hooks](../concepts/pnr.md#run-tcl-hooks) |
 | `pdn-config` | PDK's | Tcl that replaces the PDK's `pdn-config` |
 | `pdn` | — | Core grid in YAML; see below |
 | `placement` | Platform's | Any `placement.*` key, overriding the platform for this run |
 | `routing-layers`, `routing-layer-adjustment`, `cts-buffer`, `cts-root-buffer`, `cts-clock-nets`, `cts-latency-balancing`, `cts-repair-clock-nets`, `cts-sink-clustering`, `cts-obstruction-aware`, `cts-dont-use-cells`, `cts-repair-clock-inverters`, `floorplan-setup-repair`, `post-cts-setup-repair`, `global-route-hold-repair`, `global-route-antenna-repair`, `detailed-route-antenna-repair`, `port-buffer`, `keep-sizing-vt`, `tapcell-tcl` | Platform's | Override the platform's value for this run. See [P&R keys](#synthesis-and-physical-design-tools) |
 | `global-route` | Platform's | Overrides the platform's block field by field. See [P&R keys](#synthesis-and-physical-design-tools) |
-| `global-route-repair`, `post-route-repair` | Platform's | Overrides the platform's block field by field; `null` turns it off. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing) |
+| `post-cts-repair`, `global-route-repair`, `post-route-repair` | Platform's | Overrides the platform's block field by field; `null` turns it off, or for `post-cts-repair` clears its margins. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing) |
 | `mode` | `closure` | `probe` skips timing repair and the antenna repair after global route, and stops after global route. Not with `harden: true`. See [Probe a floorplan](../concepts/pnr.md#probe-a-floorplan) |
 | `signoff` | Platform's | Overrides the platform's block field by field; `null` turns it off. See [Gate signoff](../concepts/pnr.md#gate-signoff) |
 | `fail-on-electrical` | `false` | `true` fails a routed run with any max-slew, max-capacitance or max-fanout violator, and post-route repair counts each round's max-slew and max-capacitance violators, so a round that ties on timing and DRCs wins with fewer. It adds `electrical` to `signoff.fail-on` |
@@ -11427,6 +11480,7 @@ blocks:
     coverage-items:
       - id: MY-COV-01
         desc: Normal operation
+        meta: {tier: pr}
 ```
 
 | Field | Requirement | Meaning |
@@ -11437,8 +11491,9 @@ blocks:
 | `blocks[].coverage-items` | Default empty | Functional coverage item list |
 | `coverage-items[].id` | Required | Identifier used by `covers` in tests and formal verifications |
 | `coverage-items[].desc` | Required | Verification requirement |
+| `coverage-items[].meta` | Optional mapping | Free-form project metadata, such as the test tier that owns the item. Any keys and values; rtl-buddy does not interpret it. Reported as `meta` per item by `rb --machine spec check-coverage` when set |
 
-A single-block file matches its linked model unconditionally. These fields affect traceability only. See [Spec Traceability](../concepts/spec-traceability.md).
+A key that is not listed here, at the top level, on a block or on a coverage item, is ignored. The file still loads and a warning names the file, the location and the key, once per process. A `meta:` left empty or set to `~` means no metadata. A single-block file matches its linked model unconditionally. These fields affect traceability only. See [Spec Traceability](../concepts/spec-traceability.md).
 
 
 ---

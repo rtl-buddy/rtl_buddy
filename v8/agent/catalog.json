@@ -1217,6 +1217,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v8/agent/sections/concepts/pnr/tune-global-routing.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#repair-timing-after-cts",
+          "slug": "repair-timing-after-cts",
+          "title": "Repair timing after CTS",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v8/agent/sections/concepts/pnr/repair-timing-after-cts.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#repair-timing-after-routing",
           "slug": "repair-timing-after-routing",
           "title": "Repair timing after routing",
