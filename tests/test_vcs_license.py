@@ -1,6 +1,7 @@
-import time
+from types import SimpleNamespace
 
 from rtl_buddy.process_utils import run_managed_process
+from rtl_buddy.tools import vcs_license
 from rtl_buddy.tools.vcs_license import VcsLicenseQueueMonitor
 
 
@@ -41,7 +42,9 @@ def test_dots_only_continuation_stays_queued(tmp_path):
     assert monitor.is_waiting() is True
 
 
-def test_real_output_line_exits_queue_and_reports_queued_sec(tmp_path):
+def test_real_output_line_exits_queue_and_reports_queued_sec(tmp_path, monkeypatch):
+    now = 100.0
+    monkeypatch.setattr(vcs_license, "time", SimpleNamespace(time=lambda: now))
     log_path = tmp_path / "test.log"
     err_path = tmp_path / "test.err"
     log_path.write_text("Queuing for License ......\n")
@@ -53,12 +56,11 @@ def test_real_output_line_exits_queue_and_reports_queued_sec(tmp_path):
     )
     assert monitor.is_waiting() is True
 
-    time.sleep(0.05)
+    now += 12.5
     _append(log_path, "simulation resumed\n")
     assert monitor.is_waiting() is False
-    assert len(exited) == 1
-    assert exited[0] >= 0.0
-    assert monitor.queue_wait_sec == exited[0]
+    assert exited == [12.5]
+    assert monitor.queue_wait_sec == 12.5
 
 
 def test_licensed_number_of_users_marker_also_triggers(tmp_path):
@@ -77,19 +79,25 @@ def test_licensed_number_of_users_marker_also_triggers(tmp_path):
     assert monitor.is_waiting() is True
 
 
-def test_cap_exceeded_returns_false_permanently(tmp_path):
+def test_cap_exceeded_returns_false_permanently(tmp_path, monkeypatch):
+    now = 100.0
+    monkeypatch.setattr(vcs_license, "time", SimpleNamespace(time=lambda: now))
     log_path = tmp_path / "test.log"
     err_path = tmp_path / "test.err"
     log_path.write_text("Queuing for License ......\n")
     err_path.write_text("")
 
-    monitor = VcsLicenseQueueMonitor(log_path, err_path, max_queue_wait_sec=0.2)
+    monitor = VcsLicenseQueueMonitor(log_path, err_path, max_queue_wait_sec=2.0)
     assert monitor.is_waiting() is True
     assert monitor.cap_exceeded is False
 
-    time.sleep(0.3)
+    now += 2.0
+    assert monitor.is_waiting() is True
+    assert monitor.cap_exceeded is False
+    now += 0.5
     assert monitor.is_waiting() is False
     assert monitor.cap_exceeded is True
+    assert monitor.queue_wait_sec == 2.5
 
     # The monitor stays disabled even if real output appears later.
     _append(log_path, "simulation resumed\n")
