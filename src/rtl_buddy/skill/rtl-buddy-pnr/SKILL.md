@@ -30,7 +30,7 @@ rb --machine pnr-export <run> -c <pnr.yaml> --png [--run-tag <tag>]  # GDS/PNG o
 ```
 
 - Explore a floorplan with `mode: probe` (no timing repair, stops after global route) before closure runs.
-- For long runs set `checkpoints: true`, or `stages: true` to make the run resumable. `--resume` reuses earlier stages only if their scripts, inputs and OpenROAD version are unchanged; it is refused otherwise (`fail_stage: resume`).
+- For long runs set `checkpoints: true`, or `stages: true` to make the run resumable. `--resume` refuses (`fail_stage: resume`) if earlier stages' scripts, inputs or OpenROAD version changed; `--accept-change` accepts a listed change.
 - Without `threads:` OpenROAD picks the thread count (26Q4: all host threads); set a count or `auto` (the allocation's CPUs). `openroad_threads.effective` is null when unset.
 - `--dispatch slurm` sizes each stage from the run's `resources:` (`stages.<stage>` overrides). `rb pnr` waits for the chain; Ctrl-C cancels its jobs.
 - `pnr.log` is live. Before calling a route hung, check `DRT-0195` iterations and `DRT-0199` violation counts, and `checkpoints/latest/progress.jsonl` for the current step.
