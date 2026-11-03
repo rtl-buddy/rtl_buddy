@@ -73,15 +73,14 @@ def _cfg_file(**kw):
 
 
 def _hook_files(tmp_path, points=HOOK_POINTS):
-    """One hook file per point, each printing `MARK <point>`, a `stage-end` one also its stage and the run's mode; returns point -> path."""
+    """One hook file per point, each printing `MARK <point>`, a `stage-end` one also its stage and the run's mode, an `after-timing-repair` one the repair; returns point -> path."""
     paths = {}
     for point in points:
         path = tmp_path / "hooks" / f"{point}.tcl"
-        mark = (
-            "MARK stage-end $rb_stage $rb_mode"
-            if point == "stage-end"
-            else f"MARK {point}"
-        )
+        mark = {
+            "stage-end": "MARK stage-end $rb_stage $rb_mode",
+            "after-timing-repair": "MARK after-timing-repair $rb_repair",
+        }.get(point, f"MARK {point}")
         _write(path, f'puts "{mark}"\n')
         paths[point] = str(path)
     return paths
@@ -256,6 +255,8 @@ _FLOW_ORDER = [
     ">>> Hook after-cts:",
     ">>> Detail placement (post-CTS)",
     "repair_timing -hold",
+    "set rb_repair post_cts",
+    ">>> Hook after-timing-repair:",
     ">>> Detail placement (legalize repair cells)",
     "check_placement -verbose",
     ">>> Hook after-cts-repair:",
@@ -263,6 +264,9 @@ _FLOW_ORDER = [
     "\nglobal_route -congestion_iterations",
     ">>> Hook after-global-route:",
     ">>> Post-global-route hold repair",
+    "set rb_repair global_route",
+    ">>> Hook after-timing-repair:",
+    "global_route -start_incremental",
     ">>> Hook after-global-route-repair:",
     ">>> Hook stage-end (global_route):",
     ">>> Hook before-detailed-route:",
@@ -299,11 +303,13 @@ def test_every_point_renders_at_its_flow_position(tmp_path):
         for a in _FLOW_ORDER
         if a.startswith(">>> Hook ") and "stage-end" not in a
     ]
-    assert [*points, "stage-end"] == list(HOOK_POINTS)
+    assert [*dict.fromkeys(points), "stage-end"] == list(HOOK_POINTS)
     for point in HOOK_POINTS:
         if point == "stage-end":
             continue
-        assert text.count(f'puts ">>> Hook {point}: ') == 1
+        # `after-timing-repair` follows the post-CTS and the global-route repair.
+        runs = 2 if point == "after-timing-repair" else 1
+        assert text.count(f'puts ">>> Hook {point}: ') == runs
     for stage in _ONE_SESSION_STAGES:
         assert text.count(f'puts ">>> Hook stage-end ({stage}): ') == 1
     assert text.count('puts ">>> Hook stage-end (') == len(_ONE_SESSION_STAGES)
@@ -347,6 +353,11 @@ def test_a_run_without_hooks_renders_the_flow_unchanged(tmp_path):
         elif point == "after-extraction":
             spef = "$OUT_DIR/${DESIGN}.routed.spef"
             blocks = [f"\nset rb_spef {spef}" + _announce(point, path)]
+        elif point == "after-timing-repair":
+            blocks = [
+                f"set rb_repair {repair}" + _announce(point, path)
+                for repair in ("post_cts", "global_route")
+            ]
         else:
             blocks = [_announce(point, path)]
         for block in blocks:
@@ -765,7 +776,7 @@ def _log_lines(artefacts):
     return (artefacts / "pnr.log").read_text().splitlines()
 
 
-#: Where each hook file runs in a one-session run: a point, or `stage-end` and the stage it ends.
+#: Where each hook file runs in a one-session run: a point, `stage-end` and the stage it ends, or `after-timing-repair` and the repair it follows.
 _RUN_ORDER = [
     ("session", None),
     ("after-floorplan", None),
@@ -779,9 +790,11 @@ _RUN_ORDER = [
     ("before-cts", None),
     ("before-repair-clock-nets", None),
     ("after-cts", None),
+    ("after-timing-repair", "post_cts"),
     ("after-cts-repair", None),
     ("stage-end", "cts"),
     ("after-global-route", None),
+    ("after-timing-repair", "global_route"),
     ("after-global-route-repair", None),
     ("stage-end", "global_route"),
     ("before-detailed-route", None),
@@ -816,12 +829,17 @@ def test_every_hook_runs_in_flow_order_in_the_real_script(tmp_path, monkeypatch)
     assert announced == [f"{_announced(p, s)} {paths[p]}" for p, s in _RUN_ORDER]
     marks = [line for line in log if line.startswith("MARK ")]
     assert marks == [
-        f"MARK stage-end {s} closure" if p == "stage-end" else f"MARK {p}"
+        f"MARK stage-end {s} closure"
+        if p == "stage-end"
+        else f"MARK {p} {s}"
+        if p == "after-timing-repair"
+        else f"MARK {p}"
         for p, s in _RUN_ORDER
     ]
     # Each marker follows its announcement and nothing of another hook is between them.
+    at = 0
     for (point, stage), mark in zip(_RUN_ORDER, marks):
-        at = log.index(f"{_announced(point, stage)} {paths[point]}")
+        at = log.index(f"{_announced(point, stage)} {paths[point]}", at)
         assert log[at + 1] == mark
     # The flow's own stage lines surround them in the documented order.
     stages = [line for line in log if line.startswith(">>> ")]

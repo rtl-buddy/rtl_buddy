@@ -44,12 +44,14 @@ from rtl_buddy.config.pnr_repair import (
     UNSET,
     GlobalRouteRepair,
     PnrMode,
+    PostCtsRepair,
     PostRouteRepair,
     PostRouteReroute,
     RepairDesign,
     Reroute,
     WireRc,
     read_global_route_repair,
+    read_post_cts_repair,
     read_post_route_repair,
     resolve_global_route_repair,
 )
@@ -4300,3 +4302,179 @@ def test_the_abstract_digest_names_electrical_repair_only_when_set(tmp_path):
     assert _digest(**{"electrical-repair": {"slew-margin": 10}})[
         "electrical_repair"
     ] == {"slew_margin": 10.0, "cap_margin": None}
+
+
+# -- post-CTS repair margins -----------------------------------------------------
+
+
+def test_post_cts_repair_sets_no_margin_by_default():
+    assert _platform().get_post_cts_repair() == PostCtsRepair()
+
+
+def test_a_run_overrides_the_post_cts_margins_field_by_field():
+    platform = _platform(post_cts_repair={"setup-margin": 0.05, "hold-margin": 0.01})
+    assert platform.get_post_cts_repair() == PostCtsRepair(0.05, 0.01)
+    run = read_post_cts_repair("run", {"hold-margin": 0.02})
+    assert platform.with_run_repairs(
+        UNSET, UNSET, "r", run
+    ).get_post_cts_repair() == PostCtsRepair(0.05, 0.02)
+    cleared = read_post_cts_repair("run", {"setup-margin": None})
+    assert platform.with_run_repairs(
+        UNSET, UNSET, "r", cleared
+    ).get_post_cts_repair() == PostCtsRepair(None, 0.01)
+    off = read_post_cts_repair("run", None)
+    assert (
+        platform.with_run_repairs(UNSET, UNSET, "r", off).get_post_cts_repair()
+        == PostCtsRepair()
+    )
+
+
+def test_a_run_reads_its_post_cts_repair(tmp_path):
+    cfg = PnrConfigFile(
+        floorplan=PnrFloorplanFile(utilization=0.55),
+        name="r",
+        desc="r",
+        synth="s",
+        synth_path="synth.yaml",
+        platform="p",
+        post_cts_repair={"setup-margin": 0.1},
+    ).initialise(str(tmp_path))
+    assert cfg.post_cts_repair == {"setup_margin": 0.1}
+    platform = _platform().with_run_repairs(
+        cfg.global_route_repair, cfg.post_route_repair, cfg.name, cfg.post_cts_repair
+    )
+    assert platform.get_post_cts_repair() == PostCtsRepair(setup_margin=0.1)
+
+
+@pytest.mark.parametrize(
+    "block, words",
+    [
+        ({"setup-margin": -0.1}, r"post-cts-repair.setup-margin must be a number >= 0"),
+        ({"hold-margin": "x"}, r"post-cts-repair.hold-margin must be a number >= 0"),
+        ({"hold-margin": True}, r"post-cts-repair.hold-margin must be a number"),
+        (0.1, r"post-cts-repair must be a mapping of setup-margin, hold-margin"),
+    ],
+)
+def test_a_bad_post_cts_repair_is_refused_naming_the_key(block, words):
+    with pytest.raises(FatalRtlBuddyError, match=words):
+        _platform(post_cts_repair=block)
+    with pytest.raises(FatalRtlBuddyError, match=f"pnr run 'r': {words}"):
+        read_post_cts_repair("pnr run 'r'", block)
+
+
+def _post_cts(text: str) -> str:
+    """The post-CTS repair block of a rendered flow."""
+    start = text.index('puts ">>> Post-CTS timing repair"')
+    return text[start : text.index('puts ">>> Detail placement (legalize', start)]
+
+
+@pytest.mark.parametrize("block", [{}, {"setup-margin": None, "hold-margin": None}])
+def test_post_cts_repair_without_a_margin_renders_as_unset(tmp_path, block):
+    unset = _render(tmp_path, _real_platform(tmp_path))
+    assert _render(tmp_path, _real_platform(tmp_path, post_cts_repair=block)) == unset
+    assert _post_cts(unset) == (
+        'puts ">>> Post-CTS timing repair"\n'
+        "estimate_parasitics -placement\n"
+        "repair_timing -setup\n"
+        "repair_timing -hold\n"
+        "\n"
+        "# repair_timing inserts unlegalized buffers; without this pass the\n"
+        "# detailed router fails with DRT-0073.\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "ps_per_unit, setup, hold, unit",
+    [(1.0, "50", "10", "1ps"), (1000.0, "0.05", "0.01", "1ns")],
+)
+def test_post_cts_repair_passes_margins_in_the_liberty_unit(
+    tmp_path, ps_per_unit, setup, hold, unit
+):
+    platform = _real_platform(
+        tmp_path, post_cts_repair={"setup-margin": 0.05, "hold-margin": 0.01}
+    )
+    text = _render(tmp_path, platform, ps_per_unit=ps_per_unit)
+    assert _post_cts(text) == (
+        'puts ">>> Post-CTS timing repair"\n'
+        "estimate_parasitics -placement\n"
+        f'puts ">>> Post-CTS timing repair: repair_timing -setup -setup_margin {setup} '
+        f'(setup margin 0.05 ns in Liberty time unit {unit})"\n'
+        f"repair_timing -setup -setup_margin {setup}\n"
+        f'puts ">>> Post-CTS timing repair: repair_timing -hold -hold_margin {hold} '
+        f"-setup_margin {setup} (hold margin 0.01 ns, setup margin 0.05 ns in "
+        f'Liberty time unit {unit})"\n'
+        f"repair_timing -hold -hold_margin {hold} -setup_margin {setup}\n"
+        "\n"
+        "# repair_timing inserts unlegalized buffers; without this pass the\n"
+        "# detailed router fails with DRT-0073.\n"
+    )
+
+
+def test_without_post_cts_setup_repair_the_hold_repair_keeps_the_setup_margin(
+    tmp_path,
+):
+    platform = _real_platform(
+        tmp_path,
+        post_cts_setup_repair=False,
+        post_cts_repair={"setup-margin": 0.05},
+    )
+    block = _post_cts(_render(tmp_path, platform))
+    assert "repair_timing -setup" not in block
+    assert (
+        'puts ">>> Post-CTS timing repair: repair_timing -hold -setup_margin 50 '
+        '(hold margin 0 ns, setup margin 0.05 ns in Liberty time unit 1ps)"\n'
+        "repair_timing -hold -setup_margin 50\n"
+    ) in block
+
+
+def test_a_hold_margin_alone_repairs_setup_without_a_margin(tmp_path):
+    platform = _real_platform(tmp_path, post_cts_repair={"hold-margin": 0.01})
+    block = _post_cts(_render(tmp_path, platform))
+    assert "\nrepair_timing -setup\n" in block
+    assert "\nrepair_timing -hold -hold_margin 10\n" in block
+
+
+def test_post_cts_margins_take_the_repair_options(tmp_path):
+    platform = _real_platform(
+        tmp_path, post_cts_repair={"setup-margin": 0.05}, match_cell_footprint=True
+    )
+    block = _post_cts(_render(tmp_path, platform))
+    assert "\nrepair_timing -setup -setup_margin 50 -match_cell_footprint\n" in block
+    assert "\nrepair_timing -hold -setup_margin 50 -match_cell_footprint\n" in block
+
+
+def test_a_probe_skips_the_post_cts_repair_with_margins(tmp_path):
+    platform = _real_platform(
+        tmp_path, post_cts_repair={"setup-margin": 0.05, "hold-margin": 0.01}
+    )
+    text = _render(tmp_path, platform, mode=PnrMode.PROBE)
+    assert 'puts ">>> Post-CTS timing repair: skipped (mode: probe)"' in text
+    assert "-setup_margin" not in text and "-hold_margin" not in text
+
+
+def test_post_cts_margins_change_only_the_post_cts_block(tmp_path):
+    plain = _render(tmp_path, _real_platform(tmp_path))
+    margins = _render(
+        tmp_path,
+        _real_platform(
+            tmp_path, post_cts_repair={"setup-margin": 0.05, "hold-margin": 0.01}
+        ),
+    )
+    assert plain.replace(_post_cts(plain), _post_cts(margins)) == margins
+
+
+def test_the_abstract_digest_names_post_cts_margins_only_when_set(tmp_path):
+    from rtl_buddy.tools import pnr_abstract
+
+    pnr_cfg = _pnr_cfg(tmp_path, ())
+    plain = pnr_abstract.abstract_config(pnr_cfg, _real_platform(tmp_path))
+    assert "post_cts_repair" not in plain
+    emptied = pnr_abstract.abstract_config(
+        pnr_cfg, _real_platform(tmp_path, post_cts_repair={})
+    )
+    assert emptied == plain
+    hold = pnr_abstract.abstract_config(
+        replace(pnr_cfg, post_cts_repair={"setup_margin": 0.05}),
+        _real_platform(tmp_path, post_cts_repair={"hold-margin": 0.01}),
+    )
+    assert hold["post_cts_repair"] == {"setup_margin": 0.05, "hold_margin": 0.01}

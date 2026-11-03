@@ -306,11 +306,16 @@ def _flow_steps_digest(platform) -> dict:
 
 
 def _repair_digest(platform) -> dict:
-    """The timing repairs after global and detailed route, each emitted only when set so existing digests do not change.
+    """The post-CTS repair's margins and the timing repairs after global and detailed route, each emitted only when set so existing digests do not change.
 
     A hold-only global-route repair with no margin is what `global-route-hold-repair: true` always ran, so it keeps that key.
     """
     digest = {}
+    margins = {
+        k: v for k, v in asdict(platform.get_post_cts_repair()).items() if v is not None
+    }
+    if margins:
+        digest["post_cts_repair"] = margins
     gr = platform.get_global_route_repair()
     if gr == GlobalRouteRepair(hold_margin=0.0):
         digest["global_route_hold_repair"] = True
@@ -374,7 +379,10 @@ def abstract_config(pnr_cfg, platform) -> dict:
     fp = pnr_cfg.get_floorplan()
     platform = platform.with_run_placement(pnr_cfg.get_placement(), pnr_cfg.get_name())
     platform = platform.with_run_repairs(
-        pnr_cfg.global_route_repair, pnr_cfg.post_route_repair, pnr_cfg.get_name()
+        pnr_cfg.global_route_repair,
+        pnr_cfg.post_route_repair,
+        pnr_cfg.get_name(),
+        pnr_cfg.post_cts_repair,
     )
     platform = platform.with_run_overrides(pnr_cfg.get_overrides())
     hooks = platform.get_tcl_hooks()

@@ -160,6 +160,7 @@ RUN_SIZED = {
         {"name": "blk2", "pnr": "blk2_run"},
     ],
     "placement": PLACEMENT_ALL,
+    "post-cts-repair": {"setup-margin": 0.05, "hold-margin": 0.01},
     "global-route-repair": GLOBAL_ROUTE_REPAIR_ALL,
     "post-route-repair": POST_ROUTE_REPAIR_ALL,
     "routing-layers": {"signal": "m2-m4", "clock": "m3-m4"},
@@ -262,6 +263,7 @@ PLATFORM_ONE_CORNER = {
     "cts-latency-balancing": False,
     "cts-repair-clock-nets": {"max-wire-length": 1000},
     "post-cts-setup-repair": True,
+    "post-cts-repair": {"setup-margin": 0.05, "hold-margin": 0.01},
     "floorplan-setup-repair": False,
     "cts-repair-clock-inverters": False,
     "global-route-antenna-repair": False,
@@ -364,7 +366,7 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "pdn-config, pdn, platform, floorplan, lef-paths, lib-paths, gds-paths, "
             "gds-mode, gds-allow-empty, checkpoints, stages, hooks, inputs, harden, "
             "abstract, buffer-ports, fail-on-electrical, blocks, placement, "
-            "global-route-repair, post-route-repair, routing-layers, "
+            "post-cts-repair, global-route-repair, post-route-repair, routing-layers, "
             "routing-layer-adjustment, cts-buffer, cts-latency-balancing, "
             "cts-repair-clock-nets, cts-sink-clustering, cts-root-buffer, "
             "cts-obstruction-aware, post-cts-setup-repair, floorplan-setup-repair, "
@@ -456,6 +458,11 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "congestion-iterations, congestion-report-iter-step, grid-origin, "
             "layer-adjustment, allow-congestion, critical-nets-percentage, "
             "resistance-aware",
+        ),
+        (
+            "pnr run 'a': post-cts-repair",
+            ("post-cts-repair",),
+            "setup-margin, hold-margin",
         ),
         (
             "pnr run 'a': global-route-repair",
@@ -787,7 +794,7 @@ cfg-pnr-platforms:
             "name, pdk, corner, corners, cts-buffer, cts-sink-clustering, "
             "cts-root-buffer, cts-obstruction-aware, "
             "cts-latency-balancing, cts-repair-clock-nets, "
-            "post-cts-setup-repair, floorplan-setup-repair, "
+            "post-cts-setup-repair, post-cts-repair, floorplan-setup-repair, "
             "cts-repair-clock-inverters, global-route-antenna-repair, "
             "detailed-route-antenna-repair, global-route-hold-repair, "
             "global-route-repair, post-route-repair, routing-layer-adjustment, cts-apply-ndr, "
@@ -820,6 +827,12 @@ cfg-pnr-platforms:
             ("cts-repair-clock-nets",),
             "cfg-pnr-platforms 'pl1': cts-repair-clock-nets",
             "max-wire-length",
+        ),
+        (
+            "platform",
+            ("post-cts-repair",),
+            "cfg-pnr-platforms 'pl1': post-cts-repair",
+            "setup-margin, hold-margin",
         ),
         (
             "platform",

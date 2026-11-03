@@ -29,12 +29,12 @@ rb --machine pnr <run> -c <pnr.yaml> --dispatch slurm  # one Slurm job per stage
 rb --machine pnr-export <run> -c <pnr.yaml> --png [--run-tag <tag>]  # GDS/PNG of a saved run
 ```
 
-- Explore a floorplan with `mode: probe` (no timing repair, stops after global route) before closure runs.
+- Explore a floorplan with `mode: probe` (no timing repair; stops after global route).
 - For long runs set `checkpoints: true`, or `stages: true` to make the run resumable. `--resume` reuses earlier stages only if their scripts, inputs and OpenROAD version are unchanged; it is refused otherwise (`fail_stage: resume`).
 - Without `threads:` OpenROAD picks its thread count (26Q4: every host thread); set a count or `auto` (the allocation's CPUs). `openroad_threads.effective` is null when unset.
 - `--dispatch slurm` sizes each stage from the run's `resources:` (`stages.<stage>` overrides). `rb pnr` blocks until the chain ends; Ctrl-C cancels its jobs.
-- `pnr.log` is live. Before calling a route hung, check `DRT-0195` iterations and `DRT-0199` violation counts, and `checkpoints/latest/progress.jsonl` for the current step.
-- To compare iterations stage by stage, read the `stage_timing` events of `checkpoints/latest/progress.jsonl` (or `timing` in `manifest.json`): per corner setup and hold WNS and TNS in ps, with the `parasitics` they were timed on. Null means no constrained path. Compare only events with the same `parasitics`.
+- `pnr.log` is live. Before calling a route hung, check `DRT-0195` iterations, `DRT-0199` violation counts and `checkpoints/latest/progress.jsonl`.
+- To compare iterations stage by stage, read the `stage_timing` events of `checkpoints/latest/progress.jsonl` (or `timing` in `manifest.json`): per corner setup and hold WNS and TNS in ps, and the `parasitics` used. Null means no constrained path. Compare only events with the same `parasitics`.
 
 ## Read results
 
@@ -60,9 +60,10 @@ Frequent cases:
 - `fail_stage: incomplete`: a sourced Tcl file called `exit`; remove it.
 - `fail_stage: dispatch`: the stage job was killed by Slurm; read `dispatch/<NN>_<stage>.slurm.log` and raise that stage's `resources:`.
 - `PDN-0179`, or `GRT-0116` between macros: set `placement.macro-channel` (ORFS: sky130hd `[80, 80]`). `PDN-0008`: macro grid or turned macro; cut rows in `tapcell-tcl`.
-- Global-route overflow or high `drc_count`: lower density or utilization, `placement.routability-driven`, `routing-layer-adjustment`, `global-route:` options. A failed global route leaves its database as the checkpoint its `failed_global_route` field names; inspect it with `rb pnr-export --checkpoint <that value>`.
+- Global-route overflow or high `drc_count`: lower density or utilization, `placement.routability-driven`, `routing-layer-adjustment`, `global-route:` options. Inspect a failed global route with `rb pnr-export --checkpoint <failed_global_route>`.
 - Macro pins in `electrical.rpt`, such as SRAM inputs with a tight `max_transition`: `placement.macro-pin-limits`; `macro_pin_unmet_count` counts the pins it could not fix.
 - Clock tree: a run sets `cts-sink-clustering` (`false`, or `{size, max-diameter}` in µm), `cts-root-buffer`, `cts-obstruction-aware` and `cts-repair-clock-nets` (`{max-wire-length}` in µm) without a platform of its own. `CTS-0080`: `cts-sink-clustering: false`, or `cts-obstruction-aware: false` on a block with macros; that one fails setup on an OpenROAD without `-no_obstruction_aware`.
+- Setup fails after routing on paths post-CTS hold buffers padded: set `post-cts-repair: {setup-margin: <ns>}`.
 - Slow output pins with 0 max-slew violators: ports have no limit unless the SDC sets `set_max_transition` on them, and `repair_design` never repairs a port's slew. Set it and `buffer-ports: {outputs: true, hold-outputs-at-pins: true}` (`concepts/pnr#check-and-repair-slew-at-output-ports`).
 - `RB-DONT-USE-VIOLATION`: the netlist uses an excluded cell; fix synthesis, not P&R.
 - Change one knob per rerun and compare the same fields.

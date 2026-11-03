@@ -31,6 +31,7 @@ from rtl_buddy.tools import pnr_stages
 _NEW_POINTS = (
     "before-cts",
     "before-repair-clock-nets",
+    "after-timing-repair",
     "after-cts-repair",
     "after-global-route-repair",
     "after-extraction",
@@ -128,9 +129,10 @@ def _scripts(artefacts) -> dict[str, str]:
     }
 
 
-#: A new point's block: a `before-cts` one ends a one-session run's `place` stage first, unless `repair_clock_inverters` follows and that ends it, an `after-extraction` one names its SPEF.
+#: A new point's block: a `before-cts` one ends a one-session run's `place` stage first, unless `repair_clock_inverters` follows and that ends it, an `after-extraction` one names its SPEF, an `after-timing-repair` one its repair and round.
 _NEW_BLOCK_RE = re.compile(
-    r"\n(?:rb::ckpt::checkpoint_for clock_tree_synthesis enter\n"
+    r"(?:\n|(?<=\n)set rb_repair \w+\n(?:set rb_repair_round \d+\n)?)"
+    r"(?:rb::ckpt::checkpoint_for clock_tree_synthesis enter\n"
     r"(?![^\n]*\n[^\n]*\n\nrepair_clock_inverters\n))?"
     r"(?:set rb_spef [^\n]*\n)?"
     r'puts ">>> Hook (?:' + "|".join(map(re.escape, _NEW_POINTS)) + r")[^\n]*\n"
@@ -222,11 +224,13 @@ _STAGE_HOOKS = {
         ("before-cts", None),
         ("before-repair-clock-nets", None),
         ("after-cts", None),
+        ("after-timing-repair", "post_cts"),
         ("after-cts-repair", None),
         ("stage-end", "cts"),
     ],
     "04_global_route": [
         ("after-global-route", None),
+        ("after-timing-repair", "global_route"),
         ("after-global-route-repair", None),
         ("stage-end", "global_route"),
     ],
@@ -291,6 +295,7 @@ def test_each_point_runs_in_its_stage_and_where_a_one_session_run_runs_it(
     [
         ("before-cts", "cts"),
         ("before-repair-clock-nets", "cts"),
+        ("after-timing-repair", "cts"),
         ("after-cts-repair", "cts"),
         ("after-global-route-repair", "global_route"),
         ("after-reports", "finish"),
@@ -662,3 +667,189 @@ def test_the_command_tracker_covers_the_new_points(tmp_path, monkeypatch, caplog
         ("before-cts", ("rb_test_check",)),
         ("stage-end", ("rb_test_stage_end",)),
     }
+
+
+# After timing repair
+
+#: Prints the repair that just ran and, in a post-route round, its number.
+_TIMING_REPAIR_HOOK = (
+    'puts "MARK after-timing-repair $rb_repair '
+    '[expr {[info exists rb_repair_round] ? $rb_repair_round : "-"}]"\n'
+)
+
+#: The marks of the hooks around the timing repairs in a run whose two post-route rounds both repair.
+_TIMING_REPAIR_MARKS = [
+    "MARK after-cts",
+    "MARK after-timing-repair post_cts -",
+    "MARK after-cts-repair",
+    "MARK after-global-route",
+    "MARK after-timing-repair global_route -",
+    "MARK after-global-route-repair",
+    "MARK before-detailed-route",
+    "MARK after-timing-repair post_route 1",
+    "MARK before-detailed-route",
+    "MARK after-timing-repair post_route 2",
+    "MARK before-detailed-route",
+]
+
+
+def _timing_repair_hooks(tmp_path) -> dict:
+    hooks = _hooks(
+        tmp_path,
+        (
+            "after-cts",
+            "after-cts-repair",
+            "after-global-route",
+            "after-global-route-repair",
+            "before-detailed-route",
+        ),
+    )
+    return {
+        **hooks,
+        **_hooks(tmp_path, ("after-timing-repair",), _TIMING_REPAIR_HOOK),
+    }
+
+
+def _between(text: str, *anchors: str) -> None:
+    """Assert that `anchors` start in `text` in order, each after the one before."""
+    at = 0
+    for anchor in anchors:
+        at = text.index(anchor, at) + 1
+
+
+@pytest.mark.parametrize("reroute", ["eco", "full"])
+@pytest.mark.parametrize("stages", [True, False], ids=["staged", "one-session"])
+def test_after_timing_repair_runs_after_each_timing_repair_before_legalizing(
+    tmp_path, monkeypatch, stages, reroute
+):
+    backend, artefacts = _run_backend(
+        tmp_path,
+        monkeypatch,
+        _timing_repair_hooks(tmp_path),
+        stages=stages,
+        post_route={
+            "repair-design": {"after-timing": True},
+            "setup-margin": 0.1,
+            "hold-margin": 0.05,
+            "rounds": 2,
+            "reroute": reroute,
+        },
+        env={"RB_STUB_SETUP": "-0.2 -0.1 0.05"},
+    )
+
+    res = backend.run()
+
+    assert isinstance(res, PnrPassResults), res.results
+    log = (artefacts / "pnr.log").read_text().splitlines()
+    assert [line for line in log if line.startswith("MARK ")] == _TIMING_REPAIR_MARKS
+    (run_dir,) = _runs(artefacts)
+    if stages:
+        cts = (run_dir / "03_cts.tcl").read_text()
+        gr = (run_dir / "04_global_route.tcl").read_text()
+    else:
+        cts = gr = (artefacts / "pnr.tcl").read_text()
+    run = "rb::hook::run after-timing-repair "
+    _between(
+        cts,
+        'puts ">>> Post-CTS timing repair"',
+        "\nrepair_timing -hold\n",
+        "set rb_repair post_cts\n",
+        run,
+        ">>> Detail placement (legalize repair cells)",
+        "rb::hook::run after-cts-repair ",
+    )
+    _between(
+        gr,
+        ">>> Global-route repair",
+        "\nrepair_timing -hold",
+        "\nset rb_repair global_route\n",
+        run,
+        "\nglobal_route -start_incremental\n",
+        "\ndetailed_placement",
+        "rb::hook::run after-global-route-repair ",
+    )
+    for round_ in (1, 2):
+        text = (run_dir / f"06_post_route_repair.r{round_}.repair.tcl").read_text()
+        steps = [
+            "\nrepair_timing -hold",
+            f"\nset rb_repair post_route\nset rb_repair_round {round_}\n",
+            run,
+            "after timing repair",
+            "\nrepair_design",
+        ]
+        if reroute == "eco":
+            # Inside the ECO's repairs and incremental global route.
+            steps = [
+                "\nglobal_route -start_incremental",
+                f"\nrb::eco::repair {round_} {{\n",
+                *steps,
+                "\n}\n",
+            ]
+        _between(
+            text,
+            *steps,
+            "\ndetailed_placement",
+            "\nrb::global_connect\n",
+            "rb::hook::run before-detailed-route ",
+        )
+        assert text.count(run) == 1
+
+
+def test_after_timing_repair_runs_only_after_a_timing_repair(tmp_path, monkeypatch):
+    """Not where a repair is skipped or runs no `repair_timing`: a probe, a `repair_design`-only global-route repair, the electrical round."""
+    hooks = _hooks(tmp_path, ("after-timing-repair",), _TIMING_REPAIR_HOOK)
+    for name in ("probe", "closure"):
+        (tmp_path / name).mkdir()
+    probe, artefacts = _run_backend(
+        tmp_path / "probe", monkeypatch, hooks, mode=PnrMode.PROBE
+    )
+    assert isinstance(probe.run(), PnrPassResults)
+    assert "MARK after-timing-repair" not in (artefacts / "pnr.log").read_text()
+
+    backend, artefacts = _run_backend(
+        tmp_path / "closure",
+        monkeypatch,
+        hooks,
+        post_route={**_ROUNDS, "rounds": 1, "electrical-repair": {"slew-margin": 10}},
+        env={"RB_STUB_SETUP": "-0.2 0.05", "RB_STUB_SLEW": "3 2 1"},
+        platform={"global_route_repair": {"repair-design": {}}},
+    )
+    assert isinstance(backend.run(), PnrPassResults)
+    marks = [
+        line
+        for line in (artefacts / "pnr.log").read_text().splitlines()
+        if line.startswith("MARK ")
+    ]
+    assert marks == [
+        "MARK after-timing-repair post_cts -",
+        "MARK after-timing-repair post_route 1",
+    ]
+    (run_dir,) = _runs(artefacts)
+    electrical = (run_dir / "06_post_route_repair.r2.repair.tcl").read_text()
+    assert "after-timing-repair" not in electrical
+
+
+@pytest.mark.parametrize("stage", ["global_route", "detailed_route"])
+def test_a_resume_after_cts_refuses_an_edited_after_timing_repair_hook(
+    tmp_path, monkeypatch, stage
+):
+    hooks = _hooks(tmp_path, ("after-timing-repair",), _TIMING_REPAIR_HOOK)
+    backend, artefacts = _run_backend(
+        tmp_path, monkeypatch, hooks, stages=True, stop_after="global_route"
+    )
+    assert isinstance(backend.run(), PnrPassResults)
+    _write(Path(hooks["after-timing-repair"][0]), 'puts "edited"\n')
+
+    backend, _ = _run_backend(
+        tmp_path, monkeypatch, hooks, stages=True, resume="latest", resume_from=stage
+    )
+    res = backend.run()
+
+    assert isinstance(res, PnrFailResults)
+    assert res.results["fail_stage"] == "resume"
+    assert "hook_after_timing_repair" in res.results["desc"]
+
+    backend, _ = _run_backend(
+        tmp_path, monkeypatch, hooks, stages=True, resume="latest", resume_from="cts"
+    )
+    assert isinstance(backend.run(), PnrPassResults)

@@ -31,12 +31,14 @@ from .pnr_platform import PnrRoutingLayersFile, PnrRunOverrides, read_run_overri
 from .pnr_signoff import SIGNOFF_SPEC
 from .pnr_repair import (
     GLOBAL_ROUTE_REPAIR_SPEC,
+    POST_CTS_REPAIR_SPEC,
     POST_ROUTE_REPAIR_SPEC,
     UNSET,
     PnrMode,
     read_global_route_repair,
     read_hold_repair_shorthand,
     read_mode,
+    read_post_cts_repair,
     read_post_route_repair,
 )
 from .synth import SynthSuiteConfig
@@ -792,6 +794,7 @@ HOOK_POINTS = (
     "before-cts",
     "before-repair-clock-nets",
     "after-cts",
+    "after-timing-repair",
     "after-cts-repair",
     "after-global-route",
     "after-global-route-repair",
@@ -1330,6 +1333,7 @@ class PnrConfigFile:
     # Overrides the platform's `placement:` keys field by field.
     placement: PlacementFile | None = None
     # Override the platform's repair blocks field by field; `null` turns one off. Read by `pnr_repair`.
+    post_cts_repair: Any = field(rename="post-cts-repair", default=UNSET)
     global_route_repair: Any = field(rename="global-route-repair", default=UNSET)
     post_route_repair: Any = field(rename="post-route-repair", default=UNSET)
     # Override the platform's keys of the same name; unset keeps the platform's. `routing-layers` goes field by field. Typed loosely where the validators name a bad value.
@@ -1502,6 +1506,9 @@ class PnrConfigFile:
         post_route_repair = read_post_route_repair(
             f"pnr run '{self.name}'", self.post_route_repair
         )
+        post_cts_repair = read_post_cts_repair(
+            f"pnr run '{self.name}'", self.post_cts_repair
+        )
         mode = read_mode(f"pnr run '{self.name}'", self.mode)
         if mode is PnrMode.PROBE and self.harden:
             raise FatalRtlBuddyError(
@@ -1593,6 +1600,7 @@ class PnrConfigFile:
                 macro_hook=macro_hook,
             ),
             placement=placement,
+            post_cts_repair=post_cts_repair,
             global_route_repair=global_route_repair,
             post_route_repair=post_route_repair,
             overrides=overrides,
@@ -1651,6 +1659,7 @@ PNR_RUN_SPEC = KeySpec(
         "abstract": KeySpec(PnrAbstractFile),
         "buffer-ports": KeySpec(PnrPortBuffersFile),
         "placement": PLACEMENT_SPEC,
+        "post-cts-repair": POST_CTS_REPAIR_SPEC,
         "global-route-repair": GLOBAL_ROUTE_REPAIR_SPEC,
         "post-route-repair": POST_ROUTE_REPAIR_SPEC,
         "routing-layers": KeySpec(PnrRoutingLayersFile),
@@ -1707,6 +1716,7 @@ class PnrConfig:
     # The run's validated `placement:` block, applied over the platform's; None when unset.
     placement: PlacementFile | None = None
     # The run's repair layers (see `pnr_repair`), applied over the platform's: `UNSET` when absent, `None` when off.
+    post_cts_repair: Any = UNSET
     global_route_repair: Any = UNSET
     post_route_repair: Any = UNSET
     # The run's routing, CTS, repair, tap-cell and signoff values; apply them with `PnrPlatformConfig.with_run_overrides`.

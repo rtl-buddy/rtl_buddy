@@ -258,6 +258,7 @@ HOOK_STAGE = {
     "before-cts": "cts",
     "before-repair-clock-nets": "cts",
     "after-cts": "cts",
+    "after-timing-repair": "cts",
     "after-cts-repair": "cts",
     "after-global-route": "global_route",
     "after-global-route-repair": "global_route",
