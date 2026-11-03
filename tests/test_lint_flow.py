@@ -165,6 +165,17 @@ def test_rb_lint_violations_fail_and_are_counted(minimal_project: Path):
     assert results[0]["result"] == "FAIL"
     assert results[0]["violations"] == 2
 
+    human = runner.invoke(rb.app, ["lint", "-c", "lint/lint.yaml"], terminal_width=200)
+    assert human.exit_code == 1, human.output
+    assert "Violations" in human.output
+    (row,) = [
+        line
+        for line in human.output.splitlines()
+        if "bad_style" in line and "│" in line
+    ]
+    cells = [cell.strip() for cell in row.split("│")[1:-1]]
+    assert [cells[0], cells[1], *cells[3:]] == ["bad_style", "FAIL", "2", "1", "0"]
+
 
 def test_rb_lint_excludes_filter_expansion(minimal_project: Path):
     _install_fake_verible(minimal_project)
