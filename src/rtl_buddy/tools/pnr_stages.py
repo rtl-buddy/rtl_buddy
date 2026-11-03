@@ -674,10 +674,14 @@ def script_change(stage: str) -> str:
 
 
 def input_change(path: str, base_dir: str) -> str:
-    """The `--accept-change` value that names input file `path`: relative to `base_dir`, the invocation directory, when under it, else absolute."""
+    """The `--accept-change` value that names input file `path`: relative to `base_dir`, the invocation directory, when under it, else absolute. A relative path that reads as a script value gets a leading `./`."""
     path = os.path.abspath(path)
     relative = os.path.relpath(path, base_dir)
-    return path if relative.split(os.sep)[0] == os.pardir else relative
+    if relative.split(os.sep)[0] == os.pardir:
+        return path
+    if relative == ACCEPT_SCRIPTS or relative.startswith(f"{ACCEPT_SCRIPTS}:"):
+        return os.path.join(os.curdir, relative)
+    return relative
 
 
 @dataclass(eq=False)

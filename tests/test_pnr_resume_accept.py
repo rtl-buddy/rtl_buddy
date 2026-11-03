@@ -700,3 +700,13 @@ def test_accepted_change_messages_read_plainly():
         f"input hook_session /x/hooks/s.tcl, {'a' * 12} then, {'b' * 12} now "
         "(accepted by run run1)"
     )
+
+
+@pytest.mark.parametrize("name", ["script", "script:cts"])
+def test_an_input_named_like_a_script_value_is_named_with_a_leading_dot(tmp_path, name):
+    path = tmp_path / name
+    change = pnr_stages.input_change(str(path), str(tmp_path))
+    assert change == f"./{name}"
+    found = pnr_stages._Difference("", change, paths=frozenset({str(path)}))
+    assert found.named_by(change, str(tmp_path))
+    assert not found.named_by("script", str(tmp_path))
