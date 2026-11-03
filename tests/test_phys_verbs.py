@@ -289,7 +289,7 @@ def test_phys_summary_says_which_half_is_missing(phys_project):
     assert "rb power" in _flat(result.output)
 
 
-def test_phys_summary_limit_truncates_the_rankings(phys_project):
+def test_phys_summary_limit_truncates_and_reports_both_rankings(phys_project):
     runner, rb = _runner()
 
     result = runner.invoke(rb.app, ["--machine", "phys", "summary", "--limit", "1"])
@@ -297,17 +297,6 @@ def test_phys_summary_limit_truncates_the_rankings(phys_project):
     payload = _machine(result)["payload"]
     assert len(payload["modules"]) == 1
     assert len(payload["instances"]) == 1
-
-
-def test_phys_summary_limit_heads_both_rankings_and_says_so(phys_project):
-    """`--limit` still heads both rankings, and the payload reports each ranking's own
-    limit.
-    """
-    runner, rb = _runner()
-
-    result = runner.invoke(rb.app, ["--machine", "phys", "summary", "--limit", "1"])
-
-    payload = _machine(result)["payload"]
     assert payload["limit"] == 1
     assert payload["limits"] == {"modules": 1, "instances": 1}
 

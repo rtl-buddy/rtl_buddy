@@ -155,11 +155,8 @@ def test_type_words_become_hints_not_search_terms():
     assert "a-cov-1" in terms
 
 
-def test_a_type_word_promotes_but_never_conjures_a_match(graph_project: Path):
+def test_a_type_word_promotes_but_never_conjures_a_match():
     """A type word reorders real matches but never invents one."""
-    _build(graph_project)
-    ctx = load_context(graph_project)
-
     node = {"id": "test:verif/blk_a#t_basic", "type": "test", "label": "t_basic"}
     other = {"id": "tb:verif/blk_a#tb_hdl", "type": "testbench", "label": "tb_hdl"}
 
@@ -168,7 +165,6 @@ def test_a_type_word_promotes_but_never_conjures_a_match(graph_project: Path):
     )
     # No term hit: the type word alone scores zero.
     assert graph_query.score_node(other, ["t_basic"], {"testbench"}) == 0
-    assert ctx.index.node("test:verif/blk_a#t_basic") is not None
 
 
 def test_matches_are_ordered_deterministically(graph_project: Path):

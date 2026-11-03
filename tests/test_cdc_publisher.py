@@ -8,14 +8,16 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 import threading
 from pathlib import Path
 from typing import Iterator
 
 import pytest
+from protocol_helpers import JsonLineReader
 
 from rtl_buddy.hub import discovery
-from rtl_buddy.hub.protocol import Origin, decode
+from rtl_buddy.hub.protocol import Origin, encode, make_hello
 from rtl_buddy.hub.server import HubServer
 from rtl_buddy.tools.cdc_publisher import (
     build_items_from_cdc_report,
@@ -269,10 +271,10 @@ def discovery_root(tmp_path_factory, threaded_hub: _ThreadedHub, monkeypatch) ->
     return root
 
 
-def test_publish_cdc_report_pushes_violations_to_running_hub(
+def test_publish_cdc_report_pushes_and_clears_violations(
     threaded_hub: _ThreadedHub, discovery_root: Path, tmp_path: Path
 ):
-    """The publisher pushes a diagnostics_set that the hub broadcasts to a peer that said hello first."""
+    """A peer receives diagnostics and an empty replacement from a clean re-run."""
 
     report = _minimal_report(
         [
@@ -289,58 +291,39 @@ def test_publish_cdc_report_pushes_violations_to_running_hub(
     json_path.write_text(json.dumps(report))
 
     # A raw socket subscribes the view peer, since the blocking HubClient.connect() cannot share the loop thread with publish.
-    import socket as _socket
-    from rtl_buddy.hub.protocol import encode, make_hello
+    with socket.create_connection(
+        (threaded_hub.host, threaded_hub.port), timeout=5.0
+    ) as sock:
+        reader = JsonLineReader(sock)
+        sock.sendall(
+            encode(
+                make_hello(client=Origin.VIEW, version="0.0", capabilities=[])
+            ).encode()
+            + b"\n"
+        )
+        assert reader.read()["type"] == "welcome"
 
-    sock = _socket.create_connection((threaded_hub.host, threaded_hub.port))
-    sock.sendall(
-        encode(make_hello(client=Origin.VIEW, version="0.0", capabilities=[])).encode()
-        + b"\n"
-    )
-    buf = b""
-    while b"\n" not in buf:
-        chunk = sock.recv(4096)
-        assert chunk
-        buf += chunk
-    welcome_line, _, buf = buf.partition(b"\n")
-    assert decode(welcome_line).type == "welcome"
+        assert (
+            publish_cdc_report(analysis_name="ip_dma_lint", json_report_path=json_path)
+            is True
+        )
+        payload = reader.read_event("diagnostics_set")["payload"]
+        assert payload["source"] == "rb-cdc:ip_dma_lint"
+        assert len(payload["items"]) == 1
+        item = payload["items"][0]
+        assert item["code"] == "CDC-001"
+        assert item["instance_path"] == "top.u_dma"
+        assert item["file"] == "/abs/x.sv"
+        assert item["line"] == 7
 
-    ok = publish_cdc_report(analysis_name="ip_dma_lint", json_report_path=json_path)
-    assert ok is True
-
-    # Skip lifecycle events (such as the publisher's peer_joined) until the diagnostics_set arrives.
-    env = None
-    for _ in range(8):
-        while b"\n" not in buf:
-            chunk = sock.recv(4096)
-            assert chunk
-            buf += chunk
-        event_line, _, buf = buf.partition(b"\n")
-        env = decode(event_line)
-        if env.type == "diagnostics_set":
-            break
-    assert env is not None and env.type == "diagnostics_set"
-    assert env.payload["source"] == "rb-cdc:ip_dma_lint"
-    assert len(env.payload["items"]) == 1
-    item = env.payload["items"][0]
-    assert item["code"] == "CDC-001"
-    assert item["instance_path"] == "top.u_dma"
-    assert item["file"] == "/abs/x.sv"
-    assert item["line"] == 7
-
-    sock.close()
-
-
-def test_publish_cdc_report_empty_violations_is_a_clear(
-    threaded_hub: _ThreadedHub, discovery_root: Path, tmp_path: Path
-):
-    """Empty items[] is the `cleared source` signal for a clean re-run."""
-
-    json_path = tmp_path / "cdc.json"
-    json_path.write_text(json.dumps(_minimal_report([])))
-
-    ok = publish_cdc_report(analysis_name="ip_dma_lint", json_report_path=json_path)
-    assert ok is True
+        json_path.write_text(json.dumps(_minimal_report([])))
+        assert (
+            publish_cdc_report(analysis_name="ip_dma_lint", json_report_path=json_path)
+            is True
+        )
+        cleared = reader.read_event("diagnostics_set")["payload"]
+        assert cleared["source"] == payload["source"]
+        assert cleared["items"] == []
 
 
 def test_publish_cdc_report_silently_skips_when_no_hub(tmp_path: Path, monkeypatch):

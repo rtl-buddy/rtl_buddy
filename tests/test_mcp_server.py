@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from protocol_helpers import JsonLineReader
 from typer.testing import CliRunner
 
 from rtl_buddy.mcp import HUB_TOOL_NAMES, STATELESS_TOOL_NAMES, HubHandle, build_toolset
@@ -1567,21 +1568,17 @@ def test_stdio_server_lists_and_calls_tools_over_the_wire(mcp_project: Path):
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
-        text=True,
         cwd=str(mcp_project),
         env={**os.environ, "PYTHONUNBUFFERED": "1"},
     )
 
     def send(message: dict) -> None:
         assert proc.stdin is not None
-        proc.stdin.write(json.dumps(message) + "\n")
+        proc.stdin.write((json.dumps(message) + "\n").encode())
         proc.stdin.flush()
 
-    def recv() -> dict:
-        assert proc.stdout is not None
-        line = proc.stdout.readline()
-        assert line, "server closed the stream"
-        return json.loads(line)
+    assert proc.stdout is not None
+    recv = JsonLineReader(proc.stdout).read
 
     try:
         send(
@@ -1596,7 +1593,7 @@ def test_stdio_server_lists_and_calls_tools_over_the_wire(mcp_project: Path):
                 },
             }
         )
-        assert "result" in recv()
+        assert "result" in recv(timeout=30.0)
         send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
 
         send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
@@ -1628,3 +1625,5 @@ def test_stdio_server_lists_and_calls_tools_over_the_wire(mcp_project: Path):
         except subprocess.TimeoutExpired:  # pragma: no cover - hung server
             proc.kill()
             proc.wait(timeout=10)
+        finally:
+            proc.stdout.close()

@@ -121,15 +121,11 @@ def _two_test_model(tmp_path):
     return root, suite, build_model(tests, project_root=root, simulator="verilator")
 
 
-def test_model_keys_files_by_project_relative_path(tmp_path):
+def test_model_folds_test_coverage_with_source_and_test_attribution(tmp_path):
     _root, _suite, model = _two_test_model(tmp_path)
 
     assert model["schema_version"] == MODEL_SCHEMA_VERSION
     assert [row["path"] for row in model["files"]] == ["design/blk.sv"]
-
-
-def test_line_points_fold_across_tests_and_carry_attribution(tmp_path):
-    _root, _suite, model = _two_test_model(tmp_path)
     (file_row,) = model["files"]
 
     assert file_row["line"] == [
@@ -152,20 +148,11 @@ def test_line_points_fold_across_tests_and_carry_attribution(tmp_path):
     ]
     assert file_row["totals"]["line"] == {"found": 2, "hit": 2, "ratio": 1.0}
 
-
-def test_toggle_detail_survives_per_signal(tmp_path):
-    _root, _suite, model = _two_test_model(tmp_path)
-    (file_row,) = model["files"]
-
     assert [(p["name"], p["hits"]) for p in file_row["toggle"]] == [
         ("q[0]", 1),
         ("q[1]", 2),
     ]
     assert file_row["toggle"][1]["tests"] == {"basic": 0, "random": 2}
-
-
-def test_cover_points_are_reported_in_the_run_level_shape(tmp_path):
-    _root, _suite, model = _two_test_model(tmp_path)
 
     assert cover_records(model) == [
         {
@@ -177,16 +164,8 @@ def test_cover_points_are_reported_in_the_run_level_shape(tmp_path):
         }
     ]
 
-
-def test_modules_index_maps_module_to_its_sources(tmp_path):
-    _root, _suite, model = _two_test_model(tmp_path)
-
     assert model["modules"] == {"blk": ["design/blk.sv"]}
     assert model["counts"] == {"files": 1, "tests": 2, "modules": 1}
-
-
-def test_per_test_totals_are_that_test_only(tmp_path):
-    _root, _suite, model = _two_test_model(tmp_path)
     by_name = {row["name"]: row for row in model["tests"]}
 
     assert by_name["basic"]["totals"]["line"] == {"found": 2, "hit": 1, "ratio": 0.5}

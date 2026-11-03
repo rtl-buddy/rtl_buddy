@@ -1003,17 +1003,38 @@ def _write_notebook_fixture(
     return suite_dir, tests_yaml
 
 
-def _notebook_template_or_skip():
-    """Skip when ``rtl_buddy_axi_profiler`` is not installed.
+@pytest.fixture
+def notebook_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
 
-    rtl_buddy shells out to axi-profiler, so CI does not install the package.
-    """
-    return pytest.importorskip("rtl_buddy_axi_profiler.notebook")
+    template = tmp_path / "template.py"
+    template.write_text("# Notebook template passed to the fake marimo process.\n")
+    monkeypatch.setattr(
+        RtlBuddyAxiProfileNotebook, "_resolve_template_path", lambda self: str(template)
+    )
+    return template
 
 
-def test_notebook_wrapper_builds_expected_argv_and_env(tmp_path: Path) -> None:
+def test_notebook_template_resolves_from_installed_profiler(tmp_path: Path) -> None:
+    pytest.importorskip("rtl_buddy_axi_profiler.notebook")
+    from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
+
+    suite_dir, tests_yaml = _write_notebook_fixture(tmp_path)
+    notebook = RtlBuddyAxiProfileNotebook(
+        name="t",
+        test_cfg=SuiteConfig(str(tests_yaml)).get_tests("basic")[0],
+        suite_dir=str(suite_dir),
+    )
+
+    template = notebook._resolve_template_path()
+    assert template.endswith("rtl_buddy_axi_profiler/notebook/template.py")
+    assert Path(template).is_file()
+
+
+def test_notebook_wrapper_builds_expected_argv_and_env(
+    tmp_path: Path, notebook_template: Path
+) -> None:
     """Pin the marimo argv shape and the AXI_TXNS_PARQUET export the notebook template reads."""
-    _notebook_template_or_skip()
     from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
 
     suite_dir, tests_yaml = _write_notebook_fixture(tmp_path)
@@ -1034,7 +1055,7 @@ def test_notebook_wrapper_builds_expected_argv_and_env(tmp_path: Path) -> None:
     argv = payload["argv"]
     assert argv[0] == "edit"
     template_path = argv[1]
-    assert template_path.endswith("rtl_buddy_axi_profiler/notebook/template.py")
+    assert Path(template_path) == notebook_template
     assert Path(template_path).is_file()
     parquet_env = payload["env_axi_txns_parquet"]
     assert parquet_env is not None
@@ -1042,8 +1063,9 @@ def test_notebook_wrapper_builds_expected_argv_and_env(tmp_path: Path) -> None:
     assert Path(parquet_env).is_file()
 
 
-def test_notebook_wrapper_forwards_port_flag(tmp_path: Path) -> None:
-    _notebook_template_or_skip()
+def test_notebook_wrapper_forwards_port_flag(
+    tmp_path: Path, notebook_template: Path
+) -> None:
     from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
 
     suite_dir, tests_yaml = _write_notebook_fixture(tmp_path)
@@ -1062,9 +1084,10 @@ def test_notebook_wrapper_forwards_port_flag(tmp_path: Path) -> None:
     assert argv[argv.index("--port") + 1] == "2718"
 
 
-def test_notebook_wrapper_forwards_headless_and_no_token(tmp_path: Path) -> None:
+def test_notebook_wrapper_forwards_headless_and_no_token(
+    tmp_path: Path, notebook_template: Path
+) -> None:
     """``--headless`` and ``--no-token`` are forwarded together for the hub-initiated flow."""
-    _notebook_template_or_skip()
     from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
 
     suite_dir, tests_yaml = _write_notebook_fixture(tmp_path)
@@ -1084,9 +1107,10 @@ def test_notebook_wrapper_forwards_headless_and_no_token(tmp_path: Path) -> None
     assert "--no-token" in argv
 
 
-def test_notebook_wrapper_omits_headless_by_default(tmp_path: Path) -> None:
+def test_notebook_wrapper_omits_headless_by_default(
+    tmp_path: Path, notebook_template: Path
+) -> None:
     """The CLI default keeps marimo's token and browser auto-open."""
-    _notebook_template_or_skip()
     from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
 
     suite_dir, tests_yaml = _write_notebook_fixture(tmp_path)
@@ -1126,9 +1150,10 @@ def test_notebook_wrapper_errors_when_parquet_missing(tmp_path: Path) -> None:
     assert "rb axi-profile run basic --emit-txns-parquet" in msg
 
 
-def test_notebook_wrapper_errors_when_marimo_missing(tmp_path: Path) -> None:
+def test_notebook_wrapper_errors_when_marimo_missing(
+    tmp_path: Path, notebook_template: Path
+) -> None:
     """A missing marimo binary gets a hint to install the [notebook] extra."""
-    _notebook_template_or_skip()
     from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
 
     suite_dir, tests_yaml = _write_notebook_fixture(tmp_path)
@@ -1145,8 +1170,9 @@ def test_notebook_wrapper_errors_when_marimo_missing(tmp_path: Path) -> None:
     assert "marimo" in str(exc.value).lower()
 
 
-def test_notebook_wrapper_propagates_nonzero_exit(tmp_path: Path) -> None:
-    _notebook_template_or_skip()
+def test_notebook_wrapper_propagates_nonzero_exit(
+    tmp_path: Path, notebook_template: Path
+) -> None:
     from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
 
     suite_dir, tests_yaml = _write_notebook_fixture(tmp_path)
@@ -1163,10 +1189,9 @@ def test_notebook_wrapper_propagates_nonzero_exit(tmp_path: Path) -> None:
 
 
 def test_rb_axi_profile_notebook_invokes_stubbed_marimo(
-    minimal_project: Path,
+    minimal_project: Path, notebook_template: Path
 ) -> None:
     """`rb axi-profile notebook <test>` end to end through the Typer app, parquet pre-staged."""
-    _notebook_template_or_skip()
     parquet_dir = minimal_project / "artefacts" / "axi" / "basic"
     parquet_dir.mkdir(parents=True)
     (parquet_dir / "axi-txns.parquet").write_bytes(b"PAR1\x00\x00stub\x00")
@@ -1191,7 +1216,7 @@ def test_rb_axi_profile_notebook_invokes_stubbed_marimo(
     payload = json.loads(record.read_text())
     argv = payload["argv"]
     assert argv[0] == "edit"
-    assert argv[1].endswith("rtl_buddy_axi_profiler/notebook/template.py")
+    assert Path(argv[1]) == notebook_template
     assert argv[argv.index("--port") + 1] == "2718"
     assert payload["env_axi_txns_parquet"].endswith(
         "artefacts/axi/basic/axi-txns.parquet"
