@@ -186,7 +186,7 @@ class _Locks:
     def __init__(self):
         self.acquired = []
 
-    def acquire(self, root, *, command=None):
+    def acquire(self, root, *, command=None, wait_for_copying=False):
         self.acquired.append(Path(root))
 
 

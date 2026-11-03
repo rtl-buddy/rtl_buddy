@@ -872,7 +872,7 @@ def resolve_block(ref: BlockRef, *, source=None) -> ResolvedBlock:
         run_cfg=run_cfg,
         run_tag=run_tag,
         manifest_sha256=(file_fingerprint(manifest_path, None) or {}).get("sha256"),
-        source_dir=copy_source(directory),
+        source_dir=copy_source(directory, getattr(source, "project_root", None)),
     )
 
 
@@ -897,14 +897,21 @@ def _hardening_run_cfg(ref: BlockRef, where: str):
     return run_cfg
 
 
-def copy_source(directory: str) -> str | None:
-    """Return the published abstract `directory` is a copy of, or None when it is not a copy."""
+def copy_source(directory: str, project_root: str | None = None) -> str | None:
+    """Return the published abstract `directory` is a copy of, or None when it is not a copy.
+
+    A source in the copy's own project is recorded relative to `project_root`, that project as it is now.
+    """
     try:
         record = json.loads(Path(directory, COPY_SOURCE_NAME).read_text())
     except (OSError, ValueError):
         return None
     source = record.get("abstract_dir") if isinstance(record, dict) else None
-    return source if isinstance(source, str) else None
+    if not isinstance(source, str):
+        return None
+    if os.path.isabs(source):
+        return source
+    return os.path.join(project_root, source) if project_root else None
 
 
 def one_or_many(paths: list[str]) -> str | list[str]:

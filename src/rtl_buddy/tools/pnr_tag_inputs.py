@@ -20,9 +20,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..artifact_lock import tree_lock
+from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from . import pnr_abstract
-from .artifact_paths import run_artifact_root
+from .artifact_paths import project_relative, project_root_or_none, run_artifact_root
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,10 @@ ATTEMPT_MARKER_NAME = ".rb-pnr-attempted"
 _SYNTH_NETLIST = "synth_netlist.v"
 _SYNTH_FILELIST = "synth.f"
 _FILELIST_PATH_OPTIONS = ("-v ", "-y ", "-f ", "-F ")
+
+
+class SynthCopyChanged(FatalRtlBuddyError):
+    """A digest-keyed synthesis copy whose files no longer hold what its digest names."""
 
 
 def _short(text: str) -> str:
@@ -95,30 +100,82 @@ def mark_attempt(artefact_dir: str) -> None:
     Path(artefact_dir, ATTEMPT_MARKER_NAME).touch()
 
 
-def read_consumed_blocks(artefact_dir: str) -> dict | None:
-    """Return the block copies a saved tagged run consumed, by (pnr.yaml real path, run), or None without a record."""
+def read_consumed_blocks(artefact_dir: str, project_root: str | None) -> dict | None:
+    """Return the block copies a saved tagged run consumed, by (pnr.yaml real path, run), or None without a record.
+
+    Relative paths are against `project_root`, the project of the run's suite. Raises `BlockResolutionError` for a malformed record, and for one naming a copy outside that project and outside the tree the record says the copies were taken into, as an absolute path does once the project has moved.
+    """
+    record = Path(artefact_dir, CONSUMED_BLOCKS_NAME)
     try:
-        data = json.loads(Path(artefact_dir, CONSUMED_BLOCKS_NAME).read_text())
+        data = json.loads(record.read_text())
     except (OSError, ValueError):
         return None
-    return {
-        (os.path.realpath(b["pnr_path"]), b["pnr"]): b
-        for b in data.get("blocks") or []
-        if isinstance(b, dict)
-    }
+    rerun = f"re-run the P&R run under --run-tag {data.get('run_tag')}"
+
+    def _here(path: str) -> str:
+        if os.path.isabs(path) or project_root is None:
+            return path
+        return os.path.normpath(os.path.join(project_root, path))
+
+    copies_in = data.get("copies_in")
+    copies_in = _here(copies_in) if isinstance(copies_in, str) and copies_in else None
+    blocks = {}
+    for index, b in enumerate(data.get("blocks") or []):
+        paths = {}
+        for key in ("pnr_path", "abstract_dir"):
+            path = b.get(key) if isinstance(b, dict) else None
+            if not isinstance(path, str) or not path:
+                raise pnr_abstract.BlockResolutionError(
+                    f"{record} is malformed: blocks[{index}] has no {key} — {rerun}"
+                )
+            if not os.path.isabs(path):
+                if project_root is None:
+                    raise pnr_abstract.BlockResolutionError(
+                        f"{record} names {key} {path} relative to a project, and the "
+                        f"run's suite is in none — {rerun}"
+                    )
+                path = os.path.normpath(os.path.join(project_root, path))
+            paths[key] = path
+        where = Path(paths["abstract_dir"])
+        if (
+            project_root is not None
+            and not where.is_relative_to(os.path.normpath(project_root))
+            and not (copies_in and where.is_relative_to(copies_in))
+        ):
+            raise pnr_abstract.BlockResolutionError(
+                f"{record} names the copy of block {b.get('name')!r} at "
+                f"{paths['abstract_dir']}, outside the project {project_root} — {rerun}"
+            )
+        b = {**b, **paths}
+        blocks[(os.path.realpath(b["pnr_path"]), b.get("pnr"))] = b
+    return blocks
 
 
-def write_consumed_blocks(artefact_dir: str, run_tag: str, blocks) -> None:
-    """Record `blocks` (`ResolvedBlock`s) in the run directory for a later `rb pnr-export --run-tag`."""
+def write_consumed_blocks(
+    artefact_dir: str,
+    run_tag: str,
+    blocks,
+    project_root: str | None,
+    copies_in: str | None = None,
+) -> None:
+    """Record `blocks` (`ResolvedBlock`s) in the run directory for a later `rb pnr-export --run-tag`.
+
+    Paths are relative to `project_root`, the project of the run's suite, so the record still reads after the project moves. `copies_in` is the tagged tree the copies were taken into, which for a run pulled in from another project is in the calling project.
+    """
+
+    def _portable(path: str) -> str:
+        return project_relative(path, project_root) if project_root else path
+
     Path(artefact_dir, CONSUMED_BLOCKS_NAME).write_text(
         json.dumps(
             {
                 "run_tag": run_tag,
+                **({"copies_in": _portable(copies_in)} if copies_in else {}),
                 "blocks": [
                     {
                         **b.manifest_entry(),
-                        "pnr_path": b.ref.pnr_suite_path,
-                        "abstract_dir": b.abstract_dir,
+                        "pnr_path": _portable(b.ref.pnr_suite_path),
+                        "abstract_dir": _portable(b.abstract_dir),
                     }
                     for b in blocks
                 ],
@@ -146,9 +203,21 @@ class TagInputs:
     run_tag: str
     root: str
     pinned: dict | None = None
+    #: The project of the suite whose tree `root` is; the copies' records are relative to it.
+    project_root: str | None = None
     _copies: dict = field(default_factory=dict, repr=False)
     _key_locks: dict = field(default_factory=dict, repr=False)
     _mutex: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    @classmethod
+    def for_suite(cls, suite_dir, run_tag: str, *, pinned: dict | None = None):
+        """The inputs of a call under `run_tag` on the suite in `suite_dir`, copied into its tagged tree."""
+        return cls(
+            run_tag,
+            str(run_artifact_root(suite_dir, run_tag)),
+            pinned=pinned,
+            project_root=project_root_or_none(suite_dir),
+        )
 
     def _once(self, key, compute, keep):
         """Return `compute()` for `key`, computed once while `keep` holds for its result.
@@ -195,7 +264,10 @@ class TagInputs:
         )
 
     def prefetch(self, refs) -> None:
-        """Resolve `refs` now, so a later resolution under another tree's lock waits for no block tree."""
+        """Resolve `refs` now, so a later resolution under another tree's lock waits for no block tree.
+
+        A block that does not resolve is reported by the run that reads it.
+        """
         for ref in refs:
             try:
                 pnr_abstract.resolve_block(ref, source=self)
@@ -268,7 +340,14 @@ class TagInputs:
                 shutil.copytree(source, partial)
                 self._check_copy(partial, manifest_bytes, source, where)
                 Path(partial, pnr_abstract.COPY_SOURCE_NAME).write_text(
-                    json.dumps({"abstract_dir": source}) + "\n"
+                    json.dumps(
+                        {
+                            "abstract_dir": project_relative(source, self.project_root)
+                            if self.project_root
+                            else source
+                        }
+                    )
+                    + "\n"
                 )
                 os.replace(partial, dest)
             else:
@@ -316,7 +395,7 @@ class TagInputs:
     def synth_dir(self, synth_suite_path: str, synth_name: str) -> str | None:
         """Return the copy of a synthesis's netlist and filelist to read, or None when it has no netlist.
 
-        Taken under the synthesis tree's lock. The copied filelist names absolute paths. A missing netlist is looked for again on the next call, so a synthesis this call runs later is still copied.
+        Taken under the synthesis tree's lock. The copied filelist names absolute paths. A missing netlist is looked for again on the next call, so a synthesis this call runs later is still copied. Raises `SynthCopyChanged` when the copy for this content exists but its files differ from it.
         """
         return self._once(
             ("synth", os.path.realpath(synth_suite_path), synth_name),
@@ -336,7 +415,15 @@ class TagInputs:
                 filelist = (source / _SYNTH_FILELIST).read_text()
             except OSError:
                 filelist = None
-        digest = hashlib.sha256(data + (filelist or "").encode()).hexdigest()
+        copied = {
+            _SYNTH_NETLIST: data,
+            _SYNTH_FILELIST: None
+            if filelist is None
+            else _absolute_filelist(filelist, str(source)).encode(),
+        }
+        digest = hashlib.sha256(
+            data + b"\0" + (copied[_SYNTH_FILELIST] or b"")
+        ).hexdigest()
         dest = Path(
             self.root,
             SYNTH_COPIES_DIRNAME,
@@ -346,10 +433,19 @@ class TagInputs:
             partial = dest.with_name(f"{dest.name}.partial")
             shutil.rmtree(partial, ignore_errors=True)
             partial.mkdir(parents=True)
-            (partial / _SYNTH_NETLIST).write_bytes(data)
-            if filelist is not None:
-                (partial / _SYNTH_FILELIST).write_text(
-                    _absolute_filelist(filelist, str(source))
-                )
+            for name, content in copied.items():
+                if content is not None:
+                    (partial / name).write_bytes(content)
             os.replace(partial, dest)
+            return str(dest)
+        for name, content in copied.items():
+            try:
+                now = (dest / name).read_bytes()
+            except OSError:
+                now = None
+            if now != content:
+                raise SynthCopyChanged(
+                    f"the {name} of the copy {dest} has changed since it was copied "
+                    f"— remove {dest} to have it copied again"
+                )
         return str(dest)

@@ -3,7 +3,8 @@
 Each command takes an exclusive non-blocking ``flock(2)`` on
 ``<artifact_root>/.rtl-buddy.lock`` and fails fast if another process holds it.
 A lock whose recorded holder is dead on this host is reclaimed.
-:func:`tree_lock` holds another tree's lock for a short read or write, waiting for it.
+:func:`tree_lock` holds another tree's lock for a short read or write, waiting for it;
+a ``--run-tag`` command waits out such a hold of its own tree instead of failing.
 :func:`build_dir_lock` is the narrower, blocking lock around a shared compile.
 """
 
@@ -41,6 +42,10 @@ BUILD_LOCK_POLL_SEC = 0.2
 BUILD_LOCK_ANNOUNCE_SEC = 300.0
 
 TREE_LOCK_POLL_SEC = 1.0
+# How long a holder's record may lag its lock before a waiter reads it again.
+HOLDER_RECORD_SETTLE_SEC = 0.2
+# How long a waiter reads again a record that names no live holder before it gives up.
+HOLDER_RECORD_TIMEOUT_SEC = 10.0
 TREE_LOCK_ANNOUNCE_SEC = 300.0
 
 # Lock files this process holds through any ArtifactLocks, and one mutex per tree for `tree_lock`.
@@ -98,11 +103,18 @@ class ArtifactLocks:
         *,
         command: str | None = None,
         log_contention: bool = True,
+        copying: bool = False,
+        wait_for_copying: bool = False,
     ) -> None:
         """Take the exclusive lock for ``artifact_root``, creating it if needed.
 
         Raises :class:`ArtifactLockContended` naming the holder when another process has it,
-        and :class:`FatalRtlBuddyError` when the filesystem cannot lock.
+        and :class:`FatalRtlBuddyError` when the filesystem cannot lock. ``copying`` records
+        the hold as a copy (:meth:`acquire_waiting`); ``wait_for_copying`` waits out such a
+        holder instead of failing. A holder writes its record just after it locks, so a
+        record that names a live holder without ``copying`` is read again once before
+        failing, and one that names no live holder (empty, partial, or left by a dead
+        process) is read again until ``HOLDER_RECORD_TIMEOUT_SEC`` has passed.
         """
         artifact_root = Path(artifact_root)
         lock_path = artifact_root / LOCK_FILENAME
@@ -110,14 +122,50 @@ class ArtifactLocks:
             return
 
         artifact_root.mkdir(parents=True, exist_ok=True)
-        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            holder = _read_holder(fd)
-            os.close(fd)
-            fd = _reclaim_if_stale(artifact_root, lock_path, holder)
-            if fd is None:
+        started = time.monotonic()
+        announced = None
+        looked_again = False
+        unknown_since = None
+        while True:
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                holder = _read_holder(fd)
+                os.close(fd)
+                fd = _reclaim_if_stale(artifact_root, lock_path, holder)
+                if fd is not None:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "artifact_lock.reclaimed",
+                        path=str(artifact_root),
+                        holder_pid=holder.get("pid"),
+                        holder_command=holder.get("command"),
+                        holder_started=holder.get("started"),
+                        holder_host=holder.get("host"),
+                    )
+                    break
+                if wait_for_copying and exc.errno in _CONTENTION_ERRNOS:
+                    if holder.get("copying"):
+                        looked_again = False
+                        unknown_since = None
+                        announced = _announce_wait(
+                            artifact_root, holder, started, announced
+                        )
+                        time.sleep(TREE_LOCK_POLL_SEC)
+                        continue
+                    if not _names_a_live_holder(holder):
+                        now = time.monotonic()
+                        unknown_since = unknown_since or now
+                        if now - unknown_since < HOLDER_RECORD_TIMEOUT_SEC:
+                            time.sleep(HOLDER_RECORD_SETTLE_SEC)
+                            continue
+                    elif not looked_again:
+                        looked_again = True
+                        time.sleep(HOLDER_RECORD_SETTLE_SEC)
+                        continue
                 log_event(
                     logger,
                     logging.ERROR if log_contention else logging.DEBUG,
@@ -142,18 +190,8 @@ class ArtifactLocks:
                     "it to finish or kill it",
                     holder,
                 ) from exc
-            log_event(
-                logger,
-                logging.WARNING,
-                "artifact_lock.reclaimed",
-                path=str(artifact_root),
-                holder_pid=holder.get("pid"),
-                holder_command=holder.get("command"),
-                holder_started=holder.get("started"),
-                holder_host=holder.get("host"),
-            )
 
-        _write_holder(fd, command)
+        _write_holder(fd, command, copying=copying)
         if not _still_owns_lock_path(artifact_root, lock_path, fd):
             # A reclaimer replaced the file between our flock and our write; we hold an unlinked inode.
             os.close(fd)
@@ -172,6 +210,40 @@ class ArtifactLocks:
             path=str(artifact_root),
             command=command,
         )
+
+    def acquire_waiting(
+        self, artifact_root: Path, *, command: str | None = None
+    ) -> None:
+        """Take ``artifact_root``'s lock as a copy, waiting while another process holds it.
+
+        Logs ``artifact_lock.wait`` every ``TREE_LOCK_ANNOUNCE_SEC`` while waiting.
+        """
+        started = time.monotonic()
+        announced = None
+        while True:
+            try:
+                self.acquire(
+                    artifact_root, command=command, log_contention=False, copying=True
+                )
+                return
+            except ArtifactLockContended as exc:
+                announced = _announce_wait(
+                    artifact_root, exc.holder, started, announced
+                )
+                time.sleep(TREE_LOCK_POLL_SEC)
+
+    def release(self, artifact_root: Path) -> None:
+        """Drop the lock of ``artifact_root`` if held; never raises."""
+        lock_path = Path(artifact_root) / LOCK_FILENAME
+        fd = self._held.pop(lock_path, None)
+        if fd is None:
+            return
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        with _PROCESS_LOCK:
+            _PROCESS_HELD.discard(_lock_key(lock_path.parent))
 
     def release_all(self) -> None:
         """Drop every held lock. Idempotent and never raises, so it is safe inside ``finally``."""
@@ -204,31 +276,54 @@ def tree_lock(artifact_root: Path, *, command: str | None = None) -> Iterator[No
             yield
             return
         locks = ArtifactLocks()
-        started = time.monotonic()
-        announced = None
-        while True:
-            try:
-                locks.acquire(artifact_root, command=command, log_contention=False)
-                break
-            except ArtifactLockContended as exc:
-                waited = time.monotonic() - started
-                if announced is None or waited - announced >= TREE_LOCK_ANNOUNCE_SEC:
-                    log_console_event(
-                        logger,
-                        logging.INFO,
-                        "artifact_lock.wait",
-                        path=str(artifact_root),
-                        waited_sec=round(waited),
-                        holder_pid=exc.holder.get("pid"),
-                        holder_command=exc.holder.get("command"),
-                        holder_started=exc.holder.get("started"),
-                    )
-                    announced = waited
-                time.sleep(TREE_LOCK_POLL_SEC)
+        locks.acquire_waiting(artifact_root, command=command)
         try:
             yield
         finally:
             locks.release_all()
+
+
+def acquire_in_order(
+    locks: ArtifactLocks, own: Path, others, *, command: str | None = None
+) -> ArtifactLocks:
+    """Take ``own`` into ``locks`` and wait for each of ``others`` as a copy, returning the manager that holds them.
+
+    ``own`` fails as :meth:`ArtifactLocks.acquire` does, waiting out only a copy's hold, and is
+    tried first, so a busy one fails before anything is waited for. Trees are ordered by
+    resolved path, and no tree is waited for while one ordered after it is held, so callers
+    that take their trees this way never wait for each other in a cycle. When a tree ordered
+    before ``own`` is busy, ``own`` is let go and everything is taken again in order.
+    """
+    own = Path(own)
+    own_key = _lock_key(own)
+    ordered = sorted(
+        {_lock_key(p): Path(p) for p in others if _lock_key(p) != own_key}.items()
+    )
+    held = ArtifactLocks()
+    locks.acquire(own, command=command, wait_for_copying=True)
+    try:
+        for key, path in ordered:
+            if key > own_key:
+                held.acquire_waiting(path, command=command)
+            else:
+                held.acquire(path, command=command, log_contention=False, copying=True)
+        return held
+    except ArtifactLockContended:
+        held.release_all()
+        locks.release(own)
+    except BaseException:
+        held.release_all()
+        raise
+    try:
+        for key, path in sorted([*ordered, (own_key, own)]):
+            if key == own_key:
+                locks.acquire(own, command=command, wait_for_copying=True)
+            else:
+                held.acquire_waiting(path, command=command)
+        return held
+    except BaseException:
+        held.release_all()
+        raise
 
 
 @contextlib.contextmanager
@@ -328,10 +423,30 @@ def _wait_for_lock(fd: int, fields: dict) -> None:
             return
 
 
-def _write_holder(fd: int, command: str | None) -> None:
+def _announce_wait(
+    artifact_root: Path, holder: dict, started: float, announced: float | None
+) -> float | None:
+    """Log ``artifact_lock.wait`` every ``TREE_LOCK_ANNOUNCE_SEC`` of a wait; return when it last did."""
+    waited = time.monotonic() - started
+    if announced is not None and waited - announced < TREE_LOCK_ANNOUNCE_SEC:
+        return announced
+    log_console_event(
+        logger,
+        logging.INFO,
+        "artifact_lock.wait",
+        path=str(artifact_root),
+        waited_sec=round(waited),
+        holder_pid=holder.get("pid"),
+        holder_command=holder.get("command"),
+        holder_started=holder.get("started"),
+    )
+    return waited
+
+
+def _write_holder(fd: int, command: str | None, *, copying: bool = False) -> None:
     """Write this process's pid, command, host and start token into the locked file.
 
-    A record without ``host`` is never reclaimed.
+    A record without ``host`` is never reclaimed. ``copying`` marks a :func:`tree_lock` hold.
     """
     os.ftruncate(fd, 0)
     os.write(
@@ -343,6 +458,7 @@ def _write_holder(fd: int, command: str | None) -> None:
                 "started": datetime.now().isoformat(timespec="seconds"),
                 "host": _this_host(),
                 "start_token": _process_start_token(os.getpid()),
+                **({"copying": True} if copying else {}),
             }
         ).encode(),
     )
@@ -391,6 +507,18 @@ def _process_start_token(pid: int) -> str | None:
         return None
     token = proc.stdout.strip()
     return token or None
+
+
+def _names_a_live_holder(holder: dict) -> bool:
+    """Whether the record is a complete one of a process that is not known to be dead."""
+    pid = holder.get("pid")
+    return (
+        isinstance(pid, int)
+        and not isinstance(pid, bool)
+        and pid > 0
+        and bool(holder.get("started"))
+        and not _holder_is_stale(holder)
+    )
 
 
 def _holder_is_stale(holder: dict) -> bool:

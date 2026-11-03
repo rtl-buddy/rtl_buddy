@@ -27,6 +27,7 @@ from rtl_buddy.artifact_lock import (
     BUILD_LOCK_FILENAME,
     BUILD_LOCK_POLL_SEC,
     LOCK_FILENAME,
+    ArtifactLockContended,
     ArtifactLocks,
     build_dir_lock,
 )
@@ -70,6 +71,31 @@ def test_contended_acquire_fails_loud_naming_holder(tmp_path, locks):
     assert str(root) in msg
     assert f"pid {os.getpid()}" in msg
     assert "rb regression" in msg
+
+
+def test_a_copy_hold_is_waited_out_only_when_asked(tmp_path, locks, monkeypatch):
+    """`tree_lock` holds a tree briefly to copy out of it; a `--run-tag` command waits that out instead of failing."""
+    monkeypatch.setattr(artifact_lock_module, "TREE_LOCK_POLL_SEC", 0.05)
+    root = tmp_path / "artefacts"
+    copier = locks()
+    copier.acquire(root, command="pnr", copying=True)
+    assert json.loads((root / LOCK_FILENAME).read_text())["copying"] is True
+    with pytest.raises(ArtifactLockContended):
+        locks().acquire(root, command="pnr")
+
+    threading.Timer(0.3, copier.release_all).start()
+    started = time.monotonic()
+    locks().acquire(root, command="pnr", wait_for_copying=True)
+
+    assert time.monotonic() - started >= 0.2
+    assert "copying" not in json.loads((root / LOCK_FILENAME).read_text())
+
+
+def test_a_command_holding_the_tree_is_not_waited_for(tmp_path, locks):
+    root = tmp_path / "artefacts"
+    locks().acquire(root, command="pnr")
+    with pytest.raises(ArtifactLockContended):
+        locks().acquire(root, command="pnr", wait_for_copying=True)
 
 
 def test_reacquire_same_root_is_idempotent(tmp_path, locks):
@@ -649,8 +675,8 @@ def test_acquirer_that_loses_the_path_to_a_reclaimer_stands_down(tmp_path, monke
 
     real_write = artifact_lock._write_holder
 
-    def write_then_lose_the_path(fd, command):
-        real_write(fd, command)
+    def write_then_lose_the_path(fd, command, **kw):
+        real_write(fd, command, **kw)
         # Simulates a concurrent reclaimer's ``os.replace``.
         usurper = tmp_path / "usurper"
         usurper.write_text("{}")
@@ -673,3 +699,138 @@ def test_verible_filelist_into_the_tree_fails_while_another_run_holds_it(
     )
     assert result.exit_code != 0
     assert "another rtl-buddy run" in str(result.exception)
+
+
+def test_a_copy_hold_whose_record_is_not_written_yet_is_still_waited_out(
+    tmp_path, locks, monkeypatch
+):
+    """A holder writes its record just after it locks; a waiter that reads before then looks again."""
+    monkeypatch.setattr(artifact_lock_module, "TREE_LOCK_POLL_SEC", 0.05)
+    root = tmp_path / "artefacts"
+    copier = locks()
+    copier.acquire(root, command="pnr", copying=True)
+    real_read = artifact_lock_module._read_holder
+    reads = []
+
+    def _read_before_the_record(fd):
+        reads.append(fd)
+        return {} if len(reads) == 1 else real_read(fd)
+
+    monkeypatch.setattr(artifact_lock_module, "_read_holder", _read_before_the_record)
+    threading.Timer(0.3, copier.release_all).start()
+
+    locks().acquire(root, command="pnr", wait_for_copying=True)
+
+    assert len(reads) >= 2
+
+
+def test_acquire_in_order_fails_on_a_busy_own_tree_before_waiting_for_any_other(
+    tmp_path, locks
+):
+    own, other = tmp_path / "b/artefacts", tmp_path / "a/artefacts"
+    locks().acquire(own, command="pnr")
+    held_other = locks()
+    held_other.acquire(other, command="pnr")
+    started = time.monotonic()
+    with pytest.raises(ArtifactLockContended):
+        artifact_lock_module.acquire_in_order(locks(), own, [other], command="pnr")
+    assert time.monotonic() - started < 1
+
+
+@pytest.mark.parametrize("busy", ["before", "after"])
+def test_acquire_in_order_waits_for_a_busy_tree_and_keeps_only_its_own(
+    tmp_path, locks, monkeypatch, busy
+):
+    """A busy tree ordered before the own tree is waited for holding nothing ordered after it."""
+    monkeypatch.setattr(artifact_lock_module, "TREE_LOCK_POLL_SEC", 0.05)
+    own = tmp_path / "m/artefacts"
+    other = tmp_path / ("a" if busy == "before" else "z") / "artefacts"
+    holder = locks()
+    holder.acquire(other, command="pnr")
+    mine = locks()
+    seen = {}
+
+    def _release():
+        # While the other tree is waited for, the own tree is held only when it is ordered first.
+        probe = ArtifactLocks()
+        try:
+            probe.acquire(own, command="probe", log_contention=False)
+            seen["own_free"] = True
+        except ArtifactLockContended:
+            seen["own_free"] = False
+        probe.release_all()
+        holder.release_all()
+
+    threading.Timer(0.3, _release).start()
+    sources = artifact_lock_module.acquire_in_order(mine, own, [other], command="pnr")
+
+    assert seen["own_free"] is (busy == "before")
+    sources.release_all()
+    locks().acquire(other, command="pnr")
+    with pytest.raises(ArtifactLockContended):
+        locks().acquire(own, command="pnr")
+
+
+def test_a_copy_whose_record_is_written_late_is_still_waited_out(tmp_path, monkeypatch):
+    """A copier slow to write its record after it locks is not taken for a command holder."""
+    monkeypatch.setattr(artifact_lock_module, "TREE_LOCK_POLL_SEC", 0.05)
+    root = tmp_path / "artefacts"
+    root.mkdir()
+    lock = root / LOCK_FILENAME
+    copier = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(f"""\
+                import fcntl, json, os, socket, time
+                f = open({str(lock)!r}, "a+")
+                fcntl.flock(f, fcntl.LOCK_EX)
+                print("held", flush=True)
+                time.sleep(1.0)
+                f.truncate(0)
+                f.write(json.dumps({{"pid": os.getpid(), "command": "pnr",
+                                     "started": "now", "copying": True}}))
+                f.flush()
+                time.sleep(0.5)
+            """),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert copier.stdout.readline().strip() == "held"
+        started = time.monotonic()
+        locks = ArtifactLocks()
+        locks.acquire(root, command="pnr", wait_for_copying=True)
+        waited = time.monotonic() - started
+        locks.release_all()
+    finally:
+        copier.wait(timeout=10)
+
+    assert waited >= 1.0
+
+
+def test_a_record_naming_no_holder_is_given_up_on_after_a_bound(tmp_path, monkeypatch):
+    monkeypatch.setattr(artifact_lock_module, "HOLDER_RECORD_TIMEOUT_SEC", 0.5)
+    root = tmp_path / "artefacts"
+    root.mkdir()
+    lock = root / LOCK_FILENAME
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            f"import fcntl, time\nf = open({str(lock)!r}, 'a')\n"
+            "fcntl.flock(f, fcntl.LOCK_EX)\nprint('held', flush=True)\ntime.sleep(30)\n",
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        started = time.monotonic()
+        with pytest.raises(ArtifactLockContended):
+            ArtifactLocks().acquire(root, command="pnr", wait_for_copying=True)
+        assert 0.5 <= time.monotonic() - started < 5
+    finally:
+        holder.kill()
+        holder.wait(timeout=10)
