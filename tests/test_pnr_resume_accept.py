@@ -549,6 +549,7 @@ def test_the_abstract_records_accepted_changes_without_going_stale(tmp_path):
 
     from rtl_buddy.tools.pnr_abstract import resolve_block
 
+    (tmp_path / ".git").mkdir()
     suite = _block_suite(tmp_path)
     abstract = tmp_path / "blk/artefacts/blk_pnr/abstract"
     old = json.loads((abstract / "abstract.manifest.json").read_text())
