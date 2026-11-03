@@ -3,7 +3,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 from serde import serde, field
 
@@ -37,16 +37,20 @@ from .pnr_global_route import (
 )
 from .pnr_repair import (
     GLOBAL_ROUTE_REPAIR_SPEC,
+    POST_CTS_REPAIR_SPEC,
     POST_ROUTE_REPAIR_SPEC,
     UNSET,
     GlobalRouteRepair,
+    PostCtsRepair,
     PostRouteRepair,
     RepairDesign,
     read_global_route_repair,
     read_hold_repair_shorthand,
+    read_post_cts_repair,
     read_post_route_repair,
     resolve_global_route_repair,
     resolve_placement_repair_design,
+    resolve_post_cts_repair,
     resolve_post_route_repair,
 )
 from .pnr_signoff import SIGNOFF_SPEC, Signoff, read_signoff, resolve_signoff
@@ -233,6 +237,14 @@ class PnrRunOverrides:
         return self == PnrRunOverrides()
 
 
+class _Repairs(NamedTuple):
+    """A platform's repair blocks with a run's layers merged over them."""
+
+    global_route: GlobalRouteRepair | None
+    post_route: PostRouteRepair | None
+    post_cts: PostCtsRepair
+
+
 def read_run_overrides(
     where: str,
     *,
@@ -329,6 +341,8 @@ class PnrPlatformConfigFile:
     cts_repair_clock_nets: Any = field(rename="cts-repair-clock-nets", default=False)
     # Runs `repair_timing -setup` before the post-CTS hold repair.
     post_cts_setup_repair: bool = field(rename="post-cts-setup-repair", default=True)
+    # Margins of the post-CTS repair; a run overrides them field by field. Read by `pnr_repair`.
+    post_cts_repair: Any = field(rename="post-cts-repair", default=UNSET)
     # ORFS's sizing-only `repair_timing -setup` at the end of the floorplan.
     floorplan_setup_repair: bool = field(rename="floorplan-setup-repair", default=True)
     # `repair_clock_inverters` before CTS, as ORFS runs it.
@@ -388,6 +402,7 @@ PNR_PLATFORM_SPEC = KeySpec(
     {
         "routing-layers": KeySpec(PnrRoutingLayersFile),
         "placement": PLACEMENT_SPEC,
+        "post-cts-repair": POST_CTS_REPAIR_SPEC,
         "global-route-repair": GLOBAL_ROUTE_REPAIR_SPEC,
         "post-route-repair": POST_ROUTE_REPAIR_SPEC,
         "global-route": GLOBAL_ROUTE_SPEC,
@@ -490,6 +505,7 @@ class PnrPlatformConfig:
     def _read_repairs(self, cfg: PnrPlatformConfigFile) -> None:
         """Read the platform's repair blocks into layers a run's blocks go over. They are resolved per run (see `with_run_repairs`), so a partial platform block fails only the runs that leave it partial."""
         where = f"pnr platform '{self._name}'"
+        self._post_cts_repair_layer = read_post_cts_repair(where, cfg.post_cts_repair)
         gr_layer = read_global_route_repair(where, cfg.global_route_repair)
         self._global_route_repair_layer = read_hold_repair_shorthand(
             where, cfg.global_route_hold_repair or None, gr_layer
@@ -498,33 +514,35 @@ class PnrPlatformConfig:
             where, cfg.post_route_repair
         )
         # Resolved on first use, or by `with_run_repairs`.
-        self._repairs: (
-            tuple[GlobalRouteRepair | None, PostRouteRepair | None] | None
-        ) = None
+        self._repairs: _Repairs | None = None
 
-    def _resolve_repairs(self, gr_run, pr_run, where: str) -> None:
-        self._repairs = (
-            resolve_global_route_repair(
+    def _resolve_repairs(self, gr_run, pr_run, pc_run, where: str) -> None:
+        self._repairs = _Repairs(
+            global_route=resolve_global_route_repair(
                 where, [self._global_route_repair_layer, gr_run]
             ),
-            resolve_post_route_repair(where, [self._post_route_repair_layer, pr_run]),
+            post_route=resolve_post_route_repair(
+                where, [self._post_route_repair_layer, pr_run]
+            ),
+            post_cts=resolve_post_cts_repair([self._post_cts_repair_layer, pc_run]),
         )
 
     def with_run_repairs(
-        self, global_route_repair, post_route_repair, run: str
+        self, global_route_repair, post_route_repair, post_cts_repair, run: str
     ) -> "PnrPlatformConfig":
         """Return this platform with a P&R run's repair layers (see `pnr_repair`) over its own, field by field; raise when the merged block is incomplete."""
         resolved = copy.copy(self)
         resolved._resolve_repairs(
             global_route_repair,
             post_route_repair,
+            post_cts_repair,
             f"pnr run '{run}' on platform '{self._name}'",
         )
         return resolved
 
-    def _resolved_repairs(self):
+    def _resolved_repairs(self) -> "_Repairs":
         if self._repairs is None:
-            self._resolve_repairs(UNSET, UNSET, f"pnr platform '{self._name}'")
+            self._resolve_repairs(UNSET, UNSET, UNSET, f"pnr platform '{self._name}'")
         return self._repairs
 
     def _resolve_placement(
@@ -907,6 +925,10 @@ class PnrPlatformConfig:
         """Whether post-CTS repair fixes setup before hold."""
         return self._post_cts_setup_repair
 
+    def get_post_cts_repair(self) -> PostCtsRepair:
+        """The post-CTS repair's margins, platform under run."""
+        return self._resolved_repairs().post_cts
+
     def get_floorplan_setup_repair(self) -> bool:
         """Whether the floorplan ends with ORFS's sizing-only setup repair."""
         return self._floorplan_setup_repair
@@ -925,11 +947,11 @@ class PnrPlatformConfig:
 
     def get_global_route_repair(self) -> GlobalRouteRepair | None:
         """The repair after global route, platform under run, or None when off."""
-        return self._resolved_repairs()[0]
+        return self._resolved_repairs().global_route
 
     def get_post_route_repair(self) -> PostRouteRepair | None:
         """The repair rounds after detailed route, platform under run, or None when off."""
-        return self._resolved_repairs()[1]
+        return self._resolved_repairs().post_route
 
     def get_routing_layer_adjustment(self) -> float | None:
         """Global-route capacity adjustment, 0 to 1, or `None` for the router's default."""

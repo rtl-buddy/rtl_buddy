@@ -1,6 +1,6 @@
-"""Timing-repair knobs of `rb pnr`: `global-route-repair` and `post-route-repair`, set on a P&R platform and overridden by a run field by field, and the run's `mode`.
+"""Timing-repair knobs of `rb pnr`: `post-cts-repair`, `global-route-repair` and `post-route-repair`, set on a P&R platform and overridden by a run field by field, and the run's `mode`.
 
-A block is read in two steps. :func:`read_global_route_repair` and :func:`read_post_route_repair` turn one level's YAML into a layer: the keys it writes, validated, with `null` kept as a value (skip that repair), or `None` for a block written as `null` (off). :func:`resolve_global_route_repair` and :func:`resolve_post_route_repair` merge the platform's layer and the run's into the repair the flow runs. When neither level writes a global-route repair, it is :data:`DEFAULT_GLOBAL_ROUTE_REPAIR`, the repair ORFS runs after global route. Rules about the whole block (it must repair something; several rounds need a margin) apply only there, to the merged block a run uses, so a platform may set part of a block that its runs complete.
+A block is read in two steps. :func:`read_post_cts_repair`, :func:`read_global_route_repair` and :func:`read_post_route_repair` turn one level's YAML into a layer: the keys it writes, validated, with `null` kept as a value (skip that repair, or for `post-cts-repair` no margin), or `None` for a block written as `null` (off). :func:`resolve_post_cts_repair`, :func:`resolve_global_route_repair` and :func:`resolve_post_route_repair` merge the platform's layer and the run's into the repair the flow runs. When neither level writes a global-route repair, it is :data:`DEFAULT_GLOBAL_ROUTE_REPAIR`, the repair ORFS runs after global route. Rules about the whole block (it must repair something; several rounds need a margin) apply only there, to the merged block a run uses, so a platform may set part of a block that its runs complete.
 """
 
 import math
@@ -76,6 +76,12 @@ class ElectricalRepairFile:
 
 
 @serde
+class PostCtsRepairFile:
+    setup_margin: Any = field(rename="setup-margin", default=UNSET)
+    hold_margin: Any = field(rename="hold-margin", default=UNSET)
+
+
+@serde
 class GlobalRouteRepairFile:
     repair_design: Any = field(rename="repair-design", default=UNSET)
     setup_margin: Any = field(rename="setup-margin", default=UNSET)
@@ -95,6 +101,7 @@ class PostRouteRepairFile:
 
 
 #: The keys of each block, for the unknown-key check.
+POST_CTS_REPAIR_SPEC = KeySpec(PostCtsRepairFile)
 GLOBAL_ROUTE_REPAIR_SPEC = KeySpec(
     GlobalRouteRepairFile, {"repair-design": KeySpec(RepairDesignFile)}
 )
@@ -145,6 +152,14 @@ class RepairDesign:
         return "".join(
             f" -{name} {_fmt(value)}" for name, value in self.option_values().items()
         )
+
+
+@dataclass(frozen=True)
+class PostCtsRepair:
+    """The margins of the post-CTS repair on placement parasitics, in ns; `None` (also for a zero margin) passes none. Which sides it repairs is `post-cts-setup-repair`'s."""
+
+    setup_margin: float | None = None
+    hold_margin: float | None = None
 
 
 @dataclass(frozen=True)
@@ -348,7 +363,7 @@ def _read_margins(
     where: str, block: dict, design_keys: dict = _REPAIR_DESIGN_KEYS
 ) -> dict:
     layer = {}
-    if block["repair_design"] is not UNSET:
+    if block.get("repair_design", UNSET) is not UNSET:
         layer["repair_design"] = _read_repair_design(
             f"{where}.repair-design", block["repair_design"], design_keys
         )
@@ -360,6 +375,10 @@ def _read_margins(
     return layer
 
 
+_POST_CTS_KEYS = {
+    "setup-margin": "setup_margin",
+    "hold-margin": "hold_margin",
+}
 _GLOBAL_ROUTE_KEYS = {
     "repair-design": "repair_design",
     "setup-margin": "setup_margin",
@@ -375,6 +394,17 @@ _POST_ROUTE_KEYS = {
     "reroute": "reroute",
     "electrical-repair": "electrical_repair",
 }
+
+
+def read_post_cts_repair(where: str, raw):
+    """Return one level's `post-cts-repair` as a layer: `UNSET` when absent, `None` when `null`, else the margins it writes, validated."""
+    where = f"{where}: post-cts-repair"
+    if raw is UNSET:
+        return UNSET
+    block = _block(where, raw, _POST_CTS_KEYS)
+    if block is None:
+        return None
+    return _read_margins(where, block)
 
 
 def read_global_route_repair(where: str, raw):
@@ -505,6 +535,15 @@ def resolve_global_route_repair(where: str, layers) -> GlobalRouteRepair | None:
         setup_margin=merged.get("setup_margin"),
         hold_margin=merged.get("hold_margin"),
         reroute=merged.get("reroute", Reroute.INCREMENTAL),
+    )
+
+
+def resolve_post_cts_repair(layers) -> PostCtsRepair:
+    """The post-CTS repair's margins `layers` (platform first, then run) set; a block turned off sets none. A zero margin is none: it passes no option, so the repair renders as without the block."""
+    merged = _merge(layers) or {}
+    return PostCtsRepair(
+        setup_margin=merged.get("setup_margin") or None,
+        hold_margin=merged.get("hold_margin") or None,
     )
 
 

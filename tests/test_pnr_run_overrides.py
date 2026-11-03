@@ -221,7 +221,7 @@ def test_a_run_hold_repair_shorthand_adds_the_hold_repair(tmp_path):
     run = _run(tmp_path, **{"global-route-hold-repair": True})
 
     resolved = platform.with_run_repairs(
-        run.global_route_repair, run.post_route_repair, "r"
+        run.global_route_repair, run.post_route_repair, run.post_cts_repair, "r"
     )
 
     assert resolved.get_global_route_repair() == GlobalRouteRepair(hold_margin=0.0)
@@ -232,7 +232,7 @@ def test_a_run_hold_repair_false_turns_the_platform_shorthand_off(tmp_path):
     run = _run(tmp_path, **{"global-route-hold-repair": False})
 
     resolved = platform.with_run_repairs(
-        run.global_route_repair, run.post_route_repair, "r"
+        run.global_route_repair, run.post_route_repair, run.post_cts_repair, "r"
     )
 
     assert resolved.get_global_route_repair() is None
@@ -246,7 +246,7 @@ def test_a_run_hold_repair_false_keeps_the_rest_of_a_platform_block(tmp_path):
     run = _run(tmp_path, **{"global-route-hold-repair": False})
 
     resolved = platform.with_run_repairs(
-        run.global_route_repair, run.post_route_repair, "r"
+        run.global_route_repair, run.post_route_repair, run.post_cts_repair, "r"
     )
 
     assert resolved.get_global_route_repair() == GlobalRouteRepair(setup_margin=0.1)
@@ -259,7 +259,7 @@ def test_a_run_hold_repair_false_over_no_platform_repair_drops_it_from_the_defau
     run = _run(tmp_path, **{"global-route-hold-repair": False})
 
     resolved = platform.with_run_repairs(
-        run.global_route_repair, run.post_route_repair, "r"
+        run.global_route_repair, run.post_route_repair, run.post_cts_repair, "r"
     )
 
     assert resolved.get_global_route_repair() == GlobalRouteRepair(
@@ -431,7 +431,7 @@ def test_the_routing_and_repair_knobs_render_from_the_run(tmp_path):
     )
     run = _run(tmp_path, **{"global-route-hold-repair": True})
     platform = platform.with_run_repairs(
-        run.global_route_repair, run.post_route_repair, "r"
+        run.global_route_repair, run.post_route_repair, run.post_cts_repair, "r"
     )
 
     text = _render(tmp_path, platform, harden=True)

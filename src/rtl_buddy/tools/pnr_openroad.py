@@ -498,7 +498,10 @@ def run_platform(pnr_cfg, root_cfg):
     platform = root_cfg.get_pnr_platform_cfg(pnr_cfg.get_platform())
     platform = platform.with_run_placement(pnr_cfg.get_placement(), pnr_cfg.get_name())
     platform = platform.with_run_repairs(
-        pnr_cfg.global_route_repair, pnr_cfg.post_route_repair, pnr_cfg.get_name()
+        pnr_cfg.global_route_repair,
+        pnr_cfg.post_route_repair,
+        pnr_cfg.post_cts_repair,
+        pnr_cfg.get_name(),
     )
     return platform.with_run_overrides(pnr_cfg.get_overrides())
 
@@ -841,8 +844,14 @@ def _repair_steps_tcl(
     ps_per_unit: float | None,
     legalize: str | None,
     platform=None,
+    *,
+    sides: tuple[str, ...] | None = None,
+    log_prefix: str | None = None,
+    after_timing: str = "",
 ) -> str:
-    """Return `repair_design`, then setup and hold `repair_timing`, each after a log line naming it, each with `platform`'s repair options (`_repair_command`).
+    """Return `repair_design`, then setup and hold `repair_timing`, each after a log line naming it, each with `platform`'s repair options (`_repair_command`), then `after_timing` (the `after-timing-repair` hooks, `_after_timing_repair_block`) when a `repair_timing` ran.
+
+    `sides` are the `repair_timing` sides that run, by default each whose margin is set; a side that runs without a margin passes no margin option, and a set `setup_ns` is still passed to the hold repair when the setup side does not run. Each log line starts with `log_prefix`, by default `title` and a colon, and names only the margins that are set.
 
     Margins are given in ns and passed in the Liberty time unit (`ps_per_unit` picoseconds), which is what `repair_timing` reads; the log line gives both. A zero margin is the tool's default and passes no option. The hold repair also passes a set setup margin, as ORFS's `repair_timing_helper` does, so it keeps that much setup slack on the paths it delays.
 
@@ -868,10 +877,19 @@ def _repair_steps_tcl(
         value = _fmt_number(margin * 1000.0 / ps_per_unit)
         return f" -{kind}_margin {value}", f"{kind} margin {_fmt_number(margin)} ns"
 
+    if sides is None:
+        sides = tuple(
+            kind
+            for kind, margin in (("setup", setup_ns), ("hold", hold_ns))
+            if margin is not None
+        )
+    prefix = f"{title}: " if log_prefix is None else log_prefix
+    timed = False
     for kind, margin in (("setup", setup_ns), ("hold", hold_ns)):
-        if margin is None:
+        if kind not in sides:
             continue
-        options = [_option(kind, margin)]
+        timed = True
+        options = [] if margin is None else [_option(kind, margin)]
         if kind == "hold" and setup_ns is not None:
             options.append(_option("setup", setup_ns))
         command = _repair_command(
@@ -882,28 +900,71 @@ def _repair_steps_tcl(
             note += f" in Liberty time unit {format_time_unit(ps_per_unit)}"
         if design is not None and design.wire_rc is not None:
             note += ", signal wire RC [rb::rc::describe] for the nets it changes"
-        lines += [f'puts ">>> {title}: {command} ({note})"', command]
+        note = f" ({note.removeprefix(', ')})" if note else ""
+        lines += [f'puts ">>> {prefix}{command}{note}"', command]
+    if timed and after_timing:
+        lines.append(after_timing.rstrip("\n"))
     if design is not None and design.after_timing:
         lines += _repair_design_tcl(title, design, " after timing repair", platform)
     return "".join(f"{line}\n" for line in lines)
 
 
-def _post_cts_repair_tcl(platform, mode: PnrMode) -> str:
-    """Return the post-CTS timing repair on placement parasitics: setup unless `post-cts-setup-repair` is false, then hold. A probe skips it.
+def _after_timing_repair_block(
+    hooks: dict, repair: str, round_: int | None = None
+) -> str:
+    """Return the `after-timing-repair` hook lines that follow the `repair_timing` calls of `repair` (`post_cts`, `global_route` or `post_route`), with `$rb_repair` naming it and, in post-route round `round_`, `$rb_repair_round` its number, both unset after them; `""` when the run has none."""
+    paths = hooks.get("after-timing-repair")
+    if not paths:
+        return ""
+    names = "rb_repair" if round_ is None else "rb_repair rb_repair_round"
+    round_line = f"set rb_repair_round {round_}\n" if round_ is not None else ""
+    return (
+        f"set rb_repair {repair}\n{round_line}"
+        + _run_hook_lines("after-timing-repair", paths)
+        + f"unset -nocomplain {names}\n"
+    )
+
+
+def _post_cts_repair_tcl(
+    platform,
+    mode: PnrMode,
+    ps_per_unit: float | None = None,
+    after_timing: str = "",
+) -> str:
+    """Return the post-CTS timing repair on placement parasitics: setup unless `post-cts-setup-repair` is false, then hold, then `after_timing` (`_after_timing_repair_block`). A probe skips it.
+
+    Without `post-cts-repair` margins (a zero margin is none) the commands are bare; with them the repair runs as `_repair_steps_tcl` renders it under the block's own log line, and the hold repair also passes a set setup margin, `post-cts-setup-repair: false` or not.
 
     The block carries its own leading newline, as the template once held the text itself.
     """
     if mode is PnrMode.PROBE:
         return '\nputs ">>> Post-CTS timing repair: skipped (mode: probe)"\n'
+    head = '\nputs ">>> Post-CTS timing repair"\nestimate_parasitics -placement\n'
+    margins = platform.get_post_cts_repair()
+    if margins.setup_margin is not None or margins.hold_margin is not None:
+        return head + _repair_steps_tcl(
+            "Post-CTS timing repair",
+            None,
+            margins.setup_margin,
+            margins.hold_margin,
+            ps_per_unit,
+            None,
+            platform,
+            sides=("setup", "hold")
+            if platform.get_post_cts_setup_repair()
+            else ("hold",),
+            log_prefix="  ",
+            after_timing=after_timing,
+        )
     setup = (
         _repair_command("repair_timing -setup", platform) + "\n"
         if platform.get_post_cts_setup_repair()
         else ""
     )
     return (
-        '\nputs ">>> Post-CTS timing repair"\n'
-        "estimate_parasitics -placement\n"
-        f"{setup}{_repair_command('repair_timing -hold', platform)}\n"
+        head
+        + f"{setup}{_repair_command('repair_timing -hold', platform)}\n"
+        + after_timing
     )
 
 
@@ -1003,8 +1064,9 @@ def _global_route_repair_tcl(
     gr: GlobalRoute = GlobalRoute(),
     timing: bool = False,
     platform=None,
+    after_timing: str = "",
 ) -> str:
-    """Return the repair on global-route parasitics, as ORFS runs it, or `""` when the platform and run leave it off. Each repair command takes `platform`'s repair options (`_repair_command`). A probe skips it. With `timing` (checkpoints armed) the repair starts by timing the router's result, the stage's `before_repair` event.
+    """Return the repair on global-route parasitics, as ORFS runs it, or `""` when the platform and run leave it off. Each repair command takes `platform`'s repair options (`_repair_command`). A probe skips it. With `timing` (checkpoints armed) the repair starts by timing the router's result, the stage's `before_repair` event. `after_timing` (`_after_timing_repair_block`) follows its `repair_timing` calls, before legalization.
 
     The global-route estimate includes the wires that post-CTS repair (on placement parasitics) could not see. The resizer reroutes the nets it changes; the cells it adds are legalized, then `reroute: incremental` reroutes their nets incrementally and `full` runs the flow's global route again. The closing route is `-verbose`, so the log repeats the congestion table after the repair. `dpl_options` follows its `detailed_placement`, as it does the flow's others.
 
@@ -1023,6 +1085,7 @@ def _global_route_repair_tcl(
             "estimate_parasitics -global_routing\n"
             + _repair_command("repair_timing -hold", platform)
             + "\n"
+            + after_timing
             + _start_incremental_cmd(gr)
             + f"detailed_placement{dpl_options}\n"
             + _end_incremental_cmd(gr)
@@ -1038,6 +1101,7 @@ def _global_route_repair_tcl(
         ps_per_unit,
         legalize,
         platform,
+        after_timing=after_timing,
     )
     head = (
         before + f'puts ">>> {title} (reroute {repair.reroute.value})"\n'
@@ -1952,11 +2016,11 @@ def _session_events(run_dir: str | None, since: int | None = None) -> list[dict]
     return events[begins[-1] :] if begins else events
 
 
-def _stage_end_hook_failed(run_dir: str, since: int) -> bool:
-    """Whether a `stage-end` hook failed in the session whose progress events start at index `since` of `run_dir`'s."""
+def _round_hook_failed(run_dir: str, since: int) -> bool:
+    """Whether a `stage-end` or `after-timing-repair` hook failed in the session whose progress events start at index `since` of `run_dir`'s."""
     return any(
         e.get("event") == "hook_end"
-        and e.get("point") == "stage-end"
+        and e.get("point") in ("stage-end", "after-timing-repair")
         and e.get("status") == "error"
         for e in _session_events(run_dir, since)
     )
@@ -2493,7 +2557,7 @@ def run_post_route_repair(
 
     Rounds count those violators only on a run that gates on electrical violators (`gate_electrical` in the plan) or sets `electrical-repair`; a gated run's stop reason also names the kept round's violators. With `electrical-repair` (`electrical` in the plan) one more round runs after the others when the best round has such violators: rb links the best round's checkpoint and SPEF as `POST_ROUTE_ELECTRICAL_SOURCE`, and the round's `repair_design` runs on them. It is timed and compared as any round; `electrical_round` in the done event says whether it was kept, not kept, skipped or failed, and why. When the round is kept, `unseen` lists the violators its extraction found within limits on the placement estimate (`_unseen_tcl`), which rb also warns about.
 
-    A failed session of round k from 1 is set aside: rb warns, notes it after the session's part of the log, whose `[ERROR` lines then do not fail the run (`_error_lines`), and the stage keeps the best round. A repair session whose `stage-end` hook failed fails the stage instead. Round 0's extraction failing fails the stage, as does a failed stage report: a `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint the stage kept.
+    A failed session of round k from 1 is set aside: rb warns, notes it after the session's part of the log, whose `[ERROR` lines then do not fail the run (`_error_lines`), and the stage keeps the best round. A repair session whose `stage-end` or `after-timing-repair` hook failed fails the stage instead. Round 0's extraction failing fails the stage, as does a failed stage report: a `--stop-after post_route_repair` run ends with a session that reports timing on the extracted checkpoint the stage kept.
     """
     plan = json.loads(Path(run_dir, POST_ROUTE_PLAN).read_text())
     stage = _checkpoint_name(POST_ROUTE_REPAIR_STAGE)
@@ -2626,16 +2690,16 @@ def run_post_route_repair(
         pnr_checkpoints.record_event(run_dir, "post_route_round_failed", **fields)
         return "session_failed", f"round {round_}'s {kind} session failed: {failure}"
 
-    # A failed `stage-end` hook fails the stage instead of setting its round aside.
+    # A failed `stage-end` or `after-timing-repair` hook fails the stage instead of setting its round aside.
     hook_failed: list[PostRouteOutcome] = []
 
     def _repair(round_: int, script: str, label: str):
-        """Run round `round_`'s repair session; return its checkpoint files, or None after setting it aside, and the stop a set-aside round gives. A session whose `stage-end` hook failed returns None twice and leaves the stage's outcome in `hook_failed`."""
+        """Run round `round_`'s repair session; return its checkpoint files, or None after setting it aside, and the stop a set-aside round gives. A session whose `stage-end` or `after-timing-repair` hook failed returns None twice and leaves the stage's outcome in `hook_failed`."""
         since = len(pnr_checkpoints.read_progress(run_dir))
         code, stderr, problem, failure, section = _run(
             script, label, f"{_ROUND_DONE_MARKER}{round_} repair"
         )
-        if failure is not None and _stage_end_hook_failed(run_dir, since):
+        if failure is not None and _round_hook_failed(run_dir, since):
             hook_failed.append(_outcome(code, stderr, problem))
             return None, None
         if failure is None:
@@ -3682,7 +3746,12 @@ class OpenRoadPnr:
                 if self.pnr_cfg.get_harden()
                 else ""
             ),
-            "post_cts_repair": _post_cts_repair_tcl(platform, self._mode),
+            "post_cts_repair": _post_cts_repair_tcl(
+                platform,
+                self._mode,
+                self._ps_per_unit,
+                _after_timing_repair_block(hooks, "post_cts"),
+            ),
             "floorplan_setup_repair": _floorplan_setup_repair_tcl(platform, self._mode),
             "place_repair_design_options": (
                 platform.get_placement_repair_design().options()
@@ -3712,6 +3781,7 @@ class OpenRoadPnr:
                 platform.get_global_route(),
                 timing=self._arms_checkpoints(),
                 platform=platform,
+                after_timing=_after_timing_repair_block(hooks, "global_route"),
             ),
             "gp_blockages_create": gp_blocks.create,
             "gp_blockages_destroy": gp_blocks.destroy,
@@ -4032,7 +4102,7 @@ class OpenRoadPnr:
         )
 
     def _post_route_repair_script(self, round_: int, run_dir: str) -> str:
-        """Round `round_`'s repair session, bound to `run_dir`: repair round `round_ - 1`'s database on its SPEF, legalize inside an incremental global route, connect the supply pins of the cells the repair added, run the `before-detailed-route` hooks and connect again, route in detail, repair antennas as the flow does after its detailed route (`_round_antenna_repair_tcl`), run the `stage-end` hooks and write the stage's checkpoint, which keeps the round's `drt_antennas.rpt`.
+        """Round `round_`'s repair session, bound to `run_dir`: repair round `round_ - 1`'s database on its SPEF, with the `after-timing-repair` hooks after its `repair_timing` calls, legalize inside an incremental global route, connect the supply pins of the cells the repair added, run the `before-detailed-route` hooks and connect again, route in detail, repair antennas as the flow does after its detailed route (`_round_antenna_repair_tcl`), run the `stage-end` hooks and write the stage's checkpoint, which keeps the round's `drt_antennas.rpt`.
 
         The rounds work on the unfilled database; `finish` fills after the last. Each round starts with `remove_fillers`, which removes every CORE_SPACER instance that is not LOCKED, spacers a hook placed included. A repair in the session that routed fails detailed routing (DRT-0218), so each round is a fresh session that reads the routed database.
 
@@ -4047,6 +4117,9 @@ class OpenRoadPnr:
         setup, hold = repair.margins(round_)
         title = self._round_title(round_)
         gr = self._platform.get_global_route()
+        after_timing = _after_timing_repair_block(
+            self.pnr_cfg.get_hooks(), "post_route", round_
+        )
         if round_ == self._electrical_round():
             # Only `repair_design`, on the best round's database (`run_post_route_repair`).
             design = repair.electrical_design()
@@ -4082,12 +4155,20 @@ class OpenRoadPnr:
                     self._ps_per_unit,
                     legalize,
                     self._platform,
+                    after_timing=after_timing,
                 ),
                 legalize,
             ]
         else:
             steps = _repair_steps_tcl(
-                title, design, setup, hold, self._ps_per_unit, None, self._platform
+                title,
+                design,
+                setup,
+                hold,
+                self._ps_per_unit,
+                None,
+                self._platform,
+                after_timing=after_timing,
             )
             parts += [
                 files(_TEMPLATE_PACKAGE).joinpath(_ECO_REPAIR_FILE).read_text(),
@@ -7148,6 +7229,7 @@ class OpenRoadPnr:
             platform = platform.with_run_repairs(
                 self.pnr_cfg.global_route_repair,
                 self.pnr_cfg.post_route_repair,
+                self.pnr_cfg.post_cts_repair,
                 self.pnr_cfg.get_name(),
             )
             platform.get_global_route_repair()

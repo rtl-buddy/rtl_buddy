@@ -409,6 +409,18 @@ global-route:
 
 `allow-congestion` is for diagnosis: global route keeps its overflow and the flow goes on to detailed route. The result is a `PASS` qualified `global-route.allow-congestion (diagnosis only)` with `allow_congestion: true` and `global_route_overflow`, never a clean pass. Such a run cannot be `harden: true`.
 
+## Repair timing after CTS
+
+After CTS the flow repairs setup, unless `post-cts-setup-repair` is false, then hold, on placement parasitics. `post-cts-repair` sets the margins of that repair, in ns:
+
+```yaml
+    post-cts-repair:
+      setup-margin: 0.05
+      hold-margin: 0.01
+```
+
+`setup-margin` goes to `repair_timing -setup`, and `hold-margin` and a set `setup-margin` go to `repair_timing -hold`, as in the repairs after routing and in ORFS. Unset or 0, a margin is not passed, as OpenROAD's default is 0. The setup margin keeps that much setup slack, on placement parasitics, on the paths the hold repair delays: set it when the hold buffers the post-CTS repair inserts leave setup-critical paths failing after routing, since later repairs do not remove them. With `post-cts-setup-repair: false` the setup repair does not run, and a `setup-margin` still goes to the hold repair. A run's block overrides the platform's field by field, and `null` clears the margins. A probe skips the post-CTS repair.
+
 ## Repair timing after routing
 
 Post-CTS repair times the design on placement estimates. Two blocks, on the platform or the run, repair again on routed parasitics. When neither the platform nor the run writes `global-route-repair` or `global-route-hold-repair`, the repair after global route runs as ORFS runs it: `repair_design`, then setup and hold repair with no margin, `{repair-design: {}, setup-margin: 0, hold-margin: 0}`. `post-route-repair` runs only when set. Both cost run time and change QoR.
@@ -590,6 +602,7 @@ A macro grid in the `pdn-config` with a `-halo` needs the standard-cell rows cut
 | `before-cts` | After legalization, `improve_placement`, `optimize_mirroring` and the `placement.macro-pin-limits` step, before `repair_clock_inverters` and `clock_tree_synthesis`. The `cts-dont-use-cells` are not yet excluded. |
 | `before-repair-clock-nets` | Right after `clock_tree_synthesis`, before `cts-repair-clock-nets` runs `repair_clock_nets`. The `cts-dont-use-cells` are still excluded. |
 | `after-cts` | After CTS and any `repair_clock_nets`, before setup and hold repair |
+| `after-timing-repair` | Right after the `repair_timing` calls of the post-CTS repair, the global-route repair and each post-route repair round, on the parasitics they repaired on and before the legalization that follows them. `$rb_repair` names the repair: `post_cts`, `global_route` or `post_route`; in a post-route round `$rb_repair_round` is the round's number. In an `eco` round it runs inside the round's incremental global route, before `repair-design.after-timing`'s `repair_design`. Not after the floorplan setup repair, and not where a repair is skipped or runs no `repair_timing`: a probe, a `global-route-repair` or `post-route-repair` without a margin, and the electrical round |
 | `after-cts-repair` | After post-CTS setup and hold repair and their legalization |
 | `after-global-route` | After `global_route`, before global-route repair |
 | `after-global-route-repair` | After global-route repair, before the antenna repair, in the `global_route` stage, so also in a probe |
@@ -599,9 +612,9 @@ A macro grid in the `pdn-config` with a `-halo` needs the standard-cell rows cut
 | `after-reports` | After the final reports, on their parasitics, before rb writes the routed outputs |
 | `stage-end` | At the end of every stage, before its checkpoint, with `$rb_stage` naming the stage and `$rb_mode` the run's `mode` (`closure` or `probe`). In post-route repair, at the end of each repair round, including the electrical round; when round 0 stops the rounds, the stage keeps the detailed route and runs none. |
 
-Hooks run at Tcl global scope in `artefacts/<run>/`, with `$OUT_DIR` and `$DESIGN` set. A Tcl error, `exit` or stray `return` in a hook fails the run naming the point and file; a `stage-end` hook's error also names the stage, and fails the run in a post-route repair round too, where other failures only set the round aside. Results come from the final reports, so a report a hook prints before or after them does not change them. Hook files are inputs of checkpoints and hardened abstracts. On a multi-corner platform an SDC command in a hook constrains the primary corner only; see [Sign off at several corners](#sign-off-at-several-corners).
+Hooks run at Tcl global scope in `artefacts/<run>/`, with `$OUT_DIR` and `$DESIGN` set. A Tcl error, `exit` or stray `return` in a hook fails the run naming the point and file; a `stage-end` hook's error also names the stage. A `stage-end` or `after-timing-repair` hook's error fails the run in a post-route repair round too, where other failures only set the round aside. Results come from the final reports, so a report a hook prints before or after them does not change them. Hook files are inputs of checkpoints and hardened abstracts. On a multi-corner platform an SDC command in a hook constrains the primary corner only; see [Sign off at several corners](#sign-off-at-several-corners).
 
-Each point belongs to the stage it runs in, `before-cts` to `cts`: a staged run runs it in that stage's session where a one-session run runs it, and `--resume` from that stage runs it again.
+Each point belongs to the stage it runs in, `before-cts` to `cts`: a staged run runs it in that stage's session where a one-session run runs it, and `--resume` from that stage runs it again. `after-timing-repair` runs in `cts`, `global_route` and each post-route repair round, and belongs to `cts`: a `--resume` from a later stage is refused when its files changed.
 
 Every later `read_spef` of a SPEF reads what the `after-extraction` hooks left: the next post-route repair round's, the final reports' and `rb power`'s. A multi-corner platform writes one SPEF and reads it once per corner, so one edit covers every corner.
 
