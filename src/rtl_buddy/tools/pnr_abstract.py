@@ -722,7 +722,7 @@ def write_manifest(
         "outputs": outputs,
         **({"blocks": [b.manifest_entry() for b in blocks]} if blocks else {}),
         **(
-            {"accepted_changes": pnr_checkpoints._relativise(accepted_changes, root)}
+            {"accepted_changes": pnr_checkpoints.relativise(accepted_changes, root)}
             if accepted_changes
             else {}
         ),

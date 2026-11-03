@@ -382,7 +382,7 @@ def stage_end(
         returncode=returncode,
         **resources,
         **fields,
-        **({"checkpoint": _relativise(checkpoint, root)} if checkpoint else {}),
+        **({"checkpoint": relativise(checkpoint, root)} if checkpoint else {}),
     )
 
 
@@ -694,9 +694,9 @@ def begin_run(
             }
             for stage in stages
         },
-        "inputs": _relativise(inputs, root),
+        "inputs": relativise(inputs, root),
         **{
-            key: _relativise(staged[key], root)
+            key: relativise(staged[key], root)
             for key in (
                 "staged",
                 "stop_after",
@@ -709,7 +709,7 @@ def begin_run(
         },
         # Set by `finish_run`; stays None if rb itself is killed.
         "outcome": None,
-        "checkpoints": _relativise(staged.get("inherited_checkpoints") or {}, root),
+        "checkpoints": relativise(staged.get("inherited_checkpoints") or {}, root),
         "resources": {},
     }
     _write_manifest(run_dir, document)
@@ -731,14 +731,15 @@ def begin_run(
     return os.path.join(run_dir, MANIFEST_NAME)
 
 
-def _relativise(value, root):
+def relativise(value, root):
+    """`value` with each `path` entry project-relative under `root`."""
     if isinstance(value, dict):
         return {
-            k: (_rel(v, root) if k == "path" else _relativise(v, root))
+            k: (_rel(v, root) if k == "path" else relativise(v, root))
             for k, v in value.items()
         }
     if isinstance(value, list):
-        return [_relativise(v, root) for v in value]
+        return [relativise(v, root) for v in value]
     return value
 
 

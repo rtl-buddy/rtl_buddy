@@ -12085,9 +12085,9 @@ class RtlBuddy:
                     "let a --resume go ahead although CHANGE, a difference its "
                     "refusal names, differs from the resumed run: script:STAGE "
                     "for a stage script, script for every stage script, or an "
-                    "input file's path, relative to the pnr.yaml or absolute. "
-                    "Repeatable. The run records each accepted change; a value "
-                    "that names no difference refuses the resume"
+                    "input file's path. Repeatable. The run records each "
+                    "accepted change; a value that names no difference refuses "
+                    "the resume"
                 ),
             ),
         ] = None,
@@ -12182,6 +12182,7 @@ class RtlBuddy:
                 ),
                 resume_from=resume_from,
                 accept_changes=tuple(accept_changes or ()),
+                invocation_dir=str(self.invocation_cwd),
                 dispatch=backend,
                 run_tag=self._run_tag,
                 tag_inputs=tag_inputs,
@@ -12308,6 +12309,7 @@ class RtlBuddy:
         resume: str | None = None,
         resume_from: str | None = None,
         accept_changes: tuple[str, ...] = (),
+        invocation_dir: str | None = None,
         dispatch=None,
         run_tag: str | None = None,
         tag_inputs=None,
@@ -12315,10 +12317,16 @@ class RtlBuddy:
     ):
         """Run the planned P&R runs of `suite_cfg`; `plan` is `_pnr_plan`'s result when the caller built it already."""
         suite_path = suite_cfg.get_path()
-        if stop_after is not None or resume is not None or resume_from is not None:
+        if (
+            stop_after is not None
+            or resume is not None
+            or resume_from is not None
+            or accept_changes
+        ):
             if pnr_name is None:
                 raise FatalRtlBuddyError(
-                    "--stop-after, --resume and --from need a single named pnr run"
+                    "--stop-after, --resume, --from and --accept-change need a "
+                    "single named pnr run"
                 )
             problem = pnr_stages.option_error(
                 stop_after, resume, resume_from, accept_changes
@@ -12389,6 +12397,7 @@ class RtlBuddy:
                 resume=resume,
                 resume_from=resume_from,
                 accept_changes=accept_changes,
+                invocation_dir=invocation_dir,
                 dispatch=dispatch,
                 run_tag=run_tag,
                 tag_inputs=tag_inputs,
@@ -12434,6 +12443,7 @@ class RtlBuddy:
         resume=None,
         resume_from=None,
         accept_changes=(),
+        invocation_dir=None,
         dispatch=None,
         run_tag=None,
         tag_inputs=None,
@@ -12541,6 +12551,7 @@ class RtlBuddy:
             resume=resume,
             resume_from=resume_from,
             accept_changes=accept_changes,
+            invocation_dir=invocation_dir,
             dispatch=dispatch,
             run_tag=run_tag,
             tag_inputs=tag_inputs,

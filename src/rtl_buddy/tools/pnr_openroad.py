@@ -3178,6 +3178,7 @@ class OpenRoadPnr:
         resume: str | None = None,
         resume_from: str | None = None,
         accept_changes: tuple[str, ...] = (),
+        invocation_dir: str | None = None,
         dispatch=None,
         run_tag: str | None = None,
         tag_inputs: pnr_tag_inputs.TagInputs | None = None,
@@ -3202,8 +3203,9 @@ class OpenRoadPnr:
         # `--resume` and `--from`: the run to resume (a run id or directory) and the first stage to run.
         self.resume = resume
         self.resume_from = resume_from
-        # `--accept-change`: the differences from a fresh run the resume accepts.
+        # `--accept-change`: the differences from a fresh run the resume accepts, input files named relative to `invocation_dir`.
         self.accept_changes = tuple(accept_changes)
+        self.invocation_dir = invocation_dir or os.getcwd()
         # `--dispatch`: the backend that runs each stage as a job, or None to run here.
         self._dispatch = dispatch
         # Why submitting or waiting on the stage jobs failed; the scheduler's account of a failed stage job.
@@ -6500,7 +6502,7 @@ class OpenRoadPnr:
             inputs=inputs,
             fingerprint=_file_fingerprint,
             accept=self.accept_changes,
-            base_dir=self.suite_dir,
+            base_dir=self.invocation_dir,
         )
         if isinstance(checked, str):
             return checked
