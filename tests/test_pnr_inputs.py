@@ -294,7 +294,7 @@ def test_resume_refuses_an_input_added_since_the_checkpoints(tmp_path, monkeypat
     res = backend.run()
 
     assert res.results["fail_stage"] == "resume"
-    assert "input extra_inputs differs" in res.results["desc"]
+    assert "input extra_inputs is newly configured" in res.results["desc"]
 
 
 def test_resume_refuses_an_input_moved_to_a_same_bytes_file(tmp_path, monkeypatch):
@@ -314,7 +314,7 @@ def test_resume_refuses_an_input_moved_to_a_same_bytes_file(tmp_path, monkeypatc
 
     assert res.results["fail_stage"] == "resume"
     desc = res.results["desc"]
-    assert "input extra_inputs differs" in desc
+    assert "input extra_inputs lists other files" in desc
     assert "other/window.tcl" in desc
 
 
