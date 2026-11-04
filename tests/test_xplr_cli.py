@@ -529,8 +529,19 @@ def test_xplr_root_option_works_from_unrelated_cwd(
     assert not (elsewhere / "artefacts").exists()
 
 
+@pytest.fixture
+def missing_project_root(monkeypatch):
+    from rtl_buddy import rtl_buddy as cli_module
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    def missing(*, start_dir=None):
+        raise FatalRtlBuddyError(f"cannot locate project root above {start_dir}")
+
+    monkeypatch.setattr(cli_module, "discover_project_root", missing)
+
+
 def test_xplr_root_option_bad_root_exits_2(
-    minimal_project: Path, monkeypatch, capsys, tmp_path: Path
+    minimal_project: Path, monkeypatch, capsys, tmp_path: Path, missing_project_root
 ):
     no_project = tmp_path / "no_project"
     no_project.mkdir()
@@ -557,7 +568,7 @@ def test_xplr_root_option_bad_root_exits_2(
 
 
 def test_xplr_outside_project_error_mentions_root_flag(
-    monkeypatch, capsys, tmp_path: Path
+    monkeypatch, capsys, tmp_path: Path, missing_project_root
 ):
     nowhere = tmp_path / "nowhere"
     nowhere.mkdir()

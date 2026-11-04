@@ -8,10 +8,10 @@ on:
       - 'pyproject.toml'
       - 'uv.lock'
       - 'pytest.ini'
-      - 'src/**/*.py'
-      - 'src/**/*.tcl'
-      - 'src/**/*.template'
-      - 'tests/**/*.py'
+      - 'src/rtl_buddy/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'docs/**'
   # No `branches:` filter: stacked PRs target their predecessor branch, and a
   # filter would skip their checks.
   pull_request:
@@ -20,14 +20,15 @@ on:
       - 'pyproject.toml'
       - 'uv.lock'
       - 'pytest.ini'
-      - 'src/**/*.py'
-      - 'src/**/*.tcl'
-      - 'src/**/*.template'
-      - 'tests/**/*.py'
+      - 'src/rtl_buddy/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'docs/**'
 
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 
@@ -47,12 +48,19 @@ jobs:
         run: uv run --managed-python --python 3.12 python -c "from rtl_buddy.tool_manifest import constraint_reader_description as d; print('constraint reader:', d())"
 
       - name: Run pytest with coverage
-        run: uv run --managed-python --python 3.12 pytest --cov --cov-report=term-missing --cov-report=xml
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/rtl-buddy.coverage
+        run: |
+          uv run --managed-python --python 3.12 pytest --cov --cov-report=term-missing --cov-report=xml --durations=25 --junitxml=pytest-results.xml
+          uv run --managed-python --python 3.12 coverage report --include='*/elab_worker.py' --fail-under=80
+          uv run --managed-python --python 3.12 coverage report --include='*/constraints/tcl_worker.py' --fail-under=80
 
-      - name: Upload coverage XML
+      - name: Upload coverage and test results
         if: always()
         uses: actions/upload-artifact@v6
         with:
           name: coverage-xml
-          path: coverage.xml
+          path: |
+            coverage.xml
+            pytest-results.xml
           if-no-files-found: warn

@@ -2,6 +2,8 @@ import json
 import subprocess
 import sys
 
+from cli_helpers import run_cli
+
 from rtl_buddy.docs_access import (
     _extract_frontmatter,
     _extract_section_content,
@@ -89,13 +91,14 @@ def test_get_section_unknown_page_returns_none():
     assert get_section("does-not-exist", "some-anchor") is None
 
 
-def test_docs_list_machine_output():
+def test_docs_list_machine_output(tmp_path):
     result = subprocess.run(
         [sys.executable, "-m", "rtl_buddy", "--machine", "docs", "list"],
-        cwd="/tmp",
+        cwd=tmp_path,
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
 
     assert result.returncode == 0
@@ -110,14 +113,8 @@ def test_docs_list_machine_output():
     )
 
 
-def test_docs_show_machine_output():
-    result = subprocess.run(
-        [sys.executable, "-m", "rtl_buddy", "--machine", "docs", "show", "agents"],
-        cwd="/tmp",
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def test_docs_show_machine_output(tmp_path):
+    result = run_cli("--machine", "docs", "show", "agents", cwd=tmp_path)
 
     assert result.returncode == 0
     payload = json.loads(result.stdout)
@@ -130,21 +127,9 @@ def test_docs_show_machine_output():
     assert "# Agent use of rtl-buddy" in payload["content"]
 
 
-def test_docs_show_section_machine_output():
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "rtl_buddy",
-            "--machine",
-            "docs",
-            "show",
-            "agents#local-docs-access",
-        ],
-        cwd="/tmp",
-        capture_output=True,
-        text=True,
-        check=False,
+def test_docs_show_section_machine_output(tmp_path):
+    result = run_cli(
+        "--machine", "docs", "show", "agents#local-docs-access", cwd=tmp_path
     )
 
     assert result.returncode == 0
@@ -155,28 +140,16 @@ def test_docs_show_section_machine_output():
     assert payload["content"].startswith("## Local docs access")
 
 
-def test_docs_show_unknown_slug_is_clean_error():
-    result = subprocess.run(
-        [sys.executable, "-m", "rtl_buddy", "docs", "show", "does-not-exist"],
-        cwd="/tmp",
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def test_docs_show_unknown_slug_is_clean_error(tmp_path):
+    result = run_cli("docs", "show", "does-not-exist", cwd=tmp_path)
 
     assert result.returncode == 1
     assert "Unknown docs page" in result.stderr
     assert "Traceback" not in result.stderr
 
 
-def test_docs_show_unknown_anchor_is_clean_error():
-    result = subprocess.run(
-        [sys.executable, "-m", "rtl_buddy", "docs", "show", "agents#does-not-exist"],
-        cwd="/tmp",
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def test_docs_show_unknown_anchor_is_clean_error(tmp_path):
+    result = run_cli("docs", "show", "agents#does-not-exist", cwd=tmp_path)
 
     assert result.returncode == 1
     assert "Unknown section" in result.stderr

@@ -32,7 +32,7 @@ def test_no_args_shows_help():
     """Bare invocation prints help and exits non-zero (no_args_is_help)."""
     runner, rb = _runner()
     result = runner.invoke(rb.app, [])
-    # The exit code is 0 or 2 depending on the Typer version.
+    assert result.exit_code == 2, result.output
     assert "Usage:" in result.output or "usage:" in result.output.lower()
 
 
