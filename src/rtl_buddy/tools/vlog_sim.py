@@ -376,19 +376,17 @@ def _scrub_stale_build_outputs(build_dir) -> int:
 
 
 def _is_verilation_subdir(path) -> bool:
-    """Whether ``path`` holds a verilation of its own: a ``*__verFiles.dat`` at its top.
+    """Whether ``path`` holds a verilation of its own: a ``*__verFiles.dat`` or
+    ``*_classes.mk`` at its top.
 
-    Never raises.
+    Raises ``OSError`` when ``path`` cannot be listed.
     """
-    try:
-        with os.scandir(path) as scan:
-            return any(
-                entry.name.endswith("__verFiles.dat")
-                and entry.is_file(follow_symlinks=False)
-                for entry in scan
-            )
-    except OSError:
-        return False
+    with os.scandir(path) as scan:
+        return any(
+            entry.name.endswith(("__verFiles.dat", "_classes.mk"))
+            and entry.is_file(follow_symlinks=False)
+            for entry in scan
+        )
 
 
 def _scrub_unfinished_make_outputs(build_dir, executable) -> int:

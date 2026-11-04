@@ -8598,12 +8598,13 @@ def test_prune_unlinks_symlinks_without_following_them_and_continues_after_failu
     )
 
 
+@pytest.mark.parametrize("marker", ["Vblk__verFiles.dat", "Vblk_classes.mk"])
 def test_prune_removes_hierarchical_sub_models_and_keeps_other_subdirectories(
-    tmp_path, monkeypatch, caplog
+    tmp_path, monkeypatch, caplog, marker
 ):
     """A `--hierarchical` sub-model is all Verilator output; other directories are not rtl_buddy's to judge."""
     sub_model = {
-        "Vblk/Vblk__verFiles.dat",
+        f"Vblk/{marker}",
         "Vblk/Vblk.cpp",
         "Vblk/Vblk__ALL.o",
         "Vblk/blk.cpp",
@@ -8635,6 +8636,32 @@ def test_prune_removes_hierarchical_sub_models_and_keeps_other_subdirectories(
         if getattr(r, "rtl_event", None) == "compile.shared_build_pruned"
     )
     assert event.rtl_fields["removed_files"] == len(_PRUNABLE) + len(sub_model)
+
+
+def test_prune_warns_when_a_subdirectory_cannot_be_listed(
+    tmp_path, monkeypatch, caplog
+):
+    _write_source(tmp_path)
+    calls = []
+    _install_prunable_builder(monkeypatch, calls, extra={"Vblk/Vblk_classes.mk"})
+    sim = _make_sim(tmp_path, monkeypatch, test_name="a", shared_build_prune=True)
+    directory = _shared_dir_of(sim)
+    directory.mkdir(parents=True)
+    original_scandir = vlog_sim_module.os.scandir
+
+    def denied(path):
+        if Path(path).name == "Vblk":
+            raise PermissionError("listing denied")
+        return original_scandir(path)
+
+    monkeypatch.setattr(vlog_sim_module.os, "scandir", denied)
+    assert sim.compile() == 0
+    assert (directory / "Vblk" / "Vblk_classes.mk").is_file()
+    assert any(
+        getattr(r, "rtl_event", None) == "compile.shared_build_prune_failed"
+        and r.rtl_fields.get("path", "").endswith("Vblk")
+        for r in caplog.records
+    )
 
 
 def _with_suite_compile_opts(sim, opts_by_family):
