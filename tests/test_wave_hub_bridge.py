@@ -9,6 +9,7 @@ import asyncio
 import threading
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -351,17 +352,16 @@ def test_goto_declaration_becomes_signal_selected(hub_in_thread: _HubInThread):
         bridge.stop()
 
 
-def test_malformed_wcp_event_is_dropped(hub_in_thread: _HubInThread):
-    """A malformed event is dropped without raising."""
-
-    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+def test_malformed_wcp_event_is_dropped():
+    """A malformed event cannot send a frame to the hub or waveform viewer."""
+    sock = Mock()
     listener = _FakeListener()
-    bridge = WaveHubBridge.connect((host, port), listener=listener)
-    try:
-        # No timestamp field.
-        bridge.on_wcp_event("cursor_moved", {})
-    finally:
-        bridge.stop()
+    bridge = WaveHubBridge(sock, listener=listener)
+
+    bridge.on_wcp_event("cursor_moved", {})
+
+    sock.sendall.assert_not_called()
+    assert listener.sent == []
 
 
 # ---------------------------------------------------------------------------

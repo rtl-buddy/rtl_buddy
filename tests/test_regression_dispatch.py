@@ -3606,32 +3606,45 @@ def test_unresolvable_builder_does_not_abort_finished_run(
     )
     _mark_stub_builder_verilator(minimal_project)
 
-    rb = RtlBuddy(name="unknown_builder")
-    from typer.testing import CliRunner
-
-    # Every builder lookup during analysis fails, as if the name were missing from
-    # cfg-rtl-builder.
     import rtl_buddy.config.root as root_mod
 
     orig = root_mod.RootConfig.resolve_rtl_builder_cfg
+    unresolved = []
 
     def flaky(self, name=None):
         if name == "__gone__":
-            from rtl_buddy.errors import FatalRtlBuddyError
-
+            unresolved.append(name)
             raise FatalRtlBuddyError("no such builder")
         return orig(self, name)
 
     monkeypatch.setattr(root_mod.RootConfig, "resolve_rtl_builder_cfg", flaky)
+    analyze = rtl_buddy_module.analyze_suite_reservations
 
-    # Stamp the missing builder onto the collected row via the backend.
-    result = CliRunner().invoke(
-        rb.app,
-        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"],
+    def analyze_missing_builder(rows, **kwargs):
+        completed = [row for row in rows if row["test_name"] == "basic"]
+        assert len(completed) == 1
+        assert completed[0]["results"].results["result"] == "PASS"
+        return analyze([dict(row, builder="__gone__") for row in rows], **kwargs)
+
+    monkeypatch.setattr(
+        rtl_buddy_module, "analyze_suite_reservations", analyze_missing_builder
     )
-    # The run completes and reports (exit 0/1 from results), not exit 2.
-    assert result.exit_code in (0, 1), result.output
-    assert '"command": "regression"' in result.output
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert unresolved == ["__gone__"], result.output
+    envelope = json.loads(result.stdout)
+    assert envelope["command"] == "regression"
+    assert {row["name"]: row["result"] for row in envelope["payload"]["results"]} == {
+        "basic": "PASS",
+        "extra": "SKIP",
+    }
+    assert [
+        (advice["resource"], advice["direction"])
+        for advice in envelope["payload"]["reservation_advice"]
+    ] == [("time", "reduce")]
 
 
 def test_jobs_flag_sizes_the_local_parallel_pool(

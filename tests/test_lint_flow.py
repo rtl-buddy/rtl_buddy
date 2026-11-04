@@ -5,6 +5,7 @@ They cover config loading, the runner (model expansion, verible config and exclu
 
 from __future__ import annotations
 
+import json
 import stat
 from pathlib import Path
 
@@ -156,10 +157,24 @@ def test_rb_lint_violations_fail_and_are_counted(minimal_project: Path):
         ),
     )
     runner, rb = _runner()
-    result = runner.invoke(rb.app, ["lint", "-c", "lint/lint.yaml"])
-    assert result.exit_code == 1
-    # Findings come back on stderr and are still counted.
-    assert "2" in result.output  # violations column
+    result = runner.invoke(rb.app, ["--machine", "lint", "-c", "lint/lint.yaml"])
+    assert result.exit_code == 1, result.output
+    results = json.loads(result.stdout)["payload"]["results"]
+    assert len(results) == 1
+    assert results[0]["name"] == "bad_style"
+    assert results[0]["result"] == "FAIL"
+    assert results[0]["violations"] == 2
+
+    human = runner.invoke(rb.app, ["lint", "-c", "lint/lint.yaml"], terminal_width=200)
+    assert human.exit_code == 1, human.output
+    assert "Violations" in human.output
+    (row,) = [
+        line
+        for line in human.output.splitlines()
+        if "bad_style" in line and "│" in line
+    ]
+    cells = [cell.strip() for cell in row.split("│")[1:-1]]
+    assert [cells[0], cells[1], *cells[3:]] == ["bad_style", "FAIL", "2", "1", "0"]
 
 
 def test_rb_lint_excludes_filter_expansion(minimal_project: Path):
@@ -190,6 +205,7 @@ def test_rb_lint_excludes_filter_expansion(minimal_project: Path):
         minimal_project / "lint" / "artefacts" / "mixed_style" / "lint.f"
     ).read_text()
     assert "gen_csr_pkg.sv" not in listing
+    assert listing.splitlines() == ["../src/example.sv"]
 
 
 def test_rb_lint_xfail_turns_fail_into_pass(minimal_project: Path):

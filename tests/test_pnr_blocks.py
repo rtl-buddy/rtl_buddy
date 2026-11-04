@@ -509,6 +509,7 @@ def test_every_kind_of_change_makes_a_block_stale(tmp_path, mutate, expected):
 
 def test_a_per_corner_sdc_edit_makes_a_block_stale(tmp_path):
     """A single-corner block with `constraints: {typ: blk.sdc}` records the SDC's digest, so editing it is a change."""
+    (tmp_path / "root_config.yaml").write_text("rtl-buddy-filetype: root_config\n")
     suite = _block_suite(tmp_path)
     abstract = tmp_path / "blk/artefacts/blk_pnr/abstract"
     old = json.loads((abstract / "abstract.manifest.json").read_text())
@@ -526,6 +527,7 @@ def test_a_per_corner_sdc_edit_makes_a_block_stale(tmp_path):
         config={k: v for k, v in old["config"].items() if k != "sha256"},
     )
     written = json.loads((abstract / "abstract.manifest.json").read_text())
+    assert written["inputs"]["sdc"]["typ"]["path"] == "blk/blk.sdc"
     assert written["inputs"]["sdc"]["typ"]["sha256"] == _sha("create_clock\n")
     root_cfg = MagicMock()
     root_cfg.get_pnr_platform_cfg.return_value = _block_platform(tmp_path)
@@ -534,7 +536,7 @@ def test_a_per_corner_sdc_edit_makes_a_block_stale(tmp_path):
 
     sdc.write_text("create_clock -period 5\n")
 
-    assert pnr_abstract.block_changes(block, root_cfg) == [f"sdc {sdc} changed"]
+    assert pnr_abstract.block_changes(block, root_cfg) == ["sdc blk/blk.sdc changed"]
 
 
 def test_a_block_hardened_by_an_earlier_flow_generation_is_stale(tmp_path, monkeypatch):

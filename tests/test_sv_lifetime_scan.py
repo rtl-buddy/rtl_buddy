@@ -1124,42 +1124,36 @@ def _include_chain(tmp_path, length, *, leaf_body):
     return str(tmp_path / "f0.sv")
 
 
-def test_a_deep_acyclic_include_chain_is_followed(tmp_path):
-    """The leaf of a long include chain is scanned."""
-    top = _include_chain(
-        tmp_path, 60, leaf_body="function int deep; return 1; endfunction\n"
-    )
-    findings = scan_files([str(top)])
-    assert [f.name for f in findings] == ["deep"]
-    assert findings[0].path.endswith("f60.svh")
-
-
-def test_a_600_deep_include_chain_does_not_exhaust_the_python_stack(tmp_path):
-    """A 600-deep include chain raises a structured fatal error, not RecursionError."""
-    top = _include_chain(
-        tmp_path, 600, leaf_body="function int deep; return 1; endfunction\n"
-    )
-    findings = scan_files([str(top)])
-    assert [f.name for f in findings] == ["deep"]
-    assert findings[0].path.endswith("f600.svh")
-
-
-def test_the_advertised_include_depth_is_the_one_that_fires(tmp_path):
-    """At `MAX_INCLUDE_DEPTH` the leaf is still scanned; one level deeper raises the structured fatal error."""
-    from rtl_buddy.errors import FatalRtlBuddyError
+@pytest.fixture(scope="module")
+def include_depth_chain(tmp_path_factory):
     from rtl_buddy.tools import sv_lifetime_scan
 
     depth = sv_lifetime_scan.MAX_INCLUDE_DEPTH
-    at_cap = _include_chain(
-        tmp_path / "at_cap",
+    assert depth >= 600, "the scanner supports at least 600 nested includes"
+    directory = tmp_path_factory.mktemp("include_depth")
+    top = _include_chain(
+        directory,
         depth,
         leaf_body="function int deep; return 1; endfunction\n",
     )
-    assert [f.name for f in scan_files([str(at_cap)])] == ["deep"]
+    return top, str(directory / f"f{depth}.svh")
 
-    over = _include_chain(tmp_path / "over", depth + 1, leaf_body="// nothing\n")
+
+def test_at_the_advertised_include_depth_the_leaf_is_scanned(include_depth_chain):
+    top, leaf = include_depth_chain
+    findings = scan_files([top])
+    assert [f.name for f in findings] == ["deep"]
+    assert findings[0].path == leaf
+
+
+def test_above_the_advertised_include_depth_is_fatal(tmp_path, include_depth_chain):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    top, _ = include_depth_chain
+    wrapper = tmp_path / "over_limit.sv"
+    wrapper.write_text(f'`include "{top}"\n')
     with pytest.raises(FatalRtlBuddyError, match="include nesting deeper than"):
-        scan_files([str(over)])
+        scan_files([str(wrapper)])
 
 
 def test_exceeding_the_include_depth_raises_instead_of_dropping(tmp_path):

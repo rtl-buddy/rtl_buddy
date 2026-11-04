@@ -2851,21 +2851,24 @@ def test_cli_envelope_and_summary_report_opted_out_models(
 # End to end against the real viewer
 
 
-def _real_view_supports_graph() -> bool:
+@pytest.fixture
+def installed_graph_viewer():
     exe = shutil.which("rtl-buddy-view")
     if exe is None:
-        return False
-    probe = subprocess.run(
-        [exe, "graph", "--help"], capture_output=True, text=True, timeout=60
-    )
-    return probe.returncode == 0
+        pytest.skip("rtl-buddy-view is not installed")
+    try:
+        probe = subprocess.run(
+            [exe, "graph", "--help"], capture_output=True, text=True, timeout=60
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        pytest.skip(f"rtl-buddy-view capability probe failed: {exc}")
+    if probe.returncode != 0:
+        pytest.skip("installed rtl-buddy-view does not support the `graph` verb")
 
 
-@pytest.mark.skipif(
-    not _real_view_supports_graph(),
-    reason="rtl-buddy-view with the `graph` verb is not installed",
-)
-def test_end_to_end_with_the_installed_viewer(graph_project: Path):
+def test_end_to_end_with_the_installed_viewer(
+    graph_project: Path, installed_graph_viewer
+):
     build = build_graph(graph_project, extract_enabled=False)
     assert not build.failed_tiers(), build.tiers
     graph = json.loads(build.graph_path.read_text())

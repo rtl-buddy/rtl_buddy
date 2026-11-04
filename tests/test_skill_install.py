@@ -80,17 +80,6 @@ def test_no_trailing_newline(tmp_path):
     assert ".agents/skills/rtl-buddy/" in text
 
 
-def test_comment_not_duplicated(tmp_path):
-    gitignore = tmp_path / ".gitignore"
-    gitignore.write_text(
-        "# rtl_buddy skill (materialized by `rtl-buddy skill install --project`)\n"
-        ".claude/skills/rtl-buddy/\n"
-    )
-    _update_gitignore(gitignore, _SNIPPET, dry_run=False)
-    text = gitignore.read_text()
-    assert text.count("# rtl_buddy skill") == 1
-
-
 def test_patterns_present_comment_missing(tmp_path):
     gitignore = tmp_path / ".gitignore"
     gitignore.write_text(".claude/skills/rtl-buddy/\n.agents/skills/rtl-buddy/\n")

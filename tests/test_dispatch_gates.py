@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-import threading
-import time
+from types import SimpleNamespace
 
+from rtl_buddy.dispatch import gates
 from rtl_buddy.dispatch.gates import (
     GATES_SCHEMA_VERSION,
     load_gates,
@@ -62,44 +62,48 @@ def test_a_damaged_or_foreign_manifest_is_declined(tmp_path):
     assert load_gates(shapeless)[0] is None
 
 
-def test_wait_returns_a_manifest_that_arrives_late(tmp_path):
+def test_wait_returns_a_manifest_that_arrives_late(tmp_path, monkeypatch):
     """A manifest that is absent at the first release means the head is still
     submitting.
     """
     path = tmp_path / "gates-9.json"
+    slept = []
+    now = 100.0
+    monkeypatch.setattr(gates, "time", SimpleNamespace(monotonic=lambda: now))
 
-    def _write_later():
-        time.sleep(0.15)
+    def _write_later(seconds):
+        nonlocal now
+        slept.append(seconds)
+        now += seconds
         write_gates(path, run_token="tok", entries=_entries())
 
-    writer = threading.Thread(target=_write_later)
-    writer.start()
-    try:
-        payload, reason = wait_for_gates(
-            path, run_token="tok", timeout_s=5.0, interval_s=0.02
-        )
-    finally:
-        writer.join()
+    payload, reason = wait_for_gates(
+        path, run_token="tok", timeout_s=5.0, interval_s=0.02, sleep=_write_later
+    )
     assert reason is None
     assert payload["run_token"] == "tok"
+    assert slept == [0.02]
 
 
-def test_wait_gives_up_bounded_when_the_head_never_writes(tmp_path):
+def test_wait_gives_up_bounded_when_the_head_never_writes(tmp_path, monkeypatch):
     """A head that died mid-submit costs the build job only the wait."""
     slept = []
+    now = 100.0
+    monkeypatch.setattr(gates, "time", SimpleNamespace(monotonic=lambda: now))
 
     def _sleep(seconds):
+        nonlocal now
         slept.append(seconds)
-        time.sleep(seconds)
+        now += seconds
 
     payload, reason = wait_for_gates(
-        tmp_path / "never.json", timeout_s=0.05, interval_s=0.01, sleep=_sleep
+        tmp_path / "never.json", timeout_s=2.5, interval_s=1.0, sleep=_sleep
     )
     assert payload is None
     assert "not written" in reason
     # The last wait is trimmed to the deadline.
-    assert slept and all(nap <= 0.01 for nap in slept)
-    assert sum(slept) <= 0.05
+    assert slept == [1.0, 1.0, 0.5]
+    assert now == 102.5
 
 
 def test_a_manifest_from_an_earlier_run_is_rejected_immediately(tmp_path):

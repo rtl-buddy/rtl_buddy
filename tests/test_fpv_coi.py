@@ -28,6 +28,21 @@ def test_build_yosys_script_emits_total_and_selected_markers():
     assert "select -set property_cells t:$assert" in script
     assert "@property_cells %ci*" in script
 
+    assert "=== RTL_BUDDY_ASSUMES_TOTAL ===" in script
+    assert "=== RTL_BUDDY_ASSUMES_IN_COI ===" in script
+    # Used assumes are found by walking forward from the assertion COI: assume cells
+    # are sinks, so intersecting them with the input-cone COI is empty.
+    used_line = next(
+        ln for ln in script.splitlines() if ln.startswith("select @property_coi %co*")
+    )
+    assert used_line.endswith(" @all_assumes %i")
+    # Clock/trigger and reset network edges are excluded from the forward walk, or the
+    # shared clk/rst would mark every assume as used.
+    assert ":-$check[TRG]" in used_line
+    assert "[CLK]" in used_line
+    assert "[ARST]" in used_line
+    assert "[SRST]" in used_line
+
 
 def test_build_yosys_script_inlines_constraints_between_design_and_props():
     script = build_yosys_script(
@@ -148,10 +163,6 @@ def test_compute_coverage_aggregates_modules():
     assert summary["per_module"]["counter"]["coi_cells"] == 6
     assert summary["per_module"]["clk_gate"]["coi_cells"] == 0
 
-
-def test_compute_coverage_rolls_up_dead_assumes():
-    blocks = parse_stat_blocks(_FAKE_YOSYS_LOG)
-    summary = compute_coverage(blocks)
     assumes = summary["assumes"]
     # 5 total `$assume` cells, 3 inside the assertion COI, so 2 are dead.
     assert assumes["total"] == 5
@@ -242,27 +253,3 @@ def test_format_assumes_cell_loud_when_dead():
 def test_format_assumes_cell_none_when_no_coi_data():
     assert RtlBuddy._format_assumes_cell(None) is None
     assert RtlBuddy._format_assumes_cell({}) is None
-
-
-def test_build_yosys_script_emits_assume_markers():
-    script = build_yosys_script(
-        sources=["dut.sv"],
-        incdirs=[],
-        properties=["props.sv"],
-        constraints=None,
-        top="dut",
-    )
-    assert "=== RTL_BUDDY_ASSUMES_TOTAL ===" in script
-    assert "=== RTL_BUDDY_ASSUMES_IN_COI ===" in script
-    # Used assumes are found by walking forward from the assertion COI: assume cells
-    # are sinks, so intersecting them with the input-cone COI is empty.
-    used_line = next(
-        ln for ln in script.splitlines() if ln.startswith("select @property_coi %co*")
-    )
-    assert used_line.endswith(" @all_assumes %i")
-    # Clock/trigger and reset network edges are excluded from the forward walk, or the
-    # shared clk/rst would mark every assume as used.
-    assert ":-$check[TRG]" in used_line
-    assert "[CLK]" in used_line
-    assert "[ARST]" in used_line
-    assert "[SRST]" in used_line

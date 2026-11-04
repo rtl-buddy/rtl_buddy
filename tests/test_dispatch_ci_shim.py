@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +23,10 @@ _SCONTROL_SHIM = _SHIMS / "scontrol_shim"
 _FIXTURE = _REPO / "tests" / "fixtures" / "dispatch_project"
 _SWEEP_FIXTURE = _REPO / "tests" / "fixtures" / "dispatch_sweep_project"
 _PARALLEL_FIXTURE = _REPO / "tests" / "fixtures" / "dispatch_parallel_project"
+_BASIC_TOOLS = (
+    "bash sh cat chmod mkdir rm wc seq sed basename sleep git env dirname date "
+    "touch head tail awk true false cp mv grep sort cut find readlink uname"
+).split()
 
 pytestmark = pytest.mark.skipif(
     os.name != "posix" or shutil.which("bash") is None,
@@ -37,6 +42,101 @@ _COLOCATED_EXPECTED = {
     config: [f"{name}_planned" for name in names]
     for config, names in _COLOCATED_BASES.items()
 }
+
+
+def _shim_environment(work_dir, extra_env, extra_path_dirs):
+    bin_dir = work_dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    for name in (*_BASIC_TOOLS, "python", "python3"):
+        target = sys.executable if name.startswith("python") else shutil.which(name)
+        assert target is not None, f"dispatch shim requires {name}"
+        link = bin_dir / name
+        if not link.exists():
+            link.symlink_to(target)
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(("RB_SHIM_", "RB_SWEEP_", "SBATCH_", "SLURM_"))
+        and name not in {"RTL_BUDDY_SHARED_BUILD_ROOT", "RTL_BUDDY_JOB_TAG"}
+    }
+    env["PATH"] = os.pathsep.join(
+        str(path) for path in (*extra_path_dirs, _SHIMS, bin_dir)
+    )
+    env["RB_SHIM_DB"] = str(work_dir / "jobs.db")
+    env["RB_SHIM_LOG"] = str(work_dir / "jobs.log")
+    env.update(extra_env or {})
+    return env
+
+
+def _stop_process_tree(proc):
+    groups = {proc.pid}
+    try:
+        snapshot = subprocess.run(
+            ["ps", "-eo", "pid=,ppid=,pgid="],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        )
+        rows = [tuple(map(int, line.split())) for line in snapshot.stdout.splitlines()]
+        descendants = {proc.pid}
+        while True:
+            children = {pid for pid, parent, _ in rows if parent in descendants}
+            if children <= descendants:
+                break
+            descendants.update(children)
+        groups.update(group for pid, _, group in rows if pid in descendants)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    groups.discard(os.getpgrp())
+
+    def signal_groups(sig):
+        for group in groups:
+            try:
+                os.killpg(group, sig)
+            except ProcessLookupError:
+                pass
+
+    signal_groups(signal.SIGTERM)
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+    finally:
+        # Compilers start separate sessions and can outlive the head process.
+        signal_groups(signal.SIGKILL)
+        proc.wait(timeout=5)
+
+
+def _run_bounded(command, *, cwd, env, timeout=180):
+    proc = subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except BaseException as error:
+        _stop_process_tree(proc)
+        if isinstance(error, subprocess.TimeoutExpired):
+            job_log = Path(env["RB_SHIM_LOG"])
+            diagnostics = [
+                stream.decode(errors="replace") if isinstance(stream, bytes) else stream
+                for stream in (error.stdout, error.stderr)
+                if stream
+            ]
+            if job_log.exists():
+                diagnostics.append(job_log.read_text())
+            error.add_note("\n".join(diagnostics))
+        raise
+    finally:
+        proc.stdout.close()
+        proc.stderr.close()
+    return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
 
 
 def _write_colocated_configs(project: Path) -> None:
@@ -98,13 +198,8 @@ def _rerun_regression(
 
     It shares the shim environment and job db, so both runs share the scheduler's id space as two invocations against one cluster do.
     """
-    env = dict(os.environ)
-    prefix = os.pathsep.join(str(path) for path in (*extra_path_dirs, _SHIMS))
-    env["PATH"] = f"{prefix}{os.pathsep}{env['PATH']}"
-    env["RB_SHIM_DB"] = str(work_dir / "jobs.db")
-    env["RB_SHIM_LOG"] = str(work_dir / "jobs.log")
-    env.update(extra_env or {})
-    proc = subprocess.run(
+    env = _shim_environment(work_dir, extra_env, extra_path_dirs)
+    proc = _run_bounded(
         [
             sys.executable,
             "-m",
@@ -118,8 +213,6 @@ def _rerun_regression(
             *extra_args,
         ],
         cwd=project,
-        capture_output=True,
-        text=True,
         env=env,
     )
     envelope = None
@@ -137,7 +230,10 @@ def _rerun_regression(
 @pytest.fixture(scope="module")
 def shim_run(tmp_path_factory):
     # One real regression subprocess shared by the assertions below.
-    return _run_regression(tmp_path_factory.mktemp("dispatch"))
+    work = tmp_path_factory.mktemp("dispatch")
+    return _run_regression(
+        work, extra_env={"RB_SHIM_ARGV": str(work / "sbatch_argv.txt")}
+    )
 
 
 def test_shim_regression_runs_real_pipeline_to_pass(shim_run):
@@ -188,36 +284,10 @@ def test_shim_sweep_hook_runs_once_across_builds_and_arrays(tmp_path_factory):
     A two-suite regression whose first suite has a `sweep` expanding to three variants runs against the shims. The hook appends its pid to ``$RB_SWEEP_COUNTER`` on every execution, so the file must hold one line.
     """
     work = tmp_path_factory.mktemp("sweep_idem")
-    project = work / "proj"
-    shutil.copytree(_SWEEP_FIXTURE, project)
     counter = work / "sweep_execs.txt"
-
-    env = dict(os.environ)
-    env["PATH"] = f"{_SHIMS}{os.pathsep}{env['PATH']}"
-    env["RB_SHIM_DB"] = str(work / "jobs.db")
-    env["RB_SHIM_LOG"] = str(work / "jobs.log")
-    env["RB_SWEEP_COUNTER"] = str(counter)
-    proc = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "rtl_buddy",
-            "--machine",
-            "regression",
-            "-c",
-            "regression.yaml",
-            "--dispatch",
-            "slurm",
-        ],
-        cwd=project,
-        capture_output=True,
-        text=True,
-        env=env,
+    proc, envelope, project, diag = _run_regression(
+        work, fixture=_SWEEP_FIXTURE, extra_env={"RB_SWEEP_COUNTER": str(counter)}
     )
-    job_log = work / "jobs.log"
-    diag = proc.stdout + proc.stderr
-    if job_log.exists():
-        diag += "\n--- job log ---\n" + job_log.read_text()
     assert proc.returncode == 0, diag
 
     # The hook ran exactly once, on the head.
@@ -239,10 +309,6 @@ def test_shim_sweep_hook_runs_once_across_builds_and_arrays(tmp_path_factory):
     assert elements == 3, f"expected a 3-element array, got {elements}\n{diag}"
 
     # All three variants and the second suite's test run to PASS.
-    envelope = None
-    for line in proc.stdout.splitlines():
-        if line.startswith('{"command"'):
-            envelope = json.loads(line)
     assert envelope is not None, diag
     results = {r["name"]: r["result"] for r in envelope["payload"]["results"]}
     for name in ("wide_v0", "wide_v1", "wide_v2", "solo"):
@@ -541,17 +607,13 @@ def test_shim_adopt_collects_an_interrupted_fleet_without_resubmitting(
 
 
 @pytest.fixture(scope="module")
-def split_shim_run(tmp_path_factory):
+def split_shim_run(shim_run):
     """One regression whose compile went out as two chained Slurm jobs.
 
     The shim runs submissions synchronously in order, matching the ``afterok`` chain: the front end alone under the first, ``--no-verilate`` under the second, then a simulation on what they built.
     """
-    work = tmp_path_factory.mktemp("dispatch_split")
-    argv = work / "sbatch_argv.txt"
-    proc, envelope, project, diag = _run_regression(
-        work, extra_env={"RB_SHIM_ARGV": str(argv)}
-    )
-    return proc, envelope, project, diag, argv
+    _, _, project, _ = shim_run
+    return (*shim_run, project.parent / "sbatch_argv.txt")
 
 
 def test_shim_split_compile_submits_a_verilate_job_then_a_build_job(split_shim_run):

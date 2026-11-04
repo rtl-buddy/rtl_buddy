@@ -164,7 +164,7 @@ def _run_user_only(tmp_path, monkeypatch) -> MutResults:
         return runner.run()
 
 
-def test_user_only_campaign_scores_each_patch(tmp_path, monkeypatch):
+def test_user_campaign_scores_reports_and_preserves_source(tmp_path, monkeypatch):
     results = _run_user_only(tmp_path, monkeypatch)
 
     assert results.baseline_verdict == "fpv=PASS"
@@ -184,17 +184,11 @@ def test_user_only_campaign_scores_each_patch(tmp_path, monkeypatch):
     assert by_id["user_leaf_kill"].file == "leaf.sv"
     assert by_id["user_leaf_kill"].diff_summary == "patch mutants/kill.patch"
 
-
-def test_user_mutants_leave_the_source_tree_untouched(tmp_path, monkeypatch):
-    original = _DESIGN_SV
-    _run_user_only(tmp_path, monkeypatch)
-    assert (tmp_path / "design" / "leaf" / "leaf.sv").read_text() == original
+    assert (tmp_path / "design" / "leaf" / "leaf.sv").read_text() == _DESIGN_SV
     patched = tmp_path / "work" / "user_leaf_kill" / "model_src" / "leaf.sv"
     assert patched.read_text() == _KILL_SV
 
-
-def test_user_mutants_report_one_entry_each(tmp_path, monkeypatch):
-    report = _run_user_only(tmp_path, monkeypatch).as_report()
+    report = results.as_report()
     assert [m["mutant_id"] for m in report["mutants"]] == [
         "user_leaf_kill",
         "user_leaf_survive",

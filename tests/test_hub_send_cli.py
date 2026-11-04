@@ -5,16 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 import threading
 import time
 from pathlib import Path
 from typing import Iterator
 
 import pytest
+from protocol_helpers import JsonLineReader
 from typer.testing import CliRunner
 
 from rtl_buddy.hub import discovery
 from rtl_buddy.hub.config import HubMappingConfig
+from rtl_buddy.hub.protocol import Origin, encode, make_hello
 from rtl_buddy.hub.resolver import Resolver
 from rtl_buddy.hub.send import send_app
 from rtl_buddy.hub.server import HubServer
@@ -212,11 +215,22 @@ def test_send_open_parses_file_line_col(
     threaded_hub: _ThreadedHub, discovery_root: Path
 ):
     runner = CliRunner()
-    result = runner.invoke(send_app, ["open", "design/dma/dma.sv:42:7"])
-    assert result.exit_code == 0, result.output
-    # source_focused is not a snapshot field; a parse failure would exit nonzero.
-    # Drain so the transport-close callback fires before the next test (avoids a Python 3.12 "Event loop is closed" teardown error).
-    _drain_briefly()
+    with socket.create_connection(
+        (threaded_hub.host, threaded_hub.port), timeout=5.0
+    ) as sock:
+        reader = JsonLineReader(sock)
+        sock.sendall(
+            encode(
+                make_hello(client=Origin.SRC, version="0.0", capabilities=[])
+            ).encode()
+            + b"\n"
+        )
+        assert reader.read()["type"] == "welcome"
+        result = runner.invoke(send_app, ["open", "design/dma/dma.sv:42:7"])
+        assert result.exit_code == 0, result.output
+        event = reader.read_event("source_focused")
+        assert event["origin"] == "cli"
+        assert event["payload"] == {"file": "design/dma/dma.sv", "line": 42, "col": 7}
 
 
 def test_send_open_rejects_bad_spec(threaded_hub: _ThreadedHub, discovery_root: Path):

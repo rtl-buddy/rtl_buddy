@@ -94,35 +94,11 @@ async def test_query_disconnect_clears_cli_slot(server: HubServer):
     assert "cli" in second
 
 
-def test_display_origins_does_not_include_cli():
-    """``cli`` is the status query itself and is excluded from the displayed peers."""
-    assert "cli" not in DISPLAY_ORIGINS
-    # View, wave and editor (src) are the v1 production peers.
-    assert "view" in DISPLAY_ORIGINS
-    assert "wave" in DISPLAY_ORIGINS
-    assert "src" in DISPLAY_ORIGINS
-
-
-def test_display_origins_includes_the_graph_pane():
-    """``rb hub status`` lists the graph pane."""
-    assert "graph" in DISPLAY_ORIGINS
-
-
-def test_display_origins_includes_the_cov_pane():
-    """``rb hub status`` lists the coverage pane."""
-
-    assert "cov" in DISPLAY_ORIGINS
-
-
-def test_display_origins_includes_the_phys_pane():
-    """``rb hub status`` lists the `/phy` pane."""
-
-    assert "phys" in DISPLAY_ORIGINS
-
-
-def test_display_origins_are_real_protocol_origins():
-    """Displayed origins are real protocol origins."""
+def test_display_origins_cover_the_protocol_panes():
+    """Status lists display peers and excludes its own CLI connection."""
     from rtl_buddy.hub.protocol import Origin
 
+    assert "cli" not in DISPLAY_ORIGINS
+    assert {"view", "wave", "src", "graph", "cov", "phys"} <= set(DISPLAY_ORIGINS)
     values = {o.value for o in Origin}
     assert set(DISPLAY_ORIGINS) <= values

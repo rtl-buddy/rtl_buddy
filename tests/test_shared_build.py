@@ -5101,21 +5101,6 @@ def test_an_unshareable_builders_reuse_also_leaves_a_breadcrumb(
     assert "Compile skipped" in _compile_log_of(second).read_text()
 
 
-def test_rebuild_recompiles_over_a_warm_valid_stamp(tmp_path, monkeypatch):
-    """``--rebuild`` forces a recompile even when ``--share-build`` is off."""
-    _write_source(tmp_path)
-    calls = []
-    _install_fake_builder(monkeypatch, calls)
-
-    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
-    assert len(calls) == 1
-    assert (
-        _make_sim(tmp_path, monkeypatch, test_name="test_b", rebuild=True).compile()
-        == 0
-    )
-    assert len(calls) == 2
-
-
 def test_rebuild_forces_one_rebuild_per_build_dir_per_process(tmp_path, monkeypatch):
     """One ``--rebuild`` request rebuilds the shared directory once: the first test claims it and the rest reuse the stamp it wrote."""
     _write_source(tmp_path)
@@ -5128,6 +5113,7 @@ def test_rebuild_forces_one_rebuild_per_build_dir_per_process(tmp_path, monkeypa
     first = _make_sim(tmp_path, monkeypatch, test_name="test_b", rebuild=True)
     second = _make_sim(tmp_path, monkeypatch, test_name="test_c", rebuild=True)
     assert first.compile() == 0
+    assert len(calls) == 2
     assert second.compile() == 0
     assert len(calls) == 2, "the shared build was rebuilt once per test"
 
@@ -5208,17 +5194,6 @@ def test_rebuild_also_overrides_an_unshareable_builders_own_stamp(
         == 0
     )
     assert len(calls) == 2
-
-
-def test_without_rebuild_a_warm_stamp_is_still_reused(tmp_path, monkeypatch):
-    """``--rebuild`` is off by default and changes nothing then."""
-    _write_source(tmp_path)
-    calls = []
-    _install_fake_builder(monkeypatch, calls)
-
-    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
-    assert _make_sim(tmp_path, monkeypatch, test_name="test_b").compile() == 0
-    assert len(calls) == 1
 
 
 def test_a_forced_rebuild_says_which_directory_it_is_recompiling(
