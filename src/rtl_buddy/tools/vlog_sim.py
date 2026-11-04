@@ -23,7 +23,7 @@ import logging
 import threading
 import types
 from dataclasses import dataclass, field, replace as dataclass_replace
-from stat import S_ISREG
+from stat import S_ISDIR, S_ISREG
 
 logger = logging.getLogger(__name__)
 from ..hooks import exec_hook_script
@@ -360,17 +360,35 @@ def _unlink_build_output(path) -> int:
 def _scrub_stale_build_outputs(build_dir) -> int:
     """Delete the make outputs a new toolchain must not inherit; return how many.
 
-    Top level only. Keeps the verilation's own ``*__ver.d``, which no make writes and
-    a make-only compile cannot regenerate. Never raises; a file that will not go is
-    left for make.
+    Walks the whole build dir, since a `--hierarchical` build makes each sub-model in
+    a subdirectory of its own. Keeps the verilation's own ``*__ver.d``, which no make
+    writes and a make-only compile cannot regenerate. Never raises; a file that will
+    not go is left for make.
     """
     removed = 0
-    root = Path(build_dir)
-    for pattern in _STALE_BUILD_OUTPUT_GLOBS:
-        for path in root.glob(pattern):
-            if not path.name.endswith("__ver.d"):
-                removed += _unlink_build_output(path)
+    for dirpath, _dirnames, filenames in os.walk(build_dir):
+        for name in filenames:
+            if name.endswith("__ver.d"):
+                continue
+            if any(fnmatch.fnmatch(name, glob) for glob in _STALE_BUILD_OUTPUT_GLOBS):
+                removed += _unlink_build_output(Path(dirpath) / name)
     return removed
+
+
+def _is_verilation_subdir(path) -> bool:
+    """Whether ``path`` holds a verilation of its own: a ``*__verFiles.dat`` at its top.
+
+    Never raises.
+    """
+    try:
+        with os.scandir(path) as scan:
+            return any(
+                entry.name.endswith("__verFiles.dat")
+                and entry.is_file(follow_symlinks=False)
+                for entry in scan
+            )
+    except OSError:
+        return False
 
 
 def _scrub_unfinished_make_outputs(build_dir, executable) -> int:
@@ -5309,6 +5327,13 @@ class VlogSim:
                 )
                 if intermediate and (path.is_symlink() or S_ISREG(metadata.st_mode)):
                     remove(path)
+                elif S_ISDIR(metadata.st_mode) and _is_verilation_subdir(path):
+                    # A `--hierarchical` sub-model (`V<block>/`, `V<top>__hier.dir/`):
+                    # all Verilator output, linked into the executable already.
+                    for dirpath, _dirnames, filenames in os.walk(path):
+                        for filename in filenames:
+                            remove(Path(dirpath) / filename)
+                    shutil.rmtree(path)
             except FileNotFoundError:
                 continue
             except OSError as exc:
