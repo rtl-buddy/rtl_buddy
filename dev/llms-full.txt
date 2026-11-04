@@ -5998,7 +5998,7 @@ Convert recoverable per-item failures into structured results. Use `FilelistErro
 
 Let validation scale with risk:
 
-- Docs-only edits: run frontmatter and MkDocs strict checks.
+- Docs-only edits: run the frontmatter check and `npm run build`.
 - CLI help changes: regenerate `docs/reference/cli.md` and run the generated-reference check.
 - Path, artifact, or subprocess changes: add focused tests proving roots, generated paths, and subprocess `cwd`.
 - Shared command-dispatch or config-loader changes: run the affected test module subset, then broaden if the change crosses command families.
@@ -6013,6 +6013,22 @@ Report skipped checks and the reason. Complete the applicable follow-through:
 6. If release or packaging behavior changed, verify wheel inclusion rules and update downstream integrations after release.
 7. Record new non-conventional behavior in `docs/known-issues.md`.
 8. For `version/major`, add a complete `## vN to vM` section to `docs/migrations.md`.
+
+## Test Design
+
+Each test protects an observable contract or failure mode. Use the lowest layer that proves it, with representative integration tests for CLI, process, tool and protocol boundaries. Keep distinct inputs and failures separate; give parameter cases readable IDs.
+
+Combine related result, artifact and event assertions after the same expensive action. Share immutable inputs or completed outputs through small domain support modules; keep mutable applications, environments, projects and servers isolated. Do not import helpers from collected test modules when adding shared support.
+
+Failure-path tests must prove that the injected failure occurred. Assert exact verdicts, structured payloads and expected outputs; negative assertions must also establish that required output exists. Fakes reject unexpected calls and replace the boundary production actually uses.
+
+Collection performs no external capability subprocesses. Tests control package and tool availability, relevant environment variables and project roots, including ancestor repository markers. Probe optional tools only in fixtures used by their integration tests; retain those integration checks and report their skips.
+
+Bound subprocesses, pipe and socket reads, and thread joins. Clean up children and transports even when an assertion fails. Use events or pipes for ordering and fake clocks for polling arithmetic. Preserve real process, locking, cancellation and compatibility tests where the boundary itself is the contract.
+
+Before deleting a case, identify its retained assertions and compare affected line and branch coverage. Identical execution paths alone do not establish equivalent assertions. Validate important failure-path replacements with a deliberately bad result or fault. Parametrization reduces boilerplate, not the number of executed cases.
+
+Measure collection, setup and calls separately with the same interpreter and tool profile. Compare runtime without coverage instrumentation; keep coverage enabled in CI, including Python subprocesses. Large fixtures and wall-clock assertions need a specific scaling, boundary or resource contract. See [Environment Setup](setup.md#tests) for focused, timing and coverage commands.
 
 ## Bundled Skills
 
@@ -6181,7 +6197,7 @@ cd rtl_buddy
 uv sync --group dev
 ```
 
-This installs the package and the lint, test, and docs groups. Add `--extra graph-extract` only when working on the optional graph binding tier.
+This installs the package and the lint and test groups. Add `--extra graph-extract` when working on the optional graph binding tier or matching the CI test environment.
 
 Verify the install:
 
@@ -6212,10 +6228,21 @@ uv run ruff format          # rewrite files
 uv run pytest                                # full suite
 uv run pytest tests/test_cli_with_fixture.py # one file
 uv run pytest -k "list"                      # by keyword
+uv run pytest --collect-only -q              # collection and case count
+uv run pytest --durations=25                 # runtime without coverage overhead
 uv run pytest --cov --cov-report=term-missing
 ```
 
-Coverage is opt-in; plain `pytest` stays fast.
+Coverage is opt-in; plain `pytest` stays fast. Coverage includes Python subprocesses and enforces a combined statement/branch floor of 87%. CI also checks an 80% floor for each elaboration and Tcl worker, so missing subprocess measurements fail visibly. For a focused coverage investigation, select the affected source with `--cov=rtl_buddy.<module>` and set an appropriate `--cov-fail-under` for that subset; the full-suite floor applies to CI.
+
+CI uses managed Python 3.12 and the graph extractor extra:
+
+```bash
+uv sync --managed-python --python 3.12 --group dev --extra graph-extract
+uv run --managed-python --python 3.12 pytest --durations=25
+```
+
+Compare timings using the same interpreter, optional dependencies and tool availability. Read setup as well as call durations. Optional EDA tests probe their tools when selected and skip when prerequisites are absent; inspect skips with `-rs`. Keep a full run when changing shared fixtures or test infrastructure. Test authoring and deletion rules are in [Engineering Guidelines](guidelines.md#test-design).
 
 ## Docs
 
