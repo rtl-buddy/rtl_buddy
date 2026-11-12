@@ -7785,13 +7785,17 @@ def test_a_compile_line_with_no_build_step_is_run_whole_by_the_verilate_phase(
 
 
 def _install_listing_builder(monkeypatch, calls):
-    """The fake builder, plus what the `--Mdir` held when the builder ran."""
+    """The fake builder, plus what the `--Mdir` held when the builder ran, as paths relative to it."""
     _install_fake_builder(monkeypatch, calls)
     inner = vlog_sim_module.run_managed_process
 
     def _listing_run(cmd, capture_output, text, cwd, env=None):
         mdir = Path(cwd) / cmd[cmd.index("--Mdir") + 1]
-        seen = sorted(p.name for p in mdir.iterdir()) if mdir.is_dir() else []
+        seen = (
+            sorted(p.relative_to(mdir).as_posix() for p in mdir.rglob("*"))
+            if mdir.is_dir()
+            else []
+        )
         result = inner(cmd, capture_output=capture_output, text=text, cwd=cwd, env=env)
         calls[-1]["mdir_before"] = seen
         return result
@@ -7817,6 +7821,18 @@ def _toolchain_marker(sim):
 
 
 _STALE = {"verilated.d", "verilated.o", "Vtop__ALL.a"}
+
+# A `--hierarchical` block's sub-model directory, as Verilator 5.052 lays it out.
+_HIER_STALE = {"Vblk/blk.d", "Vblk/blk.o", "Vblk/libblk.a", "Vblk/Vblk__ALL.o"}
+_HIER_KEPT = {"Vblk/Vblk__ver.d", "Vblk/Vblk.cpp", "Vblk/Vblk__verFiles.dat"}
+
+
+def _plant_hierarchical_block(sim):
+    mdir = Path(sim._get_simv_path()).parent
+    (mdir / "Vblk").mkdir(parents=True, exist_ok=True)
+    for name in _HIER_STALE | _HIER_KEPT:
+        (mdir / name).write_text("// Verilated -*- C++ -*-\n")
+    return mdir
 
 
 @pytest.mark.parametrize("share_build", [False, True])
@@ -7970,6 +7986,44 @@ def test_rebuild_starts_the_make_clean(tmp_path, monkeypatch, share_build):
     assert forced.compile() == 0
     assert len(calls) == 2
     assert not _STALE & set(calls[-1]["mdir_before"])
+
+
+@pytest.mark.parametrize("share_build", [False, True])
+@pytest.mark.parametrize("cause", ["rebuild", "upgrade"])
+def test_a_scrub_reaches_hierarchical_sub_models(
+    tmp_path, monkeypatch, share_build, cause
+):
+    """A `--hierarchical` block's objects and archive go with the top level's; its verilation stays."""
+    _write_source(tmp_path)
+    calls = []
+    _install_listing_builder(monkeypatch, calls)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.052 2026-09-05")
+
+    def _sim(**kwargs):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name="test_a",
+            exe=str(exe),
+            share_build=share_build,
+            **kwargs,
+        )
+
+    sim = _sim()
+    assert sim.compile() == 0
+    _plant_stale_objects(sim)
+    _plant_hierarchical_block(sim)
+    if cause == "upgrade":
+        _touch(exe, '#!/bin/sh\necho "Verilator 5.054 2026-11-01"\n')
+        again = _sim()
+    else:
+        vlog_sim_module._reset_rebuilt_dirs()
+        again = _sim(rebuild=True)
+    assert again.compile() == 0
+    assert len(calls) == 2
+    seen = set(calls[-1]["mdir_before"])
+    assert not (_STALE | _HIER_STALE) & seen
+    assert _HIER_KEPT <= seen
 
 
 def test_a_build_dir_with_no_recorded_toolchain_starts_clean_once(
@@ -8311,7 +8365,8 @@ def _lock_is_held_by_another_process(lock):
     return subprocess.run([sys.executable, "-c", probe, str(lock)]).returncode == 0
 
 
-def _install_prunable_builder(monkeypatch, calls, **kwargs):
+def _install_prunable_builder(monkeypatch, calls, extra=(), **kwargs):
+    """The fake builder, writing the prunable and preserved files, plus ``extra`` paths as Verilator output."""
     _install_fake_builder(monkeypatch, calls, **kwargs)
     original = vlog_sim_module.run_managed_process
 
@@ -8320,11 +8375,14 @@ def _install_prunable_builder(monkeypatch, calls, **kwargs):
         cmd, cwd = calls[-1]["cmd"], calls[-1]["cwd"]
         if "--Mdir" in cmd:
             directory = Path(cwd) / cmd[cmd.index("--Mdir") + 1]
-            for name in _PRUNABLE | _PRESERVED:
+            for name in _PRUNABLE | _PRESERVED | set(extra):
                 path = directory / name
                 if not path.exists():
+                    path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(
-                        "// Verilated -*- C++ -*-\n" if name in _PRUNABLE else "asset\n"
+                        "asset\n"
+                        if name in _PRESERVED
+                        else "// Verilated -*- C++ -*-\n"
                     )
         return result
 
@@ -8536,6 +8594,72 @@ def test_prune_unlinks_symlinks_without_following_them_and_continues_after_failu
     assert not (directory / "Vtop__ALL.a").exists()
     assert any(
         getattr(r, "rtl_event", None) == "compile.shared_build_prune_failed"
+        for r in caplog.records
+    )
+
+
+@pytest.mark.parametrize("marker", ["Vblk__verFiles.dat", "Vblk_classes.mk"])
+def test_prune_removes_hierarchical_sub_models_and_keeps_other_subdirectories(
+    tmp_path, monkeypatch, caplog, marker
+):
+    """A `--hierarchical` sub-model is all Verilator output; other directories are not rtl_buddy's to judge."""
+    sub_model = {
+        f"Vblk/{marker}",
+        "Vblk/Vblk.cpp",
+        "Vblk/Vblk__ALL.o",
+        "Vblk/blk.cpp",
+        "Vblk/blk.sv",
+        "Vblk/libblk.a",
+        "Vtop__hier.dir/Vtop__verFiles.dat",
+    }
+    kept = {"assets/table.hex"}
+    _write_source(tmp_path)
+    calls = []
+    _install_prunable_builder(monkeypatch, calls, extra=sub_model | kept)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="a", shared_build_prune=True)
+    directory = _shared_dir_of(sim)
+    directory.mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "Vext__verFiles.dat").write_text("keep me\n")
+    (directory / "linked").symlink_to(elsewhere, target_is_directory=True)
+    with caplog.at_level(logging.INFO):
+        assert sim.compile() == 0
+    assert not (directory / "Vblk").exists()
+    assert not (directory / "Vtop__hier.dir").exists()
+    assert (directory / "assets" / "table.hex").is_file()
+    assert (directory / "linked").is_symlink()
+    assert (elsewhere / "Vext__verFiles.dat").read_text() == "keep me\n"
+    event = next(
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.shared_build_pruned"
+    )
+    assert event.rtl_fields["removed_files"] == len(_PRUNABLE) + len(sub_model)
+
+
+def test_prune_warns_when_a_subdirectory_cannot_be_listed(
+    tmp_path, monkeypatch, caplog
+):
+    _write_source(tmp_path)
+    calls = []
+    _install_prunable_builder(monkeypatch, calls, extra={"Vblk/Vblk_classes.mk"})
+    sim = _make_sim(tmp_path, monkeypatch, test_name="a", shared_build_prune=True)
+    directory = _shared_dir_of(sim)
+    directory.mkdir(parents=True)
+    original_scandir = vlog_sim_module.os.scandir
+
+    def denied(path):
+        if Path(path).name == "Vblk":
+            raise PermissionError("listing denied")
+        return original_scandir(path)
+
+    monkeypatch.setattr(vlog_sim_module.os, "scandir", denied)
+    assert sim.compile() == 0
+    assert (directory / "Vblk" / "Vblk_classes.mk").is_file()
+    assert any(
+        getattr(r, "rtl_event", None) == "compile.shared_build_prune_failed"
+        and r.rtl_fields.get("path", "").endswith("Vblk")
         for r in caplog.records
     )
 

@@ -207,7 +207,7 @@ The test's `compile.log` records the same message with the command a rebuild wou
 
 ### Changed Verilator toolchain
 
-If a Verilator build directory was compiled by a different Verilator (an upgrade, another install, or the same checkout built on a laptop and a cluster node) or runs under `--rebuild`, rtl_buddy deletes its `*.o`, `*.d` and `*.a` files first. This prevents make errors such as `No rule to make target '.../include/verilated.cpp'`. The console reports it:
+If a Verilator build directory was compiled by a different Verilator (an upgrade, another install, or the same checkout built on a laptop and a cluster node) or runs under `--rebuild`, rtl_buddy deletes its `*.o`, `*.d` and `*.a` files first, in every subdirectory too (a `--hierarchical` build makes each sub-model in one). The verilation's own `*__ver.d` stays. This prevents make errors such as `No rule to make target '.../include/verilated.cpp'`. The console reports it:
 
 ```text
 basic: dropped 12 stale object/dependency files from … (built by …, now …); the C++ build starts clean
@@ -251,7 +251,7 @@ cfg-rtl-reg:
 
 The [configuration reference](../reference/yaml.md#regression-manifest-defaults) defines the setting. It defaults to false and applies with `--share-build`, including dispatch and persistent caches. Only a newly completed, successfully stamped Verilator build is pruned; existing cache hits, other simulators, and the verilate-only half of a split build are left intact. Use `--rebuild` to rebuild and prune an existing entry.
 
-Pruning removes generated C++ sources, headers, makefiles, object files, static archives, dependency files and precompiled headers from the build directory's top level. Generated sources are identified by Verilator's prefix metadata and file headers. It preserves `simv`, the compile stamp, toolchain metadata, the build lock, subdirectories, shared libraries and other runtime assets. Symlink targets are never traversed.
+Pruning removes generated C++ sources, headers, makefiles, object files, static archives, dependency files and precompiled headers from the build directory's top level. Generated sources are identified by Verilator's prefix metadata and file headers. It also removes each `--hierarchical` sub-model directory (`V<block>/`, `V<top>__hier.dir/`) whole, recognised by the `*__verFiles.dat` or `*_classes.mk` Verilator writes at its top; the executable already links the sub-model's archive. It preserves `simv`, the compile stamp, toolchain metadata, the build lock, other subdirectories, shared libraries and other runtime assets. Symlink targets are never traversed.
 
 The saved stamp still tracks consumed RTL and headers, so unchanged inputs reuse the executable and edited inputs rebuild correctly. A rebuild regenerates the removed files and performs a full C++ compile. Waveforms and coverage remain available from the executable, but generated C++ is unavailable for debugging until pruning is disabled and the build is forced again.
 
