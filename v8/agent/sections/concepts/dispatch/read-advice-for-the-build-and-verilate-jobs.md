@@ -1,6 +1,6 @@
 ## Read advice for the build and verilate jobs
 
-The build job gets a row named `(build job)` with `phase: compile`, and a split suite also gets `(verilate job)` with `phase: verilate`. Both suggest `time` in either direction and `cpus` only downward.
+The build job gets a row named `(build job)` with `phase: compile`, and a split suite also gets `(verilate job)` with `phase: verilate`. Both suggest `time` in either direction, `cpus` only downward, and `mem` upward after an `OUT_OF_MEMORY` kill. Memory suggestions use the larger of the reservation and observed peak, multiplied by the configured margin; sampled memory alone produces no build advice.
 
 - The `cpus` suggestion appears only when the job ran one build at a time. With `compile.parallel` above 1, size `parallel` first, then read `cpus` from a `parallel: 1` run.
 - A `reduce` is withheld when every build was reused, when the head has no per-build records, or when the job ended within one accounting interval. `rightsize.build_advice_withheld` records why. `raise` advice is unaffected.

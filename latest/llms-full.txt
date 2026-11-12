@@ -1083,7 +1083,7 @@ A nonempty list logs one INFO `rightsize.summary` with `total` and direction `co
 
 ## Read advice for the build and verilate jobs
 
-The build job gets a row named `(build job)` with `phase: compile`, and a split suite also gets `(verilate job)` with `phase: verilate`. Both suggest `time` in either direction and `cpus` only downward.
+The build job gets a row named `(build job)` with `phase: compile`, and a split suite also gets `(verilate job)` with `phase: verilate`. Both suggest `time` in either direction, `cpus` only downward, and `mem` upward after an `OUT_OF_MEMORY` kill. Memory suggestions use the larger of the reservation and observed peak, multiplied by the configured margin; sampled memory alone produces no build advice.
 
 - The `cpus` suggestion appears only when the job ran one build at a time. With `compile.parallel` above 1, size `parallel` first, then read `cpus` from a `parallel: 1` run.
 - A `reduce` is withheld when every build was reused, when the head has no per-build records, or when the job ended within one accounting interval. `rightsize.build_advice_withheld` records why. `raise` advice is unaffected.
@@ -1146,7 +1146,8 @@ A test whose retries ran under different cpu requests gets no `cpus` row (`right
 - **`build_job.group_failure_adoption_declined`:** a config shares a build whose most recent compile failed (the event's `leader` names that compile's test), but its inputs differ, the compiler was killed by a signal, or the failure may be transient (a license wait or an out-of-memory signature in the transcript), so it compiles again. A hook that rewrites a listed input per test causes the first; for an out-of-memory failure, raise `compile.mem` or lower `compile.parallel`.
 - **`compile.build_stamp_rejected`, `compile.stamp_write_failed`, `compile.prebuilt_stamp_invalid`:** see [Recover when a gated job cannot use the build](#recover-when-a-gated-job-cannot-use-the-build).
 - **`dispatch.binary_mismatch`:** runs of one build directory did not all use the same executable, because one run rebuilt it while others used it. Results are scored as they ran; re-run to confirm.
-- **`compile.build_phase_fallback`** (`marker-missing`, `marker-stale`, `marker-foreign`, `no-verilate-unsupported`, and for a build with `-CFLAGS`/`-LDFLAGS` `verilation-missing`, `verilation-foreign`, `verilation-unusable`): the build job verilated for itself. The result is correct but unsplit.
+- **`compile.verilation_incomplete`:** the successful verilation record lacks a generated-file inventory, or a recorded makefile, C++ source, or header is missing, including hierarchical sub-model files. The event names the record and missing files. The job regenerates under the build lock with `--no-skip-identical`, so Verilator's timestamp shortcut cannot preserve incomplete output; do not delete another running job's cache. A record without an inventory requires one regeneration before reuse.
+- **`compile.build_phase_fallback`** (`marker-missing`, `marker-stale`, `marker-foreign`, `verilation-incomplete`, `no-verilate-unsupported`, and for a build with `-CFLAGS`/`-LDFLAGS` `verilation-missing`, `verilation-foreign`, `verilation-unusable`): the build job verilated for itself. The result is correct but unsplit.
 - **`compile.verilate_failed`:** verilation failed; the build job reports it per test.
 - **`compile.verilate_marker_write_failed`:** the verilate output could not be recorded, so the build job compiles that build in full.
 - **`compile.license_queued`:** a VCS build waited for a license. Add `compile.time` headroom or lower `parallel`.
