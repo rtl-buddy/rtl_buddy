@@ -6,7 +6,7 @@ cd rtl_buddy
 uv sync --group dev
 ```
 
-This installs the package and the lint, test, and docs groups. Add `--extra graph-extract` only when working on the optional graph binding tier.
+This installs the package and the lint and test groups. Add `--extra graph-extract` when working on the optional graph binding tier or matching the CI test environment.
 
 Verify the install:
 

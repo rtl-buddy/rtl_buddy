@@ -30,7 +30,7 @@ The test's `compile.log` records the same message with the command a rebuild wou
 
 ### Changed Verilator toolchain
 
-If a Verilator build directory was compiled by a different Verilator (an upgrade, another install, or the same checkout built on a laptop and a cluster node) or runs under `--rebuild`, rtl_buddy deletes its `*.o`, `*.d` and `*.a` files first. This prevents make errors such as `No rule to make target '.../include/verilated.cpp'`. The console reports it:
+If a Verilator build directory was compiled by a different Verilator (an upgrade, another install, or the same checkout built on a laptop and a cluster node) or runs under `--rebuild`, rtl_buddy deletes its `*.o`, `*.d` and `*.a` files first, in every subdirectory too (a `--hierarchical` build makes each sub-model in one). The verilation's own `*__ver.d` stays. This prevents make errors such as `No rule to make target '.../include/verilated.cpp'`. The console reports it:
 
 ```text
 basic: dropped 12 stale object/dependency files from … (built by …, now …); the C++ build starts clean

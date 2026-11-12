@@ -2213,6 +2213,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v8/agent/sections/development/guidelines/validation-and-follow-through.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v8/development/guidelines/#test-design",
+          "slug": "test-design",
+          "title": "Test Design",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v8/agent/sections/development/guidelines/test-design.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v8/development/guidelines/#bundled-skills",
           "slug": "bundled-skills",
           "title": "Bundled Skills",
