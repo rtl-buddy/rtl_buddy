@@ -34,6 +34,7 @@ Read `payload.reservation_advice` and apply each explicit `edit_hint`. Its `file
 - Mode overrides beat base fields. A coverage-only OOM usually needs `modes.cov.mem` in the controlling block.
 - `(build job)` and `(verilate job)` rows size different phases. Read `edit_hint.note`: suggested `cpus` is per build; `reserved` can include the parallel multiplier. CPU advice is withheld above `parallel: 1`; size concurrency first, then measure a serial run.
 - Build reductions can be withheld when builds were reused or accounting/records are insufficient. Measure a representative rebuild.
+- A build or verilate job killed `OUT_OF_MEMORY` still gets a memory raise when its reservation is known, even without samples or completed build records. Follow its phase-specific `edit_hint`.
 - ERROR `config.unknown_key_rejected` (exit 2) names misspelt or misplaced reservation/dispatch keys. Correct every reported key before rerunning.
 
 ## Size the coverage tail
@@ -59,6 +60,7 @@ Read `concepts/tests#sharing-compiled-builds-across-tests` for invalidation rule
 - Suspicious reuse: inspect `compile.build_reused` and the test's `compile.log` for the directory and stamp age. Use `--rebuild`, never delete a build during a run. Dropping `--share-build` under dispatch does not disable reuse.
 - `build_job.group_input_drift`: same-key configs consumed different inputs. Fix preprocessing or give them distinct builds.
 - `compile.build_lock_wait`: another process is compiling into that directory.
+- `compile.verilation_incomplete`: a generated-file inventory or a recorded makefile/source/header is missing. The job regenerates under its build lock; inspect the event's `record` and `missing` fields before touching the cache.
 - `dispatch.build_job_deduped`: this suite and job tag wait on an earlier build through `singleton`, then revalidate it. Inspect `squeue -j <ids> -O JobID,State,Reason`; cancel only a confirmed held, unschedulable, or abandoned job.
 
 For missing results, license retries, and unusable prebuilt stamps, read `concepts/dispatch#troubleshoot-builds` and `known-issues`.

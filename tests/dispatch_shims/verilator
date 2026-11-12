@@ -88,6 +88,7 @@ mkdir -p "$mdir"
 if [ "$no_verilate" = "0" ]; then
   echo "// fake generated model" > "$mdir/Vtop.cpp"
   printf 'default:\n\t@true\n' > "$mdir/Vtop.mk"
+  echo '# generated class lists' > "$mdir/Vtop_classes.mk"
   # With $RB_SHIM_DEPS set it also writes the make-style dependency file real
   # Verilator emits, naming the `.sv` lines of the filelist it was handed. The
   # stamp compares a `+incdir+` listing by name alone once a build reports its
