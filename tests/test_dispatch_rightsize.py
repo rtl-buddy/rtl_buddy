@@ -17,6 +17,7 @@ from rtl_buddy.config.dispatch import (
     RightsizeConfigFile,
     TestbenchCompileFile as TbCompile,
     aggregate_compile_resources,
+    aggregate_verilate_resources,
 )
 from rtl_buddy.config.dispatch import greedy_schedule, mem_to_bytes, time_to_seconds
 from rtl_buddy.dispatch.rightsize import (
@@ -1223,6 +1224,47 @@ def test_oom_build_translates_aggregate_memory_raise_to_one_contributor():
 
 def test_oom_build_without_known_memory_request_has_no_guess():
     assert _build_advice({"state": "OUT_OF_MEMORY"}) == []
+
+
+@pytest.mark.parametrize("mode", [None, "cov"])
+def test_verilate_oom_raise_counts_builds_sharing_a_key(mode):
+    cfg = DispatchConfigFile(compile=DispatchCompileFile(mem="1G")).initialise()
+    block = (
+        TbCompile(modes={"cov": {"verilate": {"mem": "2G"}}})
+        if mode
+        else TbCompile(mem="2G")
+    )
+    reservation, origins = aggregate_verilate_resources(
+        cfg,
+        testbenches=[("chip", block), ("chip", block)],
+        parallel=2,
+        builder_mode=mode,
+    )
+    findings = _build_advice(
+        {"state": "OUT_OF_MEMORY", "req_mem_bytes": mem_to_bytes(reservation.mem)},
+        compile_origins=origins,
+        suite_config_hint="tests.yaml",
+        phase="verilate",
+        parallel=2,
+    )
+    (finding,) = findings
+    assert mem_to_bytes(finding.suggested) == 3 * 2**30
+    assert mem_to_bytes(finding.suggested_total) == 6 * 2**30
+    assert finding.edit_hint["path"] == "testbenches[name=chip].compile." + (
+        "modes.cov.verilate.mem" if mode else "mem"
+    )
+    updated = (
+        TbCompile(modes={"cov": {"verilate": {"mem": finding.suggested}}})
+        if mode
+        else TbCompile(mem=finding.suggested)
+    )
+    applied, _ = aggregate_verilate_resources(
+        cfg,
+        testbenches=[("chip", updated), ("chip", updated)],
+        parallel=2,
+        builder_mode=mode,
+    )
+    assert mem_to_bytes(applied.mem) == mem_to_bytes(finding.suggested_total)
 
 
 def test_build_advice_without_a_root_config_path_still_names_the_field():

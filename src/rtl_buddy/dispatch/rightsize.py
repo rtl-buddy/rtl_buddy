@@ -575,6 +575,8 @@ def analyze_build_reservation(
             return plain
         # One key can be several contributors; each takes its share, rounded up.
         primary = {"origin": entry.get("origin"), "testbench": entry.get("testbench")}
+        if entry.get("key") is not None:
+            primary["key"] = entry["key"]
         occurrences = sum(
             1 for source in entry.get("contributors") or [] if source == primary
         )
