@@ -369,8 +369,8 @@ def analyze_build_reservation(
     """Right-size the build job's own reservation; returns a list of findings.
 
     The build job is one allocation running up to ``parallel`` concurrent
-    Verilations and has no per-test row. There is no memory advice (``MaxRSS``
-    under-reports short jobs) and no cpus ``raise``.
+    Verilations and has no per-test row. Memory advice requires an OOM kill
+    (``MaxRSS`` under-reports short jobs). There is no cpus ``raise``.
 
     - ``compile_resources`` is the per-build reservation; the submitted cpus were
       multiplied by ``parallel``. Cpus advice is offered only when the effective
@@ -575,6 +575,8 @@ def analyze_build_reservation(
             return plain
         # One key can be several contributors; each takes its share, rounded up.
         primary = {"origin": entry.get("origin"), "testbench": entry.get("testbench")}
+        if entry.get("key") is not None:
+            primary["key"] = entry["key"]
         occurrences = sum(
             1 for source in entry.get("contributors") or [] if source == primary
         )
@@ -664,6 +666,29 @@ def analyze_build_reservation(
                     **common,
                 )
             )
+
+    # --- memory (a scheduler kill is evidence even without samples) ---
+    req_mem = build_telemetry.get("req_mem_bytes")
+    if req_mem and state == "OUT_OF_MEMORY":
+        peak_rss = build_telemetry.get("max_rss_bytes") or 0
+        target = max(
+            int(max(req_mem, peak_rss) * rightsize_cfg.margin), _MEM_FLOOR_BYTES
+        )
+        raised = raise_fields("mem", target, req_mem, format_mem)
+        findings.append(
+            RightsizeFinding(
+                resource="mem",
+                reserved=format_mem(req_mem),
+                peak=format_mem(peak_rss)
+                if peak_rss > req_mem
+                else f">{format_mem(req_mem)}",
+                utilization=max(1.0, peak_rss / req_mem),
+                direction="raise",
+                edit_hint=with_aggregate(hint("mem"), raised),
+                **common,
+                **raised,
+            )
+        )
 
     # --- cpus (efficiency; only ever suggests reducing) --------------
     cpu_time = build_telemetry.get("total_cpu_s")

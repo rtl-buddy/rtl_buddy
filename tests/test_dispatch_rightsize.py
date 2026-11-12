@@ -17,8 +17,9 @@ from rtl_buddy.config.dispatch import (
     RightsizeConfigFile,
     TestbenchCompileFile as TbCompile,
     aggregate_compile_resources,
+    aggregate_verilate_resources,
 )
-from rtl_buddy.config.dispatch import greedy_schedule, time_to_seconds
+from rtl_buddy.config.dispatch import greedy_schedule, mem_to_bytes, time_to_seconds
 from rtl_buddy.dispatch.rightsize import (
     BUILD_JOB_ROW,
     VERILATE_JOB_ROW,
@@ -1145,7 +1146,7 @@ def test_build_cpus_fall_back_to_what_the_head_asked_for(caplog):
     assert record.rtl_fields["efficiency"] == 0.125
 
 
-def test_a_build_job_never_gets_memory_advice():
+def test_a_completed_build_job_gets_no_sampled_memory_advice():
     """MaxRSS is sampled, and a too-small compile mem is an OOM kill."""
     findings = _build_advice(
         {
@@ -1157,6 +1158,113 @@ def test_a_build_job_never_gets_memory_advice():
         }
     )
     assert [f for f in findings if f.resource == "mem"] == []
+
+
+@pytest.mark.parametrize("phase", ["compile", "verilate"])
+@pytest.mark.parametrize("peak_gib, target_gib", [(None, 3), (1, 3), (4, 6)])
+def test_oom_build_raises_memory_without_compile_records(phase, peak_gib, target_gib):
+    findings = _build_advice(
+        {
+            "state": "OUT_OF_MEMORY",
+            "elapsed_s": 5,
+            "req_mem_bytes": 2 * 2**30,
+            "max_rss_bytes": peak_gib * 2**30 if peak_gib else None,
+        },
+        phase=phase,
+        compile_work=None,
+        accounting_interval_s=30,
+        compile_origins={
+            "mem": {
+                "origin": "testbench",
+                "testbench": "chip",
+                "key": "modes.cov.verilate.mem" if phase == "verilate" else "mem",
+            }
+        },
+        suite_config_hint="tests.yaml",
+    )
+    (finding,) = findings
+    assert finding.resource == "mem"
+    assert finding.direction == "raise"
+    assert mem_to_bytes(finding.reserved) == 2 * 2**30
+    assert mem_to_bytes(finding.suggested) == target_gib * 2**30
+    assert finding.phase == phase
+    assert finding.states == ["OUT_OF_MEMORY"]
+    assert finding.test == (VERILATE_JOB_ROW if phase == "verilate" else BUILD_JOB_ROW)
+    assert finding.edit_hint == {
+        "file": "tests.yaml",
+        "path": "testbenches[name=chip].compile."
+        + ("modes.cov.verilate.mem" if phase == "verilate" else "mem"),
+    }
+
+
+def test_oom_build_translates_aggregate_memory_raise_to_one_contributor():
+    findings = _build_advice(
+        {"state": "OUT_OF_MEMORY", "req_mem_bytes": 8 * 2**30},
+        compile_origins={
+            "mem": {
+                "origin": "testbench",
+                "testbench": "chip",
+                "aggregated": True,
+                "contributor_value": 2 * 2**30,
+                "contributors": [
+                    {"origin": "testbench", "testbench": "chip"},
+                    {"origin": "testbench", "testbench": "chip"},
+                    {"origin": "suite", "testbench": None},
+                ],
+            }
+        },
+        suite_config_hint="tests.yaml",
+    )
+    (finding,) = findings
+    assert mem_to_bytes(finding.suggested) == 4 * 2**30
+    assert mem_to_bytes(finding.suggested_total) == 12 * 2**30
+    assert finding.aggregate_delta == "+2048M"
+    assert finding.edit_hint["path"] == "testbenches[name=chip].compile.mem"
+
+
+def test_oom_build_without_known_memory_request_has_no_guess():
+    assert _build_advice({"state": "OUT_OF_MEMORY"}) == []
+
+
+@pytest.mark.parametrize("mode", [None, "cov"])
+def test_verilate_oom_raise_counts_builds_sharing_a_key(mode):
+    cfg = DispatchConfigFile(compile=DispatchCompileFile(mem="1G")).initialise()
+    block = (
+        TbCompile(modes={"cov": {"verilate": {"mem": "2G"}}})
+        if mode
+        else TbCompile(mem="2G")
+    )
+    reservation, origins = aggregate_verilate_resources(
+        cfg,
+        testbenches=[("chip", block), ("chip", block)],
+        parallel=2,
+        builder_mode=mode,
+    )
+    findings = _build_advice(
+        {"state": "OUT_OF_MEMORY", "req_mem_bytes": mem_to_bytes(reservation.mem)},
+        compile_origins=origins,
+        suite_config_hint="tests.yaml",
+        phase="verilate",
+        parallel=2,
+    )
+    (finding,) = findings
+    assert mem_to_bytes(finding.suggested) == 3 * 2**30
+    assert mem_to_bytes(finding.suggested_total) == 6 * 2**30
+    assert finding.edit_hint["path"] == "testbenches[name=chip].compile." + (
+        "modes.cov.verilate.mem" if mode else "mem"
+    )
+    updated = (
+        TbCompile(modes={"cov": {"verilate": {"mem": finding.suggested}}})
+        if mode
+        else TbCompile(mem=finding.suggested)
+    )
+    applied, _ = aggregate_verilate_resources(
+        cfg,
+        testbenches=[("chip", updated), ("chip", updated)],
+        parallel=2,
+        builder_mode=mode,
+    )
+    assert mem_to_bytes(applied.mem) == mem_to_bytes(finding.suggested_total)
 
 
 def test_build_advice_without_a_root_config_path_still_names_the_field():

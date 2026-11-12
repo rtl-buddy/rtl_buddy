@@ -1832,6 +1832,7 @@ class VlogSim:
         # Set by the build half: whether the marker cleared this key to skip the front
         # end. False means a full compile.
         self._skip_verilate = False
+        self._force_verilation = False
         # Time the verilate half spent on this key, from its marker. The build half
         # reports the sum.
         self._verilate_sec = None
@@ -4039,6 +4040,8 @@ class VlogSim:
         first half left; so does ``full`` over a verilation copied from the build
         dir without the C++-only options (#833).
         """
+        if self._force_verilation and not self._skip_verilate:
+            run_cmd = run_cmd + ["--no-skip-identical"]
         if self.build_phase in (BUILD_PHASE_FULL, BUILD_PHASE_BUILD):
             # Only where a marker or a copied verilation cleared this key; every
             # fallback runs the whole compile.
@@ -4090,7 +4093,7 @@ class VlogSim:
         return Path(stamp_dir) / VERILATE_MARKER_NAME
 
     def _write_verilate_marker(
-        self, stamp_dir, *, fingerprint, status, transcript, duration_sec
+        self, stamp_dir, *, build_dir, fingerprint, status, transcript, duration_sec
     ):
         """Record this key's verilation for the build half. Never raises.
 
@@ -4110,6 +4113,7 @@ class VlogSim:
                         "transcript": transcript,
                         "duration_sec": duration_sec,
                         "timestamp": time.time(),
+                        "generated_files": self._generated_build_files(build_dir),
                     },
                     sort_keys=True,
                 ),
@@ -4131,6 +4135,78 @@ class VlogSim:
         except (OSError, json.JSONDecodeError):
             return None
         return stored if isinstance(stored, dict) else None
+
+    def _generated_build_files(self, build_dir):
+        """Inventory makefiles and generated sources, including hierarchical models."""
+        root = Path(build_dir)
+        prefixes = {
+            path.name.removesuffix(suffix)
+            for suffix in ("__verFiles.dat", "_classes.mk")
+            for path in root.glob(f"*{suffix}")
+        }
+        if not prefixes:
+            return None
+        # Hierarchical wrapper timestamps can survive missing top-level makefiles.
+        files = [
+            str(root / f"{prefix}{suffix}")
+            for prefix in prefixes
+            for suffix in (".mk", "_classes.mk")
+        ]
+        for directory, subdirs, names in os.walk(root):
+            subdirs[:] = [
+                name
+                for name in subdirs
+                if _is_verilation_subdir(Path(directory) / name)
+            ]
+            files.extend(
+                str(Path(directory) / name)
+                for name in names
+                if name.endswith((".mk", ".cpp", ".h"))
+            )
+            for name in names:
+                if not name.endswith("__verFiles.dat"):
+                    continue
+                for line in (
+                    (Path(directory) / name)
+                    .read_text(errors="surrogateescape")
+                    .splitlines()
+                ):
+                    if not line.startswith("T "):
+                        continue
+                    try:
+                        target = shlex.split(line)[-1]
+                    except (ValueError, IndexError):
+                        return None
+                    path = os.path.normpath(os.path.join(self._compile_cwd, target))
+                    if path.endswith((".mk", ".cpp", ".h")) and _path_is_under(
+                        path, str(root)
+                    ):
+                        files.append(path)
+        return sorted(set(files))
+
+    def _generated_build_files_exist(self, record, record_path):
+        files = record.get("generated_files")
+        if (
+            not isinstance(files, list)
+            or not files
+            or not all(isinstance(path, str) for path in files)
+        ):
+            missing = ["generated-file inventory"]
+        else:
+            missing = [path for path in files if not Path(path).is_file()]
+        if not missing:
+            return True
+        self._force_verilation = True
+        log_event(
+            logger,
+            logging.WARNING,
+            "compile.verilation_incomplete",
+            test=self.test_name,
+            record=str(record_path),
+            missing=missing,
+            fingerprint_sha=record.get("fingerprint_sha"),
+        )
+        return False
 
     @staticmethod
     def _verilate_marker_is_ok(marker, fingerprint):
@@ -4168,6 +4244,7 @@ class VlogSim:
                         "duration_sec": duration_sec,
                         "deps": deps,
                         "deps_format": _DEPS_FORMAT,
+                        "generated_files": self._generated_build_files(build_dir),
                         "timestamp": time.time(),
                     },
                     sort_keys=True,
@@ -4268,6 +4345,10 @@ class VlogSim:
             )
             self._record_compile(duration_sec=0.0, reused=True)
             return 0
+        if not self._generated_build_files_exist(
+            marker, self._verilate_marker_path(stamp_dir)
+        ):
+            return None
         log_event(
             logger,
             logging.INFO,
@@ -4312,6 +4393,11 @@ class VlogSim:
             return None
         if marker.get("status") != "ok":
             return self._decline_failed_verilation(marker)
+        if not self._generated_build_files_exist(
+            marker, self._verilate_marker_path(stamp_dir)
+        ):
+            self._report_build_phase_fallback("verilation-incomplete")
+            return None
         if not self._verilator_supports_no_verilate():
             self._report_build_phase_fallback("no-verilate-unsupported")
             return None
@@ -4427,9 +4513,18 @@ class VlogSim:
                 # alone and compile here in full.
                 return "fallback", "verilation-foreign"
             matches = self._verilation_record_matches(record, fingerprint)
-            if (matches and record.get("status") == "ok") or (
+            reusable = (matches and record.get("status") == "ok") or (
                 record is None and self._verilate_marker_is_ok(marker, fingerprint)
-            ):
+            )
+            if reusable:
+                found = record if matches else marker
+                reusable = self._generated_build_files_exist(
+                    found,
+                    self._verilation_record_path(vdir)
+                    if matches
+                    else self._verilate_marker_path(vdir),
+                )
+            if reusable:
                 found = record if matches else marker
                 log_console_event(
                     logger,
@@ -4446,7 +4541,11 @@ class VlogSim:
                     if self.build_phase == BUILD_PHASE_BUILD
                     else 0.0
                 )
-            elif matches and self.build_phase == BUILD_PHASE_BUILD:
+            elif (
+                matches
+                and record.get("status") != "ok"
+                and self.build_phase == BUILD_PHASE_BUILD
+            ):
                 # The verilate job failed these inputs; running it again here fails
                 # the same way under the wrong reservation.
                 return "done", self._decline_failed_verilation(record)
@@ -4500,6 +4599,8 @@ class VlogSim:
             extra_compile_flags=split_cxx_only_flags(plan.extra_compile_flags)[0],
         )
         run_cmd = self._verilate_only_argv(self._compile_argv_base(vplan, quiet=True))
+        if self._force_verilation:
+            run_cmd.append("--no-skip-identical")
         run_str = " ".join(run_cmd)
         # The front end is about to rewrite what both describe.
         self._clear_verilation_record(vdir)
@@ -5203,6 +5304,7 @@ class VlogSim:
 
     def compile(self):
         rtl_builder_cfg = self.rtl_builder_cfg
+        self._force_verilation = False
         # One compile, one verdict: do not inherit the previous compile's failure
         # record, desc or transcript name.
         self.last_compile_failure = None
@@ -5617,6 +5719,7 @@ class VlogSim:
             # no executable.
             self._write_verilate_marker(
                 stamp_dir,
+                build_dir=Path(compile_work_dir) / build_dir,
                 fingerprint=fingerprint,
                 status="ok" if result.returncode == 0 else "failed",
                 transcript=transcript_path,

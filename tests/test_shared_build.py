@@ -7188,7 +7188,9 @@ def _forget_no_verilate_support():
     vlog_sim_module._NO_VERILATE_SUPPORT.clear()
 
 
-def _install_phase_aware_builder(monkeypatch, calls, *, returncode=0, stderr=""):
+def _install_phase_aware_builder(
+    monkeypatch, calls, *, returncode=0, stderr="", skip_identical=False
+):
     """A fake Verilator that produces a binary only when asked to build.
     The shared `_install_fake_builder` writes a simv wherever it sees `--Mdir`, which would let the build half validate a directory the verilate half never built.
     """
@@ -7198,8 +7200,19 @@ def _install_phase_aware_builder(monkeypatch, calls, *, returncode=0, stderr="")
         mdir = Path(cmd[cmd.index("--Mdir") + 1])
         mdir = mdir if mdir.is_absolute() else Path(cwd) / mdir
         mdir.mkdir(parents=True, exist_ok=True)
-        if "--no-verilate" not in cmd:
+        timestamp = mdir / "Vtop__verFiles.dat"
+        skip_generation = (
+            skip_identical and timestamp.exists() and "--no-skip-identical" not in cmd
+        )
+        if "--no-verilate" not in cmd and not skip_generation:
             (mdir / "Vtop.mk").write_text("default:\n\t@true\n")
+            (mdir / "Vtop_classes.mk").write_text("# classes\n")
+            (mdir / "Vtop.cpp").write_text("// Verilated model\n")
+            (mdir / "Vtop.h").write_text("// Verilated header\n")
+            (mdir / "Vchild").mkdir(exist_ok=True)
+            (mdir / "Vchild" / "Vchild_classes.mk").write_text("# classes\n")
+            (mdir / "Vchild" / "Vchild.cpp").write_text("// Verilated child\n")
+            timestamp.write_text(f'T 1 0 0 "unhashed" "{mdir / "Vtop.h"}"\n')
         if returncode == 0 and (
             "--binary" in cmd or "--build" in cmd or "--no-verilate" in cmd
         ):
@@ -7283,6 +7296,87 @@ def test_the_build_phase_runs_make_alone_and_consumes_the_marker(tmp_path, monke
     assert (shared / vlog_sim_module.SHARED_BUILD_STAMP_NAME).exists()
     # The marker is gone.
     assert not (shared / _MARKER).exists()
+
+
+@pytest.mark.parametrize("phase", ["verilate", "build"])
+@pytest.mark.parametrize(
+    "missing", ["Vtop.mk", "Vtop.cpp", "Vtop.h", "Vchild/Vchild.cpp"]
+)
+def test_split_compile_regenerates_missing_outputs(
+    tmp_path, monkeypatch, caplog, phase, missing
+):
+    _write_source(tmp_path)
+    calls = []
+    _install_phase_aware_builder(monkeypatch, calls, skip_identical=True)
+    verilate = _split_sim(tmp_path, monkeypatch, phase="verilate")
+    assert verilate.compile() == 0
+    shared = _shared_dir_of(verilate)
+    missing_path = shared / missing
+    missing_path.unlink()
+
+    vlog_sim_module._NO_VERILATE_SUPPORT[verilate.rtl_builder_cfg.get_exe()] = True
+    with caplog.at_level(logging.WARNING):
+        recovered = _split_sim(tmp_path, monkeypatch, phase=phase)
+        assert recovered.compile() == 0
+
+    assert len(calls) == 2
+    assert "--no-verilate" not in calls[-1]["cmd"]
+    assert missing_path.is_file()
+    (event,) = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "compile.verilation_incomplete"
+    ]
+    assert event.rtl_fields["missing"] == [str(missing_path)]
+    assert event.rtl_fields["record"] == str(shared / _MARKER)
+    assert event.rtl_fields["fingerprint_sha"]
+    if phase == "build":
+        assert (shared / "simv").is_file()
+        assert (shared / vlog_sim_module.SHARED_BUILD_STAMP_NAME).is_file()
+
+
+def test_split_compile_regenerates_a_marker_without_output_inventory(
+    tmp_path, monkeypatch
+):
+    _write_source(tmp_path)
+    calls = []
+    _install_phase_aware_builder(monkeypatch, calls)
+    verilate = _split_sim(tmp_path, monkeypatch, phase="verilate")
+    assert verilate.compile() == 0
+    path = _shared_dir_of(verilate) / _MARKER
+    marker = json.loads(path.read_text())
+    del marker["generated_files"]
+    path.write_text(json.dumps(marker))
+    vlog_sim_module._NO_VERILATE_SUPPORT[verilate.rtl_builder_cfg.get_exe()] = True
+    assert _split_sim(tmp_path, monkeypatch, phase="build").compile() == 0
+    assert "--no-verilate" not in calls[-1]["cmd"]
+
+
+@pytest.mark.parametrize("missing", [("Vtop.mk", "Vtop_classes.mk"), ("Vtop.h",)])
+def test_split_compile_checks_outputs_even_if_generation_reports_success(
+    tmp_path, monkeypatch, caplog, missing
+):
+    _write_source(tmp_path)
+    calls = []
+    _install_phase_aware_builder(monkeypatch, calls, skip_identical=True)
+    verilate = _split_sim(tmp_path, monkeypatch, phase="verilate")
+    assert verilate.compile() == 0
+    shared = _shared_dir_of(verilate)
+    (shared / _MARKER).unlink()
+    for name in missing:
+        (shared / name).unlink()
+    (shared / "Vtop_hier.mk").write_text("# wrapper makefile\n")
+
+    # The timestamp shortcut reports success without restoring the outputs.
+    assert _split_sim(tmp_path, monkeypatch, phase="verilate").compile() == 0
+    assert not (shared / missing[0]).exists()
+    vlog_sim_module._NO_VERILATE_SUPPORT[verilate.rtl_builder_cfg.get_exe()] = True
+    with caplog.at_level(logging.WARNING):
+        assert _split_sim(tmp_path, monkeypatch, phase="build").compile() == 0
+
+    for name in missing:
+        assert (shared / name).is_file()
+        assert name in caplog.text
 
 
 def test_the_build_phase_reports_the_whole_compiles_duration(tmp_path, monkeypatch):
@@ -7462,6 +7556,7 @@ def _install_checkout_aware_split_builder(monkeypatch, calls):
         mdir.mkdir(parents=True, exist_ok=True)
         if "--no-verilate" not in cmd:
             (mdir / "Vtop.mk").write_text("default:\n\t@true\n")
+            (mdir / "Vtop_classes.mk").write_text("# classes\n")
             checkout = next(
                 parent
                 for parent in Path(cwd).resolve().parents
@@ -9178,6 +9273,27 @@ def test_a_plain_build_records_its_verilation(tmp_path, monkeypatch):
     # The plain build itself is the one it always was.
     assert [call["kind"] for call in calls] == ["full"]
     assert "--no-verilate" not in calls[0]["cmd"]
+
+
+@pytest.mark.parametrize("missing", ["Vtop.mk", "Vtop.cpp", "Vtop.h"])
+def test_cxx_flag_reuse_regenerates_incomplete_verilation(
+    tmp_path, monkeypatch, missing
+):
+    source = _write_source(tmp_path)
+    calls = []
+    _install_verilating_builder(monkeypatch, calls, source)
+    plain = _cxx_sim(tmp_path, monkeypatch)
+    assert plain.compile() == 0
+    vdir = _shared_dir_of(plain)
+    (vdir / missing).unlink()
+
+    flagged = _cxx_sim(tmp_path, monkeypatch, ["-CFLAGS", "-O1"])
+    assert flagged.compile() == 0
+
+    assert [call["kind"] for call in calls] == ["full", "verilate", "make"]
+    assert (vdir / missing).is_file()
+    assert (_shared_dir_of(flagged) / missing).is_file()
+    assert "-O1" in _user_flags_of(_shared_dir_of(flagged) / "Vtop.mk")["cflags"]
 
 
 def test_changing_only_cflags_reuses_the_verilation_and_runs_the_make(

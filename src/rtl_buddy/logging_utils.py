@@ -605,6 +605,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "compile.stamp_write_failed above for why the stamp is "
                 "missing."
             )
+        case "compile.verilation_incomplete":
+            return (
+                f"{fields.get('test')}: generated build files are missing: "
+                f"{', '.join(fields.get('missing') or [])}. "
+                f"Regenerating the build described by {fields.get('record')}."
+            )
         case "compile.build_phase_fallback":
             reason = {
                 "marker-missing": (
@@ -624,6 +630,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     "the build directory without the -CFLAGS/-LDFLAGS options "
                     "holds no verilation of these inputs"
                 ),
+                "verilation-incomplete": "the recorded generated build files are missing",
                 "verilation-foreign": (
                     "the verilation without the -CFLAGS/-LDFLAGS options belongs "
                     "to another checkout"
