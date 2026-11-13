@@ -1021,3 +1021,24 @@ def test_progress_with_a_non_utf8_byte_still_reads(tmp_path):
     )
     events = pnr_checkpoints.read_progress(str(tmp_path))
     assert [e["event"] for e in events] == ["step_begin", "step_end"]
+
+
+def test_the_first_event_survives_openstas_unknown_handler(tmp_path):
+    """OpenSTA's `sta_unknown` evaluates what `unknown` returns as a command. On Tcl 9 the session's first `clock format` loads the system time zone through it, so that call fails."""
+    from importlib.resources import files
+
+    tkinter = pytest.importorskip("tkinter")
+    interp = tkinter.Tcl()
+    if int(interp.eval("info tclversion").split(".")[0]) < 9:
+        pytest.skip("Tcl 8 loads the clock commands without `unknown`")
+    interp.eval(
+        "proc sta_unknown {args} { return [uplevel 1 [::unknown {*}$args]] }\n"
+        "namespace unknown sta_unknown"
+    )
+    progress = tmp_path / pnr_checkpoints.PROGRESS_NAME
+    interp.eval(files("rtl_buddy.pnr").joinpath("checkpoints.tcl").read_text())
+    interp.eval(f"set rb::ckpt::progress {{{progress}}}")
+    interp.eval("rb::ckpt::emit flow_begin {}")
+    (event,) = pnr_checkpoints.read_progress(str(tmp_path))
+    assert event["event"] == "flow_begin"
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d", event["t"])

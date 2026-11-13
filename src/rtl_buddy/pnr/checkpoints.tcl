@@ -65,6 +65,11 @@ namespace eval rb::ckpt {
     variable rss_reset 0
 }
 
+# On Tcl 9 the session's first `clock format` auto-loads the system time zone
+# through `unknown`, and OpenSTA's `sta_unknown` evaluates the loaded command's
+# result as a command, so that one call fails. Absorb it here.
+catch {clock format 0}
+
 # JSON string literal; error messages carry quotes, backslashes and newlines.
 proc rb::ckpt::json_str {s} {
     set out ""
