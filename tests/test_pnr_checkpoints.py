@@ -1021,3 +1021,44 @@ def test_progress_with_a_non_utf8_byte_still_reads(tmp_path):
     )
     events = pnr_checkpoints.read_progress(str(tmp_path))
     assert [e["event"] for e in events] == ["step_begin", "step_end"]
+
+
+# Loads `checkpoints.tcl` (argv[1]) under OpenSTA's `unknown` handler in a Tcl 9
+# interpreter and emits one event to argv[2]; exits 3 without one.
+_OPENSTA_UNKNOWN_DRIVER = """
+import sys
+try:
+    import tkinter
+except ImportError:
+    sys.exit(3)
+interp = tkinter.Tcl()
+if int(interp.eval("info tclversion").split(".")[0]) < 9:
+    sys.exit(3)
+interp.eval("proc sta_unknown {args} { return [uplevel 1 [::unknown {*}$args]] }")
+interp.eval("namespace unknown sta_unknown")
+interp.eval(open(sys.argv[1]).read())
+interp.call("set", "rb::ckpt::progress", sys.argv[2])
+interp.eval("rb::ckpt::emit flow_begin {}")
+"""
+
+
+def test_the_first_event_survives_openstas_unknown_handler(tmp_path):
+    """OpenSTA's `sta_unknown` evaluates what `unknown` returns as a command. On Tcl 9 the session's first `clock format` loads the system time zone through it, so that call fails."""
+    from importlib.resources import files
+
+    script = files("rtl_buddy.pnr").joinpath("checkpoints.tcl")
+    progress = tmp_path / pnr_checkpoints.PROGRESS_NAME
+    done = _REAL_RUN(
+        [sys.executable, "-c", _OPENSTA_UNKNOWN_DRIVER, str(script), str(progress)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if done.returncode == 3:
+        pytest.skip(
+            "needs a Tcl 9 tkinter: Tcl 8 loads the clock commands without `unknown`"
+        )
+    assert done.returncode == 0, done.stderr
+    (event,) = pnr_checkpoints.read_progress(str(tmp_path))
+    assert event["event"] == "flow_begin"
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d", event["t"])
