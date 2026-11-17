@@ -995,3 +995,38 @@ def test_equivalent_gates_share_a_digest(tmp_path, block, flag):
     assert digest == same
     # Without the gate the digest differs.
     assert _digest({}, False)[1] != digest
+
+
+def test_judged_timing_takes_each_sides_tns_from_its_worst_judged_corner():
+    timing = {
+        "wns_setup_ps": -300.0,
+        "wns_hold_ps": -50.0,
+        "tns_ps": -900.0,
+        "tns_hold_ps": -80.0,
+        "unconstrained": [],
+        "corners": {
+            "ss": {
+                "wns_setup_ps": -300.0,
+                "wns_hold_ps": 20.0,
+                "tns_ps": -900.0,
+                "tns_hold_ps": 0.0,
+            },
+            "ff": {
+                "wns_setup_ps": 100.0,
+                "wns_hold_ps": -50.0,
+                "tns_ps": 0.0,
+                "tns_hold_ps": -80.0,
+            },
+            "tt": {
+                "wns_setup_ps": -10.0,
+                "wns_hold_ps": -5.0,
+                "tns_ps": -40.0,
+                "tns_hold_ps": -6.0,
+            },
+        },
+    }
+    view = pnr_openroad._judged_timing(
+        timing, "", {"setup": ["ss", "tt"], "hold": ["tt"]}
+    )
+    assert (view["tns_ps"], view["tns_hold_ps"]) == (-900.0, -6.0)
+    assert pnr_openroad._tns_over_sides(view, ["setup", "hold"]) == -906.0

@@ -620,7 +620,9 @@ def test_a_probe_skips_timing_repair_and_stops_after_global_route(tmp_path):
 # (round 0 is the detailed route) from `RB_STUB_SETUP` and `RB_STUB_HOLD` (one
 # value per round from round 0, in the Liberty unit; hold defaults to 0, a
 # missing setup value is not reported), and each corner's from
-# `RB_STUB_SETUP_<corner>` and `RB_STUB_HOLD_<corner>`. `RB_STUB_DRC` lists the
+# `RB_STUB_SETUP_<corner>` and `RB_STUB_HOLD_<corner>`; their total negative
+# slack likewise from `RB_STUB_TNS` (default -1.5) and `RB_STUB_TNS_HOLD`
+# (default 0), and `RB_STUB_TNS_<corner>`, `RB_STUB_TNS_HOLD_<corner>`. `RB_STUB_DRC` lists the
 # rounds whose detailed route reports a violation (0: the flow's detailed
 # route); `RB_STUB_RSZ0074=<round>` makes that round's `repair_timing` fail as
 # OpenROAD's does without usable routes; `RB_STUB_REPAIR_FAIL=<round>` makes
@@ -673,13 +675,20 @@ proc sta::worst_slack_scene {scene min_max} {
     set kind [expr {$min_max eq "max" ? "SETUP" : "HOLD"}]
     return [rb_slack RB_STUB_${kind}_$scene 0.0]
 }
-proc sta::total_negative_slack_scene_cmd {scene min_max} { return 0.0 }
+proc sta::total_negative_slack_scene_cmd {scene min_max} {
+    set kind [expr {$min_max eq "max" ? "" : "_HOLD"}]
+    return [rb_slack RB_STUB_TNS${kind}_$scene 0.0]
+}
 proc report_tns {args} {
     if {[rb_round] eq ""} { return }
     if {[rb_stub_round RB_STUB_ERROR]} {
         puts "\[ERROR STA-0001\] stub"
     }
-    if {[lsearch $args -min] >= 0} { puts "tns min 0.0" } else { puts "tns max -1.5" }
+    if {[lsearch $args -min] >= 0} {
+        puts "tns min [rb_slack RB_STUB_TNS_HOLD 0.0]"
+    } else {
+        puts "tns max [rb_slack RB_STUB_TNS -1.5]"
+    }
 }
 proc write_spef {path} {
     if {[rb_round] ne ""} { rb_write $path "spef r[rb_round]" }
@@ -1915,7 +1924,8 @@ def test_a_round_that_trades_a_large_hold_miss_for_a_small_setup_miss_is_kept(
         "rounds": 1,
         "stop": "last_round",
         "reason": "all 1 round(s) ran; round 1 times better on hold and worse on "
-        "setup than round 0, and its worst violation, setup WNS -0.0030 ns, is "
+        "setup than round 0; its total negative slack, -1.5000 ns, is equal to "
+        "round 0's, -1.5000 ns; its worst violation, setup WNS -0.0030 ns, is "
         "smaller than round 0's, hold WNS -0.0320 ns",
         "passed_over_round": None,
     }
@@ -1993,9 +2003,11 @@ def test_a_round_that_trades_back_for_no_smaller_violation_stops_the_rounds(
         "rounds": 3,
         "stop": "no_improvement",
         "reason": "round 2 did not improve timing: round 2 times better on setup "
-        f"and worse on hold than round 1, and its worst violation, {worst} round "
+        "and worse on hold than round 1; its total negative slack, -1.5000 ns, is "
+        f"equal to round 1's, -1.5000 ns; its worst violation, {worst} round "
         "1's, setup WNS -0.0030 ns; round 1 times better on hold and worse on setup "
-        "than round 0, and its worst violation, setup WNS -0.0030 ns, is smaller "
+        "than round 0; its total negative slack, -1.5000 ns, is equal to round 0's, "
+        "-1.5000 ns; its worst violation, setup WNS -0.0030 ns, is smaller "
         "than round 0's, hold WNS -0.0320 ns",
         "passed_over_round": None,
     }
@@ -3255,7 +3267,7 @@ def test_repair_steps_without_wire_rc_or_after_timing_render_as_before():
     )
 
 
-def test_repair_steps_set_the_wire_rc_around_each_repair_design_and_repeat_it():
+def test_repair_steps_set_the_wire_rc_around_all_their_repairs():
     steps = pnr_openroad._repair_steps_tcl(
         "T",
         RepairDesign(slew_margin=20.0, wire_rc=WireRc(layer="M5"), after_timing=True),
@@ -3264,14 +3276,15 @@ def test_repair_steps_set_the_wire_rc_around_each_repair_design_and_repeat_it():
         1.0,
         None,
     ).splitlines()
-    design = [
+    commands = [line for line in steps if not line.startswith("puts")]
+    assert commands == [
         "rb::rc::save",
         "rb::rc::apply {layer {M5}}",
         "repair_design -slew_margin 20",
+        "repair_timing -hold",
+        "repair_design -slew_margin 20",
         "rb::rc::restore",
     ]
-    commands = [line for line in steps if not line.startswith("puts")]
-    assert commands == design + ["repair_timing -hold"] + design
     logged = [line for line in steps if line.startswith("puts")]
     assert logged == [
         'puts ">>> T: repair_design -slew_margin 20 (wire-rc: signal wire RC '
@@ -3368,10 +3381,8 @@ def _rc_state(**signal) -> str:
     ],
     ids=["rc", "layer"],
 )
-def test_repair_design_runs_at_the_wire_rc_and_repair_timing_at_the_session_s(
-    wire_rc, signal
-):
-    """Each `repair_design` sees the `wire-rc` signal RC in every scene (a layer's RC for the scene, else its LEF RC); each `repair_timing`, and the session after, the RC the session had, horizontal and vertical apart. Clock RC never changes."""
+def test_every_repair_of_the_steps_runs_at_the_wire_rc(wire_rc, signal):
+    """Each `repair_design` and `repair_timing` sees the `wire-rc` signal RC in every scene (a layer's RC for the scene, else its LEF RC); the session after gets back the RC it had, horizontal and vertical apart. Clock RC never changes."""
     steps = pnr_openroad._repair_steps_tcl(
         "T", RepairDesign(wire_rc=wire_rc, after_timing=True), 0.0, 0.0, 1.0, None
     )
@@ -3380,7 +3391,7 @@ def test_repair_design_runs_at_the_wire_rc_and_repair_timing_at_the_session_s(
     )
     *_printed, design, setup, hold, again, after = result.split("\n")
     assert design == again == f"repair_design: {_rc_state(**signal)}"
-    assert setup == hold == f"repair_timing: {_rc_state()}"
+    assert setup == hold == f"repair_timing: {_rc_state(**signal)}"
     assert after == _rc_state()
 
 
@@ -3397,8 +3408,7 @@ def test_the_log_names_the_signal_wire_rc_of_each_repair_step():
     assert printed == [
         ">>> T: repair_design (wire-rc: signal wire RC 0.06 kohm/um, 0.17 fF/um)",
         ">>> T: repair_timing -setup (setup margin 0 ns, signal wire RC "
-        "ss 0.003 kohm/um, 0.2 fF/um; ff 0.001 kohm/um, 0.1 fF/um for the nets it "
-        "changes)",
+        "0.06 kohm/um, 0.17 fF/um for the nets it changes)",
     ]
 
 
@@ -3463,7 +3473,7 @@ _PR_RC = {
 
 
 @pytest.mark.parametrize("reroute", ["eco", "full"])
-def test_a_round_repairs_design_at_the_wire_rc_and_again_before_legalizing(
+def test_a_round_repairs_at_the_wire_rc_and_designs_again_before_legalizing(
     tmp_path, monkeypatch, reroute
 ):
     backend, artefacts = _repair_backend(
@@ -3482,10 +3492,9 @@ def test_a_round_repairs_design_at_the_wire_rc_and_again_before_legalizing(
     apply = "rb::rc::apply {resistance 0.06 capacitance 0.17}\n"
     order = [
         "\nrb::rc::save\n" + apply,
-        "repair_design -slew_margin 20\nrb::rc::restore\n",
+        "repair_design -slew_margin 20\n",
         "\nrepair_timing -setup -setup_margin 0.1\n",
         "\nrepair_timing -hold -setup_margin 0.1\n",
-        "rb::rc::save\n" + apply,
         "after timing repair (wire-rc",
         "repair_design -slew_margin 20\nrb::rc::restore\n",
     ]
@@ -3629,10 +3638,14 @@ def test_the_electrical_round_repairs_at_its_margins_and_the_repair_design_wire_
         electrical_repair=RepairDesign(slew_margin=10.0, cap_margin=5.0),
     )
     assert repair.electrical_design() == RepairDesign(
-        slew_margin=10.0, cap_margin=5.0, wire_rc=WireRc(layer="M5")
+        slew_margin=10.0, cap_margin=5.0, wire_rc=WireRc(layer="M5"), after_timing=True
     )
     assert replace(repair, repair_design=None).electrical_design() == RepairDesign(
-        slew_margin=10.0, cap_margin=5.0
+        slew_margin=10.0, cap_margin=5.0, after_timing=True
+    )
+    # Without a timing side there is no timing repair to follow.
+    assert replace(repair, setup_margin=None).electrical_design() == RepairDesign(
+        slew_margin=10.0, cap_margin=5.0, wire_rc=WireRc(layer="M5")
     )
     assert replace(repair, electrical_repair=None).electrical_design() is None
 
@@ -3738,7 +3751,7 @@ def test_the_electrical_round_repairs_the_best_round_s_violators(
         == (done["electrical_round"])
     )
     assert "post-route electrical round 2 kept" in res.results["desc"]
-    # The round repairs the best round's database on its SPEF, with repair_design only.
+    # The round repairs the best round's database on its SPEF, then timing at the block's margins.
     assert (run_dir / "06_post_route_repair.best.odb").samefile(
         run_dir / "06_post_route_repair.r1.odb"
     )
@@ -3751,8 +3764,16 @@ def test_the_electrical_round_repairs_the_best_round_s_violators(
     r2 = (run_dir / "06_post_route_repair.r2.repair.tcl").read_text()
     assert "read_db [file join $RB_RUN_DIR 06_post_route_repair.best.odb]" in r2
     assert re.search(r"^read_spef .*06_post_route_repair\.best\.spef\]$", r2, re.M)
-    assert r2.count("\nrepair_design -slew_margin 10 -cap_margin 5\n") == 1
-    assert not re.search(r"^repair_timing", r2, re.M)
+    commands = [
+        line
+        for line in r2.splitlines()
+        if line.startswith(("repair_design", "repair_timing"))
+    ]
+    assert commands == [
+        "repair_design -slew_margin 10 -cap_margin 5",
+        "repair_timing -setup -setup_margin 0.1",
+        "repair_design -slew_margin 10 -cap_margin 5",
+    ]
     assert "\ndetailed_placement" in r2 and "\ndetailed_route \\" in r2
     if reroute == "full":
         assert "destroyNetWires" in r2
@@ -4592,3 +4613,168 @@ def test_the_abstract_digest_names_max_buffer_percent_only_when_set(tmp_path):
         _real_platform(tmp_path, global_route_repair={**gr, "max-buffer-percent": 40}),
     )
     assert budget["global_route_repair"]["max_buffer_percent"] == 40.0
+
+
+# -- trades on total negative slack, electrical violators keep the rounds going -----
+
+
+@pytest.mark.parametrize(
+    "tns, kept",
+    [
+        # Round 1 closes hold and cuts setup TNS, one setup path 16 ps worse.
+        ("-49.9 -31.7", 1),
+        # The same trade with more setup TNS than round 0 lost on hold.
+        ("-49.9 -51.5", 0),
+    ],
+)
+def test_a_trade_of_sides_goes_to_the_smaller_total_negative_slack(
+    tmp_path, monkeypatch, tns, kept
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_BOTH, "rounds": 1},
+        env={
+            "RB_STUB_SETUP": "-0.1898 -0.206",
+            "RB_STUB_HOLD": "-0.0257 0.0",
+            "RB_STUB_TNS": tns,
+            "RB_STUB_TNS_HOLD": "-1.2 0.0",
+        },
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    rounds = _rounds(run_dir)
+    assert [r["decided_by"] for r in rounds] == [None, "total_negative_slack"]
+    post_route = res.results["post_route_repair"]
+    assert post_route["kept_round"] == kept
+    if kept:
+        assert post_route["reason"] == (
+            "all 1 round(s) ran; round 1 times better on hold and worse on setup "
+            "than round 0; its total negative slack, -31.7000 ns, is smaller than "
+            "round 0's, -51.1000 ns; its worst violation, setup WNS -0.2060 ns, is "
+            "larger than round 0's, setup WNS -0.1898 ns"
+        )
+
+
+def test_a_round_kept_on_total_negative_slack_gets_the_next_round(
+    tmp_path, monkeypatch
+):
+    """Round 2 trades a 7.5 ps worse setup path for hold met and a ninth of round 1's setup TNS: it becomes the best and round 3 runs from it."""
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_BOTH, "rounds": 3},
+        env={
+            "RB_STUB_SETUP": "-0.1424 -0.0148 -0.0223 0.001",
+            "RB_STUB_HOLD": "-0.0315 -0.0003 0.010 0.010",
+            "RB_STUB_TNS": "-15.452 -0.197 -0.0223 0.0",
+            "RB_STUB_TNS_HOLD": "-0.5 -0.0003 0.0 0.0",
+        },
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    rounds = _rounds(run_dir)
+    assert [r["best_round"] for r in rounds] == [0, 1, 2, 3]
+    assert [r["decided_by"] for r in rounds] == [
+        None,
+        "timing",
+        "total_negative_slack",
+        "timing",
+    ]
+    assert res.results["post_route_repair"]["stop"] == "timing_met"
+
+
+_PR_SLEW = {
+    "repair-design": {"slew-margin": 20},
+    "setup-margin": 0.0,
+    "hold-margin": 0.0,
+    "rounds": 2,
+}
+
+
+@pytest.mark.parametrize("gate", [True, False], ids=["gate", "electrical-repair"])
+def test_met_timing_with_electrical_violators_runs_the_next_round(
+    tmp_path, monkeypatch, gate
+):
+    post_route = dict(_PR_SLEW)
+    if not gate:
+        post_route["electrical-repair"] = {"slew-margin": 10}
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=post_route,
+        gate=gate,
+        env={
+            "RB_STUB_SETUP": "0.04 0.04 0.04",
+            "RB_STUB_HOLD": "0.01 0.01 0.01",
+            "RB_STUB_SLEW": "27 0 0",
+            "RB_STUB_CAP": "0 0 0",
+        },
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "PASS", res.results
+    (run_dir,) = _runs(artefacts)
+    rounds = _rounds(run_dir)
+    assert [r["round"] for r in rounds] == [0, 1]
+    assert [r["decided_by"] for r in rounds] == [None, "electrical_violators"]
+    done = _done(run_dir)
+    assert (done["kept_round"], done["stop"]) == (1, "timing_met")
+
+
+def test_met_timing_with_violators_stops_when_the_rounds_run_no_repair_design(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={**_PR_SLEW, "repair-design": None},
+        gate=True,
+        env={
+            "RB_STUB_SETUP": "0.04 0.04 0.04",
+            "RB_STUB_HOLD": "0.01 0.01 0.01",
+            "RB_STUB_SLEW": "27 0 0",
+            "RB_STUB_CAP": "0 0 0",
+        },
+    )
+
+    assert backend.run().results["result"] == "PASS"
+    (run_dir,) = _runs(artefacts)
+    assert [r["round"] for r in _rounds(run_dir)] == [0]
+    assert _done(run_dir)["stop"] == "timing_met"
+
+
+@pytest.mark.parametrize("gate, rounds_run", [(True, 3), (False, 2)])
+def test_a_round_with_fewer_violators_keeps_the_rounds_going_on_an_electrical_run(
+    tmp_path, monkeypatch, gate, rounds_run
+):
+    """Round 1 clears the slew violators at 1.7 ps of hold: it is not the best, but on a run that counts electrical violators round 2 still runs from it."""
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR_SLEW,
+        gate=gate,
+        env={
+            "RB_STUB_SETUP": "0.04 0.04 0.04",
+            "RB_STUB_HOLD": "-0.0002 -0.0019 0.001",
+            "RB_STUB_SLEW": "3 0 0",
+            "RB_STUB_CAP": "0 0 0",
+        },
+    )
+
+    assert backend.run().results["result"] == "PASS"
+    (run_dir,) = _runs(artefacts)
+    rounds = _rounds(run_dir)
+    assert len(rounds) == rounds_run
+    if gate:
+        assert [r["best_round"] for r in rounds] == [0, 0, 2]
+        assert _done(run_dir)["stop"] == "timing_met"
+    else:
+        assert _done(run_dir)["stop"] == "no_improvement"

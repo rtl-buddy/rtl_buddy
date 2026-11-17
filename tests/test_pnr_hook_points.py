@@ -811,7 +811,7 @@ def test_after_timing_repair_runs_after_each_timing_repair_before_legalizing(
 
 
 def test_after_timing_repair_runs_only_after_a_timing_repair(tmp_path, monkeypatch):
-    """Not where a repair is skipped or runs no `repair_timing`: a probe, a `repair_design`-only global-route repair, the electrical round."""
+    """Not where a repair is skipped or runs no `repair_timing`: a probe, a `repair_design`-only global-route repair."""
     hooks = _hooks(tmp_path, ("after-timing-repair",), _TIMING_REPAIR_HOOK)
     for name in ("probe", "closure"):
         (tmp_path / name).mkdir()
@@ -840,8 +840,12 @@ def test_after_timing_repair_runs_only_after_a_timing_repair(tmp_path, monkeypat
         "MARK after-timing-repair post_route 1 0.1 0",
     ]
     (run_dir,) = _runs(artefacts)
+    # The electrical round repairs timing at the block's margins, so its hooks follow.
     electrical = (run_dir / "06_post_route_repair.r2.repair.tcl").read_text()
-    assert "after-timing-repair" not in electrical
+    assert (
+        "set rb_setup_margin 0.1\nset rb_hold_margin 0\n"
+        "set rb_repair post_route\nset rb_repair_round 2\n"
+    ) in electrical
 
 
 @pytest.mark.parametrize("stage", ["global_route", "detailed_route"])
