@@ -21,6 +21,7 @@ rtl-buddy-filetype: fpv_config
 
 verifications:
   - name: demo_fpv_fifo
+    desc: FIFO safety properties
     tool: sby
     model: demo_fifo
     model_path: ../../design/demo_fifo/models.yaml
@@ -151,6 +152,7 @@ When the full state space is impractical, use `params` to shrink a width or dept
 ```yaml
 verifications:
   - name: my_block_proof_k8
+    desc: my_block proof at K=8
     tool: sby
     model: my_block
     top: my_block

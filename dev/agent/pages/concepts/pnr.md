@@ -421,6 +421,8 @@ After CTS the flow repairs setup, unless `post-cts-setup-repair` is false, then 
 
 `setup-margin` goes to `repair_timing -setup`, and `hold-margin` and a set `setup-margin` go to `repair_timing -hold`, as in the repairs after routing and in ORFS. Unset or 0, a margin is not passed, as OpenROAD's default is 0. The setup margin keeps that much setup slack, on placement parasitics, on the paths the hold repair delays: set it when the hold buffers the post-CTS repair inserts leave setup-critical paths failing after routing, since later repairs do not remove them. With `post-cts-setup-repair: false` the setup repair does not run, and a `setup-margin` still goes to the hold repair. A run's block overrides the platform's field by field, and `null` clears the margins. A probe skips the post-CTS repair.
 
+`max-buffer-percent` in `post-cts-repair`, `global-route-repair` or `post-route-repair` goes to that block's `repair_timing -hold` as `-max_buffer_percent`: the most buffers hold repair inserts, as a percentage of the design's instances. Unset leaves OpenROAD's default of 20%, which ORFS also keeps. Raise it when hold repair stops with `RSZ-0060` (max buffer count reached), for example on a block whose input registers need padding on most bits.
+
 ## Repair timing after routing
 
 Post-CTS repair times the design on placement estimates. Two blocks, on the platform or the run, repair again on routed parasitics. When neither the platform nor the run writes `global-route-repair` or `global-route-hold-repair`, the repair after global route runs as ORFS runs it: `repair_design`, then setup and hold repair with no margin, `{repair-design: {}, setup-margin: 0, hold-margin: 0}`. `post-route-repair` runs only when set. Both cost run time and change QoR.
@@ -602,7 +604,7 @@ A macro grid in the `pdn-config` with a `-halo` needs the standard-cell rows cut
 | `before-cts` | After legalization, `improve_placement`, `optimize_mirroring` and the `placement.macro-pin-limits` step, before `repair_clock_inverters` and `clock_tree_synthesis`. The `cts-dont-use-cells` are not yet excluded. |
 | `before-repair-clock-nets` | Right after `clock_tree_synthesis`, before `cts-repair-clock-nets` runs `repair_clock_nets`. The `cts-dont-use-cells` are still excluded. |
 | `after-cts` | After CTS and any `repair_clock_nets`, before setup and hold repair |
-| `after-timing-repair` | Right after the `repair_timing` calls of the post-CTS repair, the global-route repair and each post-route repair round, on the parasitics they repaired on and before the legalization that follows them. `$rb_repair` names the repair: `post_cts`, `global_route` or `post_route`; in a post-route round `$rb_repair_round` is the round's number. In an `eco` round it runs inside the round's incremental global route, before `repair-design.after-timing`'s `repair_design`. Not after the floorplan setup repair, and not where a repair is skipped or runs no `repair_timing`: a probe, a `global-route-repair` or `post-route-repair` without a margin, and the electrical round |
+| `after-timing-repair` | Right after the `repair_timing` calls of the post-CTS repair, the global-route repair and each post-route repair round, on the parasitics they repaired on and before the legalization that follows them. `$rb_repair` names the repair: `post_cts`, `global_route` or `post_route`; in a post-route round `$rb_repair_round` is the round's number. `$rb_setup_margin` and `$rb_hold_margin` are the margins the repair passed to `repair_timing`, in the Liberty time unit, `0` for none; the hold repair also passes the setup margin. In an `eco` round it runs inside the round's incremental global route, before `repair-design.after-timing`'s `repair_design`. Not after the floorplan setup repair, and not where a repair is skipped or runs no `repair_timing`: a probe, a `global-route-repair` or `post-route-repair` without a margin, and the electrical round |
 | `after-cts-repair` | After post-CTS setup and hold repair and their legalization |
 | `after-global-route` | After `global_route`, before global-route repair |
 | `after-global-route-repair` | After global-route repair, before the antenna repair, in the `global_route` stage, so also in a probe |
@@ -639,7 +641,7 @@ A run killed at a wall-time limit leaves only its log. `checkpoints: true` (or o
 | Stage | Holds |
 | --- | --- |
 | `floorplan` | Floorplan, macros, power grid, pins |
-| `place` | Legalized global placement |
+| `place` | Legalized global placement that passed `check_placement` |
 | `cts` | Clock tree and hold repair |
 | `global_route` | The global route after global-route repair and antenna repair, with route guides and segments and `grt_antennas.rpt`; with `global-route.grid-origin`, before the GCell grid is rebuilt from the guides |
 | `detailed_route` | The detailed route after antenna repair, before fill, with its DRC report and `drt_antennas.rpt` |
@@ -819,7 +821,7 @@ For maintainers and hook authors. The generated `pnr.tcl` runs:
 1. `platform-tcl`, Liberty, LEF, a mode and scene per corner on a multi-corner platform, netlist, SDC, `max-fanout`, `layer-rc-tcl`, don't-use cells, `session` hooks. The SDC and `max-fanout` go into every mode.
 2. Floorplan, tracks, blockages and cut-outs, tie cells, floorplan setup repair.
 3. Macro placement, tap cells, power grid, pin placement, port buffering.
-4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and the output port buffers `hold-outputs-at-pins` fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, `improve_placement` and `optimize_mirroring`, the `placement.macro-pin-limits` step.
+4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and the output port buffers `hold-outputs-at-pins` fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, `improve_placement` and `optimize_mirroring`, the `placement.macro-pin-limits` step, the place stage's `stage-end` hooks, `check_placement`. An illegal placement, including one a hook left, fails the stage, so no checkpoint is written and CTS does not start.
 5. `repair_clock_inverters`, CTS, post-CTS setup repair, hold repair, legalization.
 6. Global route, global-route repair, antenna repair, detailed route, antenna repair with detailed routes, optional post-route repair stage, whose rounds each repair antennas after their detailed route.
 7. Fill, global connections, extraction with `rcx-rules`, final reports, outputs.
