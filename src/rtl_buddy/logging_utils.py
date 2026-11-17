@@ -1465,6 +1465,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "this job's reservation, which is 1 CPU if the verilate job "
                 "lowered it"
             )
+        case "build_job.released_build_changed":
+            return (
+                f"build job: the build the verilate job recorded for "
+                f"{fields.get('test')} is gone or changed ({fields.get('reason')}; "
+                f"stamp in {fields.get('stamp_dir')}), but the verilate job already "
+                "released its simulations, so the build job leaves it alone; each "
+                "simulation checks the build before it runs"
+            )
         case "build_job.compile_inputs_moved":
             return (
                 f"build job: an input of {fields.get('test')} was rewritten while "
@@ -1652,6 +1660,18 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('test')}: simulator {_sim_exit_phrase(fields)} before "
                 f"the --early-stop {fields.get('stage')} stop; result is FAIL "
                 "(transcript not post-processed)"
+            )
+        case "postproc.log_missing":
+            build_log = fields.get("build_log")
+            return (
+                f"{fields.get('test')}: no simulation log at {fields.get('log')} after "
+                "the simulation ran, so the run has no verdict"
+                + (
+                    f"; under --dispatch, check {build_log} for a job that ran "
+                    "this test's preproc again"
+                    if build_log
+                    else ""
+                )
             )
         case "postproc.conflicting_markers":
             return (

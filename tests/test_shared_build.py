@@ -9657,6 +9657,57 @@ def test_a_settled_build_stands_until_its_executable_or_a_dependency_moves(
     assert "executable" in problem()
 
 
+def test_a_settled_build_survives_a_same_key_sibling_refreshing_its_listing(
+    tmp_path, monkeypatch
+):
+    """A header under `+incdir+` that this key's build never read changes; a test
+    reuses the build and a same-key sibling adopts it, which rewrites the stamp's
+    listing. The build is the one the first test recorded, so the build half keeps
+    it; a rebuild after that does not stand."""
+    _write_source(tmp_path)
+    _write_header(tmp_path)
+    monitor = tmp_path / "inc" / "mon.svh"
+    monitor.write_text("`define MON 1\n")
+    calls = []
+    filelist = ["src/top.sv", "+incdir+inc"]
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    def _sim(test_name, **kwargs):
+        return _make_sim(
+            tmp_path, monkeypatch, test_name=test_name, filelist=filelist, **kwargs
+        )
+
+    assert _sim("warm").compile() == 0
+    _touch(monitor, "`define MON 1\n\n")
+    first = _sim("test_a")
+    assert first.compile() == 0
+    assert first.last_compile["reused"] is True
+    record = dict(first.last_build_stamp)
+    assert _sim("test_b").adopt_group_build() == ("adopted", None)
+    assert len(calls) == 1
+    root = first._project_root
+
+    def problem(build_sha):
+        return vlog_sim_module.settled_build_problem(
+            record["build_dir"], record["fingerprint_sha"], root, build_sha=build_sha
+        )
+
+    assert (
+        vlog_sim_module.stamp_fingerprint_sha(record["build_dir"])
+        != (record["fingerprint_sha"])
+    ), (
+        "the adoption was supposed to rewrite the stamp; this test proves nothing otherwise"
+    )
+    assert problem(record["build_sha"]) is None
+    # A record without the build digest keeps the exact comparison.
+    assert "other inputs" in problem(None)
+    assert _sim("test_c", rebuild=True).compile() == 0
+    assert len(calls) == 2
+    assert "other inputs" in problem(record["build_sha"])
+
+
 @pytest.mark.parametrize("family", ["verilator", "vcs"])
 def test_a_settled_build_falls_when_a_search_directory_gains_a_file(
     tmp_path, monkeypatch, family

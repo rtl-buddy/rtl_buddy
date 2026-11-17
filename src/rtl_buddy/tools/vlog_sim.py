@@ -33,7 +33,7 @@ from ..config.rtl import expand_compile_opts
 from .vlog_filelist import VlogFilelist
 from .vlog_post import VlogPost
 from .vlog_post import UvmVlogPost
-from .vlog_post import grade_sim_exit
+from .vlog_post import describe_sim_exit, grade_sim_exit
 from .vlog_cov import coverage_collector_for
 from .artifact_paths import (
     ARTIFACT_DIRNAME,
@@ -58,6 +58,7 @@ import pprint
 from pathlib import Path
 
 from ..artifact_lock import build_dir_lock
+from ..dispatch.argv import job_log_path
 from ..dispatch.base import (
     BUILD_PHASE_BUILD,
     BUILD_PHASE_FULL,
@@ -71,6 +72,8 @@ from ..logging_utils import (
     task_status,
 )
 from ..runner.result_io import build_compile_fail_desc, load_build_result_json
+from ..runner.test_results import TestResults
+from ..runner.xfail import FAIL_STAGE_KEY
 from ..process_utils import run_managed_process
 from .vcs_license import VcsLicenseQueueMonitor, has_license_queue_marker
 
@@ -1549,11 +1552,13 @@ def _file_unchanged(stored, path, project_root):
     return _entry_matches(stored, [stored[0], *current[1:]])
 
 
-def settled_build_problem(stamp_dir, fingerprint_sha, project_root):
+def settled_build_problem(stamp_dir, fingerprint_sha, project_root, *, build_sha=None):
     """Why the build stamped in ``stamp_dir`` no longer stands, or ``None``.
 
-    For a build another job recorded as ``fingerprint_sha``: the stamp must still be
-    that one, its executable must be the one it stamped, every dependency it recorded
+    For a build another job recorded as ``fingerprint_sha`` and ``build_sha``: the
+    stamp must still be that one, or that build with its listing refreshed by a
+    same-key adoption (:func:`_stamp_build_sha`), its executable must be the one it
+    stamped, every dependency it recorded
     must be unchanged, and every ``+incdir+``/``-y`` directory it listed must list the
     same files now (by name where the stamp has dependencies, else by content too).
     This is the part of a simulation job's stamp check that needs no compile plan, so
@@ -1576,7 +1581,9 @@ def settled_build_problem(stamp_dir, fingerprint_sha, project_root):
     if not isinstance(stored, dict):
         return "no readable stamp"
     inputs = {key: value for key, value in stored.items() if key not in _STAMP_META}
-    if _fingerprint_sha(inputs) != fingerprint_sha:
+    if _fingerprint_sha(inputs) != fingerprint_sha and (
+        build_sha is None or _stamp_build_sha(stored) != build_sha
+    ):
         return "the stamp now vouches for other inputs"
     simv = stored.get("simv")
     if not (
@@ -1687,6 +1694,18 @@ def _fingerprint_sha(fingerprint):
     return hashlib.sha256(
         json.dumps(canonical, sort_keys=True).encode("utf-8")
     ).hexdigest()
+
+
+def _stamp_build_sha(stored):
+    """Digest of a stamp minus its listing (``sources``) and ``root``.
+
+    An adoption rewrites only the listing, so it keeps this digest; a rebuild stamps a
+    new executable and moves it.
+    """
+    build = {
+        key: value for key, value in stored.items() if key not in ("sources", "root")
+    }
+    return hashlib.sha256(json.dumps(build, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -4884,8 +4903,10 @@ class VlogSim:
 
         ``build_dir`` is the resolved stamp directory (for a shared build, the
         ``obj_dir_<key>`` directory), ``fingerprint_sha`` the digest of the stamp's
-        input half, and ``simv`` the entry it vouched for. The head groups runs by
-        ``build_dir`` at collect and flags a run naming a different binary or digest.
+        input half, ``build_sha`` that of everything but its listing
+        (:func:`_stamp_build_sha`), and ``simv`` the entry it vouched for. The head
+        groups runs by ``build_dir`` at collect and flags a run naming a different
+        binary or digest.
         """
         stored = self._read_build_stamp(stamp_dir)
         if stored is None:
@@ -4895,6 +4916,7 @@ class VlogSim:
         self.last_build_stamp = {
             "build_dir": os.path.realpath(str(stamp_dir)),
             "fingerprint_sha": _fingerprint_sha(inputs),
+            "build_sha": _stamp_build_sha(stored),
             "simv": stored.get("simv"),
         }
 
@@ -6124,6 +6146,38 @@ class VlogSim:
 
         return returncode
 
+    def _missing_log_results(self, log_path, *, run_id, sim_returncode):
+        """The result of a run whose ``test.log`` is gone after it simulated.
+
+        ``NA``, or ``FAIL`` when the simulator exited nonzero. Under ``--dispatch``
+        another job running PRE for this test removes the log; the desc names the
+        build job's log, which says whether that happened.
+        """
+        build_log = (
+            job_log_path(self.build_result_json)
+            if self.build_result_json is not None
+            else None
+        )
+        log_event(
+            logger,
+            logging.ERROR,
+            "postproc.log_missing",
+            test=self.test_name,
+            run_id=run_id,
+            log=str(log_path),
+            returncode=sim_returncode,
+            build_log=None if build_log is None else str(build_log),
+        )
+        desc = f"no simulation log at {log_path} after the simulation ran"
+        if sim_returncode:
+            desc += f" (sim {describe_sim_exit(sim_returncode)})"
+        if build_log is not None:
+            desc += f"; see {build_log}"
+        results = {"result": "FAIL" if sim_returncode else "NA", "desc": desc}
+        if sim_returncode:
+            results[FAIL_STAGE_KEY] = "sim"
+        return TestResults(name=self.test_name, results=results)
+
     def post(self, run_id=None, sim_returncode=None):
         """Post-process the test output into a TestResult.
 
@@ -6155,17 +6209,23 @@ class VlogSim:
                 err_path=err_path,
                 assertions_enabled=assertions_enabled,
             )
-        results = self.vlog_post.get_results()
-        # Before the coverage overlay and postproc.completed: that event's result/desc
-        # are the authoritative record for JSONL consumers, so the verdict must be
-        # final.
-        grade_sim_exit(
-            results.results,
-            sim_returncode,
-            test=self.test_name,
-            run_id=run_id,
-            transcripts=(log_path, err_path),
-        )
+        try:
+            results = self.vlog_post.get_results()
+        except FileNotFoundError:
+            results = self._missing_log_results(
+                log_path, run_id=run_id, sim_returncode=sim_returncode
+            )
+        else:
+            # Before the coverage overlay and postproc.completed: that event's
+            # result/desc are the authoritative record for JSONL consumers, so the
+            # verdict must be final.
+            grade_sim_exit(
+                results.results,
+                sim_returncode,
+                test=self.test_name,
+                run_id=run_id,
+                transcripts=(log_path, err_path),
+            )
         if self._coverage_enabled():
             cov = coverage_collector_for(
                 self._get_simulator_family(),

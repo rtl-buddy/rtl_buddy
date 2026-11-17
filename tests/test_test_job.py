@@ -3890,6 +3890,12 @@ def test_a_verilate_job_releases_every_reused_key_and_shrinks_the_build_job(
         "builder": "stub-builder",
         "reused": True,
     }
+    stamped_runner.build_stamp_of = lambda _name: {
+        "build_dir": "/b",
+        "fingerprint_sha": "sha",
+        "build_sha": "build",
+        "simv": None,
+    }
     pre: list[str] = []
     stamped_runner.prepare_hook = lambda name: pre.append(name)
     calls = _fake_release(monkeypatch)
@@ -3921,6 +3927,7 @@ def test_a_verilate_job_releases_every_reused_key_and_shrinks_the_build_job(
     envelope = load_build_result_json(minimal_project / "verilate-result-1.json")
     assert not envelope["partial"]
     assert {entry["fingerprint_sha"] for entry in envelope["builds"]} == {"sha"}
+    assert {entry["build_sha"] for entry in envelope["builds"]} == {"build"}
     # The build half re-releases only what is not marked.
     assert {entry["released"] for entry in envelope["builds"]} == {True}
 
@@ -4402,6 +4409,90 @@ def test_the_build_half_compiles_a_settled_key_whose_stamp_changed(
         assert "executable" in changed["reason"]
 
 
+@pytest.mark.parametrize("change", ["evicted", "rebuilt"])
+def test_the_build_half_leaves_a_released_config_whose_stamp_changed(
+    minimal_project: Path,
+    stamped_runner: type[_StampedStubRunner],
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+):
+    """A config whose simulations the verilate job released is never prepared here,
+    since PRE would clear the outputs in the artefact dir those simulations write.
+    The change is reported and the config recorded as the verilate job left it."""
+    from rtl_buddy.tools.vlog_sim import SHARED_BUILD_STAMP_NAME
+
+    builds = [
+        _settled_record(minimal_project, "basic"),
+        _settled_record(minimal_project, "extra", released=True),
+    ]
+    sha = builds[1]["fingerprint_sha"]
+    _verilate_envelope(minimal_project, builds)
+    stamp = minimal_project / "obj_dir_extra" / SHARED_BUILD_STAMP_NAME
+    if change == "evicted":
+        stamp.unlink()
+    else:
+        stamp.write_text(json.dumps({"sources": ["other"], "simv": "simv"}))
+    pre: list[str] = []
+    stamped_runner.prepare_hook = lambda name: pre.append(name)
+    calls = _fake_release(monkeypatch)
+    gates = _gates(
+        minimal_project / "gates-1.json",
+        [(0, "basic", "1000_1"), (1, "extra", "1000_2")],
+    )
+
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, _build_half("--gates", str(gates)))
+    assert result.exit_code == 0, result.output
+
+    assert pre == []
+    assert stamped_runner.inits == []
+    assert _build_payload(result.output)["built"] == ["basic", "extra"]
+    assert [call["job_ids"] for call in calls] == [["1000_1"]]
+    envelope = load_build_result_json(minimal_project / "build-result-1.json")
+    extra = next(e for e in envelope["builds"] if e["test"] == "extra")
+    assert (extra["fingerprint_sha"], extra["reused"]) == (sha, True)
+    records = _records(job_log_path(minimal_project / "build-result-1.json"))
+    (changed,) = [
+        r for r in records if r.get("event") == "build_job.released_build_changed"
+    ]
+    assert (changed["test"], changed["level"]) == ("extra", "WARNING")
+    assert changed["reason"] == (
+        "no readable stamp"
+        if change == "evicted"
+        else "the stamp now vouches for other inputs"
+    )
+    assert not [
+        r for r in records if r.get("event") == "build_job.settled_build_changed"
+    ]
+
+
+def test_the_build_half_settles_a_build_whose_listing_a_sibling_refreshed(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    """A same-key adoption rewrites only the stamp's listing. The record's build
+    digest still matches, so the config is settled with no PRE and no warning."""
+    from rtl_buddy.tools.vlog_sim import SHARED_BUILD_STAMP_NAME, _stamp_build_sha
+
+    builds = [_settled_record(minimal_project, name) for name in ("basic", "extra")]
+    stamp = minimal_project / "obj_dir_extra" / SHARED_BUILD_STAMP_NAME
+    stored = json.loads(stamp.read_text())
+    builds[1]["build_sha"] = _stamp_build_sha(stored)
+    stamp.write_text(json.dumps({**stored, "sources": ["extra", "refreshed"]}))
+    _verilate_envelope(minimal_project, builds)
+    pre: list[str] = []
+    stamped_runner.prepare_hook = lambda name: pre.append(name)
+
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, _build_half())
+    assert result.exit_code == 0, result.output
+
+    assert pre == []
+    assert _build_payload(result.output)["built"] == ["basic", "extra"]
+    events = _events(job_log_path(minimal_project / "build-result-1.json"))
+    assert "build_job.settled_build_changed" not in events
+    assert "build_job.released_build_changed" not in events
+
+
 def test_a_compile_that_raced_a_preproc_is_rebuilt_after_pre(
     minimal_project: Path,
     stamped_runner: type[_StampedStubRunner],
@@ -4544,5 +4635,11 @@ def test_the_shrink_and_follow_events_have_dedicated_human_messages():
     )
     assert "obj_dir_k" in changed and "1 CPU" in changed
     assert "the executable changed" in changed
+    left = _human_message(
+        "build_job.released_build_changed",
+        {"test": "t", "stamp_dir": "obj_dir_k", "reason": "no readable stamp"},
+    )
+    assert "obj_dir_k" in left and "no readable stamp" in left
+    assert "released" in left and "compiles here" not in left
     moved = _human_message("build_job.compile_inputs_moved", {"test": "t"})
     assert "t was rewritten" in moved and "preproc" in moved

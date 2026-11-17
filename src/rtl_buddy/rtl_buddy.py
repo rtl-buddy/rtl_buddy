@@ -3929,6 +3929,10 @@ class RtlBuddy:
                 # validate the stamp compares its fingerprint against this, and declines
                 # to recompile either way.
                 build_entry["fingerprint_sha"] = stamp["fingerprint_sha"]
+                if stamp.get("build_sha") is not None:
+                    # Lets the build half tell a same-key adoption's listing refresh
+                    # from a rebuild.
+                    build_entry["build_sha"] = stamp["build_sha"]
                 if stamp.get("build_dir"):
                     # Where the build half re-reads the stamp before trusting it.
                     build_entry["stamp_dir"] = os.path.relpath(
@@ -4265,7 +4269,8 @@ class RtlBuddy:
 
         # ---- what the verilate job settled (the build half of a split compile).
         # A config it left built and stamped is recorded with no PRE, once its stamp is
-        # confirmed still on disk. Of the configs it verilated, the first of each key
+        # confirmed still on disk or, if it released the config's simulations, whatever
+        # the stamp now says. Of the configs it verilated, the first of each key
         # leads: it runs PRE and the make, and the rest follow without PRE when their
         # recorded inputs match its build. Anything else, and every config when the
         # envelope is unusable, goes the full way. The verilate job ran every PRE, so it
@@ -4312,9 +4317,23 @@ class RtlBuddy:
                             Path(suite_dir) / stamp_dir,
                             record["fingerprint_sha"],
                             project_root,
+                            build_sha=record.get("build_sha"),
                         )
                     )
                     if problem is None:
+                        settled[index] = record
+                        continue
+                    if record.get("released"):
+                        # Its simulations may be running in its artefact dir, which
+                        # PRE would clear. They validate the build themselves.
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "build_job.released_build_changed",
+                            test=cfg.get_name(),
+                            stamp_dir=stamp_dir,
+                            reason=problem,
+                        )
                         settled[index] = record
                         continue
                     # Evicted, cleaned or rebuilt since the verilate job: compile it
