@@ -4236,6 +4236,45 @@ def test_a_gated_job_declines_on_a_missing_stamp_beside_a_real_simv(
     assert "not recompiling" in sim.compile_fail_desc
 
 
+def test_a_gated_job_names_a_released_build_the_build_job_held(
+    tmp_path, monkeypatch, caplog
+):
+    """A build the build job left alone because its key had released simulations is
+    reported with the build job's reason, not as a compile the build job made."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    calls.clear()
+    envelope = _write_build_envelope(
+        tmp_path,
+        failed=[],
+        built=["test_b"],
+        builds=[
+            {
+                "test": "test_b",
+                "fingerprint_sha": "sha",
+                "released_build_changed": "no readable stamp",
+            }
+        ],
+    )
+    sim = _gated(tmp_path, monkeypatch, "test_b", envelope=envelope)
+    _stamp_path(sim).unlink()
+
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 1
+
+    assert calls == []
+    (rejected,) = _events(caplog, "compile.build_stamp_rejected")
+    assert rejected["released_build_changed"] == "no readable stamp"
+    desc = sim.compile_fail_desc
+    assert "no readable stamp" in desc and "released" in desc
+    assert "build job built this test" not in desc
+    assert str(tmp_path / "artefacts" / ".dispatch" / "build-rtl_buddy-1.log") in desc
+
+
 def _break_stamp_writes(monkeypatch, *, error=errno.EROFS):
     """Fail every stamp write and leave other artefact writes alone."""
     real = vlog_sim_module.VlogSim._replace_text
@@ -9655,6 +9694,61 @@ def test_a_settled_build_stands_until_its_executable_or_a_dependency_moves(
     assert "executable" in problem()
     simv.unlink()
     assert "executable" in problem()
+
+
+def test_a_settled_build_survives_a_same_key_sibling_refreshing_its_listing(
+    tmp_path, monkeypatch
+):
+    """A header under `+incdir+` that this key's build never read changes; a test
+    reuses the build and a same-key sibling adopts it, which rewrites the stamp's
+    listing. The build is the one the first test recorded, so the build half keeps
+    it; a rebuild after that does not stand."""
+    _write_source(tmp_path)
+    _write_header(tmp_path)
+    monitor = tmp_path / "inc" / "mon.svh"
+    monitor.write_text("`define MON 1\n")
+    calls = []
+    filelist = ["src/top.sv", "+incdir+inc"]
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    def _sim(test_name, **kwargs):
+        return _make_sim(
+            tmp_path, monkeypatch, test_name=test_name, filelist=filelist, **kwargs
+        )
+
+    assert _sim("warm").compile() == 0
+    _touch(monitor, "`define MON 1\n\n")
+    first = _sim("test_a")
+    assert first.compile() == 0
+    assert first.last_compile["reused"] is True
+    record = dict(first.last_build_stamp)
+    build_sha = vlog_sim_module.stamp_build_sha(
+        record["build_dir"], record["fingerprint_sha"]
+    )
+    assert build_sha is not None
+    assert _sim("test_b").adopt_group_build() == ("adopted", None)
+    assert len(calls) == 1
+    root = first._project_root
+
+    def problem(build_sha):
+        return vlog_sim_module.settled_build_problem(
+            record["build_dir"], record["fingerprint_sha"], root, build_sha=build_sha
+        )
+
+    assert (
+        vlog_sim_module.stamp_fingerprint_sha(record["build_dir"])
+        != (record["fingerprint_sha"])
+    ), (
+        "the adoption was supposed to rewrite the stamp; this test proves nothing otherwise"
+    )
+    assert problem(build_sha) is None
+    # A record without the build digest keeps the exact comparison.
+    assert "other inputs" in problem(None)
+    assert _sim("test_c", rebuild=True).compile() == 0
+    assert len(calls) == 2
+    assert "other inputs" in problem(build_sha)
 
 
 @pytest.mark.parametrize("family", ["verilator", "vcs"])

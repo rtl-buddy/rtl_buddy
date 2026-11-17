@@ -1,6 +1,6 @@
 """A simulator that exits nonzero after the transcript's PASS verdict fails the test.
 
-Covers the exit-status rule in ``grade_sim_exit``: the ``final``-block assertion, ``$stop`` and abort shapes Verilator prints after the pass marker, the cases that keep their verdict, and how an xfail marker reads the result.
+Covers the exit-status rule in ``grade_sim_exit``: the ``final``-block assertion, ``$stop`` and abort shapes Verilator prints after the pass marker, the cases that keep their verdict, and how an xfail marker reads the result. Also how ``VlogSim.post`` grades a run whose transcript is gone.
 """
 
 from __future__ import annotations
@@ -9,6 +9,8 @@ import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from rtl_buddy.logging_utils import _human_message, setup_logging
 from rtl_buddy.runner.test_results import TestResults as RtlBuddyTestResults
@@ -214,3 +216,57 @@ def test_vlog_sim_post_reads_stderr_for_the_error_line(tmp_path: Path):
     results = sim.post(sim_returncode=1).results
     assert results["result"] == "FAIL"
     assert results[FIRST_ERROR_KEY] == "%Error: tb.sv:1: Verilog $stop"
+
+
+@pytest.mark.parametrize(
+    ("returncode", "uvm", "split", "unreadable", "expected"),
+    [
+        (0, None, True, "missing", "NA"),
+        (1, None, True, "missing", "FAIL"),
+        (0, SimpleNamespace(), True, "missing", "NA"),
+        (0, None, False, "missing", "NA"),
+        (0, None, True, "directory", "NA"),
+    ],
+    ids=["exit-0", "exit-1", "uvm", "unsplit", "directory"],
+)
+def test_vlog_sim_post_reports_an_unreadable_log_as_a_result(
+    tmp_path: Path, returncode, uvm, split, unreadable, expected
+):
+    """A run whose ``test.log`` cannot be read is a result, not a traceback. Under a split dispatched compile it names the build job's log."""
+    log = tmp_path / "test.log"
+    if unreadable == "directory":
+        log.mkdir()
+    sim = VlogSim.__new__(VlogSim)
+    sim.test_name = "t"
+    sim.run_id = None
+    sim.test_cfg = SimpleNamespace(uvm=uvm)
+    if uvm is not None:
+        uvm.max_warns = uvm.max_errors = 0
+    dispatch_dir = tmp_path / ".dispatch"
+    sim.build_result_json = dispatch_dir / "build-result-7.json"
+    sim.verilate_result_json = (
+        dispatch_dir / "verilate-result-7.json" if split else None
+    )
+    sim._get_log_path = lambda run_id=None: str(log)
+    sim._get_err_path = lambda run_id=None: str(tmp_path / "test.err")
+    sim._assertions_enabled = lambda: False
+    sim._coverage_enabled = lambda: False
+    machine_log = tmp_path / "rb.jsonl"
+    setup_logging(color=False, machine=True, log_path=machine_log)
+
+    results = sim.post(sim_returncode=returncode).results
+
+    assert not log.is_file()
+    assert results["result"] == expected
+    build_log = str(dispatch_dir / "build-rtl_buddy-7.log")
+    assert str(log) in results["desc"]
+    assert (build_log in results["desc"]) == split
+    assert ("exited 1" in results["desc"]) == bool(returncode)
+    assert is_run_failure(RtlBuddyTestResults("t", results))
+    (event,) = [
+        e for e in _events(machine_log) if e.get("event") == "postproc.log_unreadable"
+    ]
+    assert event["level"] == "ERROR"
+    assert event.get("build_log") == (build_log if split else None)
+    human = _human_message("postproc.log_unreadable", event)
+    assert str(log) in human and (build_log in human) == split

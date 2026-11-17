@@ -196,7 +196,7 @@ class VlogPost:
         match_pass = None
         match_fail = None
         match_err = None
-        with open(self.path, "r") as f:
+        with open(self.path, "r", errors="replace") as f:
             for line in f.readlines():
                 if match_pass is None:
                     match_pass = re.search(r"^PASS\s*(.*)", line)
@@ -282,7 +282,7 @@ class UvmVlogPost(VlogPost):
         """Return TestResults graded against max_warns, max_errors and zero fatals."""
 
         results = {}
-        with open(self.path, "r") as f:
+        with open(self.path, "r", errors="replace") as f:
             text = f.read()
             summary = re.search(
                 r"-+\s*UVM Report Summary\s*-+\s*\**\s*Report counts by severity\s*((?:UVM_(?:INFO|WARNING|ERROR|FATAL)\s*:?\s*[0-9]+\s?)+)",

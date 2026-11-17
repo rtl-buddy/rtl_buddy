@@ -578,6 +578,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     "on this node, an edit that landed mid-run — and re-run."
                 )
             )
+            held = fields.get("released_build_changed")
+            if held:
+                return (
+                    f"{fields.get('test')}{run_note}: not compiling — the build of "
+                    "this test changed after the verilate job released its "
+                    f"simulations ({held}), and the build job left it alone rather "
+                    "than rebuild it under them. Re-run; if it recurs, find what "
+                    f"rebuilds or prunes {fields.get('build_dir')} or edits its "
+                    "inputs during the run"
+                )
             return (
                 f"{fields.get('test')}{run_note}: not compiling — the build "
                 f"job built this test {what}{why}. Recompiling would run into "
@@ -1455,15 +1465,25 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 "build job: no usable verilate job record at "
                 f"{fields.get('path')}, so every config runs preproc and "
-                "compiles here"
+                "compiles here, except those of a build whose simulations it "
+                "had already released"
             )
         case "build_job.settled_build_changed":
             return (
                 f"build job: the build the verilate job recorded for "
                 f"{fields.get('test')} is gone or changed ({fields.get('reason')}; "
-                f"stamp in {fields.get('stamp_dir')}), so it compiles here, with "
-                "this job's reservation, which is 1 CPU if the verilate job "
-                "lowered it"
+                f"stamp in {fields.get('stamp_dir')}), and no simulation of that "
+                "build was released yet, so it compiles here, with this job's "
+                "reservation, which is 1 CPU if the verilate job lowered it"
+            )
+        case "build_job.released_build_changed":
+            return (
+                f"build job: the build the verilate job recorded for "
+                f"{fields.get('test')} is gone or changed ({fields.get('reason')}; "
+                f"stamp in {fields.get('stamp_dir')}), but the verilate job already "
+                "released simulations of that build, so the build job neither "
+                "prepares nor rebuilds it; a simulation that finds the build "
+                "unusable fails naming this reason"
             )
         case "build_job.compile_inputs_moved":
             return (
@@ -1652,6 +1672,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('test')}: simulator {_sim_exit_phrase(fields)} before "
                 f"the --early-stop {fields.get('stage')} stop; result is FAIL "
                 "(transcript not post-processed)"
+            )
+        case "postproc.log_unreadable":
+            build_log = fields.get("build_log")
+            return (
+                f"{fields.get('test')}: cannot read the simulation log "
+                f"{fields.get('log')} ({fields.get('error')}), so the run has no "
+                "verdict"
+                + (
+                    f"; check {build_log} for a build job that ran this test's "
+                    "preproc again"
+                    if build_log
+                    else ""
+                )
             )
         case "postproc.conflicting_markers":
             return (

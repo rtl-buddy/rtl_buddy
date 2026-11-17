@@ -33,7 +33,7 @@ from ..config.rtl import expand_compile_opts
 from .vlog_filelist import VlogFilelist
 from .vlog_post import VlogPost
 from .vlog_post import UvmVlogPost
-from .vlog_post import grade_sim_exit
+from .vlog_post import describe_sim_exit, grade_sim_exit
 from .vlog_cov import coverage_collector_for
 from .artifact_paths import (
     ARTIFACT_DIRNAME,
@@ -58,6 +58,7 @@ import pprint
 from pathlib import Path
 
 from ..artifact_lock import build_dir_lock
+from ..dispatch.argv import job_log_path
 from ..dispatch.base import (
     BUILD_PHASE_BUILD,
     BUILD_PHASE_FULL,
@@ -71,6 +72,8 @@ from ..logging_utils import (
     task_status,
 )
 from ..runner.result_io import build_compile_fail_desc, load_build_result_json
+from ..runner.test_results import TestResults
+from ..runner.xfail import FAIL_STAGE_KEY
 from ..process_utils import run_managed_process
 from .vcs_license import VcsLicenseQueueMonitor, has_license_queue_marker
 
@@ -1495,6 +1498,24 @@ def stamp_fingerprint_sha(stamp_dir):
     )
 
 
+def stamp_build_sha(stamp_dir, fingerprint_sha):
+    """:func:`_stamp_build_sha` of the stamp in ``stamp_dir``, or ``None``.
+
+    ``None`` too when that stamp's input digest is no longer ``fingerprint_sha``, so
+    the two digests a build record carries always describe one stamp. Never raises.
+    """
+    try:
+        stored = json.loads((Path(stamp_dir) / SHARED_BUILD_STAMP_NAME).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(stored, dict):
+        return None
+    inputs = {key: value for key, value in stored.items() if key not in _STAMP_META}
+    if _fingerprint_sha(inputs) != fingerprint_sha:
+        return None
+    return _stamp_build_sha(stored)
+
+
 def _directory_files(dir_path, *, recursive):
     """``[(name, path)]`` of the input files a directory listing covers, sorted.
 
@@ -1549,11 +1570,13 @@ def _file_unchanged(stored, path, project_root):
     return _entry_matches(stored, [stored[0], *current[1:]])
 
 
-def settled_build_problem(stamp_dir, fingerprint_sha, project_root):
+def settled_build_problem(stamp_dir, fingerprint_sha, project_root, *, build_sha=None):
     """Why the build stamped in ``stamp_dir`` no longer stands, or ``None``.
 
-    For a build another job recorded as ``fingerprint_sha``: the stamp must still be
-    that one, its executable must be the one it stamped, every dependency it recorded
+    For a build another job recorded as ``fingerprint_sha`` and ``build_sha``: the
+    stamp must still be that one, or that build with its listing refreshed by a
+    same-key adoption (:func:`_stamp_build_sha`), its executable must be the one it
+    stamped, every dependency it recorded
     must be unchanged, and every ``+incdir+``/``-y`` directory it listed must list the
     same files now (by name where the stamp has dependencies, else by content too).
     This is the part of a simulation job's stamp check that needs no compile plan, so
@@ -1576,7 +1599,9 @@ def settled_build_problem(stamp_dir, fingerprint_sha, project_root):
     if not isinstance(stored, dict):
         return "no readable stamp"
     inputs = {key: value for key, value in stored.items() if key not in _STAMP_META}
-    if _fingerprint_sha(inputs) != fingerprint_sha:
+    if _fingerprint_sha(inputs) != fingerprint_sha and (
+        build_sha is None or _stamp_build_sha(stored) != build_sha
+    ):
         return "the stamp now vouches for other inputs"
     simv = stored.get("simv")
     if not (
@@ -1687,6 +1712,17 @@ def _fingerprint_sha(fingerprint):
     return hashlib.sha256(
         json.dumps(canonical, sort_keys=True).encode("utf-8")
     ).hexdigest()
+
+
+def _stamp_build_sha(stored):
+    """Digest of a stamp minus its listing (``sources``) and ``root``.
+
+    An adoption rewrites only the listing, so it keeps this digest; a rebuild stamps a
+    new executable and moves it.
+    """
+    return _fingerprint_sha(
+        {key: value for key, value in stored.items() if key not in ("sources", "root")}
+    )
 
 
 @dataclass
@@ -3807,6 +3843,10 @@ class VlogSim:
         disagreement is in the stamp itself; different ones mean this node's inputs
         differ from the build job's (a ``preproc`` that generates something
         different, or a mid-run edit).
+
+        ``released_build_changed`` in the record means the build job compiled nothing:
+        the verilate job had released a simulation of this key, and the build had
+        changed by the time the build job checked it. The desc names that instead.
         """
         recorded_sha = (record or {}).get("fingerprint_sha")
         own_sha = _fingerprint_sha(fingerprint)
@@ -3828,7 +3868,12 @@ class VlogSim:
                 else "and its stamp still does not validate here"
             )
         )
-        transcript = self._get_build_compile_transcript_path()
+        held = (record or {}).get("released_build_changed")
+        transcript = (
+            str(job_log_path(self.build_result_json))
+            if held is not None
+            else self._get_build_compile_transcript_path()
+        )
         log_event(
             logger,
             logging.ERROR,
@@ -3841,13 +3886,22 @@ class VlogSim:
             stamp_unwritten=stamp_unwritten,
             recorded_sha=recorded_sha,
             own_sha=own_sha,
+            released_build_changed=held,
             build_result=str(self.build_result_json),
         )
         # One line: `render_summary` puts it in a table cell.
-        self.compile_fail_desc = (
-            f"build job built this test {what} ({reason}); not recompiling "
-            f"under the simulation reservation (see {transcript})"
-        )
+        if held is not None:
+            self.compile_fail_desc = (
+                "the build of this test changed after the verilate job released its "
+                f"simulations ({held}), so the build job did not rebuild it under "
+                "them; not recompiling under the simulation reservation (see "
+                f"build_job.released_build_changed in {transcript})"
+            )
+        else:
+            self.compile_fail_desc = (
+                f"build job built this test {what} ({reason}); not recompiling "
+                f"under the simulation reservation (see {transcript})"
+            )
         self.last_compile_failure = {
             "returncode": 1,
             "transcript": transcript,
@@ -6124,6 +6178,43 @@ class VlogSim:
 
         return returncode
 
+    def _unreadable_log_results(self, log_path, error, *, run_id, sim_returncode):
+        """The result of a run whose ``test.log`` cannot be read after it simulated.
+
+        ``NA``, or ``FAIL`` when the simulator exited nonzero. Under a split dispatched
+        compile, the build job running PRE for a test whose simulation was released
+        removes the log, so the desc then names that job's log.
+        """
+        build_log = (
+            job_log_path(self.build_result_json)
+            if self.build_result_json is not None
+            and self.verilate_result_json is not None
+            else None
+        )
+        log_event(
+            logger,
+            logging.ERROR,
+            "postproc.log_unreadable",
+            test=self.test_name,
+            run_id=run_id,
+            log=str(log_path),
+            error=error.strerror or str(error),
+            returncode=sim_returncode,
+            build_log=None if build_log is None else str(build_log),
+        )
+        desc = (
+            f"cannot read simulation log {log_path} "
+            f"({error.strerror or error}) after the simulation ran"
+        )
+        if sim_returncode:
+            desc += f" (sim {describe_sim_exit(sim_returncode)})"
+        if build_log is not None:
+            desc += f"; see {build_log}"
+        results = {"result": "FAIL" if sim_returncode else "NA", "desc": desc}
+        if sim_returncode:
+            results[FAIL_STAGE_KEY] = "sim"
+        return TestResults(name=self.test_name, results=results)
+
     def post(self, run_id=None, sim_returncode=None):
         """Post-process the test output into a TestResult.
 
@@ -6155,17 +6246,23 @@ class VlogSim:
                 err_path=err_path,
                 assertions_enabled=assertions_enabled,
             )
-        results = self.vlog_post.get_results()
-        # Before the coverage overlay and postproc.completed: that event's result/desc
-        # are the authoritative record for JSONL consumers, so the verdict must be
-        # final.
-        grade_sim_exit(
-            results.results,
-            sim_returncode,
-            test=self.test_name,
-            run_id=run_id,
-            transcripts=(log_path, err_path),
-        )
+        try:
+            results = self.vlog_post.get_results()
+        except OSError as error:
+            results = self._unreadable_log_results(
+                log_path, error, run_id=run_id, sim_returncode=sim_returncode
+            )
+        else:
+            # Before the coverage overlay and postproc.completed: that event's
+            # result/desc are the authoritative record for JSONL consumers, so the
+            # verdict must be final.
+            grade_sim_exit(
+                results.results,
+                sim_returncode,
+                test=self.test_name,
+                run_id=run_id,
+                transcripts=(log_path, err_path),
+            )
         if self._coverage_enabled():
             cov = coverage_collector_for(
                 self._get_simulator_family(),
