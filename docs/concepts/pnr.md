@@ -639,7 +639,7 @@ A run killed at a wall-time limit leaves only its log. `checkpoints: true` (or o
 | Stage | Holds |
 | --- | --- |
 | `floorplan` | Floorplan, macros, power grid, pins |
-| `place` | Legalized global placement |
+| `place` | Legalized global placement that passed `check_placement` |
 | `cts` | Clock tree and hold repair |
 | `global_route` | The global route after global-route repair and antenna repair, with route guides and segments and `grt_antennas.rpt`; with `global-route.grid-origin`, before the GCell grid is rebuilt from the guides |
 | `detailed_route` | The detailed route after antenna repair, before fill, with its DRC report and `drt_antennas.rpt` |
@@ -819,7 +819,7 @@ For maintainers and hook authors. The generated `pnr.tcl` runs:
 1. `platform-tcl`, Liberty, LEF, a mode and scene per corner on a multi-corner platform, netlist, SDC, `max-fanout`, `layer-rc-tcl`, don't-use cells, `session` hooks. The SDC and `max-fanout` go into every mode.
 2. Floorplan, tracks, blockages and cut-outs, tie cells, floorplan setup repair.
 3. Macro placement, tap cells, power grid, pin placement, port buffering.
-4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and the output port buffers `hold-outputs-at-pins` fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, `improve_placement` and `optimize_mirroring`, the `placement.macro-pin-limits` step.
+4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and the output port buffers `hold-outputs-at-pins` fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, `improve_placement` and `optimize_mirroring`, the `placement.macro-pin-limits` step, `check_placement`. An illegal placement fails the stage, so no checkpoint is written and CTS does not start.
 5. `repair_clock_inverters`, CTS, post-CTS setup repair, hold repair, legalization.
 6. Global route, global-route repair, antenna repair, detailed route, antenna repair with detailed routes, optional post-route repair stage, whose rounds each repair antennas after their detailed route.
 7. Fill, global connections, extraction with `rcx-rules`, final reports, outputs.

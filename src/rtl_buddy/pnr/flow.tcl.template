@@ -121,7 +121,8 @@ repair_design{{ place_repair_design_options }}{{ match_cell_footprint }}
 {{ hook_after_repair_design_block }}
 puts ">>> Detail placement (legalize)"
 detailed_placement{{ dpl_options }}
-{{ detailed_placement_optimization }}{{ macro_pin_limits_block }}rb::global_connect
+{{ detailed_placement_optimization }}{{ macro_pin_limits_block }}check_placement -verbose
+rb::global_connect
 {{ hook_stage_end_place_block }}
 {{ @cts }}puts ">>> Clock tree synthesis"
 {{ @clocks }}{{ propagated_clocks }}{{ @/clocks }}{{ hook_before_cts_block }}{{ cts_dont_use_block }}clock_tree_synthesis \

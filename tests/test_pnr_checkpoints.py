@@ -108,7 +108,8 @@ foreach cmd {link_design read_sdc initialize_floorplan place_pins
              insert_tiecells pdngen global_placement repair_tie_fanout
              repair_design
              detailed_placement improve_placement optimize_mirroring
-             repair_clock_inverters clock_tree_synthesis repair_timing
+             repair_clock_inverters clock_tree_synthesis repair_clock_nets
+             repair_timing
              check_placement global_route detailed_route filler_placement} {
     proc $cmd {args} [list rb_stub $cmd]
 }
