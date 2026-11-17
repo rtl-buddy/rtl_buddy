@@ -176,7 +176,9 @@ def test_every_script_differs_only_by_the_flag_on_its_repairs(
         for command in _repairs(text):
             assert command.endswith(_FLAG), (name, command)
     assert _repairs(scripts["set"][electrical]) == [
-        "repair_design -slew_margin 10 -match_cell_footprint"
+        "repair_design -slew_margin 10 -match_cell_footprint",
+        "repair_timing -setup -setup_margin 0.1 -match_cell_footprint",
+        "repair_design -slew_margin 10 -match_cell_footprint",
     ]
     assert len(_repairs(scripts["set"]["06_post_route_repair.r1.repair.tcl"])) == 3
 
