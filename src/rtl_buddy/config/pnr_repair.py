@@ -79,6 +79,7 @@ class ElectricalRepairFile:
 class PostCtsRepairFile:
     setup_margin: Any = field(rename="setup-margin", default=UNSET)
     hold_margin: Any = field(rename="hold-margin", default=UNSET)
+    max_buffer_percent: Any = field(rename="max-buffer-percent", default=UNSET)
 
 
 @serde
@@ -86,6 +87,7 @@ class GlobalRouteRepairFile:
     repair_design: Any = field(rename="repair-design", default=UNSET)
     setup_margin: Any = field(rename="setup-margin", default=UNSET)
     hold_margin: Any = field(rename="hold-margin", default=UNSET)
+    max_buffer_percent: Any = field(rename="max-buffer-percent", default=UNSET)
     reroute: Any = UNSET
 
 
@@ -94,6 +96,7 @@ class PostRouteRepairFile:
     repair_design: Any = field(rename="repair-design", default=UNSET)
     setup_margin: Any = field(rename="setup-margin", default=UNSET)
     hold_margin: Any = field(rename="hold-margin", default=UNSET)
+    max_buffer_percent: Any = field(rename="max-buffer-percent", default=UNSET)
     rounds: Any = UNSET
     margin_step: Any = field(rename="margin-step", default=UNSET)
     reroute: Any = UNSET
@@ -156,29 +159,32 @@ class RepairDesign:
 
 @dataclass(frozen=True)
 class PostCtsRepair:
-    """The margins of the post-CTS repair on placement parasitics, in ns; `None` (also for a zero margin) passes none. Which sides it repairs is `post-cts-setup-repair`'s."""
+    """The margins of the post-CTS repair on placement parasitics, in ns; `None` (also for a zero margin) passes none. Which sides it repairs is `post-cts-setup-repair`'s. `max_buffer_percent` is the hold repair's `-max_buffer_percent`; `None` passes none."""
 
     setup_margin: float | None = None
     hold_margin: float | None = None
+    max_buffer_percent: float | None = None
 
 
 @dataclass(frozen=True)
 class GlobalRouteRepair:
-    """The repair after global route, on global-route parasitics. Margins are in ns; `None` skips that repair."""
+    """The repair after global route, on global-route parasitics. Margins are in ns; `None` skips that repair. `max_buffer_percent` is the hold repair's `-max_buffer_percent`; `None` passes none."""
 
     repair_design: RepairDesign | None = None
     setup_margin: float | None = None
     hold_margin: float | None = None
+    max_buffer_percent: float | None = None
     reroute: Reroute = Reroute.INCREMENTAL
 
 
 @dataclass(frozen=True)
 class PostRouteRepair:
-    """The repair rounds after detailed route, on extracted parasitics. Margins are in ns; `None` skips that repair. `electrical_repair` holds the `slew-margin` and `cap-margin` of the electrical round, or None when it does not run."""
+    """The repair rounds after detailed route, on extracted parasitics. Margins are in ns; `None` skips that repair. `electrical_repair` holds the `slew-margin` and `cap-margin` of the electrical round, or None when it does not run. `max_buffer_percent` is the hold repair's `-max_buffer_percent`; `None` passes none."""
 
     repair_design: RepairDesign | None = None
     setup_margin: float | None = None
     hold_margin: float | None = None
+    max_buffer_percent: float | None = None
     rounds: int = 1
     margin_step: float = 0.0
     reroute: PostRouteReroute = PostRouteReroute.ECO
@@ -372,23 +378,33 @@ def _read_margins(
         if value is UNSET:
             continue
         layer[attr] = None if value is None else _number(where, key, value, low=0.0)
+    value = block["max_buffer_percent"]
+    if value is not UNSET:
+        layer["max_buffer_percent"] = (
+            None
+            if value is None
+            else _number(where, "max-buffer-percent", value, low=0.0, high=100.0)
+        )
     return layer
 
 
 _POST_CTS_KEYS = {
     "setup-margin": "setup_margin",
     "hold-margin": "hold_margin",
+    "max-buffer-percent": "max_buffer_percent",
 }
 _GLOBAL_ROUTE_KEYS = {
     "repair-design": "repair_design",
     "setup-margin": "setup_margin",
     "hold-margin": "hold_margin",
+    "max-buffer-percent": "max_buffer_percent",
     "reroute": "reroute",
 }
 _POST_ROUTE_KEYS = {
     "repair-design": "repair_design",
     "setup-margin": "setup_margin",
     "hold-margin": "hold_margin",
+    "max-buffer-percent": "max_buffer_percent",
     "rounds": "rounds",
     "margin-step": "margin_step",
     "reroute": "reroute",
@@ -534,6 +550,7 @@ def resolve_global_route_repair(where: str, layers) -> GlobalRouteRepair | None:
         repair_design=_repairs(where, "global-route-repair", merged),
         setup_margin=merged.get("setup_margin"),
         hold_margin=merged.get("hold_margin"),
+        max_buffer_percent=merged.get("max_buffer_percent"),
         reroute=merged.get("reroute", Reroute.INCREMENTAL),
     )
 
@@ -544,6 +561,7 @@ def resolve_post_cts_repair(layers) -> PostCtsRepair:
     return PostCtsRepair(
         setup_margin=merged.get("setup_margin") or None,
         hold_margin=merged.get("hold_margin") or None,
+        max_buffer_percent=merged.get("max_buffer_percent"),
     )
 
 
@@ -559,6 +577,7 @@ def resolve_post_route_repair(where: str, layers) -> PostRouteRepair | None:
         repair_design=_repairs(where, "post-route-repair", merged),
         setup_margin=merged.get("setup_margin"),
         hold_margin=merged.get("hold_margin"),
+        max_buffer_percent=merged.get("max_buffer_percent"),
         rounds=merged.get("rounds", 1),
         margin_step=merged.get("margin_step", 0.0),
         reroute=merged.get("reroute", PostRouteReroute.ECO),

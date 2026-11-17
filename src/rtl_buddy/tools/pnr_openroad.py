@@ -848,10 +848,13 @@ def _repair_steps_tcl(
     sides: tuple[str, ...] | None = None,
     log_prefix: str | None = None,
     after_timing: str = "",
+    max_buffer_percent: float | None = None,
 ) -> str:
     """Return `repair_design`, then setup and hold `repair_timing`, each after a log line naming it, each with `platform`'s repair options (`_repair_command`), then `after_timing` (the `after-timing-repair` hooks, `_after_timing_repair_block`) when a `repair_timing` ran.
 
     `sides` are the `repair_timing` sides that run, by default each whose margin is set; a side that runs without a margin passes no margin option, and a set `setup_ns` is still passed to the hold repair when the setup side does not run. Each log line starts with `log_prefix`, by default `title` and a colon, and names only the margins that are set.
+
+    `max_buffer_percent` goes to the hold repair as `-max_buffer_percent`; `None` passes none.
 
     Margins are given in ns and passed in the Liberty time unit (`ps_per_unit` picoseconds), which is what `repair_timing` reads; the log line gives both. A zero margin is the tool's default and passes no option. The hold repair also passes a set setup margin, as ORFS's `repair_timing_helper` does, so it keeps that much setup slack on the paths it delays.
 
@@ -893,7 +896,10 @@ def _repair_steps_tcl(
         if kind == "hold" and setup_ns is not None:
             options.append(_option("setup", setup_ns))
         command = _repair_command(
-            f"repair_timing -{kind}" + "".join(opt for opt, _ in options), platform
+            f"repair_timing -{kind}"
+            + "".join(opt for opt, _ in options)
+            + (_max_buffer_option(max_buffer_percent) if kind == "hold" else ""),
+            platform,
         )
         note = ", ".join(n for _, n in options)
         if any(opt for opt, _ in options):
@@ -931,6 +937,13 @@ def _after_timing_repair_block(
         + _run_hook_lines("after-timing-repair", paths)
         + f"unset -nocomplain {names}\n"
     )
+
+
+def _max_buffer_option(max_buffer_percent: float | None) -> str:
+    """The hold repair's `-max_buffer_percent` option, with a leading space; `""` for `None`."""
+    if max_buffer_percent is None:
+        return ""
+    return f" -max_buffer_percent {_fmt_number(max_buffer_percent)}"
 
 
 def _with_margins(after_timing: str, setup: str = "0", hold: str = "0") -> str:
@@ -974,6 +987,7 @@ def _post_cts_repair_tcl(
             else ("hold",),
             log_prefix="  ",
             after_timing=after_timing,
+            max_buffer_percent=margins.max_buffer_percent,
         )
     setup = (
         _repair_command("repair_timing -setup", platform) + "\n"
@@ -982,7 +996,12 @@ def _post_cts_repair_tcl(
     )
     return (
         head
-        + f"{setup}{_repair_command('repair_timing -hold', platform)}\n"
+        + setup
+        + _repair_command(
+            "repair_timing -hold" + _max_buffer_option(margins.max_buffer_percent),
+            platform,
+        )
+        + "\n"
         + _with_margins(after_timing)
     )
 
@@ -1098,11 +1117,14 @@ def _global_route_repair_tcl(
     if mode is PnrMode.PROBE:
         return 'puts ">>> Global-route repair: skipped (mode: probe)"\n'
     before = "rb::ckpt::stage_timing global_route before_repair\n" if timing else ""
-    if repair == GlobalRouteRepair(hold_margin=0.0):
+    if replace(repair, max_buffer_percent=None) == GlobalRouteRepair(hold_margin=0.0):
         return (
             before + 'puts ">>> Post-global-route hold repair"\n'
             "estimate_parasitics -global_routing\n"
-            + _repair_command("repair_timing -hold", platform)
+            + _repair_command(
+                "repair_timing -hold" + _max_buffer_option(repair.max_buffer_percent),
+                platform,
+            )
             + "\n"
             + _with_margins(after_timing)
             + _start_incremental_cmd(gr)
@@ -1121,6 +1143,7 @@ def _global_route_repair_tcl(
         legalize,
         platform,
         after_timing=after_timing,
+        max_buffer_percent=repair.max_buffer_percent,
     )
     head = (
         before + f'puts ">>> {title} (reroute {repair.reroute.value})"\n'
@@ -4180,6 +4203,7 @@ class OpenRoadPnr:
                     legalize,
                     self._platform,
                     after_timing=after_timing,
+                    max_buffer_percent=repair.max_buffer_percent,
                 ),
                 legalize,
             ]
@@ -4193,6 +4217,7 @@ class OpenRoadPnr:
                 None,
                 self._platform,
                 after_timing=after_timing,
+                max_buffer_percent=repair.max_buffer_percent,
             )
             parts += [
                 files(_TEMPLATE_PACKAGE).joinpath(_ECO_REPAIR_FILE).read_text(),

@@ -4497,3 +4497,98 @@ def test_the_abstract_digest_names_post_cts_margins_only_when_set(tmp_path):
         _real_platform(tmp_path, post_cts_repair={"hold-margin": 0.01}),
     )
     assert hold["post_cts_repair"] == {"setup_margin": 0.05, "hold_margin": 0.01}
+
+
+# -- hold-repair buffer budget ------------------------------------------------------
+
+
+def test_max_buffer_percent_merges_field_by_field():
+    platform = _platform(
+        post_cts_repair={"hold-margin": 0.01, "max-buffer-percent": 40},
+        global_route_repair={"hold-margin": 0, "max-buffer-percent": 30},
+    )
+    assert platform.get_post_cts_repair() == PostCtsRepair(
+        hold_margin=0.01, max_buffer_percent=40.0
+    )
+    run = read_post_cts_repair("run", {"max-buffer-percent": 50})
+    gr_run = read_global_route_repair("run", {"max-buffer-percent": None})
+    merged = platform.with_run_repairs(gr_run, UNSET, run, "r")
+    assert merged.get_post_cts_repair().max_buffer_percent == 50.0
+    assert merged.get_global_route_repair() == GlobalRouteRepair(hold_margin=0.0)
+
+
+@pytest.mark.parametrize("value", [-1, 101, "x", True])
+def test_a_bad_max_buffer_percent_is_refused_naming_the_key(value):
+    for block, reader in (
+        ("post-cts-repair", read_post_cts_repair),
+        ("global-route-repair", read_global_route_repair),
+        ("post-route-repair", read_post_route_repair),
+    ):
+        with pytest.raises(
+            FatalRtlBuddyError, match=rf"{block}.max-buffer-percent must be a number"
+        ):
+            reader("run", {"hold-margin": 0, "max-buffer-percent": value})
+
+
+def test_max_buffer_percent_goes_to_each_hold_repair_only(tmp_path):
+    plain = _render(tmp_path, _real_platform(tmp_path))
+    assert "-max_buffer_percent" not in plain
+    text = _render(
+        tmp_path,
+        _real_platform(
+            tmp_path,
+            post_cts_repair={"max-buffer-percent": 40},
+            global_route_repair={
+                "setup-margin": 0.2,
+                "hold-margin": 0,
+                "max-buffer-percent": 35.5,
+            },
+        ),
+    )
+    assert "\nrepair_timing -setup\nrepair_timing -hold -max_buffer_percent 40\n" in (
+        _post_cts(text)
+    )
+    assert "\nrepair_timing -setup -setup_margin 200\n" in text
+    assert "\nrepair_timing -hold -setup_margin 200 -max_buffer_percent 35.5\n" in text
+    shorthand = _render(
+        tmp_path,
+        _real_platform(
+            tmp_path,
+            global_route_repair={"hold-margin": 0, "max-buffer-percent": 30},
+        ),
+    )
+    assert (
+        'puts ">>> Post-global-route hold repair"\n'
+        "estimate_parasitics -global_routing\n"
+        "repair_timing -hold -max_buffer_percent 30\n"
+    ) in shorthand
+
+
+def test_max_buffer_percent_goes_to_the_post_route_hold_repair(tmp_path, monkeypatch):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route={"hold-margin": 0.01, "max-buffer-percent": 45},
+        env={"RB_STUB_SETUP": "0.1 0.1", "RB_STUB_HOLD": "-0.02 0.0"},
+    )
+
+    assert backend.run().results["result"] == "PASS"
+    (run_dir,) = _runs(artefacts)
+    r1 = (run_dir / "06_post_route_repair.r1.repair.tcl").read_text()
+    assert "\nrepair_timing -hold -hold_margin 0.01 -max_buffer_percent 45\n" in r1
+
+
+def test_the_abstract_digest_names_max_buffer_percent_only_when_set(tmp_path):
+    from rtl_buddy.tools import pnr_abstract
+
+    pnr_cfg = _pnr_cfg(tmp_path, ())
+    gr = {"setup-margin": 0.1}
+    plain = pnr_abstract.abstract_config(
+        pnr_cfg, _real_platform(tmp_path, global_route_repair=gr)
+    )
+    assert "max_buffer_percent" not in plain["global_route_repair"]
+    budget = pnr_abstract.abstract_config(
+        pnr_cfg,
+        _real_platform(tmp_path, global_route_repair={**gr, "max-buffer-percent": 40}),
+    )
+    assert budget["global_route_repair"]["max_buffer_percent"] == 40.0

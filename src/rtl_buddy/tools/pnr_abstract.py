@@ -326,6 +326,8 @@ def _repair_digest(platform) -> dict:
     if pr is not None:
         digest["post_route_repair"] = _jsonable(asdict(pr))
     for block in digest.values():
+        if isinstance(block, dict) and block.get("max_buffer_percent", 0) is None:
+            del block["max_buffer_percent"]
         design = block.get("repair_design") if isinstance(block, dict) else None
         if design:
             # Emitted only when set so existing digests do not change.
