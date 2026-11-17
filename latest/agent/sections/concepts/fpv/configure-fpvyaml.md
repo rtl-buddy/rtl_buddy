@@ -7,6 +7,7 @@ rtl-buddy-filetype: fpv_config
 
 verifications:
   - name: demo_fpv_fifo
+    desc: FIFO safety properties
     tool: sby
     model: demo_fifo
     model_path: ../../design/demo_fifo/models.yaml

@@ -226,14 +226,14 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | Key | Behavior |
 |---|---|
 | `repair-design` | `repair_design` with `slew-margin`, `cap-margin` (percent) and `max-wire-length` (µm); `{}` uses OpenROAD's defaults |
-| `repair-design.wire-rc` | `post-route-repair` only. Signal wire RC for `repair_design`: `{resistance: <kohm/um>, capacitance: <fF/um>}` or `{layer: <name>}`. The session's RC is restored for `repair_timing`; nets `repair_design` changed keep this estimate until they are estimated again. Unset uses the session's |
+| `repair-design.wire-rc` | `post-route-repair` only. Signal wire RC for each round's repairs, `repair_design` and `repair_timing`: `{resistance: <kohm/um>, capacitance: <fF/um>}` or `{layer: <name>}`. The session's RC is restored after the round's last repair; changed nets keep this estimate until they are estimated again. Unset uses the session's |
 | `repair-design.after-timing` | `post-route-repair` only. `true` runs `repair_design` again after timing repair in each round; needs a margin. Default `false` |
 | `setup-margin`, `hold-margin` | `repair_timing -setup` / `-hold` with that margin in ns, at least 0 |
 | `max-buffer-percent` | `repair_timing -hold -max_buffer_percent`: the hold repair's buffer budget as a percentage of the design's instances, 0 to 100. Unset leaves OpenROAD's default |
 | `reroute` | `incremental` (default) or `full` for `global-route-repair`; `eco` (default) or `full` for `post-route-repair` |
 | `rounds` | `post-route-repair` only. Positive, default 1; above 1 needs a margin |
 | `margin-step` | `post-route-repair` only. ns added to the margins each round after the first. Default 0 |
-| `electrical-repair` | `post-route-repair` only. `{slew-margin, cap-margin}` (percent): one more round runs `repair_design` alone when the best round has max-slew or max-capacitance violators, and lists those it leaves that are within limits on the placement estimate. Unset runs none |
+| `electrical-repair` | `post-route-repair` only. `{slew-margin, cap-margin}` (percent): one more round runs `repair_design`, then setup and hold repair at the block's margins, when the best round has max-slew or max-capacitance violators, and lists those it leaves that are within limits on the placement estimate. Unset runs none |
 
 When neither the platform nor the run sets `global-route-repair` or `global-route-hold-repair`, the repair after global route is `{repair-design: {}, setup-margin: 0, hold-margin: 0}`: `repair_design`, then setup and hold repair with no margin, as ORFS repairs after global route. A block that is written runs only what it sets, and `global-route-repair: null` runs no repair after global route. `post-route-repair` is off unless set. The block a run ends up with must set at least one of `repair-design`, `setup-margin` and `hold-margin`. A run's block overrides the platform's field by field; `null` turns a field or the block off. See [Repair timing after routing](../concepts/pnr.md#repair-timing-after-routing).
 

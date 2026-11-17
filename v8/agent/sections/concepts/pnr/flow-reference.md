@@ -5,7 +5,7 @@ For maintainers and hook authors. The generated `pnr.tcl` runs:
 1. `platform-tcl`, Liberty, LEF, a mode and scene per corner on a multi-corner platform, netlist, SDC, `max-fanout`, `layer-rc-tcl`, don't-use cells, `session` hooks. The SDC and `max-fanout` go into every mode.
 2. Floorplan, tracks, blockages and cut-outs, tie cells, floorplan setup repair.
 3. Macro placement, tap cells, power grid, pin placement, port buffering.
-4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and the output port buffers `hold-outputs-at-pins` fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, `improve_placement` and `optimize_mirroring`, the `placement.macro-pin-limits` step.
+4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and the output port buffers `hold-outputs-at-pins` fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, `improve_placement` and `optimize_mirroring`, the `placement.macro-pin-limits` step, the place stage's `stage-end` hooks, `check_placement`. An illegal placement, including one a hook left, fails the stage, so no checkpoint is written and CTS does not start.
 5. `repair_clock_inverters`, CTS, post-CTS setup repair, hold repair, legalization.
 6. Global route, global-route repair, antenna repair, detailed route, antenna repair with detailed routes, optional post-route repair stage, whose rounds each repair antennas after their detailed route.
 7. Fill, global connections, extraction with `rcx-rules`, final reports, outputs.

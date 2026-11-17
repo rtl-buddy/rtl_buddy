@@ -5,6 +5,7 @@ When the full state space is impractical, use `params` to shrink a width or dept
 ```yaml
 verifications:
   - name: my_block_proof_k8
+    desc: my_block proof at K=8
     tool: sby
     model: my_block
     top: my_block
