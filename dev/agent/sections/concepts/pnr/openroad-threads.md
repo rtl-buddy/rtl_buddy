@@ -1,3 +1,14 @@
 ## OpenROAD threads
 
-Unset, `threads:` passes nothing and OpenROAD uses its own default: every hardware thread of the host on 26Q4, one thread on older versions. Set `threads:` to a count or `auto` to choose. `auto` takes the CPUs of the Slurm allocation or affinity mask the run is in, 1 outside one, never the host's core count. A count above the allocation is clamped with `openroad.threads_capped`. Run `rb pnr` inside an allocation (`srun -c 8 rb pnr ...`) to give it CPUs, or use [`--dispatch slurm`](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#dispatch-the-stages-to-slurm). Results can differ slightly between thread counts. The result's `openroad_threads` gives `requested` and `effective`, the count OpenROAD logged using, or the count rb set. With `threads:` unset OpenROAD logs no count, so `effective` is null, as is the `threads` that a staged run records in each stage's `stage_end` event and manifest entry. A one-session run records no per-stage `threads`. `rb power` and `rb synth`'s OpenROAD stage read `threads:` and report `openroad_threads` the same way.
+`threads:` sets OpenROAD's thread count. Unset, rb passes none and OpenROAD uses every hardware thread of the host on 26Q4, one on older versions.
+
+- A count, or `auto`: the CPUs of the Slurm allocation or affinity mask the run is in, 1 outside one, never the host's core count.
+- A count above the allocation is clamped with `openroad.threads_capped`.
+- Run inside an allocation (`srun -c 8 rb pnr ...`) or use [`--dispatch slurm`](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#dispatch-the-stages-to-slurm) to give it CPUs.
+- Results can differ slightly between thread counts.
+
+The result's `openroad_threads` gives `requested` and `effective`, the count OpenROAD logged or rb set.
+
+- With `threads:` unset OpenROAD logs no count, so `effective` is null, as is the per-stage `threads` a staged run records in `stage_end` events and the manifest.
+- A one-session run records no per-stage `threads`.
+- `rb power` and `rb synth`'s OpenROAD stage read `threads:` and report `openroad_threads` the same way.

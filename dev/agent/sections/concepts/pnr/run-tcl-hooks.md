@@ -1,6 +1,6 @@
 ## Run Tcl hooks
 
-`hooks:` on a run sources your Tcl files at fixed points of the flow, for steps rb does not have. Each point takes a path or a list, relative to `pnr.yaml`:
+`hooks:` on a run sources your Tcl at fixed points of the flow, for steps rb does not have. Each point takes a path or list, relative to `pnr.yaml`:
 
 ```yaml
     hooks:
@@ -10,38 +10,49 @@
 
 | Point | Sourced |
 | --- | --- |
-| `session` | At the start of every OpenROAD session, after the SDC, before the floorplan. Also in a [`netlist-source: pnr` power run](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#extracted-parasitics) of the run |
-| `after-floorplan` | After floorplan, tracks, blockages, tie cells and the floorplan setup repair |
-| `macro-placement` | Instead of RTL-MP; only when the netlist has macros. `$rb_movable_macros` lists the unlocated ones. |
-| `after-pdn` | After taps and the power grid |
+| `session` | At the start of every session, after the SDC, before the floorplan. Also in the run's [`netlist-source: pnr` power run](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#extracted-parasitics). |
+| `after-floorplan` | After floorplan, tracks, blockages, tie cells and the floorplan setup repair. |
+| `macro-placement` | Instead of RTL-MP, only when the netlist has macros. `$rb_movable_macros` lists the unlocated ones. |
+| `after-pdn` | After taps and the power grid. |
 | `after-pins` | After pin placement, before port buffering. A hook that buffers ports needs `buffer-ports: false`. |
-| `after-global-placement` | After `global_placement` |
-| `after-repair-design` | After `repair_design`, before legalization and the `placement.macro-pin-limits` step |
-| `before-cts` | After legalization, `improve_placement`, `optimize_mirroring` and the `placement.macro-pin-limits` step, before `repair_clock_inverters` and `clock_tree_synthesis`. The `cts-dont-use-cells` are not yet excluded. |
-| `before-repair-clock-nets` | Right after `clock_tree_synthesis`, before `cts-repair-clock-nets` runs `repair_clock_nets`. The `cts-dont-use-cells` are still excluded. |
-| `after-cts` | After CTS and any `repair_clock_nets`, before setup and hold repair |
-| `after-timing-repair` | Right after the `repair_timing` calls of the post-CTS repair, the global-route repair and each post-route repair round, on the parasitics they repaired on and before the legalization that follows them. `$rb_repair` names the repair: `post_cts`, `global_route` or `post_route`; in a post-route round `$rb_repair_round` is the round's number. `$rb_setup_margin` and `$rb_hold_margin` are the margins the repair passed to `repair_timing`, in the Liberty time unit, `0` for none; the hold repair also passes the setup margin. In an `eco` round it runs inside the round's incremental global route, before `repair-design.after-timing`'s `repair_design`. The electrical round runs them too when the block sets a margin. Not after the floorplan setup repair, and not where a repair is skipped or runs no `repair_timing`: a probe, or a `global-route-repair` or `post-route-repair` without a margin |
-| `after-cts-repair` | After post-CTS setup and hold repair and their legalization |
-| `after-global-route` | After `global_route`, before global-route repair |
-| `after-global-route-repair` | After global-route repair, before the antenna repair, in the `global_route` stage, so also in a probe |
-| `before-detailed-route` | Before the flow's detailed route and each post-route repair round's; not before the antenna repair's |
-| `after-extraction` | In every session that writes a SPEF (each post-route repair round's extraction and the final one), after `write_spef` and before rb reads it. `$rb_spef` is its path. Needs `rcx-rules`. |
-| `before-reports` | After fill and extraction, before the final reports |
-| `after-reports` | After the final reports, on their parasitics, before rb writes the routed outputs |
-| `stage-end` | At the end of every stage, before its checkpoint, with `$rb_stage` naming the stage and `$rb_mode` the run's `mode` (`closure` or `probe`). In post-route repair, at the end of each repair round, including the electrical round; when round 0 stops the rounds, the stage keeps the detailed route and runs none. |
+| `after-global-placement` | After `global_placement`. |
+| `after-repair-design` | After `repair_design`, before legalization and `placement.macro-pin-limits`. |
+| `before-cts` | After legalization, `improve_placement`, `optimize_mirroring` and `placement.macro-pin-limits`, before `repair_clock_inverters` and CTS. `cts-dont-use-cells` are not yet excluded. |
+| `before-repair-clock-nets` | Right after `clock_tree_synthesis`, before `cts-repair-clock-nets`. `cts-dont-use-cells` are still excluded. |
+| `after-cts` | After CTS and any `repair_clock_nets`, before setup and hold repair. |
+| `after-timing-repair` | Right after the `repair_timing` calls of the post-CTS repair, the global-route repair and each post-route round, before their legalization. See below. |
+| `after-cts-repair` | After post-CTS repair and its legalization. |
+| `after-global-route` | After `global_route`, before global-route repair. |
+| `after-global-route-repair` | After global-route repair, before antenna repair. It is in the `global_route` stage, so a probe runs it. |
+| `before-detailed-route` | Before the flow's detailed route and each post-route round's, not the antenna repair's. |
+| `after-extraction` | After `write_spef` in every session that writes one (each post-route round and the final extraction), before rb reads it. `$rb_spef` is its path. Needs `rcx-rules`. |
+| `before-reports` | After fill and extraction, before the final reports. |
+| `after-reports` | After the final reports, on their parasitics, before rb writes the routed outputs. |
+| `stage-end` | At the end of every stage, before its checkpoint, with `$rb_stage` and `$rb_mode` (`closure` or `probe`). In post-route repair, at the end of each round, the electrical round included; when round 0 stops the rounds, none runs and the stage keeps the detailed route. |
 
-Hooks run at Tcl global scope in `artefacts/<run>/`, with `$OUT_DIR` and `$DESIGN` set. A Tcl error, `exit` or stray `return` in a hook fails the run naming the point and file; a `stage-end` hook's error also names the stage. A `stage-end` or `after-timing-repair` hook's error fails the run in a post-route repair round too, where other failures only set the round aside. Results come from the final reports, so a report a hook prints before or after them does not change them. Hook files are inputs of checkpoints and hardened abstracts. On a multi-corner platform an SDC command in a hook constrains the primary corner only; see [Sign off at several corners](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#sign-off-at-several-corners).
+`after-timing-repair` runs on the parasitics the repair used:
 
-Each point belongs to the stage it runs in, `before-cts` to `cts`: a staged run runs it in that stage's session where a one-session run runs it, and `--resume` from that stage runs it again. `after-timing-repair` runs in `cts`, `global_route` and each post-route repair round, and belongs to `cts`: a `--resume` from a later stage is refused when its files changed.
+- `$rb_repair` is `post_cts`, `global_route` or `post_route`, and `$rb_repair_round` the post-route round's number.
+- `$rb_setup_margin` and `$rb_hold_margin` are the margins passed to `repair_timing`, in the Liberty time unit, `0` for none. The hold repair also gets the setup margin.
+- In an `eco` round it runs inside the incremental global route, before `repair-design.after-timing`'s `repair_design`. The electrical round runs it when the block sets a margin.
+- It does not run after the floorplan setup repair, or where no `repair_timing` runs: a probe, or a repair block without a margin.
 
-Every later `read_spef` of a SPEF reads what the `after-extraction` hooks left: the next post-route repair round's, the final reports' and `rb power`'s. A multi-corner platform writes one SPEF and reads it once per corner, so one edit covers every corner.
+How hooks run:
 
-rb writes into `$OUT_DIR` and replaces a file of the same name a hook wrote there: `timing.rpt` and `electrical.rpt` in the final reports, then, after the `after-reports` hooks, `<top>.def`, `<top>.routed.v`, `<top>.routed.pwr.v`, `<top>.routed.sdc`, `<top>.<corner>.routed.sdc` and `<top>.routed.odb`, and with `harden: true` the `abstract/` views. After OpenROAD exits, rb writes `worst_paths.rpt` and `fanout.rpt`. The other names are in [Inspect artefacts](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#inspect-artefacts). Every run first deletes the files ending in `.def`, `.routed.v`, `.routed.pwr.v`, `.routed.sdc`, `.routed.odb`, `.routed.spef`, `.gds` or `.png`, so give a hook's own files other names.
+- At Tcl global scope in `artefacts/<run>/`, with `$OUT_DIR` and `$DESIGN` set.
+- A Tcl error, `exit` or stray `return` fails the run, naming the point and file, and for `stage-end` the stage. In a post-route round, where other failures only set the round aside, a `stage-end` or `after-timing-repair` error still fails the run.
+- Results come from the final reports; a report a hook prints does not change them.
+- On a multi-corner platform an SDC command in a hook constrains only the [primary corner's mode](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#sign-off-at-several-corners).
+- Every later `read_spef` reads what `after-extraction` hooks left: the next round's, the final reports' and `rb power`'s. A multi-corner platform reads one SPEF per corner, so one edit covers all.
+- Each point belongs to the stage it runs in (`before-cts` to `cts`): a staged run runs it in that stage's session, and `--resume` from that stage runs it again. `after-timing-repair` belongs to `cts`, so a `--resume` from a later stage is refused when its files changed.
+- When a run splits into sessions (`stages: true`, `--resume`, `--dispatch slurm`, `post-route-repair`), procedures, `rename` wrappers, `set_wire_rc` and `set_dont_use` a hook set are gone in the next session. Put them in a `session` hook. rb warns `pnr.hook_commands_not_kept` when a hook redefines an existing command.
 
-rb does not read the Tcl for `source` targets. List the files the SDC or a hook sources under `inputs:`, relative to `pnr.yaml`. Each is fingerprinted by path and content with the hook files, so editing one or listing another in its place refuses a `--resume` and makes a hardened block's abstract stale. `rb pnr` fails before any run starts when a run it would run lists a missing file:
+rb replaces same-named files a hook wrote in `$OUT_DIR`: `timing.rpt` and `electrical.rpt` in the final reports; after the `after-reports` hooks, `<top>.def`, `<top>.routed.v`, `<top>.routed.pwr.v`, `<top>.routed.sdc`, `<top>.<corner>.routed.sdc`, `<top>.routed.odb` and, with `harden: true`, `abstract/`; and after OpenROAD exits, `worst_paths.rpt` and `fanout.rpt`. Other names are in [Inspect artefacts](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#inspect-artefacts). Every run first deletes files ending in `.def`, `.routed.v`, `.routed.pwr.v`, `.routed.sdc`, `.routed.odb`, `.routed.spef`, `.gds` or `.png`, so name a hook's files otherwise.
+
+Hook files are inputs of checkpoints and hardened abstracts. rb does not follow `source`, so list files the SDC or a hook sources under `inputs:`, relative to `pnr.yaml`:
 
 ```yaml
     inputs: [scripts/window.tcl]
 ```
 
-When a run splits into several OpenROAD sessions (`stages: true`, `--resume`, `--dispatch slurm`, or `post-route-repair`), Tcl procedures, `rename` wrappers, `set_wire_rc` and `set_dont_use` set by a hook are gone in the next session. Put such state in a `session` hook. rb warns `pnr.hook_commands_not_kept` when a hook redefines an existing command.
+Each is fingerprinted by path and content with the hooks: editing one, or listing another in its place, refuses a `--resume` and makes a hardened abstract stale. `rb pnr` fails before any run starts when a run it would run lists a missing file.

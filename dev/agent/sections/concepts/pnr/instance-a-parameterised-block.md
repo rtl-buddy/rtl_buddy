@@ -8,4 +8,10 @@ module blk #(parameter int W = 8) (input logic clk, input logic [W-1:0] d, outpu
 endmodule
 ```
 
-Use `frontend: slang` for such a parent. rb rewrites each instance to `blk u_blk (...)` before OpenROAD reads it, after checking it against the block: every connected port must exist in the abstract with the same width, every input must be connected, and each override must equal the value recorded in `<top>.params.json`. A mismatch stops the run naming the instance and both values. Re-harden a block with no record.
+Use `frontend: slang` for such a parent. Before OpenROAD reads it, rb checks each instance against the block and rewrites it to `blk u_blk (...)`:
+
+- every connected port must exist in the abstract with the same width;
+- every input must be connected;
+- each override must equal the value in `<top>.params.json`.
+
+A mismatch stops the run naming the instance and both values. Re-harden a block that has no record.
