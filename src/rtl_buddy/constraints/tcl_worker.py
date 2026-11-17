@@ -159,6 +159,22 @@ _PROPERTY_COMMANDS = frozenset({"get_property", "get_attribute"})
 _CLOCK_QUERY = "get_clocks"
 #: ``create_clock`` flags that take a value.
 _CLOCK_VALUE_FLAGS = frozenset({"-name", "-period", "-waveform", "-comment"})
+#: ``create_generated_clock`` flags that take a value.
+_GENERATED_VALUE_FLAGS = frozenset(
+    {
+        "-name",
+        "-source",
+        "-master_clock",
+        "-divide_by",
+        "-multiply_by",
+        "-duty_cycle",
+        "-edges",
+        "-edge_shift",
+        "-comment",
+        "-pll_output",
+        "-pll_feedback",
+    }
+)
 #: Deepest ``source`` nesting followed before the read fails (a file sourcing itself).
 _MAX_SOURCE_DEPTH = 16
 #: ``file`` subcommands the child gets under ``script_path``: path arithmetic and read-only tests.
@@ -225,6 +241,42 @@ def _clock_definition(words: tuple[str, ...]) -> tuple[str, str] | None:
         i += 1
     name = name or (sources[0] if sources else None)
     return (name, period) if name and period is not None else None
+
+
+def _generated_clock_definition(
+    words: tuple[str, ...], periods: dict[str, str]
+) -> tuple[str, str] | None:
+    """``(name, period)`` of one ``create_generated_clock`` whose period follows from its ``-master_clock``, a clock the file created, and one ``-divide_by`` or ``-multiply_by`` ratio or ``-combinational``; ``None`` for ``-edges``, an implicit master or an unknown master."""
+    values: dict[str, str] = {}
+    flags: set[str] = set()
+    targets: list[str] = []
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if word in _GENERATED_VALUE_FLAGS and i + 1 < len(words):
+            values[word] = words[i + 1]
+            i += 2
+            continue
+        if word.startswith("-"):
+            flags.add(word)
+        else:
+            targets.extend(word.split())
+        i += 1
+    name = values.get("-name") or (targets[0] if targets else None)
+    master = periods.get(values.get("-master_clock", ""))
+    ratios = [f for f in ("-divide_by", "-multiply_by") if f in values]
+    ratios += ["-combinational"] if "-combinational" in flags else []
+    if name is None or master is None or "-edges" in values or len(ratios) != 1:
+        return None
+    try:
+        period = float(master)
+        if ratios[0] == "-divide_by":
+            period *= int(values["-divide_by"])
+        elif ratios[0] == "-multiply_by":
+            period /= int(values["-multiply_by"])
+    except (ValueError, ZeroDivisionError):
+        return None
+    return (name, f"{period:.10g}")
 
 
 def _clock_period(
@@ -440,8 +492,12 @@ def _evaluate(
                 if name in _QUERY_COMMANDS:
                     queried_by.update(dict.fromkeys(names, name))
                 return _tcl_list(names)
-            if name == "create_clock":
-                clock = _clock_definition(words[1:])
+            if name in ("create_clock", "create_generated_clock"):
+                clock = (
+                    _clock_definition(words[1:])
+                    if name == "create_clock"
+                    else _generated_clock_definition(words[1:], clock_periods)
+                )
                 if clock is not None:
                     clock_periods[clock[0]] = clock[1]
             elif name in _PROPERTY_COMMANDS:
