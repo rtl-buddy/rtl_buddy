@@ -903,7 +903,15 @@ def _repair_steps_tcl(
         note = f" ({note.removeprefix(', ')})" if note else ""
         lines += [f'puts ">>> {prefix}{command}{note}"', command]
     if timed and after_timing:
-        lines.append(after_timing.rstrip("\n"))
+
+        def _value(margin: float | None) -> str:
+            if not margin:
+                return "0"
+            return _fmt_number(margin * 1000.0 / ps_per_unit)
+
+        held = hold_ns if "hold" in sides else None
+        block = _with_margins(after_timing, _value(setup_ns), _value(held))
+        lines.append(block.rstrip("\n"))
     if design is not None and design.after_timing:
         lines += _repair_design_tcl(title, design, " after timing repair", platform)
     return "".join(f"{line}\n" for line in lines)
@@ -912,7 +920,7 @@ def _repair_steps_tcl(
 def _after_timing_repair_block(
     hooks: dict, repair: str, round_: int | None = None
 ) -> str:
-    """Return the `after-timing-repair` hook lines that follow the `repair_timing` calls of `repair` (`post_cts`, `global_route` or `post_route`), with `$rb_repair` naming it and, in post-route round `round_`, `$rb_repair_round` its number, both unset after them; `""` when the run has none."""
+    """Return the `after-timing-repair` hook lines that follow the `repair_timing` calls of `repair` (`post_cts`, `global_route` or `post_route`), with `$rb_repair` naming it and, in post-route round `round_`, `$rb_repair_round` its number, both unset after them; `""` when the run has none. The caller sets the margins around it (`_with_margins`)."""
     paths = hooks.get("after-timing-repair")
     if not paths:
         return ""
@@ -922,6 +930,17 @@ def _after_timing_repair_block(
         f"set rb_repair {repair}\n{round_line}"
         + _run_hook_lines("after-timing-repair", paths)
         + f"unset -nocomplain {names}\n"
+    )
+
+
+def _with_margins(after_timing: str, setup: str = "0", hold: str = "0") -> str:
+    """`after_timing` (`_after_timing_repair_block`) with `$rb_setup_margin` and `$rb_hold_margin` holding the margins the `repair_timing` calls before it passed, in the Liberty time unit (`0` for none), unset after it; `""` when it is."""
+    if not after_timing:
+        return ""
+    return (
+        f"set rb_setup_margin {setup}\nset rb_hold_margin {hold}\n"
+        + after_timing
+        + "unset -nocomplain rb_setup_margin rb_hold_margin\n"
     )
 
 
@@ -964,7 +983,7 @@ def _post_cts_repair_tcl(
     return (
         head
         + f"{setup}{_repair_command('repair_timing -hold', platform)}\n"
-        + after_timing
+        + _with_margins(after_timing)
     )
 
 
@@ -1085,7 +1104,7 @@ def _global_route_repair_tcl(
             "estimate_parasitics -global_routing\n"
             + _repair_command("repair_timing -hold", platform)
             + "\n"
-            + after_timing
+            + _with_margins(after_timing)
             + _start_incremental_cmd(gr)
             + f"detailed_placement{dpl_options}\n"
             + _end_incremental_cmd(gr)
