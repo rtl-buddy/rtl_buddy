@@ -2657,7 +2657,7 @@ def run_post_route_repair(
 
     Round 0 is the detailed route: its extraction session extracts it and times every corner. Round k from 1 repairs round k-1's database on that round's SPEF, routes, and writes the stage's checkpoint, which rb renames `06_post_route_repair.r<k>.*` (`_round_files`); its extraction session then times the result. Each round's DRC violations are counted from its router's report. A round becomes the best when it beats the best (`_compare_rounds`): its route is clean and the best's is not; it improves on the best (`_round_improves`); each is better on one repaired side and its total negative slack over the repaired sides is smaller, or on a tie its worst violation; or it ties the best on timing and DRC violations with fewer max-slew and max-capacitance violators (`_electrically_cleaner`). Each round's event names the comparison that decided (`decided_by`). The stop reason names the total negative slack and worst violations or the electrical violators when they made the kept round the best, and the same of both rounds when a clean round that trades sides with the best stopped the rounds. A round whose route has violations never stops the rounds, so the next one gets another detailed route on its database. The rounds stop when a clean round is the best and meets timing on every side they repair (setup with `setup-margin` set, hold with `hold-margin` set), when a clean round does not become the best (on a run that counts electrical violators, unless more rounds remain and the best meets timing with violators and the rounds run `repair_design`, or the round that did not become the best has fewer violators), when a round's timing is not reported, when a session of a later round fails, or after the last round. The stage keeps the best round's database as its checkpoint (`_keep_round`); a round from 1 whose timing was not reported or whose session failed is never kept. When a round with violations has better timing than the clean round kept, the stop reason names both (`_passed_over`).
 
-    With `judged` in the plan (a multi-corner run that sets `signoff:`), the rounds judge each side's worst slack only over the corners it names for that side (`_judged_timing`): which sides are met, which round is the best and when they stop. Each round's event keeps every corner's timing and adds the judged worst slack as `signoff_timing`.
+    With `judged` in the plan (a multi-corner run that sets `signoff:`), the rounds judge each side's worst slack only over the corners it names for that side (`_judged_timing`): which sides are met, which round is the best and when they stop. Each round's event keeps every corner's timing and adds each side's judged worst and total negative slack as `signoff_timing`.
 
     Rounds count those violators only on a run that gates on electrical violators (`gate_electrical` in the plan) or sets `electrical-repair`; a gated run's stop reason also names the kept round's violators. With `electrical-repair` (`electrical` in the plan) one more round runs after the others when the best round has such violators: rb links the best round's checkpoint and SPEF as `POST_ROUTE_ELECTRICAL_SOURCE`, and the round's `repair_design` runs on them. It is timed and compared as any round; `electrical_round` in the done event says whether it was kept, not kept, skipped or failed, and why. When the round is kept, `unseen` lists the violators its extraction found within limits on the placement estimate (`_unseen_tcl`), which rb also warns about.
 
@@ -2759,7 +2759,9 @@ def run_post_route_repair(
             **(
                 {
                     "signoff_timing": {
-                        f"wns_{side}_ps": view[f"wns_{side}_ps"] for side in judged
+                        key: view[key]
+                        for side in judged
+                        for key in (f"wns_{side}_ps", _TNS_KEYS[side])
                     }
                 }
                 if judged

@@ -793,7 +793,17 @@ def test_without_signoff_hold_at_any_corner_drives_hold_repair(tmp_path, monkeyp
 
 def test_rounds_judge_hold_only_at_the_hold_corners(tmp_path, monkeypatch):
     backend, artefacts = _repair_backend(
-        tmp_path, monkeypatch, post_route=_PR, corners=["ss", "ff"], env=_HOLD_AT_SS
+        tmp_path,
+        monkeypatch,
+        post_route=_PR,
+        corners=["ss", "ff"],
+        env={
+            **_HOLD_AT_SS,
+            "RB_STUB_TNS": "0 0",
+            "RB_STUB_TNS_HOLD": "-0.6 -0.6",
+            "RB_STUB_TNS_HOLD_ss": "-0.6 -0.6",
+            "RB_STUB_TNS_HOLD_ff": "0 0",
+        },
     )
     _with_run_signoff(backend, {"setup-corners": ["ss"], "hold-corners": ["ff"]})
 
@@ -808,9 +818,12 @@ def test_rounds_judge_hold_only_at_the_hold_corners(tmp_path, monkeypatch):
     [round_0] = _rounds(run_dir)
     # The event keeps the worst over every corner and adds the judged one.
     assert round_0["wns_hold_ps"] == pytest.approx(-300.0)
+    assert round_0["tns_hold_ps"] == pytest.approx(-600.0)
     assert round_0["signoff_timing"] == {
         "wns_setup_ps": pytest.approx(100.0),
+        "tns_ps": pytest.approx(0.0),
         "wns_hold_ps": pytest.approx(50.0),
+        "tns_hold_ps": pytest.approx(0.0),
     }
     extract = (run_dir / "06_post_route_repair.r0.extract.tcl").read_text()
     assert 'puts ">>> Post-route repair: the rounds judge setup at ss, hold at ff"' in (
