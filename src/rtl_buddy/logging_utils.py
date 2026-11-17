@@ -1465,7 +1465,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 "build job: no usable verilate job record at "
                 f"{fields.get('path')}, so every config runs preproc and "
-                "compiles here"
+                "compiles here, except those of a build whose simulations it "
+                "had already released"
             )
         case "build_job.settled_build_changed":
             return (

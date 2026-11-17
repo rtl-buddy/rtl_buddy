@@ -4273,24 +4273,24 @@ class RtlBuddy:
 
         # ---- what the verilate job settled (the build half of a split compile).
         # A config it left built and stamped is recorded with no PRE, once its stamp is
-        # confirmed still on disk. A key with a released simulation is never prepared or
-        # compiled here, whatever its stamp now says: PRE clears a running simulation's
-        # outputs and a rebuild replaces the executable under it. Its configs are
-        # recorded with the reason, which their gated jobs report. Of the configs it
-        # verilated, the first of each key
+        # confirmed still on disk. Of the configs it verilated, the first of each key
         # leads: it runs PRE and the make, and the rest follow without PRE when their
         # recorded inputs match its build. Anything else, and every config when the
         # envelope is unusable, goes the full way. The verilate job ran every PRE, so it
         # is the one that reports `build_job.preproc_changed_compile_key`.
+        # A key with a released simulation is the exception: none of its configs,
+        # built, failed or merely verilated, is prepared or compiled here, whatever
+        # its stamp now says, since PRE clears a running simulation's outputs and a
+        # rebuild replaces the executable under it. Release marks are honoured from a
+        # partial envelope too, because each reached disk before its release. Those
+        # configs are recorded with the reason, which their gated jobs report.
         settled = {}  # plan index -> the verilate job's record
         held = {}  # settled plan index -> why its released key is not rebuilt here
         followers = {}  # plan index -> (leader plan index, recorded inputs sha)
         verilate_envelope = None
         if phase == BUILD_PHASE_BUILD and verilate_result_path is not None:
             verilate_envelope = load_build_result_json(verilate_result_path)
-            if verilate_envelope is not None and verilate_envelope["partial"]:
-                verilate_envelope = None
-            if verilate_envelope is None:
+            if verilate_envelope is None or verilate_envelope["partial"]:
                 log_event(
                     logger,
                     logging.INFO,
@@ -4305,11 +4305,10 @@ class RtlBuddy:
                 )
             except Exception:  # noqa: BLE001 - only narrows what can be re-checked
                 project_root = os.path.realpath(suite_dir)
+            usable = not verilate_envelope["partial"]
             verilated = set(verilate_envelope["built"])
             records = {
-                entry.get("test"): entry
-                for entry in verilate_envelope["builds"]
-                if entry.get("test") in verilated
+                entry.get("test"): entry for entry in verilate_envelope["builds"]
             }
             released_keys = {
                 entry.get("group")
@@ -4321,8 +4320,12 @@ class RtlBuddy:
                 record = records.get(cfg.get_name())
                 if record is None:
                     continue
+                built = cfg.get_name() in verilated
+                hold = record.get("released") or record.get("group") in released_keys
+                if not hold and not (usable and built):
+                    continue
                 problem = None
-                if record.get("fingerprint_sha") is not None:
+                if built and record.get("fingerprint_sha") is not None:
                     stamp_dir = record.get("stamp_dir")
                     problem = (
                         "the record names no stamp"
@@ -4337,9 +4340,11 @@ class RtlBuddy:
                     if problem is None:
                         settled[index] = record
                         continue
-                if record.get("released") or record.get("group") in released_keys:
-                    problem = (
-                        problem or "the verilate job verilated it but left no build"
+                if hold:
+                    problem = problem or (
+                        "the verilate job verilated it but left no build"
+                        if built
+                        else "the verilate job failed it"
                     )
                     log_event(
                         logger,

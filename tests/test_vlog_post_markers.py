@@ -92,3 +92,24 @@ def test_conflicting_markers_has_dedicated_human_message():
     )
     for token in ("smoke", "/p/artefacts/smoke/test.log", "FAIL"):
         assert token in msg, msg
+
+
+_UVM_SUMMARY = (
+    "--- UVM Report Summary ---\n\n** Report counts by severity\n"
+    "UVM_INFO :    1\nUVM_WARNING :    0\nUVM_ERROR :    0\nUVM_FATAL :    0\n"
+)
+
+
+def test_bytes_that_are_not_text_do_not_stop_grading(tmp_path):
+    """A simulator can print any bytes into its transcript; they are read as replacement characters, as the assertion scan reads them."""
+    log = tmp_path / "test.log"
+    log.write_bytes(b"\xff\xfe raw DUT byte dump \x80\nPASS (nwrn=0)\n")
+    plain = vlog_post.VlogPost(name="t", path=str(log)).get_results().results
+    assert plain["result"] == "PASS"
+    log.write_bytes(b"\xff\x80 dump\n" + _UVM_SUMMARY.encode())
+    uvm = (
+        vlog_post.UvmVlogPost(name="t", path=str(log), max_warns=0, max_errors=0)
+        .get_results()
+        .results
+    )
+    assert uvm["result"] == "PASS"

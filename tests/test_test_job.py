@@ -4518,6 +4518,90 @@ def test_the_build_half_holds_every_config_of_a_key_with_a_released_sim(
     assert "build_job.settled_build_changed" not in events
 
 
+def test_the_build_half_holds_a_failed_sibling_of_a_released_key(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    """A config the verilate job failed on a key whose other config it released is
+    not prepared or compiled here either; it would rebuild under the running sim."""
+    from rtl_buddy.runner.result_io import write_build_result_json
+
+    stamp_dir, sha = _stamp(minimal_project, "key")
+    write_build_result_json(
+        minimal_project / "verilate-result-1.json",
+        built=["basic"],
+        failed=["extra"],
+        builds=[
+            {
+                "test": "basic",
+                "group": stamp_dir,
+                "stamp_dir": stamp_dir,
+                "fingerprint_sha": sha,
+                "released": True,
+            },
+            {"test": "extra", "group": stamp_dir, "returncode": 1},
+        ],
+    )
+    pre: list[str] = []
+    stamped_runner.prepare_hook = lambda name: pre.append(name)
+
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, _build_half())
+    assert result.exit_code == 0, result.output
+
+    assert pre == []
+    assert stamped_runner.inits == []
+    envelope = load_build_result_json(minimal_project / "build-result-1.json")
+    by_test = {e["test"]: e for e in envelope["builds"]}
+    assert "released_build_changed" not in by_test["basic"]
+    assert by_test["extra"]["released_build_changed"] == "the verilate job failed it"
+
+
+def test_a_partial_verilate_record_still_holds_its_released_keys(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    """A verilate job that died before its final write leaves release marks that
+    reached disk before each release; their keys are not prepared here, while
+    everything else in the partial record goes the full way."""
+    from rtl_buddy.runner.result_io import write_build_result_json
+
+    _add_third_test(minimal_project)
+    key_dir, key_sha = _stamp(minimal_project, "key")
+    other_dir, other_sha = _stamp(minimal_project, "other")
+
+    def _record(name, stamp_dir, sha, **fields):
+        return {
+            "test": name,
+            "group": stamp_dir,
+            "stamp_dir": stamp_dir,
+            "fingerprint_sha": sha,
+            **fields,
+        }
+
+    write_build_result_json(
+        minimal_project / "verilate-result-1.json",
+        built=["basic", "extra", "gamma"],
+        failed=[],
+        builds=[
+            _record("basic", key_dir, key_sha, released=True),
+            _record("extra", other_dir, other_sha),
+            _record("gamma", key_dir, key_sha),
+        ],
+        partial=True,
+    )
+    stamped_runner.canned = EarlyStopResults(name="b/results", desc="built")
+    pre: list[str] = []
+    stamped_runner.prepare_hook = lambda name: pre.append(name)
+
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, _build_half())
+    assert result.exit_code == 0, result.output
+
+    assert pre == ["extra"]
+    assert _build_payload(result.output)["built"] == ["basic", "extra", "gamma"]
+    events = _events(job_log_path(minimal_project / "build-result-1.json"))
+    assert "build_job.verilate_result_unusable" in events
+
+
 def test_the_verilate_job_records_the_build_digest_of_its_stamp(
     minimal_project: Path, stamped_runner: type[_StampedStubRunner]
 ):
