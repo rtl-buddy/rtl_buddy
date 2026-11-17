@@ -219,22 +219,34 @@ def test_vlog_sim_post_reads_stderr_for_the_error_line(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    ("returncode", "uvm", "expected"),
-    [(0, None, "NA"), (1, None, "FAIL"), (0, SimpleNamespace(), "NA")],
-    ids=["exit-0", "exit-1", "uvm"],
+    ("returncode", "uvm", "split", "unreadable", "expected"),
+    [
+        (0, None, True, "missing", "NA"),
+        (1, None, True, "missing", "FAIL"),
+        (0, SimpleNamespace(), True, "missing", "NA"),
+        (0, None, False, "missing", "NA"),
+        (0, None, True, "directory", "NA"),
+    ],
+    ids=["exit-0", "exit-1", "uvm", "unsplit", "directory"],
 )
-def test_vlog_sim_post_reports_a_missing_log_as_a_result(
-    tmp_path: Path, returncode, uvm, expected
+def test_vlog_sim_post_reports_an_unreadable_log_as_a_result(
+    tmp_path: Path, returncode, uvm, split, unreadable, expected
 ):
-    """A run whose ``test.log`` another job removed is a result naming the build job's log, not a traceback."""
+    """A run whose ``test.log`` cannot be read is a result, not a traceback. Under a split dispatched compile it names the build job's log."""
     log = tmp_path / "test.log"
+    if unreadable == "directory":
+        log.mkdir()
     sim = VlogSim.__new__(VlogSim)
     sim.test_name = "t"
     sim.run_id = None
     sim.test_cfg = SimpleNamespace(uvm=uvm)
     if uvm is not None:
         uvm.max_warns = uvm.max_errors = 0
-    sim.build_result_json = tmp_path / ".dispatch" / "build-result-7.json"
+    dispatch_dir = tmp_path / ".dispatch"
+    sim.build_result_json = dispatch_dir / "build-result-7.json"
+    sim.verilate_result_json = (
+        dispatch_dir / "verilate-result-7.json" if split else None
+    )
     sim._get_log_path = lambda run_id=None: str(log)
     sim._get_err_path = lambda run_id=None: str(tmp_path / "test.err")
     sim._assertions_enabled = lambda: False
@@ -244,15 +256,17 @@ def test_vlog_sim_post_reports_a_missing_log_as_a_result(
 
     results = sim.post(sim_returncode=returncode).results
 
-    assert not log.exists()
+    assert not log.is_file()
     assert results["result"] == expected
-    build_log = str(tmp_path / ".dispatch" / "build-rtl_buddy-7.log")
-    assert str(log) in results["desc"] and build_log in results["desc"]
+    build_log = str(dispatch_dir / "build-rtl_buddy-7.log")
+    assert str(log) in results["desc"]
+    assert (build_log in results["desc"]) == split
     assert ("exited 1" in results["desc"]) == bool(returncode)
     assert is_run_failure(RtlBuddyTestResults("t", results))
-    (missing,) = [
-        e for e in _events(machine_log) if e.get("event") == "postproc.log_missing"
+    (event,) = [
+        e for e in _events(machine_log) if e.get("event") == "postproc.log_unreadable"
     ]
-    assert (missing["build_log"], missing["level"]) == (build_log, "ERROR")
-    human = _human_message("postproc.log_missing", missing)
-    assert str(log) in human and build_log in human
+    assert event["level"] == "ERROR"
+    assert event.get("build_log") == (build_log if split else None)
+    human = _human_message("postproc.log_unreadable", event)
+    assert str(log) in human and (build_log in human) == split

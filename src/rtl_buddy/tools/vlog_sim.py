@@ -1498,6 +1498,24 @@ def stamp_fingerprint_sha(stamp_dir):
     )
 
 
+def stamp_build_sha(stamp_dir, fingerprint_sha):
+    """:func:`_stamp_build_sha` of the stamp in ``stamp_dir``, or ``None``.
+
+    ``None`` too when that stamp's input digest is no longer ``fingerprint_sha``, so
+    the two digests a build record carries always describe one stamp. Never raises.
+    """
+    try:
+        stored = json.loads((Path(stamp_dir) / SHARED_BUILD_STAMP_NAME).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(stored, dict):
+        return None
+    inputs = {key: value for key, value in stored.items() if key not in _STAMP_META}
+    if _fingerprint_sha(inputs) != fingerprint_sha:
+        return None
+    return _stamp_build_sha(stored)
+
+
 def _directory_files(dir_path, *, recursive):
     """``[(name, path)]`` of the input files a directory listing covers, sorted.
 
@@ -1702,10 +1720,9 @@ def _stamp_build_sha(stored):
     An adoption rewrites only the listing, so it keeps this digest; a rebuild stamps a
     new executable and moves it.
     """
-    build = {
-        key: value for key, value in stored.items() if key not in ("sources", "root")
-    }
-    return hashlib.sha256(json.dumps(build, sort_keys=True).encode("utf-8")).hexdigest()
+    return _fingerprint_sha(
+        {key: value for key, value in stored.items() if key not in ("sources", "root")}
+    )
 
 
 @dataclass
@@ -3826,6 +3843,10 @@ class VlogSim:
         disagreement is in the stamp itself; different ones mean this node's inputs
         differ from the build job's (a ``preproc`` that generates something
         different, or a mid-run edit).
+
+        ``released_build_changed`` in the record means the build job compiled nothing:
+        the verilate job had released a simulation of this key, and the build had
+        changed by the time the build job checked it. The desc names that instead.
         """
         recorded_sha = (record or {}).get("fingerprint_sha")
         own_sha = _fingerprint_sha(fingerprint)
@@ -3847,7 +3868,12 @@ class VlogSim:
                 else "and its stamp still does not validate here"
             )
         )
-        transcript = self._get_build_compile_transcript_path()
+        held = (record or {}).get("released_build_changed")
+        transcript = (
+            str(job_log_path(self.build_result_json))
+            if held is not None
+            else self._get_build_compile_transcript_path()
+        )
         log_event(
             logger,
             logging.ERROR,
@@ -3860,13 +3886,22 @@ class VlogSim:
             stamp_unwritten=stamp_unwritten,
             recorded_sha=recorded_sha,
             own_sha=own_sha,
+            released_build_changed=held,
             build_result=str(self.build_result_json),
         )
         # One line: `render_summary` puts it in a table cell.
-        self.compile_fail_desc = (
-            f"build job built this test {what} ({reason}); not recompiling "
-            f"under the simulation reservation (see {transcript})"
-        )
+        if held is not None:
+            self.compile_fail_desc = (
+                "the build of this test changed after the verilate job released its "
+                f"simulations ({held}), so the build job did not rebuild it under "
+                "them; not recompiling under the simulation reservation (see "
+                f"build_job.released_build_changed in {transcript})"
+            )
+        else:
+            self.compile_fail_desc = (
+                f"build job built this test {what} ({reason}); not recompiling "
+                f"under the simulation reservation (see {transcript})"
+            )
         self.last_compile_failure = {
             "returncode": 1,
             "transcript": transcript,
@@ -4903,10 +4938,8 @@ class VlogSim:
 
         ``build_dir`` is the resolved stamp directory (for a shared build, the
         ``obj_dir_<key>`` directory), ``fingerprint_sha`` the digest of the stamp's
-        input half, ``build_sha`` that of everything but its listing
-        (:func:`_stamp_build_sha`), and ``simv`` the entry it vouched for. The head
-        groups runs by ``build_dir`` at collect and flags a run naming a different
-        binary or digest.
+        input half, and ``simv`` the entry it vouched for. The head groups runs by
+        ``build_dir`` at collect and flags a run naming a different binary or digest.
         """
         stored = self._read_build_stamp(stamp_dir)
         if stored is None:
@@ -4916,7 +4949,6 @@ class VlogSim:
         self.last_build_stamp = {
             "build_dir": os.path.realpath(str(stamp_dir)),
             "fingerprint_sha": _fingerprint_sha(inputs),
-            "build_sha": _stamp_build_sha(stored),
             "simv": stored.get("simv"),
         }
 
@@ -6146,29 +6178,34 @@ class VlogSim:
 
         return returncode
 
-    def _missing_log_results(self, log_path, *, run_id, sim_returncode):
-        """The result of a run whose ``test.log`` is gone after it simulated.
+    def _unreadable_log_results(self, log_path, error, *, run_id, sim_returncode):
+        """The result of a run whose ``test.log`` cannot be read after it simulated.
 
-        ``NA``, or ``FAIL`` when the simulator exited nonzero. Under ``--dispatch``
-        another job running PRE for this test removes the log; the desc names the
-        build job's log, which says whether that happened.
+        ``NA``, or ``FAIL`` when the simulator exited nonzero. Under a split dispatched
+        compile, the build job running PRE for a test whose simulation was released
+        removes the log, so the desc then names that job's log.
         """
         build_log = (
             job_log_path(self.build_result_json)
             if self.build_result_json is not None
+            and self.verilate_result_json is not None
             else None
         )
         log_event(
             logger,
             logging.ERROR,
-            "postproc.log_missing",
+            "postproc.log_unreadable",
             test=self.test_name,
             run_id=run_id,
             log=str(log_path),
+            error=error.strerror or str(error),
             returncode=sim_returncode,
             build_log=None if build_log is None else str(build_log),
         )
-        desc = f"no simulation log at {log_path} after the simulation ran"
+        desc = (
+            f"cannot read simulation log {log_path} "
+            f"({error.strerror or error}) after the simulation ran"
+        )
         if sim_returncode:
             desc += f" (sim {describe_sim_exit(sim_returncode)})"
         if build_log is not None:
@@ -6211,9 +6248,9 @@ class VlogSim:
             )
         try:
             results = self.vlog_post.get_results()
-        except FileNotFoundError:
-            results = self._missing_log_results(
-                log_path, run_id=run_id, sim_returncode=sim_returncode
+        except OSError as error:
+            results = self._unreadable_log_results(
+                log_path, error, run_id=run_id, sim_returncode=sim_returncode
             )
         else:
             # Before the coverage overlay and postproc.completed: that event's

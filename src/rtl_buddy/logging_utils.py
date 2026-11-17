@@ -578,6 +578,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     "on this node, an edit that landed mid-run — and re-run."
                 )
             )
+            held = fields.get("released_build_changed")
+            if held:
+                return (
+                    f"{fields.get('test')}{run_note}: not compiling — the build of "
+                    "this test changed after the verilate job released its "
+                    f"simulations ({held}), and the build job left it alone rather "
+                    "than rebuild it under them. Re-run; if it recurs, find what "
+                    f"rebuilds or prunes {fields.get('build_dir')} or edits its "
+                    "inputs during the run"
+                )
             return (
                 f"{fields.get('test')}{run_note}: not compiling — the build "
                 f"job built this test {what}{why}. Recompiling would run into "
@@ -1461,17 +1471,18 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f"build job: the build the verilate job recorded for "
                 f"{fields.get('test')} is gone or changed ({fields.get('reason')}; "
-                f"stamp in {fields.get('stamp_dir')}), so it compiles here, with "
-                "this job's reservation, which is 1 CPU if the verilate job "
-                "lowered it"
+                f"stamp in {fields.get('stamp_dir')}), and no simulation of that "
+                "build was released yet, so it compiles here, with this job's "
+                "reservation, which is 1 CPU if the verilate job lowered it"
             )
         case "build_job.released_build_changed":
             return (
                 f"build job: the build the verilate job recorded for "
                 f"{fields.get('test')} is gone or changed ({fields.get('reason')}; "
                 f"stamp in {fields.get('stamp_dir')}), but the verilate job already "
-                "released its simulations, so the build job leaves it alone; each "
-                "simulation checks the build before it runs"
+                "released simulations of that build, so the build job neither "
+                "prepares nor rebuilds it; a simulation that finds the build "
+                "unusable fails naming this reason"
             )
         case "build_job.compile_inputs_moved":
             return (
@@ -1661,14 +1672,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"the --early-stop {fields.get('stage')} stop; result is FAIL "
                 "(transcript not post-processed)"
             )
-        case "postproc.log_missing":
+        case "postproc.log_unreadable":
             build_log = fields.get("build_log")
             return (
-                f"{fields.get('test')}: no simulation log at {fields.get('log')} after "
-                "the simulation ran, so the run has no verdict"
+                f"{fields.get('test')}: cannot read the simulation log "
+                f"{fields.get('log')} ({fields.get('error')}), so the run has no "
+                "verdict"
                 + (
-                    f"; under --dispatch, check {build_log} for a job that ran "
-                    "this test's preproc again"
+                    f"; check {build_log} for a build job that ran this test's "
+                    "preproc again"
                     if build_log
                     else ""
                 )

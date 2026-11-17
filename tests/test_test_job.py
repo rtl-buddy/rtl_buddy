@@ -3890,12 +3890,6 @@ def test_a_verilate_job_releases_every_reused_key_and_shrinks_the_build_job(
         "builder": "stub-builder",
         "reused": True,
     }
-    stamped_runner.build_stamp_of = lambda _name: {
-        "build_dir": "/b",
-        "fingerprint_sha": "sha",
-        "build_sha": "build",
-        "simv": None,
-    }
     pre: list[str] = []
     stamped_runner.prepare_hook = lambda name: pre.append(name)
     calls = _fake_release(monkeypatch)
@@ -3927,7 +3921,6 @@ def test_a_verilate_job_releases_every_reused_key_and_shrinks_the_build_job(
     envelope = load_build_result_json(minimal_project / "verilate-result-1.json")
     assert not envelope["partial"]
     assert {entry["fingerprint_sha"] for entry in envelope["builds"]} == {"sha"}
-    assert {entry["build_sha"] for entry in envelope["builds"]} == {"build"}
     # The build half re-releases only what is not marked.
     assert {entry["released"] for entry in envelope["builds"]} == {True}
 
@@ -4456,14 +4449,115 @@ def test_the_build_half_leaves_a_released_config_whose_stamp_changed(
         r for r in records if r.get("event") == "build_job.released_build_changed"
     ]
     assert (changed["test"], changed["level"]) == ("extra", "WARNING")
-    assert changed["reason"] == (
+    reason = (
         "no readable stamp"
         if change == "evicted"
         else "the stamp now vouches for other inputs"
     )
+    assert changed["reason"] == reason
+    # What its gated jobs report if the build does not validate for them.
+    assert extra["released_build_changed"] == reason
     assert not [
         r for r in records if r.get("event") == "build_job.settled_build_changed"
     ]
+
+
+def test_the_build_half_holds_every_config_of_a_key_with_a_released_sim(
+    minimal_project: Path,
+    stamped_runner: type[_StampedStubRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """One config of a key was released; its unreleased siblings, built or only
+    verilated, are not prepared or rebuilt into the directory the released
+    simulation runs from. They keep their gate and carry the reason."""
+    from rtl_buddy.tools.vlog_sim import SHARED_BUILD_STAMP_NAME
+
+    _add_third_test(minimal_project)
+    stamp_dir, sha = _stamp(minimal_project, "key")
+    shared = {"builder": "stub-builder", "group": stamp_dir}
+    stamped = {**shared, "stamp_dir": stamp_dir, "fingerprint_sha": sha}
+    _verilate_envelope(
+        minimal_project,
+        [
+            {"test": "basic", **stamped, "released": True},
+            {"test": "extra", **stamped},
+            {"test": "gamma", **shared, "inputs_sha": "in"},
+        ],
+    )
+    (minimal_project / stamp_dir / SHARED_BUILD_STAMP_NAME).unlink()
+    pre: list[str] = []
+    stamped_runner.prepare_hook = lambda name: pre.append(name)
+    calls = _fake_release(monkeypatch)
+    gates = _gates(
+        minimal_project / "gates-1.json",
+        [(0, "basic", "1000_1"), (1, "extra", "1000_2"), (2, "gamma", "1000_3")],
+    )
+
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, _build_half("--gates", str(gates)))
+    assert result.exit_code == 0, result.output
+
+    assert pre == []
+    assert stamped_runner.inits == []
+    assert calls == []
+    envelope = load_build_result_json(minimal_project / "build-result-1.json")
+    held = {e["test"]: e["released_build_changed"] for e in envelope["builds"]}
+    assert held == {
+        "basic": "no readable stamp",
+        "extra": "no readable stamp",
+        "gamma": "the verilate job verilated it but left no build",
+    }
+    records = _records(job_log_path(minimal_project / "build-result-1.json"))
+    changed = [
+        r["test"]
+        for r in records
+        if r.get("event") == "build_job.released_build_changed"
+    ]
+    assert changed == ["basic", "extra", "gamma"]
+    events = [r.get("event") for r in records]
+    assert "build_job.settled_build_changed" not in events
+
+
+def test_the_verilate_job_records_the_build_digest_of_its_stamp(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    """``build_sha`` comes from the stamp the record's ``fingerprint_sha`` describes,
+    and is left out when the stamp moved between the two reads."""
+    from rtl_buddy.tools.vlog_sim import SHARED_BUILD_STAMP_NAME, _stamp_build_sha
+
+    stamp_dir, sha = _stamp(minimal_project, "key")
+    stored = json.loads(
+        (minimal_project / stamp_dir / SHARED_BUILD_STAMP_NAME).read_text()
+    )
+    stamped_runner.canned = EarlyStopResults(name="b/results", desc="reused")
+    stamped_runner.build_stamp_of = lambda name: {
+        "build_dir": str(minimal_project / stamp_dir),
+        "fingerprint_sha": sha if name == "basic" else "moved",
+        "simv": None,
+    }
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--phase",
+            "verilate",
+            "--result-json",
+            "verilate-result-1.json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    envelope = load_build_result_json(minimal_project / "verilate-result-1.json")
+    by_test = {e["test"]: e for e in envelope["builds"]}
+    assert by_test["basic"]["build_sha"] == _stamp_build_sha(stored)
+    assert by_test["extra"]["fingerprint_sha"] == "moved"
+    assert "build_sha" not in by_test["extra"]
 
 
 def test_the_build_half_settles_a_build_whose_listing_a_sibling_refreshed(
@@ -4641,5 +4735,6 @@ def test_the_shrink_and_follow_events_have_dedicated_human_messages():
     )
     assert "obj_dir_k" in left and "no readable stamp" in left
     assert "released" in left and "compiles here" not in left
+    assert "no simulation of that build was released" in changed
     moved = _human_message("build_job.compile_inputs_moved", {"test": "t"})
     assert "t was rewritten" in moved and "preproc" in moved

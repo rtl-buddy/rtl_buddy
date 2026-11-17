@@ -271,6 +271,7 @@ from .tools.verible import Verible
 from .tools.vlog_filelist import VlogFilelist, apply_exclude_globs
 from .tools.vlog_sim import (
     settled_build_problem,
+    stamp_build_sha,
     SHARED_BUILD_ROOT_ENV,
     VlogSim,
     resolve_shared_build_root,
@@ -3929,15 +3930,18 @@ class RtlBuddy:
                 # validate the stamp compares its fingerprint against this, and declines
                 # to recompile either way.
                 build_entry["fingerprint_sha"] = stamp["fingerprint_sha"]
-                if stamp.get("build_sha") is not None:
-                    # Lets the build half tell a same-key adoption's listing refresh
-                    # from a rebuild.
-                    build_entry["build_sha"] = stamp["build_sha"]
                 if stamp.get("build_dir"):
                     # Where the build half re-reads the stamp before trusting it.
                     build_entry["stamp_dir"] = os.path.relpath(
                         stamp["build_dir"], suite_dir
                     )
+                    # Lets the build half tell a same-key adoption's listing refresh
+                    # from a rebuild.
+                    build_sha = stamp_build_sha(
+                        stamp["build_dir"], stamp["fingerprint_sha"]
+                    )
+                    if build_sha is not None:
+                        build_entry["build_sha"] = build_sha
             if ok and getattr(runner, "stamp_write_failed", False):
                 # Built, but with nothing on disk to say so. Gated sim jobs read this as
                 # "built" and get a reason naming the write. Absent means "stamped".
@@ -4269,13 +4273,17 @@ class RtlBuddy:
 
         # ---- what the verilate job settled (the build half of a split compile).
         # A config it left built and stamped is recorded with no PRE, once its stamp is
-        # confirmed still on disk or, if it released the config's simulations, whatever
-        # the stamp now says. Of the configs it verilated, the first of each key
+        # confirmed still on disk. A key with a released simulation is never prepared or
+        # compiled here, whatever its stamp now says: PRE clears a running simulation's
+        # outputs and a rebuild replaces the executable under it. Its configs are
+        # recorded with the reason, which their gated jobs report. Of the configs it
+        # verilated, the first of each key
         # leads: it runs PRE and the make, and the rest follow without PRE when their
         # recorded inputs match its build. Anything else, and every config when the
         # envelope is unusable, goes the full way. The verilate job ran every PRE, so it
         # is the one that reports `build_job.preproc_changed_compile_key`.
         settled = {}  # plan index -> the verilate job's record
+        held = {}  # settled plan index -> why its released key is not rebuilt here
         followers = {}  # plan index -> (leader plan index, recorded inputs sha)
         verilate_envelope = None
         if phase == BUILD_PHASE_BUILD and verilate_result_path is not None:
@@ -4303,11 +4311,17 @@ class RtlBuddy:
                 for entry in verilate_envelope["builds"]
                 if entry.get("test") in verilated
             }
+            released_keys = {
+                entry.get("group")
+                for entry in records.values()
+                if entry.get("released")
+            } - {None}
             leaders = {}  # verilate group -> leader plan index
             for index, cfg in enumerate(configs):
                 record = records.get(cfg.get_name())
                 if record is None:
                     continue
+                problem = None
                 if record.get("fingerprint_sha") is not None:
                     stamp_dir = record.get("stamp_dir")
                     problem = (
@@ -4323,19 +4337,22 @@ class RtlBuddy:
                     if problem is None:
                         settled[index] = record
                         continue
-                    if record.get("released"):
-                        # Its simulations may be running in its artefact dir, which
-                        # PRE would clear. They validate the build themselves.
-                        log_event(
-                            logger,
-                            logging.WARNING,
-                            "build_job.released_build_changed",
-                            test=cfg.get_name(),
-                            stamp_dir=stamp_dir,
-                            reason=problem,
-                        )
-                        settled[index] = record
-                        continue
+                if record.get("released") or record.get("group") in released_keys:
+                    problem = (
+                        problem or "the verilate job verilated it but left no build"
+                    )
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "build_job.released_build_changed",
+                        test=cfg.get_name(),
+                        stamp_dir=record.get("stamp_dir") or record.get("group"),
+                        reason=problem,
+                    )
+                    settled[index] = record
+                    held[index] = problem
+                    continue
+                if record.get("fingerprint_sha") is not None:
                     # Evicted, cleaned or rebuilt since the verilate job: compile it
                     # here, under whatever reservation this job still has.
                     log_event(
@@ -4366,7 +4383,12 @@ class RtlBuddy:
             # one must not wait for the keys left to compile.
             settled_rows = []
             for index, record in settled.items():
-                copied_entries[index] = _as_reuse(record)
+                copied_entries[index] = _as_reuse(
+                    record,
+                    **(
+                        {"released_build_changed": held[index]} if index in held else {}
+                    ),
+                )
                 settled_rows.append(
                     (index, configs[index].get_name(), True, None, None, None)
                 )
@@ -4374,7 +4396,8 @@ class RtlBuddy:
             verdict_error = _record_group(settled_rows)
             unreleased = {}
             for index, name, *_ in settled_rows:
-                if not settled[index].get("released"):
+                # A held config's jobs keep their gate: no build here vouches for them.
+                if not settled[index].get("released") and index not in held:
                     unreleased.setdefault(settled[index].get("group"), []).append(
                         (index, name)
                     )

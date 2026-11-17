@@ -171,7 +171,7 @@ class TestRunner:
 
     @property
     def last_build_stamp(self):
-        """Return the sim's ``{build_dir, fingerprint_sha, build_sha, simv}`` build-stamp identity, or ``None``.
+        """Return the sim's ``{build_dir, fingerprint_sha, simv}`` build-stamp identity, or ``None``.
 
         The head uses it at collect time to check that one compile key produced one binary. Telemetry: it never raises.
         """
