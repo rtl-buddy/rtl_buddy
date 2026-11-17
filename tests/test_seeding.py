@@ -7,6 +7,7 @@ from rtl_buddy.seeding import (
     derive_test_seed,
     suite_seed_identity,
     validate_master_seed,
+    validate_sim_seed,
 )
 
 
@@ -77,3 +78,14 @@ def test_master_seed_accepts_values_above_signed_64_bit():
         ).seed
         <= MAX_SIM_SEED
     )
+
+
+@pytest.mark.parametrize("seed", [0, MAX_SIM_SEED + 1])
+def test_an_out_of_range_sim_seed_error_names_the_value(seed):
+    with pytest.raises(ValueError, match=f"got {seed}$"):
+        validate_sim_seed(seed)
+
+
+def test_a_negative_master_seed_error_names_the_value():
+    with pytest.raises(ValueError, match="got -1$"):
+        validate_master_seed(-1)

@@ -36,7 +36,7 @@ def validate_master_seed(seed: int) -> int:
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("master seed must be an integer")
     if seed < 0:
-        raise ValueError("master seed must be a nonnegative integer")
+        raise ValueError(f"master seed must be a nonnegative integer, got {seed}")
     return seed
 
 
@@ -44,8 +44,10 @@ def validate_sim_seed(seed: int) -> int:
     """Return a simulator-safe positive seed, or raise ``ValueError``."""
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("sim-rand-seed must be an integer")
-    if not 1 <= seed <= MAX_SIM_SEED:
-        raise ValueError(f"sim-rand-seed must be between 1 and {MAX_SIM_SEED}")
+    if not 1 <= seed < MAX_SIM_SEED:
+        raise ValueError(
+            f"sim-rand-seed must be between 1 and {MAX_SIM_SEED}, got {seed}"
+        )
     return seed
 
 
