@@ -202,7 +202,7 @@ class PostRouteRepair:
         )
 
     def electrical_design(self) -> RepairDesign | None:
-        """The electrical round's `repair_design`: its margins, at `repair-design.wire-rc` when that is set."""
+        """The electrical round's `repair_design`: its margins, at `repair-design.wire-rc` when that is set, and again after timing repair when the block repairs a timing side."""
         if self.electrical_repair is None:
             return None
         wire_rc = self.repair_design.wire_rc if self.repair_design else None
@@ -210,6 +210,7 @@ class PostRouteRepair:
             slew_margin=self.electrical_repair.slew_margin,
             cap_margin=self.electrical_repair.cap_margin,
             wire_rc=wire_rc,
+            after_timing=bool(self.sides()),
         )
 
     def margins(self, round_: int) -> tuple[float | None, float | None]:
