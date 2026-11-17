@@ -81,8 +81,8 @@ def test_the_steps_run_by_default_in_orfs_order(tmp_path):
         'puts ">>> Detail placement optimization"\n'
         "improve_placement\n"
         "optimize_mirroring\n"
-        "check_placement -verbose\n"
         "rb::global_connect\n"
+        "check_placement -verbose\n"
     ) in text
     assert ("\nrepair_clock_inverters\nclock_tree_synthesis") in text
     assert (
@@ -173,7 +173,7 @@ def test_with_both_placement_steps_off_the_placement_stage_is_as_before(tmp_path
     assert ">>> Detail placement optimization" not in text
     assert (
         'puts ">>> Detail placement (legalize)"\ndetailed_placement\n'
-        "check_placement -verbose\nrb::global_connect\n" in text
+        "rb::global_connect\ncheck_placement -verbose\n" in text
     )
 
 

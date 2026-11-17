@@ -158,7 +158,7 @@ _OPTIMIZED = (
     'puts ">>> Detail placement optimization"\nimprove_placement\noptimize_mirroring\n'
 )
 _PLACE_END = (
-    'check_placement -verbose\nrb::global_connect\n\nputs ">>> Clock tree synthesis"'
+    'rb::global_connect\ncheck_placement -verbose\n\nputs ">>> Clock tree synthesis"'
 )
 _CTS = 'puts ">>> Clock tree synthesis"'
 
