@@ -2881,11 +2881,14 @@ def run_post_route_repair(
             if more and electrical_kept and _fewer_violators(current, timed[best]):
                 continue
             traded = _traded(round_)
-            stop = (
-                "no_improvement",
-                f"round {round_} did not improve timing"
-                + (f": {traded}" if traded else ""),
-            )
+            if _timing_met(timed[best]["timing"], sides):
+                reason = (
+                    f"round {round_} did not improve on round {best}, which meets "
+                    "timing"
+                )
+            else:
+                reason = f"round {round_} did not improve timing"
+            stop = "no_improvement", reason + (f": {traded}" if traded else "")
             break
         if met:
             if (

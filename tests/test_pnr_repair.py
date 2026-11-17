@@ -4729,6 +4729,33 @@ def test_met_timing_with_electrical_violators_runs_the_next_round(
     assert (done["kept_round"], done["stop"]) == (1, "timing_met")
 
 
+def test_a_round_that_keeps_the_violators_of_a_met_round_stops_the_rounds(
+    tmp_path, monkeypatch
+):
+    backend, artefacts = _repair_backend(
+        tmp_path,
+        monkeypatch,
+        post_route=_PR_SLEW,
+        gate=True,
+        env={
+            "RB_STUB_SETUP": "0.04 0.04 0.04",
+            "RB_STUB_HOLD": "0.01 0.01 0.01",
+            "RB_STUB_SLEW": "27 27 27",
+            "RB_STUB_CAP": "0 0 0",
+        },
+    )
+
+    backend.run()
+    (run_dir,) = _runs(artefacts)
+    assert [r["round"] for r in _rounds(run_dir)] == [0, 1]
+    done = _done(run_dir)
+    assert (done["kept_round"], done["stop"]) == (0, "no_improvement")
+    assert done["reason"] == (
+        "round 1 did not improve on round 0, which meets timing; the kept "
+        "round 0 has 27 max-slew violator(s)"
+    )
+
+
 def test_met_timing_with_violators_stops_when_the_rounds_run_no_repair_design(
     tmp_path, monkeypatch
 ):
