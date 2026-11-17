@@ -325,7 +325,7 @@ def test_leaving_every_new_key_unset_renders_the_original_cts_flow(tmp_path):
         "    -buf_list $CTS_BUF \\\n"
         "    -sink_clustering_enable\n"
     ) in listed
-    assert "repair_clock_nets" not in single
+    assert "\nrepair_clock_nets" not in single
     assert "obstruction_aware" not in single
 
 
@@ -368,7 +368,7 @@ def test_a_repair_mapping_renders_the_wire_length_cap(tmp_path):
         "estimate_parasitics -placement\n"
         "repair_clock_nets -max_wire_length 1000\n"
     ) in text
-    assert text.count("repair_clock_nets") == 1
+    assert text.count("\nrepair_clock_nets") == 1
 
 
 def test_a_fractional_wire_length_renders_as_written(tmp_path):

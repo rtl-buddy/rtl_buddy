@@ -355,9 +355,11 @@ def test_a_run_without_hooks_renders_the_flow_unchanged(tmp_path):
             blocks = [f"\nset rb_spef {spef}" + _announce(point, path)]
         elif point == "after-timing-repair":
             blocks = [
+                "set rb_setup_margin 0\nset rb_hold_margin 0\n"
                 f"set rb_repair {repair}"
                 + _announce(point, path)
                 + "unset -nocomplain rb_repair\n"
+                "unset -nocomplain rb_setup_margin rb_hold_margin\n"
                 for repair in ("post_cts", "global_route")
             ]
         else:

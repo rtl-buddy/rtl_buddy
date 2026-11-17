@@ -157,7 +157,9 @@ _LEGALIZED = 'puts ">>> Detail placement (legalize)"\ndetailed_placement\n'
 _OPTIMIZED = (
     'puts ">>> Detail placement optimization"\nimprove_placement\noptimize_mirroring\n'
 )
-_PLACE_END = 'rb::global_connect\n\nputs ">>> Clock tree synthesis"'
+_PLACE_END = (
+    'check_placement -verbose\nrb::global_connect\n\nputs ">>> Clock tree synthesis"'
+)
 _CTS = 'puts ">>> Clock tree synthesis"'
 
 

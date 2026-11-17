@@ -631,7 +631,7 @@ def test_an_error_line_in_a_staged_session_stops_the_chain(tmp_path, monkeypatch
     stage, which is recorded not clean, so no resume can start past it.
     """
     backend, artefacts = _staged(
-        tmp_path, monkeypatch, env={"RB_STUB_ERRLINE": "check_placement"}
+        tmp_path, monkeypatch, env={"RB_STUB_ERRLINE": "clock_tree_synthesis"}
     )
 
     res = backend.run()
