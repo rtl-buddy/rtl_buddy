@@ -131,13 +131,15 @@ def _scripts(artefacts) -> dict[str, str]:
 
 #: A new point's block: a `before-cts` one ends a one-session run's `place` stage first, unless `repair_clock_inverters` follows and that ends it, an `after-extraction` one names its SPEF, an `after-timing-repair` one sets and unsets its repair and round.
 _NEW_BLOCK_RE = re.compile(
-    r"(?:\n|(?<=\n)set rb_repair \w+\n(?:set rb_repair_round \d+\n)?)"
+    r"(?:\n|(?<=\n)(?:set rb_setup_margin \S+\nset rb_hold_margin \S+\n)?"
+    r"set rb_repair \w+\n(?:set rb_repair_round \d+\n)?)"
     r"(?:rb::ckpt::checkpoint_for clock_tree_synthesis enter\n"
     r"(?![^\n]*\n[^\n]*\n\nrepair_clock_inverters\n))?"
     r"(?:set rb_spef [^\n]*\n)?"
     r'puts ">>> Hook (?:' + "|".join(map(re.escape, _NEW_POINTS)) + r")[^\n]*\n"
     r"rb::hook::(?:run|stage_end) [^\n]*\n"
     r"(?:unset -nocomplain rb_repair(?: rb_repair_round)?\n)?"
+    r"(?:unset -nocomplain rb_setup_margin rb_hold_margin\n)?"
 )
 
 
@@ -683,24 +685,25 @@ def test_the_command_tracker_covers_the_new_points(tmp_path, monkeypatch, caplog
 
 # After timing repair
 
-#: Prints the repair that just ran and, in a post-route round, its number.
+#: Prints the repair that just ran, in a post-route round its number, and its setup and hold margins.
 _TIMING_REPAIR_HOOK = (
     'puts "MARK after-timing-repair $rb_repair '
-    '[expr {[info exists rb_repair_round] ? $rb_repair_round : "-"}]"\n'
+    '[expr {[info exists rb_repair_round] ? $rb_repair_round : "-"}] '
+    '$rb_setup_margin $rb_hold_margin"\n'
 )
 
 #: The marks of the hooks around the timing repairs in a run whose two post-route rounds both repair.
 _TIMING_REPAIR_MARKS = [
     "MARK after-cts",
-    "MARK after-timing-repair post_cts -",
+    "MARK after-timing-repair post_cts - 0 0",
     "MARK after-cts-repair",
     "MARK after-global-route",
-    "MARK after-timing-repair global_route -",
+    "MARK after-timing-repair global_route - 0 0",
     "MARK after-global-route-repair",
     "MARK before-detailed-route",
-    "MARK after-timing-repair post_route 1",
+    "MARK after-timing-repair post_route 1 0.1 0.05",
     "MARK before-detailed-route",
-    "MARK after-timing-repair post_route 2",
+    "MARK after-timing-repair post_route 2 0.1 0.05",
     "MARK before-detailed-route",
 ]
 
@@ -833,8 +836,8 @@ def test_after_timing_repair_runs_only_after_a_timing_repair(tmp_path, monkeypat
         if line.startswith("MARK ")
     ]
     assert marks == [
-        "MARK after-timing-repair post_cts -",
-        "MARK after-timing-repair post_route 1",
+        "MARK after-timing-repair post_cts - 0 0",
+        "MARK after-timing-repair post_route 1 0.1 0",
     ]
     (run_dir,) = _runs(artefacts)
     electrical = (run_dir / "06_post_route_repair.r2.repair.tcl").read_text()
@@ -868,7 +871,7 @@ def test_a_resume_after_cts_refuses_an_edited_after_timing_repair_hook(
 
 
 @pytest.mark.parametrize("stages", [True, False], ids=["staged", "one-session"])
-def test_rb_repair_exists_only_for_the_after_timing_repair_hooks(
+def test_rb_repair_and_margins_exist_only_for_the_after_timing_repair_hooks(
     tmp_path, monkeypatch, stages
 ):
     points = (
@@ -884,7 +887,8 @@ def test_rb_repair_exists_only_for_the_after_timing_repair_hooks(
             tmp_path,
             (point,),
             f'puts "SEES {point} [info exists rb_repair] '
-            '[info exists rb_repair_round]"\n',
+            "[info exists rb_repair_round] [info exists rb_setup_margin] "
+            '[info exists rb_hold_margin]"\n',
         )[point]
         for point in points
     }
@@ -903,7 +907,7 @@ def test_rb_repair_exists_only_for_the_after_timing_repair_hooks(
         for line in (artefacts / "pnr.log").read_text().splitlines()
         if line.startswith("SEES ")
     ]
-    assert seen.count("SEES after-timing-repair 1 0") == 2
-    assert seen.count("SEES after-timing-repair 1 1") == 1
+    assert seen.count("SEES after-timing-repair 1 0 1 1") == 2
+    assert seen.count("SEES after-timing-repair 1 1 1 1") == 1
     others = [line for line in seen if "after-timing-repair" not in line]
-    assert others and all(line.endswith(" 0 0") for line in others)
+    assert others and all(line.endswith(" 0 0 0 0") for line in others)

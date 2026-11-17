@@ -545,6 +545,39 @@ def test_a_staged_session_that_exits_early_fails_the_chain(tmp_path, monkeypatch
     assert not (run_dir / "04_global_route.log").exists()
 
 
+def test_an_illegal_placement_fails_the_place_stage_before_cts(tmp_path, monkeypatch):
+    backend, artefacts = _staged(
+        tmp_path, monkeypatch, env={"RB_STUB_FAIL": "check_placement"}
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert res.results["desc"].startswith("stage 02_place: OpenROAD exited")
+    run_dir = _only_run(artefacts)
+    assert not (run_dir / "02_place.odb").exists()
+    assert not (run_dir / "03_cts.log").exists()
+
+
+def test_repair_clock_nets_is_a_progress_step(tmp_path, monkeypatch):
+    backend, artefacts = _staged(tmp_path, monkeypatch)
+    backend.root_cfg.get_pnr_platform_cfg.return_value = _platform(
+        _pdk(tmp_path), cts_repair_clock_nets=True
+    )
+
+    assert backend.run().results["result"] == "PASS"
+    steps = [
+        (e["event"], e["step"])
+        for e in _events(_only_run(artefacts))
+        if e["event"] in ("step_begin", "step_end")
+    ]
+    at = steps.index(("step_end", "clock_tree_synthesis"))
+    assert steps[at + 1 : at + 3] == [
+        ("step_begin", "repair_clock_nets"),
+        ("step_end", "repair_clock_nets"),
+    ]
+
+
 def test_a_failed_staged_session_names_its_stage(tmp_path, monkeypatch):
     backend, artefacts = _staged(
         tmp_path, monkeypatch, env={"RB_STUB_FAIL": "global_route"}
@@ -598,7 +631,7 @@ def test_an_error_line_in_a_staged_session_stops_the_chain(tmp_path, monkeypatch
     stage, which is recorded not clean, so no resume can start past it.
     """
     backend, artefacts = _staged(
-        tmp_path, monkeypatch, env={"RB_STUB_ERRLINE": "check_placement"}
+        tmp_path, monkeypatch, env={"RB_STUB_ERRLINE": "clock_tree_synthesis"}
     )
 
     res = backend.run()

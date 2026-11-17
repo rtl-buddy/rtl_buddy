@@ -1461,6 +1461,41 @@ def test_a_period_is_answered_only_for_an_object_get_clocks_returned(
         assert [(u.name, u.line) for u in result.unread] == [("create_clock", 2)]
 
 
+@pytest.mark.parametrize(
+    "generated, period",
+    [
+        ("-name fwd -master_clock base -source [get_ports clk] -divide_by 1", "2000"),
+        (
+            "-name fwd -master_clock base -source clk -divide_by 2 -duty_cycle 50",
+            "4000",
+        ),
+        ("-name fwd -master_clock base -source clk -multiply_by 4", "500"),
+        ("-name fwd -master_clock base -source clk -combinational", "2000"),
+        ("-master_clock base -source clk -divide_by 2", "4000"),
+        ("-name fwd -source clk -divide_by 2", None),
+        ("-name fwd -master_clock base -source clk -edges {1 3 5}", None),
+        ("-name fwd -master_clock nope -source clk -divide_by 2", None),
+    ],
+)
+def test_lenient_queries_answer_a_generated_clocks_period(
+    tcl_backend, generated, period
+):
+    text = (
+        "create_clock -name base -period 2000 [get_ports clk]\n"
+        f"create_generated_clock {generated} [get_ports fwd]\n"
+        "set_output_delay -clock fwd -max [expr {[get_property [get_clocks fwd] period] - 800}] [get_ports q]\n"
+    )
+    cmds, used = read_commands(
+        text,
+        interest=frozenset({"set_output_delay"}),
+        source="g.sdc",
+        lenient_queries=True,
+    )
+    assert used == "tcl"
+    delays = [c.words[3] for c in cmds]
+    assert delays == ([f"{float(period) - 800:g}"] if period else [])
+
+
 def test_a_period_of_a_clock_the_file_did_not_create_is_not_invented(
     tcl_backend, caplog
 ):

@@ -139,6 +139,7 @@ PROGRESS_STEPS = (
     "optimize_mirroring",
     "repair_clock_inverters",
     "clock_tree_synthesis",
+    "repair_clock_nets",
     "repair_timing",
     "check_placement",
     "global_route",

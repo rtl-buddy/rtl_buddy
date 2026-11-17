@@ -50,6 +50,7 @@ GLOBAL_ROUTE_REPAIR_ALL = {
     "repair-design": dict(REPAIR_DESIGN_ALL),
     "setup-margin": 0.05,
     "hold-margin": 0.02,
+    "max-buffer-percent": 30,
     "reroute": "full",
 }
 GLOBAL_ROUTE_ALL = {
@@ -69,6 +70,7 @@ POST_ROUTE_REPAIR_ALL = {
     },
     "setup-margin": 0.05,
     "hold-margin": None,
+    "max-buffer-percent": None,
     "rounds": 3,
     "margin-step": 0.01,
     "reroute": "full",
@@ -160,7 +162,11 @@ RUN_SIZED = {
         {"name": "blk2", "pnr": "blk2_run"},
     ],
     "placement": PLACEMENT_ALL,
-    "post-cts-repair": {"setup-margin": 0.05, "hold-margin": 0.01},
+    "post-cts-repair": {
+        "setup-margin": 0.05,
+        "hold-margin": 0.01,
+        "max-buffer-percent": 40,
+    },
     "global-route-repair": GLOBAL_ROUTE_REPAIR_ALL,
     "post-route-repair": POST_ROUTE_REPAIR_ALL,
     "routing-layers": {"signal": "m2-m4", "clock": "m3-m4"},
@@ -263,7 +269,11 @@ PLATFORM_ONE_CORNER = {
     "cts-latency-balancing": False,
     "cts-repair-clock-nets": {"max-wire-length": 1000},
     "post-cts-setup-repair": True,
-    "post-cts-repair": {"setup-margin": 0.05, "hold-margin": 0.01},
+    "post-cts-repair": {
+        "setup-margin": 0.05,
+        "hold-margin": 0.01,
+        "max-buffer-percent": 40,
+    },
     "floorplan-setup-repair": False,
     "cts-repair-clock-inverters": False,
     "global-route-antenna-repair": False,
@@ -462,18 +472,18 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
         (
             "pnr run 'a': post-cts-repair",
             ("post-cts-repair",),
-            "setup-margin, hold-margin",
+            "setup-margin, hold-margin, max-buffer-percent",
         ),
         (
             "pnr run 'a': global-route-repair",
             ("global-route-repair",),
-            "repair-design, setup-margin, hold-margin, reroute",
+            "repair-design, setup-margin, hold-margin, max-buffer-percent, reroute",
         ),
         (
             "pnr run 'a': post-route-repair",
             ("post-route-repair",),
-            "repair-design, setup-margin, hold-margin, rounds, margin-step, reroute, "
-            "electrical-repair",
+            "repair-design, setup-margin, hold-margin, max-buffer-percent, rounds, "
+            "margin-step, reroute, electrical-repair",
         ),
         (
             "pnr run 'a': post-route-repair.electrical-repair",
@@ -832,7 +842,7 @@ cfg-pnr-platforms:
             "platform",
             ("post-cts-repair",),
             "cfg-pnr-platforms 'pl1': post-cts-repair",
-            "setup-margin, hold-margin",
+            "setup-margin, hold-margin, max-buffer-percent",
         ),
         (
             "platform",
