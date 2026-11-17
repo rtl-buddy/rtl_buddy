@@ -1465,7 +1465,10 @@ def test_a_period_is_answered_only_for_an_object_get_clocks_returned(
     "generated, period",
     [
         ("-name fwd -master_clock base -source [get_ports clk] -divide_by 1", "2000"),
-        ("-name fwd -master_clock base -source clk -divide_by 2 -duty_cycle 50", "4000"),
+        (
+            "-name fwd -master_clock base -source clk -divide_by 2 -duty_cycle 50",
+            "4000",
+        ),
         ("-name fwd -master_clock base -source clk -multiply_by 4", "500"),
         ("-name fwd -master_clock base -source clk -combinational", "2000"),
         ("-master_clock base -source clk -divide_by 2", "4000"),
