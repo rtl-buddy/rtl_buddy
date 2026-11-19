@@ -1,19 +1,37 @@
 """`placement.legalizer`: the engine each stage's `detailed_placement` calls use (rtl_buddy#1019).
 
-Sessions run under the stub OpenROAD harness of `test_pnr_checkpoints`.
+Scripts are rendered without OpenROAD; the setup checks run `OpenRoadPnr.run` up to the point where it would start OpenROAD.
 """
 
 import re
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
-from test_pnr_checkpoints import _backend, _pdk, _platform, _pnr_cfg, _runs
-from test_pnr_hook_points import _ROUNDS, _ROUNDS_ENV, _run_backend, _scripts
-from test_pnr_planner_files import _floorplan, _render
 
-from rtl_buddy.config.pdk import MacroPinLimitsFile, PlacementFile, validate_placement
-from rtl_buddy.config.pnr import PnrMacro
+from rtl_buddy.config.pdk import (
+    MacroPinLimitsFile,
+    PdkConfig,
+    PdkConfigFile,
+    PdkPinLayersFile,
+    PlacementFile,
+    validate_placement,
+)
+from rtl_buddy.config.pnr import (
+    CHECKPOINT_STAGES,
+    POST_ROUTE_REPAIR_STAGE,
+    PnrConfig,
+    PnrFloorplan,
+    PnrMacro,
+)
+from rtl_buddy.config.pnr_platform import (
+    PnrPlatformConfig,
+    PnrPlatformConfigFile,
+    PnrRoutingLayersFile,
+)
 from rtl_buddy.errors import FatalRtlBuddyError
-from rtl_buddy.runner.pnr_results import PnrPassResults
+from rtl_buddy.tools import pnr_openroad, pnr_stages
+from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
 _DIAMOND = " -use_diamond_legalizer"
 
@@ -25,6 +43,8 @@ _SPLIT = {
     "post_route_repair": "diamond",
 }
 
+_ROUNDS = {"setup-margin": 0.1, "rounds": 2}
+
 _DPL_RE = re.compile(r"^detailed_placement\b.*$", re.MULTILINE)
 
 
@@ -32,20 +52,97 @@ def _dpl(text: str) -> list[str]:
     return _DPL_RE.findall(text)
 
 
-def _legalizer(tmp_path, pdk=None, platform=None):
-    pdk_cfg = _pdk(tmp_path, **({"placement": PlacementFile(legalizer=pdk)}))
-    return _platform(pdk_cfg, placement=PlacementFile(legalizer=platform))
+def _platform(tmp_path, legalizer=None, *, pdk_legalizer=None, **fields):
+    """A Nangate45-shaped platform whose PDK has `rcx-rules`; `fields` are further platform fields, `placement` fields included."""
+    (tmp_path / "pdk").mkdir(exist_ok=True)
+    (tmp_path / "pdk" / "rcx.rules").write_text("rules\n")
+    pdk = PdkConfig(
+        PdkConfigFile(
+            name="nangate45",
+            pin_layers=PdkPinLayersFile(horizontal="metal3", vertical="metal2"),
+            site="FreePDK45_38x28_10R_NP_162NW_34O",
+            corners={"typ": "pdk/lib/typ.lib"},
+            tech_lef="pdk/lef/tech.lef",
+            macro_lef="pdk/lef/cells.lef",
+            tie_hi="LOGIC1_X1/Z",
+            tie_lo="LOGIC0_X1/Z",
+            fill_cells=["FILLCELL_X1"],
+            rcx_rules="pdk/rcx.rules",
+            placement=PlacementFile(legalizer=pdk_legalizer),
+        ),
+        str(tmp_path / "root_config.yaml"),
+    )
+    placement = fields.pop("placement", {})
+    return PnrPlatformConfig(
+        PnrPlatformConfigFile(
+            name="nangate45_typ",
+            pdk="nangate45",
+            cts_buffer="BUF_X4",
+            routing_layers=PnrRoutingLayersFile(signal="metal2-metal6", clock="metal4"),
+            placement=PlacementFile(legalizer=legalizer, **placement),
+            **fields,
+        ),
+        lambda _name: pdk,
+    )
+
+
+def _floorplan(**fields) -> PnrFloorplan:
+    return PnrFloorplan(utilization=0.55, aspect=1.0, core_margin=2.0, **fields)
+
+
+def _backend(tmp_path, platform, *, stages=False, floorplan=None) -> OpenRoadPnr:
+    sdc = tmp_path / "constraints.sdc"
+    sdc.write_text("create_clock -period 1 [get_ports clk]\n")
+    pnr_cfg = PnrConfig(
+        name="demo_pnr",
+        desc="demo",
+        tool="openroad",
+        synth_name="demo_synth",
+        synth_suite_path=str(tmp_path / "synth.yaml"),
+        constraints=str(sdc),
+        platform="nangate45_typ",
+        floorplan=floorplan or _floorplan(),
+        _reglvl=0,
+        tool_overrides=None,
+        checkpoints=CHECKPOINT_STAGES if stages else None,
+        stages=stages,
+    )
+    synth = MagicMock()
+    synth.get_top.return_value = "demo_top"
+    pnr_cfg.resolve_synth_cfg = MagicMock(return_value=synth)
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = platform
+    backend = OpenRoadPnr("demo/openroad", pnr_cfg, str(tmp_path), root_cfg)
+    # A nanosecond library, for the post-route margins; a fixed netlist, so two renders compare.
+    backend._ps_per_unit = 1000.0
+    backend._openroad_netlist = str(tmp_path / "demo_top.v")
+    return backend
+
+
+def _one_session(tmp_path, platform, floorplan=None) -> str:
+    backend = _backend(tmp_path, platform, floorplan=floorplan)
+    fp = backend.pnr_cfg.get_floorplan()
+    return Path(backend._write_script(platform, fp)).read_text()
+
+
+def _staged(tmp_path, platform) -> dict[str, str]:
+    """Every session script of a staged run, by stage; the post-route rounds by file name, and the stage itself as its record."""
+    backend = _backend(tmp_path, platform, stages=True)
+    backend._prepare_flow(platform, backend.pnr_cfg.get_floorplan())
+    scripts = {stage: backend._stage_script(stage, "RUN") for stage in backend._stages}
+    scripts.update(backend._post_route_scripts("RUN"))
+    return scripts
 
 
 # -- configuration -----------------------------------------------------------------
 
 
 def test_unset_names_no_stage(tmp_path):
-    assert _legalizer(tmp_path).get_placement_legalizer() == {}
+    assert _platform(tmp_path).get_placement_legalizer() == {}
 
 
 def test_one_engine_stands_for_every_stage(tmp_path):
-    assert _legalizer(tmp_path, platform="diamond").get_placement_legalizer() == {
+    assert _platform(tmp_path, "diamond").get_placement_legalizer() == {
         "place": "diamond",
         "cts": "diamond",
         "global_route": "diamond",
@@ -54,7 +151,7 @@ def test_one_engine_stands_for_every_stage(tmp_path):
 
 
 def test_a_mapping_names_only_its_stages(tmp_path):
-    resolved = _legalizer(tmp_path, platform={"post_route_repair": "diamond"})
+    resolved = _platform(tmp_path, {"post_route_repair": "diamond"})
     assert resolved.get_placement_legalizer() == {"post_route_repair": "diamond"}
 
 
@@ -76,7 +173,7 @@ def test_a_mapping_names_only_its_stages(tmp_path):
 def test_each_level_replaces_the_one_below_whole(
     tmp_path, pdk, platform, run, expected
 ):
-    resolved = _legalizer(tmp_path, pdk, platform)
+    resolved = _platform(tmp_path, platform, pdk_legalizer=pdk)
     if run is not None:
         run_placement = validate_placement(PlacementFile(legalizer=run), "run")
         resolved = resolved.with_run_placement(run_placement, "r")
@@ -103,80 +200,60 @@ def test_each_level_replaces_the_one_below_whole(
 )
 def test_a_bad_value_fails_naming_the_key(tmp_path, value, message):
     with pytest.raises(FatalRtlBuddyError, match=re.escape(message)):
-        _legalizer(tmp_path, platform=value)
+        _platform(tmp_path, value)
 
 
 # -- the flow ------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("reroute", ["eco", "full"])
-@pytest.mark.parametrize("stages", [True, False], ids=["staged", "one-session"])
-def test_each_stage_legalizes_with_its_engine(tmp_path, monkeypatch, stages, reroute):
-    """Unset renders every script as before; set adds the option to the `detailed_placement` calls of the stages it chooses diamond for, and nothing else."""
-    scripts = {}
-    for name, legalizer in (("unset", None), ("set", _SPLIT)):
-        root = tmp_path / name
-        root.mkdir()
-        backend, artefacts = _run_backend(
-            root,
-            monkeypatch,
-            {},
-            stages=stages,
-            checkpoints=None,
-            post_route={**_ROUNDS, "reroute": reroute},
-            corners=["ss", "ff"],
-            env=_ROUNDS_ENV,
-            platform={"placement": PlacementFile(legalizer=legalizer)},
-        )
-        asked = []
-        monkeypatch.setattr(
-            backend,
-            "_has_command_option",
-            lambda command, option: asked.append((command, option)) or True,
-        )
-        assert isinstance(backend.run(), PnrPassResults)
-        scripts[name] = _scripts(artefacts)
-        assert asked == (
-            [("detailed_placement", "-use_diamond_legalizer")] if legalizer else []
-        )
+def test_each_stage_of_a_staged_run_legalizes_with_its_engine(tmp_path, reroute):
+    """Unset renders every session script as before; set adds the option to the `detailed_placement` calls of the stages it chooses diamond for, and nothing else."""
+    post_route = {**_ROUNDS, "reroute": reroute}
+    unset = _staged(tmp_path, _platform(tmp_path, post_route_repair=post_route))
+    chosen = _staged(
+        tmp_path, _platform(tmp_path, _SPLIT, post_route_repair=post_route)
+    )
 
-    assert scripts["set"].keys() == scripts["unset"].keys()
-    for name, text in scripts["set"].items():
-        assert text.replace(_DIAMOND, "") == scripts["unset"][name], name
-        assert _DIAMOND not in scripts["unset"][name], name
-    if stages:
-        for name, diamond in (
-            ("02_place.tcl", False),
-            ("03_cts.tcl", False),
-            ("04_global_route.tcl", True),
-            ("06_post_route_repair.r1.repair.tcl", True),
-            ("06_post_route_repair.r2.repair.tcl", True),
-        ):
-            calls = _dpl(scripts["set"][name])
-            assert calls, name
-            assert calls == [f"detailed_placement{_DIAMOND if diamond else ''}"] * len(
-                calls
-            ), name
-    else:
-        # place 1 and CTS 2, then the global-route repair's and the rounds' in diamond.
-        calls = _dpl(scripts["set"]["pnr.tcl"])
-        assert calls[:3] == ["detailed_placement"] * 3
-        assert len(calls) > 3
-        assert calls[3:] == [f"detailed_placement{_DIAMOND}"] * (len(calls) - 3)
+    assert chosen.keys() == unset.keys()
+    for name, text in chosen.items():
+        assert text.replace(_DIAMOND, "") == unset[name], name
+        assert _DIAMOND not in unset[name], name
+    for name, diamond in (
+        ("place", False),
+        ("cts", False),
+        ("global_route", True),
+        (POST_ROUTE_REPAIR_STAGE, True),
+        ("06_post_route_repair.r1.repair.tcl", True),
+        ("06_post_route_repair.r2.repair.tcl", True),
+    ):
+        calls = _dpl(chosen[name])
+        assert calls, name
+        expected = f"detailed_placement{_DIAMOND if diamond else ''}"
+        assert calls == [expected] * len(calls), name
+
+
+def test_a_one_session_run_legalizes_each_stage_with_its_engine(tmp_path):
+    unset = _one_session(tmp_path, _platform(tmp_path))
+    chosen = _one_session(tmp_path, _platform(tmp_path, _SPLIT))
+
+    assert chosen.replace(_DIAMOND, "") == unset
+    # place 1 and CTS 2, then the global-route repair's 2.
+    assert (
+        _dpl(chosen)
+        == ["detailed_placement"] * 3 + [f"detailed_placement{_DIAMOND}"] * 2
+    )
 
 
 def test_the_macro_pin_limits_step_takes_the_place_stages_engine(tmp_path):
     platform = _platform(
-        _pdk(tmp_path),
-        placement=PlacementFile(
-            legalizer={"place": "diamond"},
-            macro_pin_limits=MacroPinLimitsFile(buffers=["BUF_X1"]),
-        ),
+        tmp_path,
+        {"place": "diamond"},
+        placement={"macro_pin_limits": MacroPinLimitsFile(buffers=["BUF_X1"])},
     )
-    text = _render(tmp_path, _floorplan(), platform)
+    text = _one_session(tmp_path, platform)
 
     assert f" RB-MACRO-PIN-LIMITS: [list{_DIAMOND}]\n" in text
-    # place, then CTS 2 and the global-route repair 2.
     assert _dpl(text) == [f"detailed_placement{_DIAMOND}"] + ["detailed_placement"] * 4
 
 
@@ -184,13 +261,11 @@ def test_a_stage_the_rotated_footprint_may_turn_diamond_keeps_the_footprint(tmp_
     """`rotated-macro-footprint: diamond-legalizer` still decides at run time where `legalizer` leaves negotiation; a stage set to diamond passes it outright."""
     fp = _floorplan(macros=[PnrMacro("u_a", location=(1.0, 2.0), orientation="R90")])
     platform = _platform(
-        _pdk(tmp_path),
-        placement=PlacementFile(
-            rotated_macro_footprint="diamond-legalizer",
-            legalizer={"place": "negotiation", "global_route": "diamond"},
-        ),
+        tmp_path,
+        {"place": "negotiation", "global_route": "diamond"},
+        placement={"rotated_macro_footprint": "diamond-legalizer"},
     )
-    text = _render(tmp_path, fp, platform)
+    text = _one_session(tmp_path, platform, fp)
 
     assert "  set RB_DPL_OPTIONS -use_diamond_legalizer\n" in text
     assert (
@@ -203,89 +278,78 @@ def test_a_stage_the_rotated_footprint_may_turn_diamond_keeps_the_footprint(tmp_
 # -- resume ------------------------------------------------------------------------
 
 
-def _with_legalizer(backend, legalizer):
-    pdk = backend.root_cfg.get_pnr_platform_cfg.return_value.get_pdk()
-    backend.root_cfg.get_pnr_platform_cfg.return_value = _platform(
-        pdk, placement=PlacementFile(legalizer=legalizer)
-    )
-    backend._has_command_option = lambda *_a: True
-    return backend
-
-
-def test_a_change_for_stages_not_yet_run_resumes(tmp_path, monkeypatch):
-    first, artefacts = _backend(
-        tmp_path, monkeypatch, pnr_cfg=_pnr_cfg(tmp_path, stages=True), stop_after="cts"
-    )
-    assert first.run().results["result"] == "PASS"
-    (run,) = _runs(artefacts)
-
-    backend, _ = _backend(
-        tmp_path,
-        monkeypatch,
-        pnr_cfg=_pnr_cfg(tmp_path, stages=True),
-        resume=run.name,
-        resume_from="global_route",
-    )
-    res = _with_legalizer(backend, {"global_route": "diamond"}).run()
-
-    assert res.results["result"] == "PASS", res.results
-    assert "accepted_changes" not in res.results
-    second = next(r for r in _runs(artefacts) if r != run)
-    assert _DIAMOND in (second / "04_global_route.tcl").read_text()
-
-
-def test_a_change_for_a_stage_already_run_is_refused_for_that_stage_alone(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    ("legalizer", "changed"),
+    [
+        ({"global_route": "diamond"}, {"global_route"}),
+        ({"post_route_repair": "diamond"}, {POST_ROUTE_REPAIR_STAGE}),
+        ({"cts": "diamond", "global_route": "diamond"}, {"cts", "global_route"}),
+    ],
+    ids=["global-route", "post-route", "cts-and-global-route"],
+)
+def test_the_choice_is_part_of_its_own_stages_identity_only(
+    tmp_path, legalizer, changed
 ):
-    first, artefacts = _backend(
-        tmp_path, monkeypatch, pnr_cfg=_pnr_cfg(tmp_path, stages=True), stop_after="cts"
+    """A resume compares the identity of each stage before `--from`, so a change for stages not yet run keeps the completed ones."""
+    unset = _staged(tmp_path, _platform(tmp_path, post_route_repair=_ROUNDS))
+    chosen = _staged(
+        tmp_path, _platform(tmp_path, legalizer, post_route_repair=_ROUNDS)
     )
-    assert first.run().results["result"] == "PASS"
-    (run,) = _runs(artefacts)
 
-    backend, _ = _backend(
-        tmp_path,
-        monkeypatch,
-        pnr_cfg=_pnr_cfg(tmp_path, stages=True),
-        resume=run.name,
-        resume_from="global_route",
-    )
-    res = _with_legalizer(backend, {"cts": "diamond", "global_route": "diamond"}).run()
-
-    assert res.results["fail_stage"] == "resume", res.results
-    desc = res.results["desc"]
-    assert "03_cts.tcl" in desc and "(--accept-change script:cts)" in desc
-    assert "02_place.tcl" not in desc
+    differs = {
+        stage
+        for stage in pnr_stages.run_stages(post_route_repair=True)
+        if pnr_stages.script_identity(chosen[stage])
+        != pnr_stages.script_identity(unset[stage])
+    }
+    assert differs == changed
 
 
 # -- what OpenROAD cannot honour ---------------------------------------------------
 
 
-def _setup(
-    tmp_path, monkeypatch, legalizer, *, stages=False, has_option=True, **fields
-):
-    backend, _ = _backend(
-        tmp_path, monkeypatch, pnr_cfg=_pnr_cfg(tmp_path, stages=stages)
+def _setup(tmp_path, monkeypatch, platform, *, has_option=True):
+    """A backend whose `run` stops with `OpenROAD started` where it would start OpenROAD, and the list its option probes go to."""
+    backend = _backend(tmp_path, platform)
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: "26Q2-stub")
+    monkeypatch.setattr(backend, "_has_tcl_command", lambda _c: True)
+    monkeypatch.setattr(backend, "_probe_sta_modes", lambda: True)
+
+    def _no_openroad(*_a, **_k):
+        raise AssertionError("OpenROAD started")
+
+    monkeypatch.setattr(pnr_openroad, "_run_session", _no_openroad)
+    asked = []
+    monkeypatch.setattr(
+        backend,
+        "_has_command_option",
+        lambda command, option: asked.append((command, option)) or has_option,
     )
-    backend.root_cfg.get_pnr_platform_cfg.return_value = _platform(
-        _pdk(tmp_path), placement=PlacementFile(legalizer=legalizer), **fields
+    return backend, asked
+
+
+def _sticky(tmp_path, platform, *, stages=False) -> str | None:
+    backend = _backend(tmp_path, platform, stages=stages)
+    backend._configure_stages(platform)
+    return backend._sticky_legalizer_problem(
+        platform, platform.get_placement_legalizer()
     )
-    monkeypatch.setattr(backend, "_has_command_option", lambda *_a: has_option)
-    return backend.run().results
 
 
 @pytest.mark.parametrize(
-    ("legalizer", "fields", "later", "earlier"),
+    ("legalizer", "later", "earlier"),
     [
-        ({"place": "diamond", "cts": "negotiation"}, {}, "cts", "place"),
-        ({"cts": "diamond", "global_route": "negotiation"}, {}, "global_route", "cts"),
+        ({"place": "diamond", "cts": "negotiation"}, "cts", "place"),
+        ({"cts": "diamond", "global_route": "negotiation"}, "global_route", "cts"),
     ],
     ids=["cts-after-place", "global-route-after-cts"],
 )
 def test_negotiation_after_diamond_in_one_session_fails_setup(
-    tmp_path, monkeypatch, legalizer, fields, later, earlier
+    tmp_path, monkeypatch, legalizer, later, earlier
 ):
-    results = _setup(tmp_path, monkeypatch, legalizer, **fields)
+    backend, asked = _setup(tmp_path, monkeypatch, _platform(tmp_path, legalizer))
+    results = backend.run().results
 
     assert results["fail_stage"] == "setup", results
     assert results["desc"] == (
@@ -294,6 +358,7 @@ def test_negotiation_after_diamond_in_one_session_fails_setup(
         "keeps diamond search once -use_diamond_legalizer is passed; set "
         "stages: true to run each stage in its own session"
     )
+    assert asked == []
 
 
 @pytest.mark.parametrize(
@@ -305,45 +370,28 @@ def test_negotiation_after_diamond_in_one_session_fails_setup(
             False,
             {"global_route_repair": None},
         ),
+        (
+            {"global_route": "diamond", "post_route_repair": "negotiation"},
+            False,
+            {"post_route_repair": _ROUNDS},
+        ),
     ],
-    ids=["staged", "no-global-route-legalization"],
+    ids=["staged", "no-global-route-legalization", "post-route-rounds"],
 )
-def test_negotiation_after_diamond_in_another_session_runs(
-    tmp_path, monkeypatch, legalizer, stages, fields
+def test_negotiation_after_diamond_in_another_session_is_allowed(
+    tmp_path, legalizer, stages, fields
 ):
-    results = _setup(tmp_path, monkeypatch, legalizer, stages=stages, **fields)
-
-    assert results["result"] == "PASS", results
-
-
-def test_the_post_route_rounds_are_sessions_of_their_own(tmp_path, monkeypatch):
-    backend, artefacts = _run_backend(
-        tmp_path,
-        monkeypatch,
-        {},
-        checkpoints=None,
-        post_route=_ROUNDS,
-        env=_ROUNDS_ENV,
-        platform={
-            "placement": PlacementFile(
-                legalizer={
-                    "global_route": "diamond",
-                    "post_route_repair": "negotiation",
-                }
-            )
-        },
-    )
-    monkeypatch.setattr(backend, "_has_command_option", lambda *_a: True)
-
-    assert isinstance(backend.run(), PnrPassResults)
-    rounds = _scripts(artefacts)["06_post_route_repair.r1.repair.tcl"]
-    assert _dpl(rounds) == ["detailed_placement"]
+    platform = _platform(tmp_path, legalizer, **fields)
+    assert _sticky(tmp_path, platform, stages=stages) is None
 
 
 def test_an_openroad_without_the_option_fails_setup_naming_the_key(
     tmp_path, monkeypatch
 ):
-    results = _setup(tmp_path, monkeypatch, "negotiation", has_option=False)
+    backend, asked = _setup(
+        tmp_path, monkeypatch, _platform(tmp_path, "negotiation"), has_option=False
+    )
+    results = backend.run().results
 
     assert results["fail_stage"] == "setup", results
     assert results["desc"] == (
@@ -351,6 +399,15 @@ def test_an_openroad_without_the_option_fails_setup_naming_the_key(
         "negotiation the default engine (OpenROAD 26Q4 or newer); OpenROAD "
         "26Q2-stub does not take it"
     )
+    assert asked == [("detailed_placement", "-use_diamond_legalizer")]
+
+
+def test_an_unset_legalizer_asks_openroad_nothing(tmp_path, monkeypatch):
+    backend, asked = _setup(tmp_path, monkeypatch, _platform(tmp_path))
+
+    with pytest.raises(AssertionError, match="OpenROAD started"):
+        backend.run()
+    assert ("detailed_placement", "-use_diamond_legalizer") not in asked
 
 
 def test_the_unsupported_message_names_the_key():
