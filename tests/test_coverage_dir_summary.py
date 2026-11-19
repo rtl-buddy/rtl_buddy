@@ -1,5 +1,14 @@
+"""`--coverage-dir-summary` records come from the coverage model's source points, with or without a merge."""
+
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from typer.testing import CliRunner
+
+from rtl_buddy.cov.model import MODEL_FILENAME
+from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools.coverage import CoverageReporter
 from rtl_buddy.tools.vlog_cov import CoverageMetrics
 
@@ -24,93 +33,178 @@ class DummyRootCfg:
         return None
 
 
-def _suite_results():
+def _dat_record(*, file, line, type_, name, module, hits):
+    keys = [
+        ("f", file),
+        ("l", str(line)),
+        ("n", "1"),
+        ("t", type_),
+        ("page", f"v_{type_}/{module}"),
+        ("o", name),
+        ("h", f"tb_top.{module}.{name}"),
+    ]
+    blob = "".join(f"\x01{k}\x02{v}" for k, v in keys)
+    return f"C '{blob}' {hits}\n"
+
+
+BLK = "../../../design/blk/blk.sv"
+IFC = "../../../design/ifc/bus_if.sv"
+
+# A block with line, branch and port-toggle points, line 5 elaborated twice; and an
+# interface with toggle points only.
+_RECORDS = [
+    (BLK, 2, "toggle", "a[0]", "blk", 0),
+    (BLK, 2, "toggle", "a[1]", "blk", 4),
+    (BLK, 5, "line", "", "blk", 3),
+    (BLK, 5, "line", "", "blk_wide", 0),
+    (BLK, 6, "line", "", "blk", 2),
+    (BLK, 6, "branch", "if", "blk", 2),
+    (BLK, 6, "branch", "else", "blk", 0),
+    (BLK, 7, "line", "", "blk", 0),
+    (IFC, 3, "toggle", "valid", "bus_if", 5),
+    (IFC, 4, "toggle", "ready", "bus_if", 0),
+]
+
+# What `verilator_coverage --write-info` makes of the same points: a `DA` per touched
+# line, toggle lines included, and a `BRDA` per point on a line with several.
+_LCOV = """SF:{root}/design/blk/blk.sv
+DA:2,4
+DA:5,3
+DA:6,2
+DA:7,0
+BRDA:2,0,0,0
+BRDA:2,0,1,4
+BRDA:6,0,0,2
+BRDA:6,0,1,0
+end_of_record
+SF:{root}/design/ifc/bus_if.sv
+DA:3,5
+DA:4,0
+end_of_record
+"""
+
+
+@pytest.fixture
+def project(tmp_path):
+    root = tmp_path / "repo"
+    for rel in ("design/blk/blk.sv", "design/ifc/bus_if.sv"):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text("// source\n")
+    test_dir = root / "verif" / "blk" / "artefacts" / "basic"
+    test_dir.mkdir(parents=True)
+    (test_dir / "coverage.dat").write_text(
+        "# SystemC::Coverage-3\n"
+        + "".join(
+            _dat_record(file=f, line=ln, type_=t, name=n, module=m, hits=h)
+            for f, ln, t, n, m, h in _RECORDS
+        ),
+        encoding="utf-8",
+    )
+    (root / "merged.info").write_text(_LCOV.format(root=root), encoding="utf-8")
+    return root
+
+
+def _suite_results(project):
+    raw = project / "verif" / "blk" / "artefacts" / "basic" / "coverage.dat"
     return [
         {
             "test_name": "basic",
-            "results": SimpleNamespace(results={}),
+            "results": SimpleNamespace(results={"coverage": {"raw_paths": [str(raw)]}}),
         }
     ]
 
 
-# Records and the lines their real `_dir_summary_lines` formatter would produce, so tests assert on the lines reaching metadata.
-_FAKE_RECORDS = [
-    {
-        "prefix": "design/x",
-        "line": 1.0,
-        "branch": 1.0,
-        "toggle": None,
-        "functional": None,
-    },
-    {
-        "prefix": "verif/x",
-        "line": 0.5,
-        "branch": 0.5,
-        "toggle": None,
-        "functional": None,
-    },
-]
+def _build(project, monkeypatch, **flags):
+    reporter = CoverageReporter(DummyRootCfg(project))
+    # The merge's LCOV disagrees with the model; the summary must not read it.
+    monkeypatch.setattr(
+        reporter,
+        "merge",
+        lambda *args, **kwargs: CoverageMetrics(lcov_path=str(project / "merged.info")),
+    )
+    suite = project / "verif" / "blk"
+    return reporter.build_metadata(
+        _suite_results(project),
+        outdir=str(suite),
+        suite_name=str(suite / "tests.yaml"),
+        dir_summary_paths=["design/blk", "design/ifc", "design"],
+        **flags,
+    )
 
 
-def test_build_metadata_coverview_missing_falls_back_to_lcov_summary(
-    monkeypatch, tmp_path
-):
-    """With --coverage-coverview set but Coverview unavailable, merge_info_process() returns None and the LCOV-based directory summary is used instead of vanishing."""
+def _counts(record, metric):
+    entry = record["source_totals"][metric]
+    return entry["found"], entry["hit"]
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        pytest.param({"coverage_merge": True}, id="merge"),
+        pytest.param({}, id="no-merge"),
+        pytest.param({"model_mode": "none"}, id="model-not-written"),
+    ],
+)
+def test_dir_summary_counts_the_model_source_points(project, monkeypatch, flags):
+    metadata, coverage = _build(project, monkeypatch, **flags)
+
+    blk, ifc, design = coverage["dir_summary"]
+    # Port toggles are not line points; line 5's two elaborations are one source point.
+    assert blk["prefix"] == "design/blk"
+    assert _counts(blk, "line") == (3, 2)
+    assert _counts(blk, "branch") == (2, 1)
+    assert _counts(blk, "toggle") == (2, 1)
+    assert (blk["line"], blk["branch"], blk["toggle"], blk["functional"]) == (
+        2 / 3,
+        0.5,
+        0.5,
+        None,
+    )
+    # An interface with toggle points only has no line or branch figure.
+    assert _counts(ifc, "line") == (0, 0)
+    assert (ifc["line"], ifc["branch"], ifc["toggle"]) == (None, None, 0.5)
+    assert _counts(design, "line") == (3, 2)
+    assert _counts(design, "toggle") == (4, 2)
+    assert "Coverage design/blk: L:0.67 B:0.50 T:0.50 F:UNSP" in metadata
+    assert "Coverage design/ifc: L:UNSP B:UNSP T:0.50 F:UNSP" in metadata
+
+
+def test_dir_summary_agrees_with_the_written_model(project, monkeypatch):
+    _, coverage = _build(project, monkeypatch, coverage_merge=True)
+
+    model = json.loads(
+        (project / "verif" / "blk" / "cov_dir" / MODEL_FILENAME).read_text()
+    )
+    blk_row = next(r for r in model["files"] if r["path"] == "design/blk/blk.sv")
+    assert coverage["dir_summary"][0]["source_totals"] == blk_row["source_totals"]
+    assert coverage["dir_summary"][2]["source_totals"] == model["source_totals"]
+
+
+def test_dir_summary_without_a_model_says_so(project, monkeypatch):
+    raw = project / "verif" / "blk" / "artefacts" / "basic" / "coverage.dat"
+    raw.unlink()
+
+    metadata, coverage = _build(project, monkeypatch)
+
+    assert coverage["dir_summary"] == []
+    assert "Coverage directory summary: unavailable (no coverage model)" in metadata
+
+
+def test_build_metadata_coverview_records_the_merge_descriptions(monkeypatch, tmp_path):
+    """With Coverview present, the info-process merge's archive and description files reach the summary and the manifest."""
     reporter = CoverageReporter(DummyRootCfg(tmp_path))
-
     fake_lcov_path = str(tmp_path / "merged.info")
     monkeypatch.setattr(
         reporter,
         "merge",
         lambda *args, **kwargs: CoverageMetrics(lcov_path=fake_lcov_path),
     )
-    monkeypatch.setattr(reporter, "merge_info_process", lambda *args, **kwargs: None)
-
-    captured = {}
-
-    def _fake_dir_summary_records(lcov_path, dir_summary_paths):
-        captured["lcov_path"] = lcov_path
-        captured["dir_summary_paths"] = dir_summary_paths
-        return _FAKE_RECORDS
-
-    monkeypatch.setattr(reporter, "_dir_summary_records", _fake_dir_summary_records)
-
-    metadata, coverage = reporter.build_metadata(
-        _suite_results(),
-        outdir=str(tmp_path),
-        suite_name="verif/sandbox/tests.yaml",
-        coverage_merge=True,
-        coverage_coverview=True,
-        dir_summary_paths=["design/x", "verif/x"],
-    )
-
-    assert any("design/x" in line for line in metadata)
-    assert any("verif/x" in line for line in metadata)
-    assert captured["lcov_path"] == fake_lcov_path
-    assert captured["dir_summary_paths"] == ["design/x", "verif/x"]
-    assert coverage["dir_summary"] == _FAKE_RECORDS
-
-
-def test_build_metadata_coverview_present_uses_dataset_files_summary(
-    monkeypatch, tmp_path
-):
-    """When Coverview is present, the dataset-files summary is used and the LCOV-based summary is never invoked."""
-    reporter = CoverageReporter(DummyRootCfg(tmp_path))
-
-    fake_lcov_path = str(tmp_path / "merged.info")
-    monkeypatch.setattr(
-        reporter,
-        "merge",
-        lambda *args, **kwargs: CoverageMetrics(lcov_path=fake_lcov_path),
-    )
-
     dataset_files = {
         "line": str(tmp_path / "line.info"),
         "branch": str(tmp_path / "branch.info"),
         "toggle": None,
         "expression": None,
     }
-    # merge_info_process returns (metrics, coverview_zip, dataset_files, description_files); the stub's mapping carries a key per description type plus `line`, as the real one does.
     description_files = {
         "line": str(tmp_path / "line.desc.json"),
         "branch": None,
@@ -127,26 +221,6 @@ def test_build_metadata_coverview_present_uses_dataset_files_summary(
             description_files,
         ),
     )
-
-    lcov_calls = []
-
-    def _fake_dir_summary_records(*args, **kwargs):
-        lcov_calls.append((args, kwargs))
-        return []
-
-    monkeypatch.setattr(reporter, "_dir_summary_records", _fake_dir_summary_records)
-
-    dataset_calls = {}
-
-    def _fake_dataset_records(dataset_files_arg, dir_summary_paths):
-        dataset_calls["dataset_files"] = dataset_files_arg
-        dataset_calls["dir_summary_paths"] = dir_summary_paths
-        return _FAKE_RECORDS
-
-    monkeypatch.setattr(
-        reporter, "_dir_summary_records_from_dataset_files", _fake_dataset_records
-    )
-
     artefact_calls = {}
 
     def _fake_write_artefacts(suite_results, **kwargs):
@@ -155,58 +229,149 @@ def test_build_metadata_coverview_present_uses_dataset_files_summary(
 
     monkeypatch.setattr(reporter, "write_artefacts", _fake_write_artefacts)
 
-    metadata, coverage = reporter.build_metadata(
-        _suite_results(),
+    metadata, _ = reporter.build_metadata(
+        [{"test_name": "basic", "results": SimpleNamespace(results={})}],
         outdir=str(tmp_path),
         suite_name="verif/sandbox/tests.yaml",
         coverage_merge=True,
         coverage_coverview=True,
-        dir_summary_paths=["design/x", "verif/x"],
     )
 
-    assert any("design/x" in line for line in metadata)
-    assert any("verif/x" in line for line in metadata)
     assert "Merged Coverview: cv.zip" in metadata
-    assert dataset_calls["dataset_files"] == dataset_files
-    assert dataset_calls["dir_summary_paths"] == ["design/x", "verif/x"]
-    assert lcov_calls == []
-    assert coverage["dir_summary"] == _FAKE_RECORDS
+    assert artefact_calls["datasets"] == dataset_files
     # The line description file is what the manifest records as the merge's `desc`.
     assert artefact_calls["merged"]["desc"] == description_files["line"]
     assert artefact_calls["descriptions"] == description_files
 
 
-def test_build_metadata_no_coverview_uses_lcov_summary(monkeypatch, tmp_path):
-    """With coverage_coverview=False, the LCOV-based summary runs."""
-    reporter = CoverageReporter(DummyRootCfg(tmp_path))
-
-    fake_lcov_path = str(tmp_path / "merged.info")
-    monkeypatch.setattr(
-        reporter,
-        "merge",
-        lambda *args, **kwargs: CoverageMetrics(lcov_path=fake_lcov_path),
+def _suite(project, name, test, records):
+    test_dir = project / "verif" / name / "artefacts" / test
+    test_dir.mkdir(parents=True)
+    raw = test_dir / "coverage.dat"
+    raw.write_text(
+        "# SystemC::Coverage-3\n"
+        + "".join(
+            _dat_record(file=f, line=ln, type_=t, name=n, module=m, hits=h)
+            for f, ln, t, n, m, h in records
+        ),
+        encoding="utf-8",
     )
+    row = {
+        "test_name": test,
+        "results": SimpleNamespace(results={"coverage": {"raw_paths": [str(raw)]}}),
+    }
+    return {
+        "test_suite": f"verif/{name}/tests.yaml",
+        "test_suite_path": str(project / "verif" / name),
+        "results": [row],
+    }
 
-    captured = {}
 
-    def _fake_dir_summary_records(lcov_path, dir_summary_paths):
-        captured["lcov_path"] = lcov_path
-        captured["dir_summary_paths"] = dir_summary_paths
-        return _FAKE_RECORDS
+def test_per_suite_exports_keep_one_run_wide_summary(tmp_path, monkeypatch):
+    project = tmp_path / "repo"
+    for rel in ("design/blk/blk.sv", "design/ifc/bus_if.sv"):
+        (project / rel).parent.mkdir(parents=True, exist_ok=True)
+        (project / rel).write_text("// source\n")
+    reg_results = [
+        _suite(project, "blk", "basic", [r for r in _RECORDS if r[0] == BLK]),
+        _suite(project, "ifc", "smoke", [r for r in _RECORDS if r[0] == IFC]),
+    ]
+    reporter = CoverageReporter(DummyRootCfg(project))
+    exports = []
 
-    monkeypatch.setattr(reporter, "_dir_summary_records", _fake_dir_summary_records)
+    def fake_exports(suite_results, *, outdir, suite_name, source_roots, **_):
+        exports.append(
+            (suite_name, [r["test_name"] for r in suite_results], source_roots)
+        )
+        return []
+
+    monkeypatch.setattr(reporter, "generate_per_test_artifacts", fake_exports)
 
     metadata, coverage = reporter.build_metadata(
-        _suite_results(),
-        outdir=str(tmp_path),
-        suite_name="verif/sandbox/tests.yaml",
-        coverage_merge=True,
-        coverage_coverview=False,
-        dir_summary_paths=["design/x", "verif/x"],
+        [row for suite in reg_results for row in suite["results"]],
+        outdir=str(project),
+        suite_name=str(project / "regression.yaml"),
+        coverage_html=True,
+        reg_results=reg_results,
+        source_roots=[suite["test_suite_path"] for suite in reg_results],
+        dir_summary_paths=["design"],
+        source_summary=True,
+        per_suite_exports=True,
     )
 
-    assert any("design/x" in line for line in metadata)
-    assert any("verif/x" in line for line in metadata)
-    assert captured["lcov_path"] == fake_lcov_path
-    assert captured["dir_summary_paths"] == ["design/x", "verif/x"]
-    assert coverage["dir_summary"] == _FAKE_RECORDS
+    assert exports == [
+        ("verif/blk/tests.yaml", ["basic"], [str(project / "verif" / "blk")]),
+        ("verif/ifc/tests.yaml", ["smoke"], [str(project / "verif" / "ifc")]),
+    ]
+    (design,) = coverage["dir_summary"]
+    assert _counts(design, "line") == (3, 2)
+    assert _counts(design, "toggle") == (4, 2)
+    assert [line for line in metadata if line.startswith("Coverage design")] == [
+        "Coverage design: L:0.67 B:0.50 T:0.50 F:UNSP"
+    ]
+    assert coverage["source_summary"]["source_totals"]["toggle"]["found"] == 4
+    model = json.loads((project / "cov_dir" / MODEL_FILENAME).read_text())
+    assert [t["name"] for t in model["tests"]] == ["basic", "smoke"]
+    assert coverage["artefacts"]["manifest"] == "cov_dir/manifest.json"
+
+
+def test_html_regression_reports_coverage_over_every_suite(
+    minimal_project: Path, monkeypatch
+):
+    second = minimal_project / "second"
+    second.mkdir()
+    (second / "tests.yaml").write_text(
+        (minimal_project / "tests.yaml")
+        .read_text()
+        .replace("src/example.sv", "../src/example.sv")
+        .replace("model_path: models.yaml", "model_path: ../models.yaml")
+        .replace("name: basic", "name: other")
+    )
+    (minimal_project / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\n"
+        "test-configs:\n  - tests.yaml\n  - second/tests.yaml\n"
+    )
+    monkeypatch.setattr(
+        CoverageReporter, "collect_paths", lambda self, results: ["stub.dat"]
+    )
+    calls = []
+    record = {"prefix": "src", "line": 0.5}
+
+    def spy(self, suite_results, **kwargs):
+        calls.append(([row["test_name"] for row in suite_results], kwargs))
+        return ["Coverage src: L:0.50"], {
+            "merged": None,
+            "dir_summary": [record],
+            "merge_failed": False,
+            "failed_metrics": [],
+        }
+
+    monkeypatch.setattr(CoverageReporter, "build_metadata", spy)
+
+    result = CliRunner().invoke(
+        RtlBuddy(name="test_coverage_dir_summary").app,
+        [
+            "--machine",
+            "-M",
+            "debug",
+            "-E",
+            "comp",
+            "regression",
+            "--coverage-html",
+            "--coverage-dir-summary",
+            "src",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    ((tests, kwargs),) = calls
+    # One call over both suites; `extra` is above the regression level and skipped.
+    assert sorted(tests) == ["basic", "extra", "extra", "other"]
+    assert kwargs["per_suite_exports"] is True
+    assert kwargs["dir_summary_paths"] == ["src"]
+    assert [suite["test_suite"] for suite in kwargs["reg_results"]] == [
+        "tests.yaml",
+        "second/tests.yaml",
+    ]
+    payload = json.loads(result.stdout)["payload"]
+    assert payload["coverage"]["dir_summary"] == [record]

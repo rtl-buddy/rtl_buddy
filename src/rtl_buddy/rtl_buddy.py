@@ -66,7 +66,7 @@ from .mcp import toolset as mcp_toolset_mod
 from .artifact_lock import ArtifactLocks, acquire_in_order, tree_lock
 from .errors import FatalRtlBuddyError, FilelistError
 from .exec_context import ExecutionContext
-from .hooks import exec_hook_script
+from .hooks import exec_hook_script, report_hook_failure
 from .logging_utils import (
     attach_file_log,
     emit_console_text,
@@ -4809,16 +4809,10 @@ class RtlBuddy:
                 out_test_cfgs=[],
             )
         except Exception as e:
-            log_event(
-                logger,
-                logging.ERROR,
-                "sweep.failed",
-                test=test_cfg.name,
-                script=script_path,
-                error=e,
+            error = report_hook_failure(
+                e, script_path, stage="sweep", test=test_cfg.name
             )
-            logger.debug("sweep traceback", exc_info=True)
-            return [], f"Setup failed in sweep: {e}"
+            return [], f"Setup failed in sweep: {error}"
 
         log_event(
             logger,
@@ -8612,82 +8606,34 @@ class RtlBuddy:
             coverage_dir_summary_file=coverage_dir_summary_file,
             coverage_source_summary=coverage_source_summary,
         )
-        # The per-suite HTML branch below drops each payload, so seed the run-level
-        # cover points here. Key omitted when there are none, so "absent" keeps meaning
-        # "not collected".
-        coverage_payload = {
-            "merged": None,
-            "dir_summary": [],
-            "merge_failed": False,
-            "failed_metrics": [],
-        }
-        seed_covers = self.coverage.collect_cover_records(all_suite_results)
-        if seed_covers:
-            coverage_payload["covers"] = seed_covers
-        if (
-            coverage_html
-            and not coverage_merge
-            and not coverage_merge_raw
-            and not coverage_merge_info_process
-        ):
-            reg_outdir = str(ctx.command_root)
-            # Per-suite HTML only: no merge, so no structured merged payload.
-            outcomes = self._coverage_tail(
-                [
-                    dict(
-                        suite_results=reg_result["results"],
-                        outdir=reg_outdir,
-                        suite_name=reg_result["test_suite"],
-                        coverage_merge=False,
-                        coverage_merge_raw=False,
-                        coverage_html=True,
-                        coverage_coverview=coverage_coverview,
-                        coverage_per_test=coverage_per_test,
-                        reg_results=reg_results,
-                        coverage_merge_info_process=coverage_merge_info_process,
-                        source_roots=[reg_result["test_suite_path"]],
-                        dir_summary_paths=dir_summary_paths,
-                        source_summary=coverage_source_summary,
-                        command="regression",
-                        model_mode=coverage_model,
-                    )
-                    for reg_result in reg_results
-                ],
-                backend=dispatch_backend,
-            )
-            for cov_metadata, suite_coverage in outcomes:
-                metadata.extend(cov_metadata)
-                # A tail job that failed fails every call; carry that one verdict.
-                if suite_coverage.get("tail_failed"):
-                    coverage_payload["tail_failed"] = suite_coverage["tail_failed"]
-        else:
-            reg_outdir = str(ctx.command_root)
-            regression_source_roots = [
-                reg_result["test_suite_path"] for reg_result in reg_results
-            ]
-            ((cov_metadata, coverage_payload),) = self._coverage_tail(
-                [
-                    dict(
-                        suite_results=all_suite_results,
-                        outdir=reg_outdir,
-                        suite_name=self.reg_cfg.get_path(),
-                        coverage_merge=coverage_merge,
-                        coverage_merge_raw=coverage_merge_raw,
-                        coverage_html=coverage_html,
-                        coverage_coverview=coverage_coverview,
-                        coverage_per_test=coverage_per_test,
-                        reg_results=reg_results,
-                        coverage_merge_info_process=coverage_merge_info_process,
-                        source_roots=regression_source_roots,
-                        dir_summary_paths=dir_summary_paths,
-                        source_summary=coverage_source_summary,
-                        command="regression",
-                        model_mode=coverage_model,
-                    )
-                ],
-                backend=dispatch_backend,
-            )
-            metadata.extend(cov_metadata)
+        merging = coverage_merge or coverage_merge_raw or coverage_merge_info_process
+        ((cov_metadata, coverage_payload),) = self._coverage_tail(
+            [
+                dict(
+                    suite_results=all_suite_results,
+                    outdir=str(ctx.command_root),
+                    suite_name=self.reg_cfg.get_path(),
+                    coverage_merge=coverage_merge,
+                    coverage_merge_raw=coverage_merge_raw,
+                    coverage_html=coverage_html,
+                    coverage_coverview=coverage_coverview,
+                    coverage_per_test=coverage_per_test,
+                    reg_results=reg_results,
+                    coverage_merge_info_process=coverage_merge_info_process,
+                    source_roots=[
+                        reg_result["test_suite_path"] for reg_result in reg_results
+                    ],
+                    dir_summary_paths=dir_summary_paths,
+                    source_summary=coverage_source_summary,
+                    command="regression",
+                    model_mode=coverage_model,
+                    # Unmerged HTML is named and resolved per suite.
+                    per_suite_exports=coverage_html and not merging,
+                )
+            ],
+            backend=dispatch_backend,
+        )
+        metadata.extend(cov_metadata)
         # Same rule as `test`, applied once the artefacts are written.
         exit_code |= self._coverage_merge_exit_code(coverage_payload)
 

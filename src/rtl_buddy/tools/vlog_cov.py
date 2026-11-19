@@ -542,68 +542,6 @@ class VlogCov:
         """Return `(line_ratio, branch_ratio)` for a whole LCOV `.info` file."""
         return self._parse_lcov_summary(lcov_path)
 
-    def parse_lcov_summary_for_prefix(self, lcov_path, prefix):
-        """Return `(line_ratio, branch_ratio)` for files under a repo-relative prefix such as `design/example_block`."""
-        if lcov_path is None or not os.path.exists(lcov_path):
-            return None, None
-
-        normalized_prefix = prefix.replace("\\", "/").strip("/")
-        if not normalized_prefix:
-            return self._parse_lcov_summary(lcov_path)
-
-        repo_root = self._get_repo_root()
-        current_matches = False
-        line_found = 0
-        line_hit = 0
-        branch_found = 0
-        branch_hit = 0
-
-        with open(lcov_path, "r", encoding="utf-8") as f:
-            for raw_line in f:
-                line = raw_line.strip()
-                if line.startswith("SF:"):
-                    sf_path_raw = line[3:].strip()
-                    sf_path_obj = Path(sf_path_raw)
-                    if sf_path_obj.is_absolute():
-                        try:
-                            sf_path = (
-                                sf_path_obj.resolve().relative_to(repo_root).as_posix()
-                            )
-                        except Exception:
-                            sf_path = sf_path_obj.as_posix()
-                    else:
-                        sf_path = sf_path_raw.replace("\\", "/")
-                    sf_path = sf_path.strip("/")
-                    current_matches = (
-                        sf_path == normalized_prefix
-                        or sf_path.startswith(f"{normalized_prefix}/")
-                    )
-                elif not current_matches:
-                    continue
-                elif line.startswith("DA:"):
-                    payload = line[3:].split(",")
-                    if len(payload) < 2:
-                        continue
-                    try:
-                        hit_count = int(payload[1])
-                    except ValueError:
-                        continue
-                    line_found += 1
-                    if hit_count > 0:
-                        line_hit += 1
-                elif line.startswith("BRDA:"):
-                    payload = line[5:].split(",")
-                    if len(payload) < 4:
-                        continue
-                    branch_found += 1
-                    hit_count = payload[3]
-                    if hit_count not in ("-", "0"):
-                        branch_hit += 1
-
-        line_cov = None if line_found == 0 else (line_hit / line_found)
-        branch_cov = None if branch_found == 0 else (branch_hit / branch_found)
-        return line_cov, branch_cov
-
     def generate_artifacts(
         self,
         raw_path,

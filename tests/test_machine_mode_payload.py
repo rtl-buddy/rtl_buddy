@@ -371,32 +371,6 @@ def test_build_metadata_without_coverage_returns_empty_payload(tmp_path):
     assert metadata == []
 
 
-def test_dir_summary_records_are_structured_and_format_back(tmp_path, monkeypatch):
-    reporter = CoverageReporter(_DummyRootCfg())
-    lcov = tmp_path / "merged.info"
-    lcov.write_text("SF:/x\nend_of_record\n")
-
-    class FakeCov:
-        def parse_lcov_summary_for_prefix(self, path, prefix):
-            return (0.9, 0.8)  # (line, branch)
-
-    monkeypatch.setattr(reporter, "_get_cov_tool", lambda: FakeCov())
-
-    records = reporter._dir_summary_records(str(lcov), ["rtl/core"])
-    assert records == [
-        {
-            "prefix": "rtl/core",
-            "line": 0.9,
-            "branch": 0.8,
-            "toggle": None,
-            "functional": None,
-        }
-    ]
-    assert reporter._dir_summary_lines(records) == [
-        "Coverage rtl/core: L:0.90 B:0.80 T:UNSP F:UNSP"
-    ]
-
-
 # The shared surface: render_summary emits the "summary" event in --machine.
 
 

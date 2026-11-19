@@ -7,7 +7,8 @@
 
 Hooks are exec()'d with `__name__` set to `HOOK_MODULE_NAME`, never `"__main__"`, and
 their stdout is captured as `hook.stdout` log events. `root_cfg` reaches a hook
-read-only. See docs/concepts/plugins.md.
+read-only. A failed hook is reported by :func:`report_hook_failure`. See
+docs/concepts/plugins.md.
 """
 
 import contextlib
@@ -15,9 +16,10 @@ import io
 import logging
 import os
 import sys
+import traceback
 import types
 
-from .logging_utils import log_console_event
+from .logging_utils import log_console_event, log_event
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +123,8 @@ def exec_hook_script(script_path, code, *, stage=None, **variables):
 
     The namespace is a real module's `__dict__`, registered as
     `sys.modules[HOOK_MODULE_NAME]` during the exec so `@dataclass` with string
-    annotations works; the previous binding is restored afterwards. Exceptions propagate
+    annotations works; the previous binding is restored afterwards. The code is compiled
+    under the script's absolute path, so traceback frames name it. Exceptions propagate
     unchanged. `stage` (`"preproc"` or `"sweep"`) labels the `hook.stdout` events and is
     not injected into the namespace. Hook stderr is not captured.
     """
@@ -135,7 +138,7 @@ def exec_hook_script(script_path, code, *, stage=None, **variables):
         # The trailing partial line is flushed from our own object, even if the hook
         # rebinds sys.stdout.
         with contextlib.redirect_stdout(hook_stdout):
-            exec(code, mod.__dict__)
+            exec(compile(code, os.path.abspath(script_path), "exec"), mod.__dict__)
     finally:
         hook_stdout.flush()
         if prev is sentinel:
@@ -143,3 +146,46 @@ def exec_hook_script(script_path, code, *, stage=None, **variables):
         else:
             sys.modules[HOOK_MODULE_NAME] = prev
     return mod.__dict__
+
+
+def report_hook_failure(exc, script_path, *, stage, test):
+    """Log a failed hook as ERROR `<stage>.failed` and INFO `hook.traceback`; return the error text.
+
+    The text is ``Type: message`` (``Type`` alone when the message is empty), followed by
+    `` at <script>:<line>`` for the innermost traceback frame in ``script_path``, when
+    there is one. The traceback starts at the hook's first frame.
+    """
+    script = os.path.abspath(script_path)
+    message = str(exc)
+    error = f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+    tb = exc.__traceback__
+    while tb is not None and tb.tb_frame.f_code.co_filename != script:
+        tb = tb.tb_next
+    hook_tb = tb
+    lineno = None
+    while tb is not None:
+        if tb.tb_frame.f_code.co_filename == script:
+            lineno = tb.tb_lineno
+        tb = tb.tb_next
+    if lineno is not None:
+        error += f" at {os.path.basename(script)}:{lineno}"
+    log_event(
+        logger,
+        logging.ERROR,
+        f"{stage}.failed",
+        test=test,
+        script=script_path,
+        error=error,
+    )
+    log_event(
+        logger,
+        logging.INFO,
+        "hook.traceback",
+        test=test,
+        script=script_path,
+        stage=stage,
+        traceback="".join(
+            traceback.format_exception(type(exc), exc, hook_tb or exc.__traceback__)
+        ).rstrip(),
+    )
+    return error
