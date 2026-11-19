@@ -1,4 +1,8 @@
+import json
+import sys
 from contextlib import nullcontext
+
+import pytest
 
 from rtl_buddy.errors import FilelistError
 from rtl_buddy.logging_utils import setup_logging
@@ -481,3 +485,87 @@ def test_suite_dir_for_test_runner_comes_from_suite_cfg_path(tmp_path, monkeypat
 
     assert len(suite_results) == 1
     assert captured["suite_dir"] == str(suite_dir.resolve())
+
+
+_HELPER_MODULE = "rb_setup_failure_helper"
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        pytest.param("assert False\n", "AssertionError at pre.py:1", id="bare-assert"),
+        pytest.param(
+            "cfg = {}\ncfg['x']\n", "KeyError: 'x' at pre.py:2", id="with-message"
+        ),
+        pytest.param(
+            f"import {_HELPER_MODULE}\n\n{_HELPER_MODULE}.check()\n",
+            "ValueError: width 3 is odd at pre.py:3",
+            id="raised-in-helper",
+        ),
+    ],
+)
+def test_preproc_failure_names_the_exception_and_hook_line(
+    tmp_path, monkeypatch, capsys, script, expected
+):
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    helper_dir = tmp_path / "lib"
+    helper_dir.mkdir()
+    (helper_dir / f"{_HELPER_MODULE}.py").write_text(
+        "def check():\n    raise ValueError('width 3 is odd')\n"
+    )
+    monkeypatch.syspath_prepend(str(helper_dir))
+    monkeypatch.delitem(sys.modules, _HELPER_MODULE, raising=False)
+    script_path = tmp_path / "pre.py"
+    script_path.write_text(script)
+
+    sim = VlogSim(
+        name="rtl_buddy/vlog_sim",
+        root_cfg=DummyRootCfg(),
+        test_cfg=DummyPreprocTestCfg(str(script_path)),
+        rtl_builder_mode="reg",
+        sim_mode={"sim_to_stdout": False},
+        suite_dir=str(tmp_path),
+    )
+
+    assert sim.pre() == f"Setup failed in preproc: {expected}"
+    log = log_path.read_text()
+    assert f"ERROR basic: preproc failed ({expected})" in log
+    # The traceback reaches the file log at INFO, starting at the hook's own frame.
+    traceback_text = log.split("INFO basic: preproc hook traceback\n", 1)[1]
+    assert traceback_text.startswith(
+        f'Traceback (most recent call last):\n  File "{script_path}", line '
+    )
+    assert expected.split(" at ")[0] in traceback_text
+    console = capsys.readouterr().err
+    assert "preproc failed" in console
+    assert "Traceback" not in console
+
+
+def test_sweep_failure_names_the_exception_in_machine_events(tmp_path):
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, machine=True, log_path=log_path)
+    sweep_script = tmp_path / "sweep.py"
+    sweep_script.write_text("out_test_cfgs = []\nassert out_test_cfgs\n")
+
+    rb = RtlBuddy(name="rtl_buddy")
+    rb.root_cfg = object()
+
+    test_cfgs, error = rb._expand_tests_with_sweep(
+        DummySweepTest(str(sweep_script)), suite_dir=str(tmp_path)
+    )
+
+    assert test_cfgs == []
+    assert error == "Setup failed in sweep: AssertionError at sweep.py:2"
+    events = {
+        record["event"]: record
+        for record in map(json.loads, log_path.read_text().splitlines())
+        if "event" in record
+    }
+    assert events["sweep.failed"]["level"] == "ERROR"
+    assert events["sweep.failed"]["error"] == "AssertionError at sweep.py:2"
+    traceback_event = events["hook.traceback"]
+    assert traceback_event["level"] == "INFO"
+    assert traceback_event["stage"] == "sweep"
+    assert traceback_event["traceback"].endswith("AssertionError")
+    assert f'File "{sweep_script}", line 2' in traceback_event["traceback"]

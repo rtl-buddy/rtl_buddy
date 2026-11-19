@@ -66,7 +66,7 @@ from .mcp import toolset as mcp_toolset_mod
 from .artifact_lock import ArtifactLocks, acquire_in_order, tree_lock
 from .errors import FatalRtlBuddyError, FilelistError
 from .exec_context import ExecutionContext
-from .hooks import exec_hook_script
+from .hooks import exec_hook_script, report_hook_failure
 from .logging_utils import (
     attach_file_log,
     emit_console_text,
@@ -4809,16 +4809,10 @@ class RtlBuddy:
                 out_test_cfgs=[],
             )
         except Exception as e:
-            log_event(
-                logger,
-                logging.ERROR,
-                "sweep.failed",
-                test=test_cfg.name,
-                script=script_path,
-                error=e,
+            error = report_hook_failure(
+                e, script_path, stage="sweep", test=test_cfg.name
             )
-            logger.debug("sweep traceback", exc_info=True)
-            return [], f"Setup failed in sweep: {e}"
+            return [], f"Setup failed in sweep: {error}"
 
         log_event(
             logger,

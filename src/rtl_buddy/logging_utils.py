@@ -1092,6 +1092,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{fields.get('test')}: preproc completed"
         case "preproc.failed":
             return f"{fields.get('test')}: preproc failed ({fields.get('error')})"
+        case "hook.traceback":
+            return f"{fields.get('test')}: {fields.get('stage')} hook traceback\n{fields.get('traceback')}"
         case "hook.stdout":
             # A hook's print(), re-framed with a script prefix because it
             # interleaves with rtl_buddy output on stderr.
