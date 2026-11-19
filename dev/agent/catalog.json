@@ -1118,12 +1118,6 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/plugins/handle-hook-execution-context.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/plugins/#read-a-failed-hook",
-          "slug": "read-a-failed-hook",
-          "title": "Read a failed hook",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/plugins/read-a-failed-hook.md"
-        },
-        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/plugins/#post-processing",
           "slug": "post-processing",
           "title": "Post-processing",

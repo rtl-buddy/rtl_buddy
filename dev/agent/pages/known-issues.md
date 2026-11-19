@@ -18,8 +18,8 @@ rtl-buddy-cdc 0.3.x treats `xpm_cdc_*` instances as dual-clock blackboxes. It re
 
 Verilator scores each coverage point once per module elaboration. If a suite builds the same RTL under different defines or parameters, a block can look short on coverage when it is fully covered once the copies are collapsed.
 
-- `rb cov summary` and merged totals report the per-elaboration figure.
-- For the collapsed figure, read `source_totals`: the `run (source)` row of `rb cov summary`, `rb cov summary --by-source`, `--coverage-source-summary` on `test` and `regression`, `--coverage-dir-summary`, or the `/cov` pane's `figures` picker.
+- `rb cov summary`, `--coverage-dir-summary` and merged totals report the per-elaboration figure.
+- For the collapsed figure, read `source_totals`: the `run (source)` row of `rb cov summary`, `rb cov summary --by-source`, `--coverage-source-summary` on `test` and `regression`, or the `/cov` pane's `figures` picker.
 
 See [Coverage](concepts/coverage.md#per-elaboration-vs-source-point-figures).
 
