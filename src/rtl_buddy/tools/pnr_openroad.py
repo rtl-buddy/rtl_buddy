@@ -7479,8 +7479,12 @@ class OpenRoadPnr:
                 name=self.name + "/results", desc=sticky, fail_stage="setup"
             )
         # OpenROAD 26Q4 made negotiation the default and diamond search `-use_diamond_legalizer`.
-        if legalizer and not self._has_command_option(
-            "detailed_placement", "-use_diamond_legalizer"
+        if (
+            isinstance(legalizer, dict)
+            and legalizer
+            and not self._has_command_option(
+                "detailed_placement", "-use_diamond_legalizer"
+            )
         ):
             log_event(
                 logger,

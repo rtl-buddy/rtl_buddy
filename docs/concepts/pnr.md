@@ -22,6 +22,7 @@ description: Run OpenROAD place-and-route on a synthesised netlist with rb pnr, 
 | CTS | Clock-tree synthesis: building the buffered clock networks. |
 | Global route, detailed route | Global route plans nets over a grid of GCells; overflow is demand above capacity. Detailed route draws the wires. |
 | ECO | Engineering change order: rerouting only the nets a repair changed. |
+| Legalization | Moving cells onto free, non-overlapping row sites after a step adds or moves them. `detailed_placement` does it. |
 | Macro, RTL-MP | A block with a fixed layout, such as an SRAM or a hardened block. RTL-MP is OpenROAD's macro placer. |
 | `repair_design`, `repair_timing` | OpenROAD's repairs: the first fixes slew, capacitance, fanout and long wires, the second setup or hold. |
 | ORFS | OpenROAD-flow-scripts, the reference flow whose settings rb follows. |
@@ -357,6 +358,7 @@ Process-dependent settings live on the PDK and can be overridden on the platform
 | Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm), or a `tapcell-tcl` that cuts rows around macros. |
 | Tie cells too close to their loads | `placement.tie-separation` (µm). |
 | Macro pins over a tight Liberty limit, such as OpenRAM SKY130 SRAM inputs (0.04 ns) | `placement.macro-pin-limits`, below. |
+| Legalization after routing repair is slow, or fails with `DPL-0701` then `DPL-0033` | `placement.legalizer`, below. |
 
 A platform that ends up with `routability-use-grt` but not `routability-driven` fails to load.
 
@@ -416,6 +418,29 @@ The step judges on placement parasitics, so check `electrical.rpt`:
 - A long macro-output net can route to twice its estimated capacitance, hence `capacitance-margin: 0.5` on sky130hd.
 - A large `macro-cell-halo` keeps the buffer too far from the pin: on sky130hd, 3 µm works with `buf_8` and 20 µm does not.
 - A pin route that global routing detours around the macro is out of reach.
+
+### Choose the legalizer per stage
+
+OpenROAD 26Q4 legalizes with one of two engines:
+
+- Negotiation, the default. Cells compete for sites over many iterations. It adds less wire length where a step crowds many cells in, such as hold repair after CTS.
+- Diamond search, `-use_diamond_legalizer`. Each cell takes a nearby free site. It is much faster, and as good where a step adds few cells, such as the repairs after global and detailed route. On a crowded design negotiation can stop at its iteration cap (`DPL-0701`) with cells still overlapping, which fails `check_placement` (`DPL-0033`).
+
+`placement.legalizer` picks the engine per stage. This keeps negotiation through CTS and uses diamond search from global route on:
+
+```yaml
+    placement:
+      legalizer: {global_route: diamond, post_route_repair: diamond}
+```
+
+- `legalizer: diamond` sets every stage. A stage the mapping leaves out passes no option, so OpenROAD's default applies.
+- It applies to every `detailed_placement` rb runs in the stage, `placement.macro-pin-limits` included. A hook passes its own options.
+- With `rotated-macro-footprint: diamond-legalizer`, a turned macro makes every stage use diamond search, including one set to `negotiation`.
+- Diamond search stays on for the rest of an OpenROAD session ([Known Issues](../known-issues.md#diamond-search-stays-on-for-the-rest-of-an-openroad-session)). A one-session run that sets a stage to `negotiation` after one set to `diamond` fails at setup; run it with [`stages: true`](#run-stages-as-separate-sessions). Each post-route round is a session of its own.
+- Each stage's engine is in that stage's script only. A [resume](#run-stages-as-separate-sessions) that changes it for stages from `--from` on needs no `--accept-change`.
+- An OpenROAD whose `detailed_placement` has no `-use_diamond_legalizer` fails the run at setup.
+
+The log shows each call's engine on its `legalizer` line, under `Detailed Placement Analysis`.
 
 ### Optimisation steps
 
