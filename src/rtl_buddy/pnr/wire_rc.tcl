@@ -1,18 +1,18 @@
-
-# A post-route `repair_design` at its own signal wire RC (`repair-design.wire-rc`,
-# see `_repair_steps_tcl`). `rb::rc::save` keeps every scene's signal wire RC,
-# `rb::rc::apply` replaces it and `rb::rc::restore` puts it back, so the
-# `repair_timing` after it estimates the nets it changes at the RC the session
-# had. Restoring does not invalidate parasitics: the nets `repair_design` changed
-# keep their `wire-rc` estimate until they are estimated again. Clock wire RC is left
+# The signal wire RC a post-route repair estimates the nets it changes at (see
+# `_repair_steps_tcl`). With `repair-design.wire-rc`, `rb::rc::save` keeps every
+# scene's signal wire RC, `rb::rc::apply` replaces it and `rb::rc::restore` puts
+# it back after the last repair of the steps. `rb::rc::ideal` runs a hold repair
+# with it at zero. No setter invalidates parasitics: a net a repair changed keeps
+# the estimate it got until OpenROAD estimates it again. Clock wire RC is left
 # alone. OpenROAD reads back only the mean of the horizontal and vertical signal
-# RC, so `save` reads the horizontal one with the vertical one set to zero.
+# RC, so `rb::rc::current` reads the horizontal one with the vertical one set to
+# zero.
 namespace eval rb::rc {
     variable saved {}
 }
 
-proc rb::rc::save {} {
-    variable saved {}
+proc rb::rc::current {} {
+    set each {}
     foreach scene [sta::scenes] {
         set res [est::wire_signal_resistance $scene]
         set cap [est::wire_signal_capacitance $scene]
@@ -22,17 +22,51 @@ proc rb::rc::save {} {
         set v_res [expr {2 * $res - $h_res}]
         set v_cap [expr {2 * $cap - $h_cap}]
         est::set_v_wire_signal_rc_cmd NULL $scene $v_res $v_cap
-        lappend saved [list $scene $h_res $h_cap $v_res $v_cap]
+        lappend each [list $scene $h_res $h_cap $v_res $v_cap]
     }
+    return $each
 }
 
-proc rb::rc::restore {} {
-    variable saved
-    foreach entry $saved {
+proc rb::rc::put {each} {
+    foreach entry $each {
         lassign $entry scene h_res h_cap v_res v_cap
         est::set_h_wire_signal_rc_cmd NULL $scene $h_res $h_cap
         est::set_v_wire_signal_rc_cmd NULL $scene $v_res $v_cap
     }
+}
+
+proc rb::rc::save {} {
+    variable saved [current]
+}
+
+proc rb::rc::restore {} {
+    variable saved
+    put $saved
+}
+
+# Run `script`, a hold repair, with every scene's signal wire RC at zero, then
+# put the RC back. A hold buffer the repair tries and rolls back leaves its net
+# on an estimate in place of the extracted parasitics; with no wire that estimate
+# is never slower than the route, so an endpoint behind it cannot read as met
+# while it fails. An OpenROAD without scenes or the `est::` setters runs `script`
+# at the RC the session has.
+proc rb::rc::ideal {script} {
+    if {![llength [info commands ::sta::scenes]]
+        || ![llength [info commands ::est::set_h_wire_signal_rc_cmd]]} {
+        puts "rb: no sta::scenes or est:: wire RC commands; the hold repair\
+            estimates at the session's signal wire RC"
+        return [uplevel 1 $script]
+    }
+    set held [current]
+    set none {}
+    foreach entry $held {
+        lappend none [list [lindex $entry 0] 0 0 0 0]
+    }
+    put $none
+    set code [catch {uplevel 1 $script} result options]
+    put $held
+    if {$code == 0} { return $result }
+    return -options [dict incr options -level] $result
 }
 
 # Set every scene's signal wire RC to `spec`: {resistance R capacitance C} in

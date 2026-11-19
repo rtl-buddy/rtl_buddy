@@ -508,6 +508,18 @@ A block runs `repair_design` when `repair-design` is set (`{}` for OpenROAD's de
 3. Repairs antennas as after detailed route, with `detailed-route-antenna-repair`.
 4. Extracts and times.
 
+An `eco` round repairs hold in two calls:
+
+1. Without a hold margin, estimating the nets it changes with no signal wire RC. Each endpoint that fails on the extracted parasitics gets delay on its path.
+2. With `hold-margin`, at the round's signal wire RC. A block with `hold-margin: 0` runs the first call alone.
+
+- `repair_timing -hold` tries a buffer at each driver along a failing path and rolls it back when it costs too much slew or setup slack. The net it tried then carries an estimate in place of its extracted parasitics.
+- Where that estimate is slower than the route, the endpoint reads as met with no buffer on its path, and fails again after extraction, by the same amount in every round. With no wire RC the estimate is never slower than the route.
+- A net the first call buffers loses its wire delay in the estimate, so the call can add more buffers than the path needs. It is limited to the endpoints that fail outright for that reason.
+- The second call can still read a rolled-back net as slower than it routes, so the round can end with hold met by less than `hold-margin`.
+- Each call takes `max-buffer-percent`.
+- A `full` round estimates changed nets from their global routes and repairs hold in one call.
+
 Each round, the electrical round included, starts with `remove_fillers`, which removes every `CORE_SPACER` instance that is not `LOCKED`. A spacer a hook placed `FIRM` or `FIXED` to reserve sites is gone after the first round; place it `LOCKED`.
 
 Two `repair-design` keys apply to `post-route-repair` only, both off by default:
@@ -521,7 +533,7 @@ post-route-repair:
   setup-margin: 0.05
 ```
 
-- `wire-rc` sets the signal wire RC at which each round's repairs (`repair_design`, `repair_timing`, `after-timing-repair` hooks) estimate the nets they change. The session's RC is set for placement, but routed nets are often longer and higher in the stack: at that RC `repair_design` can leave them over their slew limit, and `repair_timing` can judge that removing a repeater from a long wire saves time.
+- `wire-rc` sets the signal wire RC at which each round's repairs (`repair_design`, `repair_timing`, `after-timing-repair` hooks) estimate the nets they change, except an `eco` round's first hold call. The session's RC is set for placement, but routed nets are often longer and higher in the stack: at that RC `repair_design` can leave them over their slew limit, and `repair_timing` can judge that removing a repeater from a long wire saves time.
 - `{layer: M5}` takes that layer's RC per corner from `set_layer_rc`, else the LEF. Clock wire RC is unchanged, and each repair line in `pnr.log` names the signal wire RC it used.
 - The session's signal wire RC, including one a `session` hook set, returns after the round's last repair. Changed nets keep the `wire-rc` estimate until OpenROAD estimates them again, such as after legalization moves their cells.
 - `after-timing: true` runs `repair_design` again after setup and hold repair, before legalizing, since `repair_timing` checks slew at the session's RC and can leave nets a few picoseconds over. It needs a margin.
