@@ -1,11 +1,14 @@
 """`--coverage-dir-summary` records come from the coverage model's source points, with or without a merge."""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from typer.testing import CliRunner
 
 from rtl_buddy.cov.model import MODEL_FILENAME
+from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools.coverage import CoverageReporter
 from rtl_buddy.tools.vlog_cov import CoverageMetrics
 
@@ -239,3 +242,136 @@ def test_build_metadata_coverview_records_the_merge_descriptions(monkeypatch, tm
     # The line description file is what the manifest records as the merge's `desc`.
     assert artefact_calls["merged"]["desc"] == description_files["line"]
     assert artefact_calls["descriptions"] == description_files
+
+
+def _suite(project, name, test, records):
+    test_dir = project / "verif" / name / "artefacts" / test
+    test_dir.mkdir(parents=True)
+    raw = test_dir / "coverage.dat"
+    raw.write_text(
+        "# SystemC::Coverage-3\n"
+        + "".join(
+            _dat_record(file=f, line=ln, type_=t, name=n, module=m, hits=h)
+            for f, ln, t, n, m, h in records
+        ),
+        encoding="utf-8",
+    )
+    row = {
+        "test_name": test,
+        "results": SimpleNamespace(results={"coverage": {"raw_paths": [str(raw)]}}),
+    }
+    return {
+        "test_suite": f"verif/{name}/tests.yaml",
+        "test_suite_path": str(project / "verif" / name),
+        "results": [row],
+    }
+
+
+def test_per_suite_exports_keep_one_run_wide_summary(tmp_path, monkeypatch):
+    project = tmp_path / "repo"
+    for rel in ("design/blk/blk.sv", "design/ifc/bus_if.sv"):
+        (project / rel).parent.mkdir(parents=True, exist_ok=True)
+        (project / rel).write_text("// source\n")
+    reg_results = [
+        _suite(project, "blk", "basic", [r for r in _RECORDS if r[0] == BLK]),
+        _suite(project, "ifc", "smoke", [r for r in _RECORDS if r[0] == IFC]),
+    ]
+    reporter = CoverageReporter(DummyRootCfg(project))
+    exports = []
+
+    def fake_exports(suite_results, *, outdir, suite_name, source_roots, **_):
+        exports.append(
+            (suite_name, [r["test_name"] for r in suite_results], source_roots)
+        )
+        return []
+
+    monkeypatch.setattr(reporter, "generate_per_test_artifacts", fake_exports)
+
+    metadata, coverage = reporter.build_metadata(
+        [row for suite in reg_results for row in suite["results"]],
+        outdir=str(project),
+        suite_name=str(project / "regression.yaml"),
+        coverage_html=True,
+        reg_results=reg_results,
+        source_roots=[suite["test_suite_path"] for suite in reg_results],
+        dir_summary_paths=["design"],
+        source_summary=True,
+        per_suite_exports=True,
+    )
+
+    assert exports == [
+        ("verif/blk/tests.yaml", ["basic"], [str(project / "verif" / "blk")]),
+        ("verif/ifc/tests.yaml", ["smoke"], [str(project / "verif" / "ifc")]),
+    ]
+    (design,) = coverage["dir_summary"]
+    assert _counts(design, "line") == (3, 2)
+    assert _counts(design, "toggle") == (4, 2)
+    assert [line for line in metadata if line.startswith("Coverage design")] == [
+        "Coverage design: L:0.67 B:0.50 T:0.50 F:UNSP"
+    ]
+    assert coverage["source_summary"]["source_totals"]["toggle"]["found"] == 4
+    model = json.loads((project / "cov_dir" / MODEL_FILENAME).read_text())
+    assert [t["name"] for t in model["tests"]] == ["basic", "smoke"]
+    assert coverage["artefacts"]["manifest"] == "cov_dir/manifest.json"
+
+
+def test_html_regression_reports_coverage_over_every_suite(
+    minimal_project: Path, monkeypatch
+):
+    second = minimal_project / "second"
+    second.mkdir()
+    (second / "tests.yaml").write_text(
+        (minimal_project / "tests.yaml")
+        .read_text()
+        .replace("src/example.sv", "../src/example.sv")
+        .replace("model_path: models.yaml", "model_path: ../models.yaml")
+        .replace("name: basic", "name: other")
+    )
+    (minimal_project / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\n"
+        "test-configs:\n  - tests.yaml\n  - second/tests.yaml\n"
+    )
+    monkeypatch.setattr(
+        CoverageReporter, "collect_paths", lambda self, results: ["stub.dat"]
+    )
+    calls = []
+    record = {"prefix": "src", "line": 0.5}
+
+    def spy(self, suite_results, **kwargs):
+        calls.append(([row["test_name"] for row in suite_results], kwargs))
+        return ["Coverage src: L:0.50"], {
+            "merged": None,
+            "dir_summary": [record],
+            "merge_failed": False,
+            "failed_metrics": [],
+        }
+
+    monkeypatch.setattr(CoverageReporter, "build_metadata", spy)
+
+    result = CliRunner().invoke(
+        RtlBuddy(name="test_coverage_dir_summary").app,
+        [
+            "--machine",
+            "-M",
+            "debug",
+            "-E",
+            "comp",
+            "regression",
+            "--coverage-html",
+            "--coverage-dir-summary",
+            "src",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    ((tests, kwargs),) = calls
+    # One call over both suites; `extra` is above the regression level and skipped.
+    assert sorted(tests) == ["basic", "extra", "extra", "other"]
+    assert kwargs["per_suite_exports"] is True
+    assert kwargs["dir_summary_paths"] == ["src"]
+    assert [suite["test_suite"] for suite in kwargs["reg_results"]] == [
+        "tests.yaml",
+        "second/tests.yaml",
+    ]
+    payload = json.loads(result.stdout)["payload"]
+    assert payload["coverage"]["dir_summary"] == [record]

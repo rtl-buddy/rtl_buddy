@@ -49,6 +49,7 @@ _PLAIN_KWARGS = (
     "source_summary",
     "command",
     "model_mode",
+    "per_suite_exports",
 )
 
 

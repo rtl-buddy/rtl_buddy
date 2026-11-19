@@ -819,6 +819,7 @@ class CoverageReporter:
         source_summary=False,
         command="regression",
         model_mode=model_mod.MODEL_MODE_FULL,
+        per_suite_exports=False,
     ):
         """Build the coverage summaries for merged or unmerged runs.
 
@@ -837,7 +838,9 @@ class CoverageReporter:
           :meth:`_source_summary_record`.
 
         ``model_mode`` is ``--coverage-model``: ``full``, ``totals`` (no per-point test
-        attribution) or ``none`` (manifest only).
+        attribution) or ``none`` (manifest only). Without a merge, ``per_suite_exports``
+        writes the per-test exports suite by suite from ``reg_results``, each named and
+        resolved against its own suite; the model and summaries still cover every test.
         """
         metadata = []
         coverage = {
@@ -1020,23 +1023,35 @@ class CoverageReporter:
                 if cv is not None and cv.zip_path is not None:
                     coverview_paths["per_test_zip"] = cv.zip_path
                     metadata.append(f"Per-Test Coverview: {cv.zip_path}")
-            html_reports = self.generate_per_test_artifacts(
-                suite_results,
-                outdir=outdir,
-                suite_name=suite_name,
-                html_output=coverage_html,
-                coverview_output=(coverage_coverview and not coverage_per_test),
-                source_roots=source_roots,
-            )
-            for test_name_i, metrics, coverview_zip in html_reports:
-                if metrics.lcov_path is not None:
-                    metadata.append(f"Coverage LCOV {test_name_i}: {metrics.lcov_path}")
-                if metrics.html_dir is not None:
-                    metadata.append(f"Coverage HTML {test_name_i}: {metrics.html_dir}")
-                if coverview_zip is not None:
-                    metadata.append(
-                        f"Coverage Coverview {test_name_i}: {coverview_zip}"
-                    )
+            if per_suite_exports and reg_results is not None:
+                export_groups = [
+                    (suite["results"], suite["test_suite"], [suite["test_suite_path"]])
+                    for suite in reg_results
+                ]
+            else:
+                export_groups = [(suite_results, suite_name, source_roots)]
+            for group_results, group_name, group_roots in export_groups:
+                html_reports = self.generate_per_test_artifacts(
+                    group_results,
+                    outdir=outdir,
+                    suite_name=group_name,
+                    html_output=coverage_html,
+                    coverview_output=(coverage_coverview and not coverage_per_test),
+                    source_roots=group_roots,
+                )
+                for test_name_i, metrics, coverview_zip in html_reports:
+                    if metrics.lcov_path is not None:
+                        metadata.append(
+                            f"Coverage LCOV {test_name_i}: {metrics.lcov_path}"
+                        )
+                    if metrics.html_dir is not None:
+                        metadata.append(
+                            f"Coverage HTML {test_name_i}: {metrics.html_dir}"
+                        )
+                    if coverview_zip is not None:
+                        metadata.append(
+                            f"Coverage Coverview {test_name_i}: {coverview_zip}"
+                        )
 
         # One model serves both the artefacts and the source-point summary.
         model = self.build_run_model(
