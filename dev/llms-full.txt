@@ -584,16 +584,17 @@ HTML needs `use-lcov: true` and `genhtml` (diagnose with `rb tool-check --explai
 
 ## Add directory and source-point summaries
 
-`--coverage-dir-summary` adds rollups for repo-relative directory prefixes. Repeat the flag, or list one prefix per line in a file:
+`--coverage-dir-summary` adds rollups for repo-relative directory prefixes. Repeat the flag, or list one prefix per line in a file. No merge flag is needed:
 
 ```bash
-rb -M cov regression --coverage-merge \
+rb -M cov regression \
   --coverage-dir-summary src/core \
   --coverage-dir-summary src/mem
 
-rb -M cov regression --coverage-merge \
-  --coverage-dir-summary-file coverage_dirs.txt
+rb -M cov regression --coverage-dir-summary-file coverage_dirs.txt
 ```
+
+Each prefix sums the coverage model's source points (`source_totals`) over the files under it, so the rollup agrees with `coverage-model.json` and `rb cov summary --by-source`. The console prints `Coverage <prefix>: L:… B:… T:… F:…`, where `F` is cover points. In machine output, each `payload.coverage.dir_summary` entry has those ratios as `line`, `branch`, `toggle` and `functional`, and `source_totals` with `found`, `hit` and `ratio` per metric, so disjoint prefixes can be summed. A metric with no points under the prefix, such as line coverage of a directory holding only an interface, is null and prints `UNSP`. If the run produced no model, the summary prints `Coverage directory summary: unavailable (no coverage model)`.
 
 `--coverage-source-summary` adds source-point figures, which differ from the default per-elaboration ones (see [Per-elaboration vs source-point figures](#per-elaboration-vs-source-point-figures)):
 
@@ -636,7 +637,7 @@ rtl_buddy reports both:
 - **Per elaboration** (`totals`) answers "is this point covered in every build". Use it when one compile key is what you care about.
 - **Source point** (`source_totals`) answers "is this point covered by the suite", which is how a closure target is normally stated. A point counts as covered when any elaboration hit it.
 
-Both figures use one unit at every scope, so a test's figure compares with its file's and the run's. A line point is one block of code, not one source line: an `if` arm and its `else` on one line are two points, and the per-elaboration line count equals the `t=line` records in the merged `coverage.dat`. `rb cov summary` shows both figures, and `--by-source` shows the coldest files' source-point figures in the same order. `--coverage-dir-summary` is per elaboration only, because LCOV has already folded elaborations together.
+Both figures use one unit at every scope, so a test's figure compares with its file's and the run's. A line point is one block of code, not one source line: an `if` arm and its `else` on one line are two points, and the per-elaboration line count equals the `t=line` records in the merged `coverage.dat`. `rb cov summary` shows both figures, and `--by-source` shows the coldest files' source-point figures in the same order. `--coverage-dir-summary` reports source points.
 
 Source points come from the coverage model. A run with only LCOV fallback records no module, so its two figures are equal. If the run produced no model, the summary prints `Coverage source points: unavailable (no coverage model)`.
 
@@ -2826,6 +2827,17 @@ The captured `sys.stdout` has no usable `fileno()` or `.buffer`. If a third-part
 
 See [Execution Context](execution-context.md) for path ownership.
 
+## Read a failed hook
+
+A hook that raises fails its test with a description that names the exception and the innermost line of the hook script it passed through:
+
+```text
+Setup failed in preproc: KeyError: 'width' at my_preproc.py:12
+Setup failed in sweep: AssertionError at example_sweep.py:7
+```
+
+The same text is the `error` field of the ERROR `preproc.failed` or `sweep.failed` event. The traceback, starting at the hook's first frame, is the INFO `hook.traceback` event: it is in `rtl_buddy.log` and, under dispatch, in the log of the job that ran the hook (see [Monitor and stop a run](dispatch.md#monitor-and-stop-a-run)), but not on the console unless `-v` is given.
+
 ## Post-processing
 
 The config loader accepts `postproc`, but custom post-processing hooks do not run. Results come from the built-in post-processing flow.
@@ -3345,9 +3357,21 @@ A block runs `repair_design` when `repair-design` is set (`{}` for OpenROAD's de
 3. Repairs antennas as after detailed route, with `detailed-route-antenna-repair`.
 4. Extracts and times.
 
+An `eco` round repairs hold in two calls:
+
+1. Without a hold margin, estimating the nets it changes with no signal wire RC. Each endpoint that fails on the extracted parasitics gets delay on its path.
+2. With `hold-margin`, at the round's signal wire RC. A block with `hold-margin: 0` runs the first call alone.
+
+- `repair_timing -hold` tries a buffer at each driver along a failing path and rolls it back when it costs too much slew or setup slack. The net it tried then carries an estimate in place of its extracted parasitics.
+- Where that estimate is slower than the route, the endpoint reads as met with no buffer on its path, and fails again after extraction, by the same amount in every round. With no wire RC the estimate is never slower than the route.
+- A net the first call buffers loses its wire delay in the estimate, so the call can add more buffers than the path needs. It is limited to the endpoints that fail outright for that reason.
+- The second call can still read a rolled-back net as slower than it routes, so the round can end with hold met by less than `hold-margin`.
+- Each call takes `max-buffer-percent`.
+- A `full` round estimates changed nets from their global routes and repairs hold in one call.
+
 Each round, the electrical round included, starts with `remove_fillers`, which removes every `CORE_SPACER` instance that is not `LOCKED`. A spacer a hook placed `FIRM` or `FIXED` to reserve sites is gone after the first round; place it `LOCKED`.
 
-Two `repair-design` keys apply to `post-route-repair` only, both off by default:
+Three keys apply to `post-route-repair` only, all off by default:
 
 ```yaml
 post-route-repair:
@@ -3355,12 +3379,14 @@ post-route-repair:
     slew-margin: 20
     wire-rc: {resistance: 0.06, capacitance: 0.17}   # kohm/um, fF/um; or {layer: M5}
     after-timing: true
+  timing-wire-rc: {resistance: 0.03, capacitance: 0.16}
   setup-margin: 0.05
 ```
 
-- `wire-rc` sets the signal wire RC at which each round's repairs (`repair_design`, `repair_timing`, `after-timing-repair` hooks) estimate the nets they change. The session's RC is set for placement, but routed nets are often longer and higher in the stack: at that RC `repair_design` can leave them over their slew limit, and `repair_timing` can judge that removing a repeater from a long wire saves time.
+- `wire-rc` sets the signal wire RC at which each round's repairs (`repair_design`, `repair_timing`, `after-timing-repair` hooks) estimate the nets they change, except an `eco` round's first hold call. The session's RC is set for placement, but routed nets are often longer and higher in the stack: at that RC `repair_design` can leave them over their slew limit, and `repair_timing` can judge that removing a repeater from a long wire saves time.
 - `{layer: M5}` takes that layer's RC per corner from `set_layer_rc`, else the LEF. Clock wire RC is unchanged, and each repair line in `pnr.log` names the signal wire RC it used.
 - The session's signal wire RC, including one a `session` hook set, returns after the round's last repair. Changed nets keep the `wire-rc` estimate until OpenROAD estimates them again, such as after legalization moves their cells.
+- `timing-wire-rc` gives `repair_timing` and the `after-timing-repair` hooks an RC of their own, in either form `wire-rc` takes; `repair_design` keeps `wire-rc`, or the session's RC without one. Set it when `wire-rc` is above the routed mean so that `repair_design` buffers the nets that route worst: at that RC the timing repair over-estimates the nets it changes. It needs a margin.
 - `after-timing: true` runs `repair_design` again after setup and hold repair, before legalizing, since `repair_timing` checks slew at the session's RC and can leave nets a few picoseconds over. It needs a margin.
 
 ### Which round is kept
@@ -6730,8 +6756,8 @@ rtl-buddy-cdc 0.3.x treats `xpm_cdc_*` instances as dual-clock blackboxes. It re
 
 Verilator scores each coverage point once per module elaboration. If a suite builds the same RTL under different defines or parameters, a block can look short on coverage when it is fully covered once the copies are collapsed.
 
-- `rb cov summary`, `--coverage-dir-summary` and merged totals report the per-elaboration figure.
-- For the collapsed figure, read `source_totals`: the `run (source)` row of `rb cov summary`, `rb cov summary --by-source`, `--coverage-source-summary` on `test` and `regression`, or the `/cov` pane's `figures` picker.
+- `rb cov summary` and merged totals report the per-elaboration figure.
+- For the collapsed figure, read `source_totals`: the `run (source)` row of `rb cov summary`, `rb cov summary --by-source`, `--coverage-source-summary` on `test` and `regression`, `--coverage-dir-summary`, or the `/cov` pane's `figures` picker.
 
 See [Coverage](concepts/coverage.md#per-elaboration-vs-source-point-figures).
 
@@ -7000,6 +7026,14 @@ Each post-route repair round runs in fresh sessions and orders its steps to avoi
 - On a routed database, `repair_timing` switches to detailed-routing parasitics and builds buffer trees from global routes that a fresh session rebuilds incompletely, failing with `RSZ-0074` (OpenROAD#11852). An `eco` round therefore replaces OpenROAD's `design_is_routed` with one that answers 0 during its repairs, keeping them on placement parasitics. When `repair_timing` does not call that procedure, rb warns `pnr.post_route_eco_unguarded`; if the round then fails `RSZ-0074`, it is set aside and the result names the fix, `post-route-repair.reroute: full`.
 - `global_route -start_incremental` around a resizer command that reroutes by itself delivers each netlist change twice, and a later rip-up fails with `GRT-0229` and `usage=65535` (OpenROAD#11851). A `full` round and the global-route repair run their repairs first and open the incremental route around the legalization only, as ORFS does. An `eco` round, whose repairs do not reroute, opens it before the repairs.
 - `repair_timing` on global-route parasitics fails `RSZ-0074` on nets `repair_design` split until they are rerouted, so a repair that runs both legalizes and reroutes between them.
+
+## Post-route hold repair drops the extracted parasitics of a net it leaves unchanged
+
+In an `eco` post-route repair round, the repairs time unchanged nets on the extracted SPEF and the nets they change on a placement estimate. On OpenROAD 26Q4, `repair_timing -hold` tries a buffer at a driver and rolls it back when the driver's slew grows by more than 20% or the worst setup slack drops below the setup margin. The rollback leaves the net on the estimate, although it has the driver and loads it had.
+
+Where the estimate is slower than the extraction, the endpoint behind the net reads as met and the repair skips the rest of its path. The round's extraction then reports the endpoint failing by what it failed before, and every later round repeats this.
+
+An `eco` round therefore repairs hold twice: first without a hold margin and with no signal wire RC, so no estimate is slower than its route, then with the margin at the round's RC. See [Post-route repair rounds](concepts/pnr.md#post-route-repair-rounds). An OpenROAD without `sta::scenes` or the `est::` wire RC commands (before 26Q2), and a session that sets signal wire RC per technology, run both calls at the session's RC, and `pnr.log` says so.
 
 ## Post-route `repair_design` sizes its buffering on the placement estimate
 
@@ -10633,9 +10667,10 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | Key | Behavior |
 |---|---|
 | `repair-design` | `repair_design` with `slew-margin`, `cap-margin` (percent) and `max-wire-length` (µm); `{}` uses OpenROAD's defaults |
-| `repair-design.wire-rc` | `post-route-repair` only. Signal wire RC for each round's repairs, `repair_design` and `repair_timing`: `{resistance: <kohm/um>, capacitance: <fF/um>}` or `{layer: <name>}`. The session's RC is restored after the round's last repair; changed nets keep this estimate until they are estimated again. Unset uses the session's |
+| `repair-design.wire-rc` | `post-route-repair` only. Signal wire RC for each round's repairs, `repair_design` and `repair_timing` (an `eco` round's first hold call excepted): `{resistance: <kohm/um>, capacitance: <fF/um>}` or `{layer: <name>}`. The session's RC is restored after the round's last repair; changed nets keep this estimate until they are estimated again. Unset uses the session's |
+| `timing-wire-rc` | `post-route-repair` only. Signal wire RC for each round's `repair_timing` calls and `after-timing-repair` hooks, in either form `repair-design.wire-rc` takes; `repair_design` keeps `repair-design.wire-rc`, else the session's. Needs a margin. Unset leaves the timing repairs at `repair-design.wire-rc`, else the session's |
 | `repair-design.after-timing` | `post-route-repair` only. `true` runs `repair_design` again after timing repair in each round; needs a margin. Default `false` |
-| `setup-margin`, `hold-margin` | `repair_timing -setup` / `-hold` with that margin in ns, at least 0 |
+| `setup-margin`, `hold-margin` | `repair_timing -setup` / `-hold` with that margin in ns, at least 0. An `eco` round of `post-route-repair` first repairs hold without the margin and with no signal wire RC; see [Post-route repair rounds](../concepts/pnr.md#post-route-repair-rounds) |
 | `max-buffer-percent` | `repair_timing -hold -max_buffer_percent`: the hold repair's buffer budget as a percentage of the design's instances, 0 to 100. Unset leaves OpenROAD's default |
 | `reroute` | `incremental` (default) or `full` for `global-route-repair`; `eco` (default) or `full` for `post-route-repair` |
 | `rounds` | `post-route-repair` only. Positive, default 1; above 1 needs a margin |
