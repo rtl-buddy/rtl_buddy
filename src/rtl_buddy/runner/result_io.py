@@ -300,8 +300,16 @@ def load_build_result_json(path):
 
     Returns ``{"built": [...], "failed": [...], "builds": [...], "partial": bool}``. ``builds`` may be empty.
     Records are returned as written, so read their failure keys with ``.get()``.
+
+    The directory is listed first. On NFS, a name this host looked up while it was
+    missing, as the head did when it cleared a stale envelope at submit, stays missing
+    here for up to the mount's ``acdirmin`` after a job on another host writes it.
     """
     path = Path(path)
+    try:
+        os.listdir(path.parent)
+    except OSError:
+        pass
     try:
         raw = json.loads(path.read_text())
     except (OSError, ValueError):

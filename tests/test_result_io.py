@@ -7,6 +7,7 @@ and ``load_result_json`` envelope layer.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -332,6 +333,26 @@ def test_build_envelope_round_trips_its_compile_records(tmp_path: Path):
     loaded = load_build_result_json(out)
     assert loaded["built"] == ["basic"]
     assert loaded["builds"] == records
+
+
+def test_reading_a_build_envelope_lists_its_directory_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Listing the directory makes NFS revalidate a name this host saw missing."""
+    from rtl_buddy.runner import result_io
+
+    out = tmp_path / "build.json"
+    result_io.write_build_result_json(out, built=["basic"], failed=[])
+    listed = []
+    real_listdir = os.listdir
+
+    def _listdir(path):
+        listed.append(Path(path))
+        return real_listdir(path)
+
+    monkeypatch.setattr(result_io.os, "listdir", _listdir)
+    assert result_io.load_build_result_json(out)["built"] == ["basic"]
+    assert listed == [tmp_path]
 
 
 def test_a_build_envelope_without_records_is_still_readable(tmp_path: Path):
