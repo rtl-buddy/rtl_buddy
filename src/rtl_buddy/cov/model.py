@@ -433,6 +433,20 @@ def source_totals(row: dict) -> dict | None:
     return totals or None
 
 
+def prefix_source_totals(model: dict, prefix: str) -> dict:
+    """``source_totals`` summed over the model's files at or below a project-relative ``prefix``, as ``{found, hit, ratio}`` per metric."""
+    prefix = prefix.replace("\\", "/").strip("/")
+    totals = _empty_totals()
+    for row in model.get("files", []):
+        path = row["path"]
+        if prefix and path != prefix and not path.startswith(f"{prefix}/"):
+            continue
+        file_totals = row.get("source_totals")
+        if file_totals:
+            _sum_totals(totals, file_totals)
+    return totals
+
+
 def cover_points(model: dict) -> list[dict]:
     """Observed SVA cover points, with per-test hits under ``tests``, sorted by file, line, name, module."""
     records = []
