@@ -97,6 +97,7 @@ class PostRouteRepairFile:
     setup_margin: Any = field(rename="setup-margin", default=UNSET)
     hold_margin: Any = field(rename="hold-margin", default=UNSET)
     max_buffer_percent: Any = field(rename="max-buffer-percent", default=UNSET)
+    timing_wire_rc: Any = field(rename="timing-wire-rc", default=UNSET)
     rounds: Any = UNSET
     margin_step: Any = field(rename="margin-step", default=UNSET)
     reroute: Any = UNSET
@@ -115,13 +116,14 @@ POST_ROUTE_REPAIR_SPEC = KeySpec(
             PostRouteRepairDesignFile, {"wire-rc": KeySpec(WireRcFile)}
         ),
         "electrical-repair": KeySpec(ElectricalRepairFile),
+        "timing-wire-rc": KeySpec(WireRcFile),
     },
 )
 
 
 @dataclass(frozen=True)
 class WireRc:
-    """The signal wire RC a post-route `repair_design` estimates the nets it changes at: `resistance` (kohm/um) and `capacitance` (fF/um), or the RC `set_wire_rc -signal -layer` gives `layer`."""
+    """The signal wire RC a post-route repair estimates the nets it changes at: `resistance` (kohm/um) and `capacitance` (fF/um), or the RC `set_wire_rc -signal -layer` gives `layer`."""
 
     resistance: float | None = None
     capacitance: float | None = None
@@ -179,12 +181,13 @@ class GlobalRouteRepair:
 
 @dataclass(frozen=True)
 class PostRouteRepair:
-    """The repair rounds after detailed route, on extracted parasitics. Margins are in ns; `None` skips that repair. `electrical_repair` holds the `slew-margin` and `cap-margin` of the electrical round, or None when it does not run. `max_buffer_percent` is the hold repair's `-max_buffer_percent`; `None` passes none."""
+    """The repair rounds after detailed route, on extracted parasitics. Margins are in ns; `None` skips that repair. `electrical_repair` holds the `slew-margin` and `cap-margin` of the electrical round, or None when it does not run. `max_buffer_percent` is the hold repair's `-max_buffer_percent`; `None` passes none. `timing_wire_rc` is the signal wire RC of the `repair_timing` calls; `None` leaves them at `repair_design.wire_rc`, else the session's."""
 
     repair_design: RepairDesign | None = None
     setup_margin: float | None = None
     hold_margin: float | None = None
     max_buffer_percent: float | None = None
+    timing_wire_rc: WireRc | None = None
     rounds: int = 1
     margin_step: float = 0.0
     reroute: PostRouteReroute = PostRouteReroute.ECO
@@ -406,6 +409,7 @@ _POST_ROUTE_KEYS = {
     "setup-margin": "setup_margin",
     "hold-margin": "hold_margin",
     "max-buffer-percent": "max_buffer_percent",
+    "timing-wire-rc": "timing_wire_rc",
     "rounds": "rounds",
     "margin-step": "margin_step",
     "reroute": "reroute",
@@ -460,6 +464,13 @@ def read_post_route_repair(where: str, raw):
     if block is None:
         return None
     layer = _read_margins(where, block, _POST_ROUTE_REPAIR_DESIGN_KEYS)
+    timing_rc = block["timing_wire_rc"]
+    if timing_rc is not UNSET:
+        layer["timing_wire_rc"] = (
+            None
+            if timing_rc is None
+            else _read_wire_rc(f"{where}.timing-wire-rc", timing_rc)
+        )
     rounds = block["rounds"]
     if rounds is not UNSET:
         if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 1:
@@ -579,6 +590,7 @@ def resolve_post_route_repair(where: str, layers) -> PostRouteRepair | None:
         setup_margin=merged.get("setup_margin"),
         hold_margin=merged.get("hold_margin"),
         max_buffer_percent=merged.get("max_buffer_percent"),
+        timing_wire_rc=merged.get("timing_wire_rc"),
         rounds=merged.get("rounds", 1),
         margin_step=merged.get("margin_step", 0.0),
         reroute=merged.get("reroute", PostRouteReroute.ECO),
@@ -594,6 +606,11 @@ def resolve_post_route_repair(where: str, layers) -> PostRouteRepair | None:
             f"{where}: post-route-repair.repair-design.after-timing runs "
             "repair_design again after timing repair, but the block sets no "
             "setup-margin or hold-margin"
+        )
+    if repair.timing_wire_rc is not None and not repair.sides():
+        raise FatalRtlBuddyError(
+            f"{where}: post-route-repair.timing-wire-rc sets the wire RC of the "
+            "timing repair, but the block sets no setup-margin or hold-margin"
         )
     if repair.rounds > 1 and not repair.sides():
         raise FatalRtlBuddyError(

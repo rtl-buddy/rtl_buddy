@@ -26,7 +26,7 @@ from dataclasses import dataclass, field, replace as dataclass_replace
 from stat import S_ISDIR, S_ISREG
 
 logger = logging.getLogger(__name__)
-from ..hooks import exec_hook_script
+from ..hooks import exec_hook_script, report_hook_failure
 from ..seed_mode import SeedMode
 from ..config.rtl import expand_compile_opts
 
@@ -3455,16 +3455,10 @@ class VlogSim:
                 run_artifact_dir=run_artifact_dir,
             )
         except Exception as e:
-            log_event(
-                logger,
-                logging.ERROR,
-                "preproc.failed",
-                test=self.test_name,
-                script=script_path,
-                error=e,
+            error = report_hook_failure(
+                e, script_path, stage="preproc", test=self.test_name
             )
-            logger.debug("preproc traceback", exc_info=True)
-            return f"Setup failed in preproc: {e}"
+            return f"Setup failed in preproc: {error}"
 
         import_error = self._check_preproc_imports(ns, script_path)
         if import_error is not None:

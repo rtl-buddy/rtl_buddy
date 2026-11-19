@@ -1092,6 +1092,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{fields.get('test')}: preproc completed"
         case "preproc.failed":
             return f"{fields.get('test')}: preproc failed ({fields.get('error')})"
+        case "hook.traceback":
+            return f"{fields.get('test')}: {fields.get('stage')} hook traceback\n{fields.get('traceback')}"
         case "hook.stdout":
             # A hook's print(), re-framed with a script prefix because it
             # interleaves with rtl_buddy output on stderr.
@@ -2222,10 +2224,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "pnr.wire_rc_unsupported":
             return (
-                f'P&R "{fields.get("pnr")}": post-route-repair.repair-design.'
-                "wire-rc needs OpenROAD's sta::scenes and est:: wire RC "
-                f"commands (26Q2 or newer), which {fields.get('exe')} does not "
-                "have; upgrade OpenROAD or drop wire-rc"
+                f'P&R "{fields.get("pnr")}": post-route-repair.'
+                f"{fields.get('key') or 'repair-design.wire-rc'} needs OpenROAD's "
+                "sta::scenes and est:: wire RC commands (26Q2 or newer), which "
+                f"{fields.get('exe')} does not have; upgrade OpenROAD or drop "
+                f"{(fields.get('key') or 'wire-rc').rpartition('.')[2]}"
             )
         case "pnr.run_hook_missing":
             return (
