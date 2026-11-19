@@ -341,6 +341,11 @@ def _repair_digest(platform) -> dict:
                 del design["after_timing"]
     post_route = digest.get("post_route_repair")
     if post_route is not None:
+        timing_rc = post_route.pop("timing_wire_rc")
+        if timing_rc is not None:
+            post_route["timing_wire_rc"] = {
+                k: v for k, v in timing_rc.items() if v is not None
+            }
         electrical = post_route.pop("electrical_repair")
         if electrical is not None:
             post_route["electrical_repair"] = {

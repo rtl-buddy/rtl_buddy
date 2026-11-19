@@ -522,7 +522,7 @@ An `eco` round repairs hold in two calls:
 
 Each round, the electrical round included, starts with `remove_fillers`, which removes every `CORE_SPACER` instance that is not `LOCKED`. A spacer a hook placed `FIRM` or `FIXED` to reserve sites is gone after the first round; place it `LOCKED`.
 
-Two `repair-design` keys apply to `post-route-repair` only, both off by default:
+Three keys apply to `post-route-repair` only, all off by default:
 
 ```yaml
 post-route-repair:
@@ -530,12 +530,14 @@ post-route-repair:
     slew-margin: 20
     wire-rc: {resistance: 0.06, capacitance: 0.17}   # kohm/um, fF/um; or {layer: M5}
     after-timing: true
+  timing-wire-rc: {resistance: 0.03, capacitance: 0.16}
   setup-margin: 0.05
 ```
 
 - `wire-rc` sets the signal wire RC at which each round's repairs (`repair_design`, `repair_timing`, `after-timing-repair` hooks) estimate the nets they change, except an `eco` round's first hold call. The session's RC is set for placement, but routed nets are often longer and higher in the stack: at that RC `repair_design` can leave them over their slew limit, and `repair_timing` can judge that removing a repeater from a long wire saves time.
 - `{layer: M5}` takes that layer's RC per corner from `set_layer_rc`, else the LEF. Clock wire RC is unchanged, and each repair line in `pnr.log` names the signal wire RC it used.
 - The session's signal wire RC, including one a `session` hook set, returns after the round's last repair. Changed nets keep the `wire-rc` estimate until OpenROAD estimates them again, such as after legalization moves their cells.
+- `timing-wire-rc` gives `repair_timing` and the `after-timing-repair` hooks an RC of their own, in either form `wire-rc` takes; `repair_design` keeps `wire-rc`, or the session's RC without one. Set it when `wire-rc` is above the routed mean so that `repair_design` buffers the nets that route worst: at that RC the timing repair over-estimates the nets it changes. It needs a margin.
 - `after-timing: true` runs `repair_design` again after setup and hold repair, before legalizing, since `repair_timing` checks slew at the session's RC and can leave nets a few picoseconds over. It needs a margin.
 
 ### Which round is kept

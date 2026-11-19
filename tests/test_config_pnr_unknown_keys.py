@@ -71,6 +71,7 @@ POST_ROUTE_REPAIR_ALL = {
     "setup-margin": 0.05,
     "hold-margin": None,
     "max-buffer-percent": None,
+    "timing-wire-rc": {"layer": "m5"},
     "rounds": 3,
     "margin-step": 0.01,
     "reroute": "full",
@@ -482,8 +483,8 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
         (
             "pnr run 'a': post-route-repair",
             ("post-route-repair",),
-            "repair-design, setup-margin, hold-margin, max-buffer-percent, rounds, "
-            "margin-step, reroute, electrical-repair",
+            "repair-design, setup-margin, hold-margin, max-buffer-percent, "
+            "timing-wire-rc, rounds, margin-step, reroute, electrical-repair",
         ),
         (
             "pnr run 'a': post-route-repair.electrical-repair",
@@ -498,6 +499,11 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
         (
             "pnr run 'a': post-route-repair.repair-design.wire-rc",
             ("post-route-repair", "repair-design", "wire-rc"),
+            "resistance, capacitance, layer",
+        ),
+        (
+            "pnr run 'a': post-route-repair.timing-wire-rc",
+            ("post-route-repair", "timing-wire-rc"),
             "resistance, capacitance, layer",
         ),
         (

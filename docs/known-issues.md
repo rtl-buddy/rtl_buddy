@@ -295,7 +295,7 @@ In an `eco` post-route repair round, the repairs time unchanged nets on the extr
 
 Where the estimate is slower than the extraction, the endpoint behind the net reads as met and the repair skips the rest of its path. The round's extraction then reports the endpoint failing by what it failed before, and every later round repeats this.
 
-An `eco` round therefore repairs hold twice: first without a hold margin and with no signal wire RC, so no estimate is slower than its route, then with the margin at the round's RC. See [Post-route repair rounds](concepts/pnr.md#post-route-repair-rounds). An OpenROAD without `sta::scenes` or the `est::` wire RC commands (before 26Q2) runs both calls at the session's RC, and `pnr.log` says so.
+An `eco` round therefore repairs hold twice: first without a hold margin and with no signal wire RC, so no estimate is slower than its route, then with the margin at the round's RC. See [Post-route repair rounds](concepts/pnr.md#post-route-repair-rounds). An OpenROAD without `sta::scenes` or the `est::` wire RC commands (before 26Q2), and a session that sets signal wire RC per technology, run both calls at the session's RC, and `pnr.log` says so.
 
 ## Post-route `repair_design` sizes its buffering on the placement estimate
 
