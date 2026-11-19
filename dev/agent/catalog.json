@@ -317,6 +317,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/follow-a-slurm-run.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#check-that-every-build-compiles",
+          "slug": "check-that-every-build-compiles",
+          "title": "Check that every build compiles",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/check-that-every-build-compiles.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#configure-dispatch",
           "slug": "configure-dispatch",
           "title": "Configure dispatch",
@@ -1116,6 +1122,12 @@
           "slug": "handle-hook-execution-context",
           "title": "Handle hook execution context",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/plugins/handle-hook-execution-context.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/plugins/#read-a-failed-hook",
+          "slug": "read-a-failed-hook",
+          "title": "Read a failed hook",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/plugins/read-a-failed-hook.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/plugins/#post-processing",
@@ -2721,6 +2733,12 @@
           "slug": "openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint",
           "title": "OpenROAD's legalizer blocks a rotated macro's unrotated footprint",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#diamond-search-stays-on-for-the-rest-of-an-openroad-session",
+          "slug": "diamond-search-stays-on-for-the-rest-of-an-openroad-session",
+          "title": "Diamond search stays on for the rest of an OpenROAD session",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/diamond-search-stays-on-for-the-rest-of-an-openroad-session.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#repairdesign-does-not-repair-the-slew-at-an-output-port",

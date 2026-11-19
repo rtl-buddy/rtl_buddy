@@ -1,0 +1,3 @@
+## Diamond search stays on for the rest of an OpenROAD session
+
+Once `detailed_placement -use_diamond_legalizer` runs, every later legalization in that OpenROAD session uses diamond search. That includes calls without the option and OpenROAD's own, such as the one after antenna repair inserts diodes. So in a one-session run, the stages after the first one `placement.legalizer` sets to `diamond` use diamond search too, including stages it leaves unset. A one-session run that sets a later stage to `negotiation` fails at setup and names the stages. Run with `stages: true` to give each stage its own session; see [Choose the legalizer per stage](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#choose-the-legalizer-per-stage).

@@ -14,6 +14,7 @@
 | CTS | Clock-tree synthesis: building the buffered clock networks. |
 | Global route, detailed route | Global route plans nets over a grid of GCells; overflow is demand above capacity. Detailed route draws the wires. |
 | ECO | Engineering change order: rerouting only the nets a repair changed. |
+| Legalization | Moving cells onto free, non-overlapping row sites after a step adds or moves them. `detailed_placement` does it. |
 | Macro, RTL-MP | A block with a fixed layout, such as an SRAM or a hardened block. RTL-MP is OpenROAD's macro placer. |
 | `repair_design`, `repair_timing` | OpenROAD's repairs: the first fixes slew, capacitance, fanout and long wires, the second setup or hold. |
 | ORFS | OpenROAD-flow-scripts, the reference flow whose settings rb follows. |

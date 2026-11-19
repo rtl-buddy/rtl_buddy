@@ -98,16 +98,17 @@ HTML needs `use-lcov: true` and `genhtml` (diagnose with `rb tool-check --explai
 
 ## Add directory and source-point summaries
 
-`--coverage-dir-summary` adds rollups for repo-relative directory prefixes. Repeat the flag, or list one prefix per line in a file:
+`--coverage-dir-summary` adds rollups for repo-relative directory prefixes. Repeat the flag, or list one prefix per line in a file. No merge flag is needed:
 
 ```bash
-rb -M cov regression --coverage-merge \
+rb -M cov regression \
   --coverage-dir-summary src/core \
   --coverage-dir-summary src/mem
 
-rb -M cov regression --coverage-merge \
-  --coverage-dir-summary-file coverage_dirs.txt
+rb -M cov regression --coverage-dir-summary-file coverage_dirs.txt
 ```
+
+Each prefix sums the coverage model's source points (`source_totals`) over the files under it, so the rollup agrees with `coverage-model.json` and `rb cov summary --by-source`. The console prints `Coverage <prefix>: L:… B:… T:… F:…`, where `F` is cover points. In machine output, each `payload.coverage.dir_summary` entry has those ratios as `line`, `branch`, `toggle` and `functional`, and `source_totals` with `found`, `hit` and `ratio` per metric, so disjoint prefixes can be summed. A metric with no points under the prefix, such as line coverage of a directory holding only an interface, is null and prints `UNSP`. If the run produced no model, the summary prints `Coverage directory summary: unavailable (no coverage model)`.
 
 `--coverage-source-summary` adds source-point figures, which differ from the default per-elaboration ones (see [Per-elaboration vs source-point figures](#per-elaboration-vs-source-point-figures)):
 
@@ -150,7 +151,7 @@ rtl_buddy reports both:
 - **Per elaboration** (`totals`) answers "is this point covered in every build". Use it when one compile key is what you care about.
 - **Source point** (`source_totals`) answers "is this point covered by the suite", which is how a closure target is normally stated. A point counts as covered when any elaboration hit it.
 
-Both figures use one unit at every scope, so a test's figure compares with its file's and the run's. A line point is one block of code, not one source line: an `if` arm and its `else` on one line are two points, and the per-elaboration line count equals the `t=line` records in the merged `coverage.dat`. `rb cov summary` shows both figures, and `--by-source` shows the coldest files' source-point figures in the same order. `--coverage-dir-summary` is per elaboration only, because LCOV has already folded elaborations together.
+Both figures use one unit at every scope, so a test's figure compares with its file's and the run's. A line point is one block of code, not one source line: an `if` arm and its `else` on one line are two points, and the per-elaboration line count equals the `t=line` records in the merged `coverage.dat`. `rb cov summary` shows both figures, and `--by-source` shows the coldest files' source-point figures in the same order. `--coverage-dir-summary` reports source points.
 
 Source points come from the coverage model. A run with only LCOV fallback records no module, so its two figures are equal. If the run produced no model, the summary prints `Coverage source points: unavailable (no coverage model)`.
 

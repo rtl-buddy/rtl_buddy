@@ -584,16 +584,17 @@ HTML needs `use-lcov: true` and `genhtml` (diagnose with `rb tool-check --explai
 
 ## Add directory and source-point summaries
 
-`--coverage-dir-summary` adds rollups for repo-relative directory prefixes. Repeat the flag, or list one prefix per line in a file:
+`--coverage-dir-summary` adds rollups for repo-relative directory prefixes. Repeat the flag, or list one prefix per line in a file. No merge flag is needed:
 
 ```bash
-rb -M cov regression --coverage-merge \
+rb -M cov regression \
   --coverage-dir-summary src/core \
   --coverage-dir-summary src/mem
 
-rb -M cov regression --coverage-merge \
-  --coverage-dir-summary-file coverage_dirs.txt
+rb -M cov regression --coverage-dir-summary-file coverage_dirs.txt
 ```
+
+Each prefix sums the coverage model's source points (`source_totals`) over the files under it, so the rollup agrees with `coverage-model.json` and `rb cov summary --by-source`. The console prints `Coverage <prefix>: L:… B:… T:… F:…`, where `F` is cover points. In machine output, each `payload.coverage.dir_summary` entry has those ratios as `line`, `branch`, `toggle` and `functional`, and `source_totals` with `found`, `hit` and `ratio` per metric, so disjoint prefixes can be summed. A metric with no points under the prefix, such as line coverage of a directory holding only an interface, is null and prints `UNSP`. If the run produced no model, the summary prints `Coverage directory summary: unavailable (no coverage model)`.
 
 `--coverage-source-summary` adds source-point figures, which differ from the default per-elaboration ones (see [Per-elaboration vs source-point figures](#per-elaboration-vs-source-point-figures)):
 
@@ -636,7 +637,7 @@ rtl_buddy reports both:
 - **Per elaboration** (`totals`) answers "is this point covered in every build". Use it when one compile key is what you care about.
 - **Source point** (`source_totals`) answers "is this point covered by the suite", which is how a closure target is normally stated. A point counts as covered when any elaboration hit it.
 
-Both figures use one unit at every scope, so a test's figure compares with its file's and the run's. A line point is one block of code, not one source line: an `if` arm and its `else` on one line are two points, and the per-elaboration line count equals the `t=line` records in the merged `coverage.dat`. `rb cov summary` shows both figures, and `--by-source` shows the coldest files' source-point figures in the same order. `--coverage-dir-summary` is per elaboration only, because LCOV has already folded elaborations together.
+Both figures use one unit at every scope, so a test's figure compares with its file's and the run's. A line point is one block of code, not one source line: an `if` arm and its `else` on one line are two points, and the per-elaboration line count equals the `t=line` records in the merged `coverage.dat`. `rb cov summary` shows both figures, and `--by-source` shows the coldest files' source-point figures in the same order. `--coverage-dir-summary` reports source points.
 
 Source points come from the coverage model. A run with only LCOV fallback records no module, so its two figures are equal. If the run produced no model, the summary prints `Coverage source points: unavailable (no coverage model)`.
 
@@ -735,7 +736,7 @@ rb test --filter '^smoke_' --dispatch slurm
 
 - `local` is the default. `rb test` dispatches only when `--dispatch` is given; it does not inherit `cfg-dispatch.backend`.
 - `rb test` takes the same name list or regex filter locally and under dispatch. See [Run tests](tests.md#run-tests).
-- Dispatch cannot be combined with `--early-stop`.
+- Of the early stops, dispatch takes only `-E comp`, which runs the build jobs and no simulation. See [Check that every build compiles](#check-that-every-build-compiles).
 - Dispatch implies [`--share-build`](tests.md#sharing-compiled-builds-across-tests).
 - `rb pnr --dispatch slurm` runs each stage of a P&R run as a chained job, sized by the run's `resources:` over `cfg-dispatch.resources`. See [Dispatch the stages to Slurm](pnr.md#dispatch-the-stages-to-slurm).
 
@@ -773,6 +774,23 @@ License waits and out-of-memory failures are treated as transient, so the next t
 `max-jobs-per-array` throttles each array, so total concurrency can approach the throttle times the number of arrays (or slices, for [large groups](#split-large-groups-into-several-arrays)).
 
 Verilator, VCS, Icarus, and xezim can share a build. Other builders, and builders with an absolute `builder-simv`, compile inside each simulation job, which then reserves the field-wise maximum of its simulation and compile reservations. If no planned test can share a build and none is fanned out over seeds, no build job is submitted (`dispatch.build_job_skipped`).
+
+## Check that every build compiles
+
+`-E comp` under dispatch submits each suite's build job, and its verilate job where [verilation is split off](#split-verilation-from-the-c-build), and no simulation:
+
+```bash
+rb -E comp regression --dispatch slurm
+rb -E comp regression --dispatch local-parallel -j 4
+```
+
+- Each test reports as an in-process `-E comp` run does: `NA` with `early_stop: true` once its build compiled, and `FAIL` with the build job's error line when it did not, or with the `preproc` or filelist error that stopped it first. A failure exits 1.
+- Each test gets its `result.json`, and the earlier logs and coverage of its `randtest` runs are removed. No simulation job runs, so no `dispatch/result-<tag>.json` is written.
+- The build job compiles every planned test, including those whose builder cannot share a build. Tests on one compile key share its build and its result.
+- Builds compile `compile.parallel` at a time in each suite's build job (see [Compile several builds at once](#compile-several-builds-at-once)). `-j` runs several suites' build jobs at once; it does not raise the concurrency within one suite.
+- A later full run reuses the builds and compiles nothing for unchanged inputs. Under Slurm its verilate job finds them built and releases their simulations at once.
+- `-E pre` and `-E sim` are rejected under dispatch. Run them with `--dispatch local`.
+- A compile-only run is adopted only by another compile-only run, and a full run only by a full run (see [Interrupted runs](#interrupted-runs-warn-cancel-adopt)).
 
 ## Configure dispatch
 
@@ -2826,6 +2844,17 @@ The captured `sys.stdout` has no usable `fileno()` or `.buffer`. If a third-part
 
 See [Execution Context](execution-context.md) for path ownership.
 
+## Read a failed hook
+
+A hook that raises fails its test with a description that names the exception and the innermost line of the hook script it passed through:
+
+```text
+Setup failed in preproc: KeyError: 'width' at my_preproc.py:12
+Setup failed in sweep: AssertionError at example_sweep.py:7
+```
+
+The same text is the `error` field of the ERROR `preproc.failed` or `sweep.failed` event. The traceback, starting at the hook's first frame, is the INFO `hook.traceback` event: it is in `rtl_buddy.log` and, under dispatch, in the log of the job that ran the hook (see [Monitor and stop a run](dispatch.md#monitor-and-stop-a-run)), but not on the console unless `-v` is given.
+
 ## Post-processing
 
 The config loader accepts `postproc`, but custom post-processing hooks do not run. Results come from the built-in post-processing flow.
@@ -2859,6 +2888,7 @@ description: Run OpenROAD place-and-route on a synthesised netlist with rb pnr, 
 | CTS | Clock-tree synthesis: building the buffered clock networks. |
 | Global route, detailed route | Global route plans nets over a grid of GCells; overflow is demand above capacity. Detailed route draws the wires. |
 | ECO | Engineering change order: rerouting only the nets a repair changed. |
+| Legalization | Moving cells onto free, non-overlapping row sites after a step adds or moves them. `detailed_placement` does it. |
 | Macro, RTL-MP | A block with a fixed layout, such as an SRAM or a hardened block. RTL-MP is OpenROAD's macro placer. |
 | `repair_design`, `repair_timing` | OpenROAD's repairs: the first fixes slew, capacitance, fanout and long wires, the second setup or hold. |
 | ORFS | OpenROAD-flow-scripts, the reference flow whose settings rb follows. |
@@ -3194,6 +3224,7 @@ Process-dependent settings live on the PDK and can be overridden on the platform
 | Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm), or a `tapcell-tcl` that cuts rows around macros. |
 | Tie cells too close to their loads | `placement.tie-separation` (µm). |
 | Macro pins over a tight Liberty limit, such as OpenRAM SKY130 SRAM inputs (0.04 ns) | `placement.macro-pin-limits`, below. |
+| Legalization after routing repair is slow, or fails with `DPL-0701` then `DPL-0033` | `placement.legalizer`, below. |
 
 A platform that ends up with `routability-use-grt` but not `routability-driven` fails to load.
 
@@ -3253,6 +3284,29 @@ The step judges on placement parasitics, so check `electrical.rpt`:
 - A long macro-output net can route to twice its estimated capacitance, hence `capacitance-margin: 0.5` on sky130hd.
 - A large `macro-cell-halo` keeps the buffer too far from the pin: on sky130hd, 3 µm works with `buf_8` and 20 µm does not.
 - A pin route that global routing detours around the macro is out of reach.
+
+### Choose the legalizer per stage
+
+OpenROAD 26Q4 legalizes with one of two engines:
+
+- Negotiation, the default. Cells compete for sites over many iterations. It adds less wire length where a step crowds many cells in, such as hold repair after CTS.
+- Diamond search, `-use_diamond_legalizer`. Each cell takes a nearby free site. It is much faster, and as good where a step adds few cells, such as the repairs after global and detailed route. On a crowded design negotiation can stop at its iteration cap (`DPL-0701`) with cells still overlapping, which fails `check_placement` (`DPL-0033`).
+
+`placement.legalizer` picks the engine per stage. This keeps negotiation through CTS and uses diamond search from global route on:
+
+```yaml
+    placement:
+      legalizer: {global_route: diamond, post_route_repair: diamond}
+```
+
+- `legalizer: diamond` sets every stage. A stage the mapping leaves out passes no option, so OpenROAD's default applies.
+- It applies to every `detailed_placement` rb runs in the stage, `placement.macro-pin-limits` included. A hook passes its own options.
+- With `rotated-macro-footprint: diamond-legalizer`, a turned macro makes every stage use diamond search, including one set to `negotiation`.
+- Diamond search stays on for the rest of an OpenROAD session ([Known Issues](../known-issues.md#diamond-search-stays-on-for-the-rest-of-an-openroad-session)). A one-session run that sets a stage to `negotiation` after one set to `diamond` fails at setup; run it with [`stages: true`](#run-stages-as-separate-sessions). Each post-route round is a session of its own.
+- Each stage's engine is in that stage's script only. A [resume](#run-stages-as-separate-sessions) that changes it for stages from `--from` on needs no `--accept-change`.
+- An OpenROAD whose `detailed_placement` has no `-use_diamond_legalizer` fails the run at setup.
+
+The log shows each call's engine on its `legalizer` line, under `Detailed Placement Analysis`.
 
 ### Optimisation steps
 
@@ -5374,6 +5428,8 @@ rb -E comp test smoke
 
 A successful early stop reports `NA` with `early_stop: true` in its result row and exits 0. A stage failure still reports `FAIL` and exits 1. An `NA` without that marker is an unknown outcome and exits 1. `NA` is never evidence the DUT passed.
 
+Under dispatch only `-E comp` is accepted; it compiles every build in parallel jobs and runs no simulation. See [Check that every build compiles](dispatch.md#check-that-every-build-compiles).
+
 ## Sharing compiled builds across tests
 
 `--share-build` reuses one compiled build across tests that differ only at runtime:
@@ -6237,7 +6293,7 @@ Write generated outputs under `artefacts/<name>/`, or `artefacts/.runs/<tag>/<na
 
 A reserved directory under `artefacts/` is dot-prefixed (`.shared-builds`, `.dispatch`, `.runs`) so it can never collide with a run named after it and so every scan that classifies directories by name keeps skipping it.
 
-Every run writes `result.json` beside its durable output. A tagged run's envelope also carries `run_tag`; an untagged run's does not, so its bytes are unchanged. Consumers use this envelope, not log parsing, for verdicts. Envelope writes are best-effort and must not turn a passing run into a failure. Dispatch also collects copies under `<test>/dispatch/result-<tag>.json`.
+Every run writes `result.json` beside its durable output. A tagged run's envelope also carries `run_tag`; an untagged run's does not, so its bytes are unchanged. Consumers use this envelope, not log parsing, for verdicts. Envelope writes are best-effort and must not turn a passing run into a failure. A dispatched simulation job also writes its envelope to `<test>/dispatch/result-<tag>.json`, which the head collects. A run with no simulation job (in-process, or `-E comp` under dispatch) writes only `result.json`, so a consumer that reads both takes the newer as the run's record, as `rb graph results` does.
 
 ## Subprocesses
 
@@ -6744,8 +6800,8 @@ rtl-buddy-cdc 0.3.x treats `xpm_cdc_*` instances as dual-clock blackboxes. It re
 
 Verilator scores each coverage point once per module elaboration. If a suite builds the same RTL under different defines or parameters, a block can look short on coverage when it is fully covered once the copies are collapsed.
 
-- `rb cov summary`, `--coverage-dir-summary` and merged totals report the per-elaboration figure.
-- For the collapsed figure, read `source_totals`: the `run (source)` row of `rb cov summary`, `rb cov summary --by-source`, `--coverage-source-summary` on `test` and `regression`, or the `/cov` pane's `figures` picker.
+- `rb cov summary` and merged totals report the per-elaboration figure.
+- For the collapsed figure, read `source_totals`: the `run (source)` row of `rb cov summary`, `rb cov summary --by-source`, `--coverage-source-summary` on `test` and `regression`, `--coverage-dir-summary`, or the `/cov` pane's `figures` picker.
 
 See [Coverage](concepts/coverage.md#per-elaboration-vs-source-point-figures).
 
@@ -6979,7 +7035,11 @@ With the `default` mapped-run script, `&dch -f` choices and `&nf` area recovery 
 
 ## OpenROAD's legalizer blocks a rotated macro's unrotated footprint
 
-OpenROAD's default legalizer treats a fixed macro turned by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) as covering its unrotated width and height from its lower-left corner (OpenROAD#11735). Cells in that footprint but outside the macro are moved out, some far. By default `rb pnr` blocks the footprint during global placement, so the area stays empty. `placement.rotated-macro-footprint: diamond-legalizer` uses the diamond legalizer, which sees the real box, instead; `none` does neither. The workaround acts only when a macro entry turns a macro or a hook before global placement could.
+OpenROAD's default legalizer treats a fixed macro turned by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) as covering its unrotated width and height from its lower-left corner (OpenROAD#11735). Cells in that footprint but outside the macro are moved out, some far. By default `rb pnr` blocks the footprint during global placement, so the area stays empty. `placement.rotated-macro-footprint: diamond-legalizer` uses the diamond legalizer, which sees the real box, instead, in every stage over `placement.legalizer`; `none` does neither. The workaround acts only when a macro entry turns a macro or a hook before global placement could.
+
+## Diamond search stays on for the rest of an OpenROAD session
+
+Once `detailed_placement -use_diamond_legalizer` runs, every later legalization in that OpenROAD session uses diamond search. That includes calls without the option and OpenROAD's own, such as the one after antenna repair inserts diodes. So in a one-session run, the stages after the first one `placement.legalizer` sets to `diamond` use diamond search too, including stages it leaves unset. A one-session run that sets a later stage to `negotiation` fails at setup and names the stages. Run with `stages: true` to give each stage its own session; see [Choose the legalizer per stage](concepts/pnr.md#choose-the-legalizer-per-stage).
 
 ## `repair_design` does not repair the slew at an output port
 
@@ -10612,6 +10672,7 @@ P&R keys, all optional. A key set at more than one level takes its value from th
 | `placement.routability-use-grt` | PDK, platform | `true` adds `-routability_use_grt`. Needs `routability-driven: true` after overrides. Default `false` |
 | `placement.timing-driven` | PDK, platform | `true` adds `-timing_driven`; on OpenROAD 26Q4 it also buffers and resizes during placement. Default `false` |
 | `placement.rotated-macro-footprint` | PDK, platform | `block` (default), `diamond-legalizer` or `none`. See [Known Issues](../known-issues.md#openroads-legalizer-blocks-a-rotated-macros-unrotated-footprint) |
+| `placement.legalizer` | PDK, platform | The engine `detailed_placement` legalizes with: `negotiation`, OpenROAD's default, or `diamond`, passed as `-use_diamond_legalizer`. One value sets every stage; a mapping from `place`, `cts`, `global_route` or `post_route_repair` to one sets those stages. It applies to every `detailed_placement` of `rb pnr` in the stage, `placement.macro-pin-limits` included. Unset, and a stage a mapping leaves out, pass no option. A level's value replaces the one below whole. Needs OpenROAD 26Q4 or newer. See [Choose the legalizer per stage](../concepts/pnr.md#choose-the-legalizer-per-stage) |
 | `placement.improve-placement` | PDK, platform | `true` (default) runs `improve_placement` after the placement stage's legalization, as ORFS does unless `ENABLE_DPO` is 0. `false` leaves it out |
 | `placement.optimize-mirroring` | PDK, platform | `true` (default) runs `optimize_mirroring` after the placement stage's legalization, as ORFS does. `false` leaves it out |
 | `placement.macro-pin-limits` | PDK, platform | Mapping; unset (default) turns the step off. `buffers` (required): buffer cell names, weakest first. `margin`: fraction of a pin's max-slew limit kept in hand, from 0 up to but not including 1, default `0.05`. `capacitance-margin`: the same for max-capacitance, default `margin`. A block replaces a lower level's whole. See [Tune placement, clock tree and repair](../concepts/pnr.md#tune-placement-clock-tree-and-repair) |

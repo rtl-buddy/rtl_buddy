@@ -18,8 +18,8 @@ rtl-buddy-cdc 0.3.x treats `xpm_cdc_*` instances as dual-clock blackboxes. It re
 
 Verilator scores each coverage point once per module elaboration. If a suite builds the same RTL under different defines or parameters, a block can look short on coverage when it is fully covered once the copies are collapsed.
 
-- `rb cov summary`, `--coverage-dir-summary` and merged totals report the per-elaboration figure.
-- For the collapsed figure, read `source_totals`: the `run (source)` row of `rb cov summary`, `rb cov summary --by-source`, `--coverage-source-summary` on `test` and `regression`, or the `/cov` pane's `figures` picker.
+- `rb cov summary` and merged totals report the per-elaboration figure.
+- For the collapsed figure, read `source_totals`: the `run (source)` row of `rb cov summary`, `rb cov summary --by-source`, `--coverage-source-summary` on `test` and `regression`, `--coverage-dir-summary`, or the `/cov` pane's `figures` picker.
 
 See [Coverage](concepts/coverage.md#per-elaboration-vs-source-point-figures).
 
@@ -253,7 +253,11 @@ With the `default` mapped-run script, `&dch -f` choices and `&nf` area recovery 
 
 ## OpenROAD's legalizer blocks a rotated macro's unrotated footprint
 
-OpenROAD's default legalizer treats a fixed macro turned by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) as covering its unrotated width and height from its lower-left corner (OpenROAD#11735). Cells in that footprint but outside the macro are moved out, some far. By default `rb pnr` blocks the footprint during global placement, so the area stays empty. `placement.rotated-macro-footprint: diamond-legalizer` uses the diamond legalizer, which sees the real box, instead; `none` does neither. The workaround acts only when a macro entry turns a macro or a hook before global placement could.
+OpenROAD's default legalizer treats a fixed macro turned by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) as covering its unrotated width and height from its lower-left corner (OpenROAD#11735). Cells in that footprint but outside the macro are moved out, some far. By default `rb pnr` blocks the footprint during global placement, so the area stays empty. `placement.rotated-macro-footprint: diamond-legalizer` uses the diamond legalizer, which sees the real box, instead, in every stage over `placement.legalizer`; `none` does neither. The workaround acts only when a macro entry turns a macro or a hook before global placement could.
+
+## Diamond search stays on for the rest of an OpenROAD session
+
+Once `detailed_placement -use_diamond_legalizer` runs, every later legalization in that OpenROAD session uses diamond search. That includes calls without the option and OpenROAD's own, such as the one after antenna repair inserts diodes. So in a one-session run, the stages after the first one `placement.legalizer` sets to `diamond` use diamond search too, including stages it leaves unset. A one-session run that sets a later stage to `negotiation` fails at setup and names the stages. Run with `stages: true` to give each stage its own session; see [Choose the legalizer per stage](concepts/pnr.md#choose-the-legalizer-per-stage).
 
 ## `repair_design` does not repair the slew at an output port
 
@@ -288,6 +292,14 @@ Each post-route repair round runs in fresh sessions and orders its steps to avoi
 - On a routed database, `repair_timing` switches to detailed-routing parasitics and builds buffer trees from global routes that a fresh session rebuilds incompletely, failing with `RSZ-0074` (OpenROAD#11852). An `eco` round therefore replaces OpenROAD's `design_is_routed` with one that answers 0 during its repairs, keeping them on placement parasitics. When `repair_timing` does not call that procedure, rb warns `pnr.post_route_eco_unguarded`; if the round then fails `RSZ-0074`, it is set aside and the result names the fix, `post-route-repair.reroute: full`.
 - `global_route -start_incremental` around a resizer command that reroutes by itself delivers each netlist change twice, and a later rip-up fails with `GRT-0229` and `usage=65535` (OpenROAD#11851). A `full` round and the global-route repair run their repairs first and open the incremental route around the legalization only, as ORFS does. An `eco` round, whose repairs do not reroute, opens it before the repairs.
 - `repair_timing` on global-route parasitics fails `RSZ-0074` on nets `repair_design` split until they are rerouted, so a repair that runs both legalizes and reroutes between them.
+
+## Post-route hold repair drops the extracted parasitics of a net it leaves unchanged
+
+In an `eco` post-route repair round, the repairs time unchanged nets on the extracted SPEF and the nets they change on a placement estimate. On OpenROAD 26Q4, `repair_timing -hold` tries a buffer at a driver and rolls it back when the driver's slew grows by more than 20% or the worst setup slack drops below the setup margin. The rollback leaves the net on the estimate, although it has the driver and loads it had.
+
+Where the estimate is slower than the extraction, the endpoint behind the net reads as met and the repair skips the rest of its path. The round's extraction then reports the endpoint failing by what it failed before, and every later round repeats this.
+
+An `eco` round therefore repairs hold twice: first without a hold margin and with no signal wire RC, so no estimate is slower than its route, then with the margin at the round's RC. See [Post-route repair rounds](concepts/pnr.md#post-route-repair-rounds). An OpenROAD without `sta::scenes` or the `est::` wire RC commands (before 26Q2), and a session that sets signal wire RC per technology, run both calls at the session's RC, and `pnr.log` says so.
 
 ## Post-route `repair_design` sizes its buffering on the placement estimate
 
