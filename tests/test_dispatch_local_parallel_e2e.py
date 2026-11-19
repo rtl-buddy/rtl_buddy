@@ -88,11 +88,36 @@ def _run(
     command=("regression", "-c", "regression.yaml"),
     cwd_rel=".",
     prepare_project=None,
+    global_args=(),
+    dispatch="local-parallel",
 ):
     project = work_dir / "proj"
     shutil.copytree(fixture, project)
     if prepare_project is not None:
         prepare_project(project)
+    return _rerun(
+        project,
+        work_dir,
+        extra_args=extra_args,
+        extra_env=extra_env,
+        command=command,
+        cwd_rel=cwd_rel,
+        global_args=global_args,
+        dispatch=dispatch,
+    )
+
+
+def _rerun(
+    project: Path,
+    work_dir: Path,
+    extra_args=(),
+    extra_env=None,
+    command=("regression", "-c", "regression.yaml"),
+    cwd_rel=".",
+    global_args=(),
+    dispatch="local-parallel",
+):
+    """One `rb --dispatch <dispatch>` run over a project an earlier run may have used."""
     env = _clean_env()
     # The fake verilator lives beside the Slurm shims; RB_SHIM_DB is where they record
     # calls.
@@ -106,9 +131,10 @@ def _run(
             "-m",
             "rtl_buddy",
             "--machine",
+            *global_args,
             *command,
             "--dispatch",
-            "local-parallel",
+            dispatch,
             *extra_args,
         ],
         cwd=project / cwd_rel,
@@ -692,3 +718,152 @@ def test_a_failed_key_compiles_once_and_every_test_names_the_error(tmp_path_fact
     for row in rows.values():
         assert row["result"] == "FAIL", diag
         assert "Exiting due to 15 warning(s)" in row["desc"], diag
+
+
+@pytest.fixture(scope="module")
+def compile_only_then_full(tmp_path_factory):
+    """A compile-only regression, then a full one over the same tree.
+
+    ``RB_SHIM_SPANS`` gains one line per compile across both runs.
+    """
+    work = tmp_path_factory.mktemp("compile_only")
+    spans = work / "compiler_spans.txt"
+    env = {"RB_SHIM_SPANS": str(spans)}
+    comp = _run(
+        work,
+        _FIXTURE,
+        extra_args=("-j", "2"),
+        extra_env=env,
+        global_args=("-E", "comp"),
+    )
+    project = comp[2]
+    comp_compiles = spans.read_text().splitlines() if spans.exists() else []
+    comp_sim_outputs = sorted(project.glob("verif/blk/artefacts/*/dispatch/*"))
+    comp_sim_outputs += sorted(project.glob("verif/blk/artefacts/*/test.log"))
+    # Read now: the full run rewrites each test's result.json.
+    comp_records = {
+        name: json.loads(
+            (project / "verif" / "blk" / "artefacts" / name / "result.json").read_text()
+        )["result"]["results"]
+        for name in ("alpha", "beta")
+    }
+    full = _rerun(project, work, extra_args=("-j", "2"), extra_env=env)
+    return comp, comp_compiles, comp_sim_outputs, comp_records, full, spans
+
+
+def test_compile_only_pool_compiles_each_key_once_and_runs_no_sim(
+    compile_only_then_full,
+):
+    (proc, envelope, _project, diag), compiles, sim_outputs, records, _, _ = (
+        compile_only_then_full
+    )
+    assert proc.returncode == 0, diag
+    assert envelope is not None, diag
+    rows = {r["name"]: r for r in envelope["payload"]["results"]}
+    assert set(rows) == {"alpha", "beta"}, diag
+    for row in rows.values():
+        assert (row["result"], row["desc"], row.get("early_stop")) == (
+            "NA",
+            "Stopped early at compile",
+            True,
+        ), diag
+    # alpha and beta share one compile key.
+    assert len(compiles) == 1, diag
+    assert sim_outputs == [], diag
+    for recorded in records.values():
+        assert recorded["early_stop"] is True, diag
+
+
+def test_full_pool_run_after_compile_only_reuses_the_build_and_runs_every_sim(
+    compile_only_then_full,
+):
+    _comp, compiles, _, _, (proc, envelope, project, diag), spans = (
+        compile_only_then_full
+    )
+    assert proc.returncode == 0, diag
+    results = {r["name"]: r["result"] for r in envelope["payload"]["results"]}
+    assert results == {"alpha": "PASS", "beta": "PASS"}, diag
+    assert spans.read_text().splitlines() == compiles, "the full run recompiled"
+    logs = sorted(
+        project.glob("verif/blk/artefacts/*/dispatch/local-parallel-single.log")
+    )
+    assert len(logs) == 2, diag
+
+
+def test_compile_only_pool_reports_a_compile_failure(tmp_path_factory):
+    work = tmp_path_factory.mktemp("compile_only_failed")
+    compiles = work / "compiles.txt"
+    proc, envelope, _project, diag = _run(
+        work,
+        _FIXTURE,
+        extra_env={"RB_SHIM_FAIL": str(compiles)},
+        global_args=("-E", "comp"),
+    )
+    assert proc.returncode == 1, diag
+    assert envelope is not None, diag
+    assert len(compiles.read_text().splitlines()) == 1, diag
+    rows = {r["name"]: r for r in envelope["payload"]["results"]}
+    assert set(rows) == {"alpha", "beta"}, diag
+    for row in rows.values():
+        assert row["result"] == "FAIL", diag
+        assert "Exiting due to 15 warning(s)" in row["desc"], diag
+        assert "early_stop" not in row, diag
+
+
+def _break_setup_and_filelist(project: Path) -> None:
+    """alpha's preproc hook raises; beta's testbench lists a file that does not exist."""
+    suite = project / "verif" / "blk"
+    (suite / "preproc.py").write_text("raise RuntimeError('missing stimulus.csv')\n")
+    tests = (suite / "tests.yaml").read_text()
+    tests = tests.replace(
+        "    preproc:\n", "    preproc:\n      path: preproc.py\n", 1
+    ).replace(
+        "testbenches:\n",
+        "testbenches:\n"
+        "  - name: tb_missing\n    toplevel: tb_blk\n"
+        "    filelist:\n      - src.sv\n      - missing.sv\n",
+        1,
+    )
+    # The second `testbench: tb_blk` is beta's.
+    head, _, tail = tests.rpartition("    testbench: tb_blk\n")
+    (suite / "tests.yaml").write_text(head + "    testbench: tb_missing\n" + tail)
+
+
+def test_compile_only_pool_reports_setup_failures_as_in_process(tmp_path_factory):
+    """A real build job keeps a preproc failure and a filelist failure as such: the
+    rows match an in-process `-E comp` run of the same project.
+    """
+    work = tmp_path_factory.mktemp("compile_only_setup")
+    proc, envelope, project, diag = _run(
+        work,
+        _FIXTURE,
+        global_args=("-E", "comp"),
+        prepare_project=_break_setup_and_filelist,
+    )
+    assert proc.returncode == 1, diag
+    assert envelope is not None, diag
+    dispatched = {
+        r["name"]: (r["result"], r["desc"]) for r in envelope["payload"]["results"]
+    }
+    kinds = {
+        name: json.loads(
+            (project / "verif" / "blk" / "artefacts" / name / "result.json").read_text()
+        )["result"]
+        for name in ("alpha", "beta")
+    }
+
+    # The fixture's `cfg-dispatch.backend` is slurm, so in-process is asked for.
+    proc, envelope, _project, diag = _rerun(
+        project, work, global_args=("-E", "comp"), dispatch="local"
+    )
+    assert proc.returncode == 1, diag
+    in_process = {
+        r["name"]: (r["result"], r["desc"]) for r in envelope["payload"]["results"]
+    }
+    assert dispatched == in_process, diag
+    assert "missing stimulus.csv" in dispatched["alpha"][1], diag
+    assert "missing.sv" in dispatched["beta"][1], diag
+    assert kinds["alpha"]["kind"] == "SetupFailResults", kinds
+    assert kinds["beta"]["kind"] == "FilelistFailResults", kinds
+    for recorded in kinds.values():
+        assert recorded["results"]["fail_stage"] == "setup", kinds

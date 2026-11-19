@@ -42,6 +42,7 @@ from rtl_buddy.runner.test_results import (
 )
 from rtl_buddy.seed_mode import SeedMode
 from rtl_buddy.seeding import derive_test_seed
+from rtl_buddy.tools.artifact_paths import test_artifact_dir
 
 
 class _FakeBackend(DispatchBackend):
@@ -1314,26 +1315,6 @@ def test_different_resources_split_arrays(
     assert result.exit_code == 0, result.output
     # Two resource groups of one spec each.
     assert sorted(c["n"] for c in recording_backend.array_calls) == [1, 1]
-
-
-def test_early_stop_with_dispatch_rejected(
-    minimal_project: Path,
-    stub_build_runner: type[_StubBuildRunner],
-    fake_backend: _FakeBackend,
-):
-    result, _ = _invoke(
-        [
-            "--early-stop",
-            "comp",
-            "regression",
-            "-c",
-            "regression.yaml",
-            "--dispatch",
-            "slurm",
-        ]
-    )
-    assert result.exit_code != 0
-    assert fake_backend.submitted == []
 
 
 def test_collect_attaches_telemetry_to_results_and_envelope(
@@ -4658,10 +4639,8 @@ def test_single_test_dispatch_rejects_early_stop(
     minimal_project: Path,
     fake_backend: _FakeBackend,
 ):
-    """A stop before POST is not expressible per job, on `rb test` either."""
-    result, _ = _invoke(
-        ["--early-stop", "comp", "test", "basic", "--dispatch", "slurm"]
-    )
+    """No job stops after preproc, on `rb test` either."""
+    result, _ = _invoke(["--early-stop", "pre", "test", "basic", "--dispatch", "slurm"])
     assert isinstance(result.exception, FatalRtlBuddyError), result.output
     assert "cannot be combined with dispatch (--dispatch slurm)" in str(
         result.exception
@@ -4787,7 +4766,7 @@ def test_cfg_dispatch_backend_early_stop_error_names_the_config(
     """
     root_cfg = minimal_project / "root_config.yaml"
     root_cfg.write_text(root_cfg.read_text() + "\ncfg-dispatch:\n  backend: slurm\n")
-    result, _ = _invoke(["--early-stop", "comp", "regression", "-c", "regression.yaml"])
+    result, _ = _invoke(["--early-stop", "pre", "regression", "-c", "regression.yaml"])
     assert isinstance(result.exception, FatalRtlBuddyError), result.output
     assert "cfg-dispatch.backend: fake" in str(result.exception)
     assert "pass --dispatch local" in str(result.exception)
@@ -8030,3 +8009,426 @@ def test_a_key_the_verilate_job_released_keeps_its_gate_open_without_a_build_env
     assert result.exit_code == 1, result.output
     assert backend.verilate_submitted, "the suite was not split"
     assert gates == {"basic": True, "extra": False}, gates
+
+
+# ---- `-E comp` under dispatch: the compile jobs are the whole fleet.
+
+_COMPILE_ERROR = "%Error: src/example.sv:3:1: syntax error, unexpected endmodule"
+
+
+class _CompileOnlyBackend(_OrphanBackend):
+    """A fake whose build job records every planned config: built, or failed if named.
+
+    With ``record=False`` the build job leaves no envelope, as a crashed one does.
+    """
+
+    def __init__(
+        self, name="slurm", failed=(), record=True, setup_failures=None, **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.name = name
+        self.scheduled = name == "slurm"
+        # test -> the `setup_failure` record of a config stopped before its builder ran
+        self.setup_failures = dict(setup_failures or {})
+        self.failed = set(failed) | set(self.setup_failures)
+        self.record = record
+
+    def submit_build(self, spec, *, dependency=None):
+        handle = super().submit_build(spec, dependency=dependency)
+        if self.record and spec.phase != "verilate":
+            names = [cfg.get_name() for cfg in read_plan_configs(spec.plan_path)]
+            write_build_result_json(
+                spec.result_json,
+                built=[name for name in names if name not in self.failed],
+                failed=[name for name in names if name in self.failed],
+                builds=[
+                    {
+                        "test": name,
+                        "builder": "stub",
+                        "duration_sec": 1.5,
+                        "reused": False,
+                        **(
+                            {"setup_failure": self.setup_failures[name]}
+                            if name in self.setup_failures
+                            else {"returncode": 1, "error_tail": [_COMPILE_ERROR]}
+                            if name in self.failed
+                            else {}
+                        ),
+                    }
+                    for name in names
+                ],
+            )
+        return handle
+
+
+def _compile_only(argv, *, backend="slurm"):
+    result, rb = _invoke(["--machine", "-E", "comp", *argv, "--dispatch", backend])
+    rb._artifact_locks.release_all()
+    return result
+
+
+def _payload_rows(result) -> list[dict]:
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    return json.loads(payload_line)["payload"]["results"]
+
+
+_STOPPED_AT_COMPILE = {
+    "result": "NA",
+    "desc": "Stopped early at compile",
+    "early_stop": True,
+}
+
+
+@pytest.mark.parametrize("backend_name", ["slurm", "local-parallel"])
+def test_compile_only_dispatch_runs_the_compile_jobs_and_no_sim_job(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend_name: str,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _use_backend(monkeypatch, _CompileOnlyBackend(name=backend_name))
+    result = _compile_only(
+        ["regression", "-c", "regression.yaml", "-l", "5"], backend=backend_name
+    )
+    assert result.exit_code == 0, result.output
+
+    assert backend.submitted == []
+    assert len(backend.build_submitted) == 1
+    # Slurm splits verilation off a Verilator suite as for a full run.
+    assert len(backend.verilate_submitted) == (1 if backend_name == "slurm" else 0)
+    assert backend.waited
+
+    rows = {row["name"]: row for row in _payload_rows(result)}
+    assert set(rows) == {"basic", "extra"}
+    for row in rows.values():
+        assert {key: row[key] for key in _STOPPED_AT_COMPILE} == _STOPPED_AT_COMPILE
+
+    # Each test's durable record, as an in-process run writes it, carries the fleet's
+    # token and the build job's compile record.
+    plan_token = read_plan_token(backend.build_submitted[0].plan_path)
+    for name in ("basic", "extra"):
+        envelope = json.loads(
+            (minimal_project / "artefacts" / name / "result.json").read_text()
+        )
+        assert envelope["run_token"] == plan_token
+        recorded = envelope["result"]["results"]
+        assert recorded["early_stop"] is True
+        assert recorded["compile"]["duration_sec"] == 1.5
+    assert not list(minimal_project.glob("artefacts/*/dispatch"))
+
+
+def test_compile_only_slurm_fleet_names_no_sim_for_release(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The gates manifest names no sim job, so no compile job can release one, but it
+    still names the build job a warm verilate job may shrink.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _use_backend(monkeypatch, _CompileOnlyBackend())
+    result = _compile_only(["regression", "-c", "regression.yaml", "-l", "5"])
+    assert result.exit_code == 0, result.output
+
+    gates, reason = load_gates(
+        next(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+    )
+    assert reason is None
+    assert gates["entries"] == []
+    assert build_job_of(gates)["job_id"] == "fake-build"
+
+    manifest = _run_manifest(minimal_project)
+    assert manifest["early_stop"] == "comp"
+    assert manifest["pending"] == []
+    assert manifest["build"]["job_id"] == "fake-build"
+    assert manifest["status"] == "collected"
+
+
+def test_compile_only_dispatch_compiles_builds_that_cannot_be_shared(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A builder without shared builds compiles in its sim job on a full run; with no
+    sim job, the build job compiles it.
+    """
+    backend = _use_backend(monkeypatch, _CompileOnlyBackend())
+    result = _compile_only(["regression", "-c", "regression.yaml"])
+    assert result.exit_code == 0, result.output
+    assert backend.submitted == []
+    assert len(backend.build_submitted) == 1
+    assert backend.verilate_submitted == []
+    rows = {row["name"]: row for row in _payload_rows(result)}
+    # `extra` sits above the default level and is skipped, as in-process.
+    assert rows["extra"]["result"] == "SKIP"
+    basic = rows["basic"]
+    assert {key: basic[key] for key in _STOPPED_AT_COMPILE} == _STOPPED_AT_COMPILE
+
+
+def test_compile_only_dispatch_reports_a_compile_failure_and_fails_the_run(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    _use_backend(monkeypatch, _CompileOnlyBackend(failed={"basic"}))
+    result = _compile_only(["regression", "-c", "regression.yaml", "-l", "5"])
+    assert result.exit_code == 1, result.output
+
+    rows = {row["name"]: row for row in _payload_rows(result)}
+    assert rows["basic"]["result"] == "FAIL"
+    assert rows["basic"]["desc"].startswith(
+        f"compile failed in build job fake-build (exit 1): {_COMPILE_ERROR}"
+    )
+    assert "early_stop" not in rows["basic"]
+    assert {key: rows["extra"][key] for key in _STOPPED_AT_COMPILE} == (
+        _STOPPED_AT_COMPILE
+    )
+
+
+def test_compile_only_dispatch_without_a_build_record_fails_every_row(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A build job that recorded nothing compiled nothing anyone can vouch for."""
+    _mark_stub_builder_verilator(minimal_project)
+    _use_backend(monkeypatch, _CompileOnlyBackend(record=False))
+    result = _compile_only(["regression", "-c", "regression.yaml", "-l", "5"])
+    assert result.exit_code == 1, result.output
+
+    rows = {row["name"]: row for row in _payload_rows(result)}
+    assert set(rows) == {"basic", "extra"}
+    for row in rows.values():
+        assert row["result"] == "FAIL"
+        assert "build job fake-build recorded no compile result" in row["desc"]
+
+
+def test_compile_only_test_and_randtest_dispatch(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`rb test` and `rb randtest` stop at compile under dispatch too: one row per
+    selected test, and one per seed.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _use_backend(monkeypatch, _CompileOnlyBackend())
+
+    result = _compile_only(["test", "basic"])
+    assert result.exit_code == 0, result.output
+    (row,) = _payload_rows(result)
+    assert {key: row[key] for key in _STOPPED_AT_COMPILE} == _STOPPED_AT_COMPILE
+
+    result = _compile_only(["randtest", "basic", "3"])
+    assert result.exit_code == 0, result.output
+    rows = _payload_rows(result)
+    assert [row["run_id"] for row in rows] == [1, 2, 3]
+    for row in rows:
+        assert {key: row[key] for key in _STOPPED_AT_COMPILE} == _STOPPED_AT_COMPILE
+    assert backend.submitted == []
+    assert len(backend.build_submitted) == 2
+
+
+@pytest.mark.parametrize("depth", ["pre", "sim"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["regression", "-c", "regression.yaml"],
+        ["test", "basic"],
+        ["randtest", "basic", "3"],
+    ],
+    ids=["regression", "test", "randtest"],
+)
+def test_early_stops_other_than_comp_stay_rejected_under_dispatch(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+    depth: str,
+    command: list[str],
+):
+    result, _ = _invoke(["--early-stop", depth, *command, "--dispatch", "slurm"])
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    message = str(result.exception)
+    assert f"--early-stop {depth} cannot be combined with dispatch" in message
+    assert "only --early-stop comp works under dispatch" in message
+    assert fake_backend.submitted == []
+    assert fake_backend.build_submitted == []
+
+
+def test_compile_only_announces_its_compile_jobs(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    _use_backend(monkeypatch, _CompileOnlyBackend())
+    result, rb = _invoke(
+        ["-E", "comp", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    rb._artifact_locks.release_all()
+    assert result.exit_code == 0, result.output
+    assert (
+        "verilate job fake-verilate, build job fake-build, no sim jobs (-E comp) "
+        "(2 jobs on slurm)" in _console_text(result)
+    )
+
+
+@pytest.mark.parametrize(
+    ("orphan_args", "adopt_args", "said"),
+    [
+        (["-E", "comp"], [], "submitted with --early-stop comp"),
+        ([], ["-E", "comp"], "submitted without --early-stop"),
+    ],
+    ids=["compile-only-orphan", "full-orphan"],
+)
+def test_adopt_refuses_a_fleet_of_the_other_depth(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    orphan_args: list[str],
+    adopt_args: list[str],
+    said: str,
+):
+    """A compile-only fleet has no sim verdict to collect, and a full fleet ran sims
+    `-E comp` did not ask for.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _use_backend(monkeypatch, _CompileOnlyBackend())
+    result, rb = _invoke(
+        [*orphan_args, "regression", "-c", "regression.yaml"]
+        + ["-l", "5", "--dispatch", "slurm"]
+    )
+    rb._artifact_locks.release_all()
+    assert result.exit_code == 0, result.output
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    backend.live = set(_all_job_ids(payload))
+    builds_before = list(backend.build_submitted)
+
+    result, rb = _invoke(
+        [*adopt_args, "regression", "-c", "regression.yaml"]
+        + ["-l", "5", "--dispatch", "slurm", "--orphans", "adopt"]
+    )
+    rb._artifact_locks.release_all()
+    assert result.exit_code != 0
+    message = _fatal_text(result)
+    assert "cannot adopt" in message
+    assert said in message
+    assert backend.build_submitted == builds_before
+    assert json.loads(manifest_path.read_text())["status"] == "running"
+
+
+def test_adopt_collects_an_interrupted_compile_only_fleet(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _use_backend(monkeypatch, _CompileOnlyBackend())
+    assert (
+        _compile_only(["regression", "-c", "regression.yaml", "-l", "5"]).exit_code == 0
+    )
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    backend.live = set(_all_job_ids(payload))
+    builds_before = list(backend.build_submitted)
+
+    result = _compile_only(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--orphans", "adopt"]
+    )
+    assert result.exit_code == 0, result.output
+    assert backend.build_submitted == builds_before
+    rows = _payload_rows(result)
+    assert [row["name"] for row in rows] == ["basic", "extra"]
+    for row in rows:
+        assert {key: row[key] for key in _STOPPED_AT_COMPILE} == _STOPPED_AT_COMPILE
+    assert json.loads(manifest_path.read_text())["status"] == "collected"
+
+
+def test_a_full_run_after_a_compile_only_run_submits_every_sim(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The compile-only run leaves no live record and no release bookkeeping behind:
+    the next full run gates every sim on its own build job and names each one for
+    release.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _use_backend(monkeypatch, _CompileOnlyBackend())
+    assert (
+        _compile_only(["regression", "-c", "regression.yaml", "-l", "5"]).exit_code == 0
+    )
+    first_gates = set(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+
+    result, rb = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "-l", "5"]
+        + ["--dispatch", "slurm"]
+    )
+    rb._artifact_locks.release_all()
+    assert result.exit_code == 0, result.output
+    assert backend.probed == []  # the compile-only record was collected, not orphaned
+    assert sorted(spec.test_name for spec in backend.submitted) == ["basic", "extra"]
+    assert backend.dependencies == ["fake-build", "fake-build"]
+    (gates_path,) = set(minimal_project.glob("artefacts/.dispatch/gates-*.json")) - (
+        first_gates
+    )
+    gates, _reason = load_gates(gates_path)
+    assert sorted(entry["test"] for entry in gates["entries"]) == ["basic", "extra"]
+    rows = {row["name"]: row["result"] for row in _payload_rows(result)}
+    assert rows == {"basic": "PASS", "extra": "PASS"}
+
+
+def test_compile_only_randtest_clears_each_runs_previous_outputs(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """As an in-process `-E comp` randtest does: no earlier run's log or coverage is
+    left beside a compile-only verdict, and the replay seed is kept.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _use_backend(monkeypatch, _CompileOnlyBackend())
+    run_dirs = [
+        test_artifact_dir(minimal_project, "basic", run_id=i) for i in (1, 2, 3)
+    ]
+    for run_dir in run_dirs:
+        run_dir.mkdir(parents=True)
+        for name in ("test.log", "test.err", "coverage.dat", "test.randseed"):
+            (run_dir / name).write_text("from the previous run\n")
+
+    result = _compile_only(["randtest", "basic", "3"])
+    assert result.exit_code == 0, result.output
+
+    for run_dir in run_dirs:
+        assert sorted(path.name for path in run_dir.iterdir()) == [
+            "result.json",
+            "test.randseed",
+        ]
+        recorded = json.loads((run_dir / "result.json").read_text())
+        assert recorded["result"]["results"]["early_stop"] is True
+
+
+def test_compile_only_reports_setup_and_filelist_failures_as_in_process(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A config the build job stopped before its builder ran keeps its own diagnostic
+    and stage, not a generic compile failure.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    setup_desc = "Setup failed in preproc: missing stimulus.csv"
+    filelist_desc = "filelist entry does not exist: missing.sv"
+    _use_backend(
+        monkeypatch,
+        _CompileOnlyBackend(
+            setup_failures={
+                "basic": {"kind": "setup", "desc": setup_desc},
+                "extra": {"kind": "filelist", "desc": filelist_desc},
+            }
+        ),
+    )
+    result = _compile_only(["regression", "-c", "regression.yaml", "-l", "5"])
+    assert result.exit_code == 1, result.output
+
+    rows = {row["name"]: row for row in _payload_rows(result)}
+    assert (rows["basic"]["result"], rows["basic"]["desc"]) == ("FAIL", setup_desc)
+    assert (rows["extra"]["result"], rows["extra"]["desc"]) == ("FAIL", filelist_desc)
+    for name in ("basic", "extra"):
+        recorded = json.loads(
+            (minimal_project / "artefacts" / name / "result.json").read_text()
+        )
+        assert recorded["result"]["results"]["fail_stage"] == "setup"
+        assert recorded["result"]["kind"] == (
+            "SetupFailResults" if name == "basic" else "FilelistFailResults"
+        )

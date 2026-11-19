@@ -624,23 +624,13 @@ def test_cli_out_dir_and_verif_dir_overrides(results_project: Path, tmp_path: Pa
 # The producer side: every run leaves an envelope
 
 
-class _StubTestCfg:
-    def __init__(self, name: str):
-        self._name = name
-
-    def get_name(self) -> str:
-        return self._name
-
-
 def test_in_process_runs_write_a_result_envelope_per_run(results_project: Path):
     rb = RtlBuddy(name="test_graph_results")
     suite_dir = results_project / "verif" / "blk_a"
 
+    rb._record_run_results("t_basic", str(suite_dir), [None], [_results("PASS")])
     rb._record_run_results(
-        _StubTestCfg("t_basic"), str(suite_dir), [None], [_results("PASS")]
-    )
-    rb._record_run_results(
-        _StubTestCfg("t_rand"),
+        "t_rand",
         str(suite_dir),
         [1, 2],
         [_results("PASS"), _results("FAIL")],
@@ -669,7 +659,7 @@ def test_recording_a_result_never_fails_a_run(
     monkeypatch.setattr("rtl_buddy.rtl_buddy.write_result_json", _boom)
 
     rb._record_run_results(
-        _StubTestCfg("t_basic"),
+        "t_basic",
         str(results_project / "verif" / "blk_a"),
         [None],
         [_results("PASS")],

@@ -269,6 +269,7 @@ def write_build_result_json(path, *, built, failed, builds=None, partial=False):
 
     ``builds`` is an optional per-config record list in plan order, ``{test, builder, duration_sec, reused, group}``.
     A failed build's record also has ``returncode``, ``error_tail`` (see :data:`COMPILE_ERROR_TAIL_LINES`) and a suite-relative ``transcript``.
+    A config stopped before its builder ran has ``setup_failure``, ``{kind, desc}`` with ``kind`` ``setup`` (``preproc``) or ``filelist``.
     ``fingerprint_sha`` is on a record whose build is stamped, and ``inputs_sha`` on any record whose compile inputs were resolved; both are the same digest of those inputs.
     The schema version does not change for these keys, and readers must tolerate their absence.
 
@@ -300,8 +301,16 @@ def load_build_result_json(path):
 
     Returns ``{"built": [...], "failed": [...], "builds": [...], "partial": bool}``. ``builds`` may be empty.
     Records are returned as written, so read their failure keys with ``.get()``.
+
+    The directory is listed first. On NFS, a name this host looked up while it was
+    missing, as the head did when it cleared a stale envelope at submit, stays missing
+    here for up to the mount's ``acdirmin`` after a job on another host writes it.
     """
     path = Path(path)
+    try:
+        os.listdir(path.parent)
+    except OSError:
+        pass
     try:
         raw = json.loads(path.read_text())
     except (OSError, ValueError):

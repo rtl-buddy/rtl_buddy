@@ -13,6 +13,8 @@ Report `rb --version` at the top of every run summary. Use `rb --machine`; read 
 - `--dispatch local-parallel -j N` runs subprocesses without reservation enforcement, accounting, or advice.
 - `--dispatch slurm` submits builds and dependent simulations. Check prerequisites with `rb --machine tool-check --explain slurm`.
 
+`-E comp` runs only the verilate and build jobs: each built test is an early-stop `NA`, a compile failure a `FAIL`. Builds of one suite compile `compile.parallel` at a time, whatever `-j` is. `-E pre` and `-E sim` are rejected under dispatch.
+
 Dispatch implies shared builds. A failed build fails its dependent tests. Exit 0 means no real failure; 1 means failed jobs or missing, stale, or invalid results; 2 means fatal configuration or orchestration error.
 
 ## Size builds and arrays

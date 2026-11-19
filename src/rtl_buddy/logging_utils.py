@@ -995,9 +995,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 build_note = f"verilate job {verilate}, {build_note}"
             count = fields.get("jobs")
             plural = "" if count == 1 else "s"
+            sims = (
+                "no sim jobs (-E comp)"
+                if fields.get("compile_only")
+                else f"sim jobs {' '.join(map(str, ids))}"
+            )
             return (
-                f"dispatch: {fields.get('suite')} → {build_note}"
-                f"sim jobs {' '.join(map(str, ids))} "
+                f"dispatch: {fields.get('suite')} → {build_note}{sims} "
                 f"({count} job{plural} on {fields.get('backend')})"
             )
         case "dispatch.progress":
