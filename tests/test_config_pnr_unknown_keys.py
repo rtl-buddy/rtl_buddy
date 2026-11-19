@@ -34,6 +34,7 @@ PLACEMENT_ALL = {
     "routability-use-grt": True,
     "timing-driven": True,
     "rotated-macro-footprint": "none",
+    "legalizer": {"place": "negotiation", "global_route": "diamond"},
     "macro-pin-limits": {
         "buffers": ["buf1", "buf8"],
         "margin": 0.05,
@@ -437,8 +438,8 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "density, padding, macro-channel, macro-pin-aware-channels, macro-cell-halo, "
             "tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
-            "rotated-macro-footprint, macro-pin-limits, improve-placement, "
-            "optimize-mirroring, repair-design",
+            "rotated-macro-footprint, legalizer, macro-pin-limits, "
+            "improve-placement, optimize-mirroring, repair-design",
         ),
         (
             "pnr run 'a': placement.macro-pin-limits",
@@ -788,8 +789,8 @@ cfg-pnr-platforms:
             "density, padding, macro-channel, macro-pin-aware-channels, macro-cell-halo, "
             "tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
-            "rotated-macro-footprint, macro-pin-limits, improve-placement, "
-            "optimize-mirroring, repair-design",
+            "rotated-macro-footprint, legalizer, macro-pin-limits, "
+            "improve-placement, optimize-mirroring, repair-design",
         ),
         (
             "pdk",
@@ -863,8 +864,8 @@ cfg-pnr-platforms:
             "density, padding, macro-channel, macro-pin-aware-channels, macro-cell-halo, "
             "tie-separation, "
             "reference-hpwl, routability-driven, routability-use-grt, timing-driven, "
-            "rotated-macro-footprint, macro-pin-limits, improve-placement, "
-            "optimize-mirroring, repair-design",
+            "rotated-macro-footprint, legalizer, macro-pin-limits, "
+            "improve-placement, optimize-mirroring, repair-design",
         ),
         (
             "platform",

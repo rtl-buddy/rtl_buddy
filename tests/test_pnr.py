@@ -2426,9 +2426,9 @@ def test_pnr_template_legalizes_after_every_cell_inserting_repair():
     template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
     # Stage markers render as nothing in a one-session run.
     template = re.sub(r"\{\{ @/?\w+ \}\}", "", template)
-    # `{{ dpl_options }}` adds options to `detailed_placement`, not passes.
+    # `{{ <stage>_dpl_options }}` adds options to `detailed_placement`, not passes.
     commands = [
-        line.strip().replace("{{ dpl_options }}", "")
+        re.sub(r"\{\{ \w+_dpl_options \}\}", "", line.strip())
         for line in template.splitlines()
         if line.strip() and not line.strip().startswith(("#", "puts "))
     ]

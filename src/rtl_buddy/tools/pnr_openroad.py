@@ -21,7 +21,7 @@ from ..config.dispatch import JobResources
 from ..config.lib_paths import corner_lib_file, fit_lib_paths, lib_paths_overlap
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
 from ..config.pdk import MacroPinLimitsFile
-from ..config.pdk import RotatedMacroFootprint
+from ..config.pdk import LEGALIZER_STAGES, Legalizer, RotatedMacroFootprint
 from ..config.pnr import (
     CHECKPOINT_STAGES,
     PNR_STAGES,
@@ -1970,6 +1970,16 @@ def _global_placement_blocks(
     )
 
 
+def _stage_dpl_options(footprint: str, legalizer: dict[str, str]) -> dict[str, str]:
+    """The options of each stage's `detailed_placement` calls, by stage in `LEGALIZER_STAGES`: `-use_diamond_legalizer` where `placement.legalizer` chooses diamond, else `footprint` (`GlobalPlacementBlocks.dpl_options`), which `rotated-macro-footprint: diamond-legalizer` sets to diamond when a macro turned. Negotiation is OpenROAD's default and passes nothing."""
+    return {
+        stage: " -use_diamond_legalizer"
+        if legalizer.get(stage) == Legalizer.DIAMOND
+        else footprint
+        for stage in LEGALIZER_STAGES
+    }
+
+
 #: Printed by a run that `--stop-after` ended, after its stage report; with the requested stage it tells a stopped run from one that ended early by accident.
 STOPPED_MARKER = ">>> STOPPED after "
 _STAGE_DONE_MARKER = pnr_stages.STAGE_DONE_MARKER
@@ -3701,6 +3711,9 @@ class OpenRoadPnr:
             self.pnr_cfg.get_hooks(),
             checkpoints=self._arms_checkpoints() and not self._staged,
         )
+        dpl_options = _stage_dpl_options(
+            gp_blocks.dpl_options, platform.get_placement_legalizer()
+        )
         # With `rcx-rules`, extract after fill and time the final reports on the SPEF; otherwise they use the global-route estimate.
         rcx_rules = pdk.get_rcx_rules()
         self._rcx_rules = rcx_rules
@@ -3907,7 +3920,7 @@ class OpenRoadPnr:
                 platform.get_global_route_repair(),
                 self._mode,
                 self._ps_per_unit,
-                gp_blocks.dpl_options,
+                dpl_options["global_route"],
                 platform.get_global_route(),
                 timing=self._arms_checkpoints(),
                 platform=platform,
@@ -3915,9 +3928,12 @@ class OpenRoadPnr:
             ),
             "gp_blockages_create": gp_blocks.create,
             "gp_blockages_destroy": gp_blocks.destroy,
-            "dpl_options": gp_blocks.dpl_options,
+            **{
+                f"{stage}_dpl_options": options
+                for stage, options in dpl_options.items()
+            },
             "macro_pin_limits_block": _macro_pin_limits_tcl(
-                platform, gp_blocks.dpl_options
+                platform, dpl_options["place"]
             ),
             "detailed_route_verbose": str(self.pnr_cfg.get_detailed_route_verbose()),
             "cell_count_tag": _CELL_COUNT_TAG,
@@ -4023,6 +4039,33 @@ class OpenRoadPnr:
         if self._split:
             return stages[stages.index("detailed_route") + 1 :]
         return ()
+
+    def _sticky_legalizer_problem(self, platform, legalizer: dict) -> str | None:
+        """Why `placement.legalizer` cannot be honoured in this run, or None: a stage set to negotiation after a stage set to diamond in the same session. `detailed_placement -use_diamond_legalizer` keeps diamond search for the rest of its session. Only a one-session run has such stages, and its post-route rounds are sessions of their own; its global-route stage legalizes only with a global-route repair."""
+        if self._staged:
+            return None
+        legalizes = {"place", "cts"}
+        if (
+            platform.get_global_route_repair() is not None
+            and self._mode is not PnrMode.PROBE
+        ):
+            legalizes.add("global_route")
+        diamond = None
+        for stage in self._run_stages():
+            if stage not in legalizes:
+                continue
+            engine = legalizer.get(stage)
+            if engine == Legalizer.DIAMOND and diamond is None:
+                diamond = stage
+            elif engine == Legalizer.NEGOTIATION and diamond is not None:
+                return (
+                    f"placement.legalizer sets {stage} to negotiation after "
+                    f"{diamond} to diamond, but they run in one OpenROAD session, "
+                    "where detailed_placement keeps diamond search once "
+                    "-use_diamond_legalizer is passed; set stages: true to run "
+                    "each stage in its own session"
+                )
+        return None
 
     def _predecessor(self, stage: str) -> str | None:
         return pnr_stages.predecessor(stage, self._stages)
@@ -4269,7 +4312,7 @@ class OpenRoadPnr:
         if design is not None and design.wire_rc:
             parts.append(files(_TEMPLATE_PACKAGE).joinpath(_WIRE_RC_FILE).read_text())
         if repair.reroute is PostRouteReroute.FULL:
-            legalize = _legalize_tcl("{{ dpl_options }}", gr)
+            legalize = _legalize_tcl("{{ post_route_repair_dpl_options }}", gr)
             parts += [
                 "remove_fillers\n",
                 "[ord::get_db_block] destroyNetWires\n",
@@ -4309,7 +4352,7 @@ class OpenRoadPnr:
                 spef,
                 _start_incremental_cmd(gr),
                 f"rb::eco::repair {round_} {{\n{steps}}}\n",
-                "detailed_placement{{ dpl_options }}\n",
+                "detailed_placement{{ post_route_repair_dpl_options }}\n",
                 "check_placement -verbose\n",
                 _end_incremental_cmd(gr),
             ]
@@ -7421,6 +7464,41 @@ class OpenRoadPnr:
         if stage_problem is not None:
             return PnrFailResults(
                 name=self.name + "/results", desc=stage_problem, fail_stage="setup"
+            )
+        legalizer = platform.get_placement_legalizer()
+        sticky = self._sticky_legalizer_problem(platform, legalizer)
+        if sticky is not None:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.setup_invalid",
+                pnr=self.pnr_cfg.get_name(),
+                error=sticky,
+            )
+            return PnrFailResults(
+                name=self.name + "/results", desc=sticky, fail_stage="setup"
+            )
+        # OpenROAD 26Q4 made negotiation the default and diamond search `-use_diamond_legalizer`.
+        if legalizer and not self._has_command_option(
+            "detailed_placement", "-use_diamond_legalizer"
+        ):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.legalizer_unsupported",
+                pnr=self.pnr_cfg.get_name(),
+                exe=self.openroad_executable,
+                version=version,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    "placement.legalizer needs detailed_placement "
+                    "-use_diamond_legalizer, with negotiation the default engine "
+                    "(OpenROAD 26Q4 or newer); OpenROAD "
+                    f"{version or self.openroad_executable} does not take it"
+                ),
+                fail_stage="setup",
             )
         # Each round times extracted parasitics.
         if POST_ROUTE_REPAIR_STAGE in self._run_stages() and not rcx_rules:
