@@ -134,6 +134,14 @@ class TestRunner:
             return self._vlog_sim.pre()
         return self._vlog_sim.pre(run_id=pre_run_id)
 
+    def clear_run_outputs(self, run_ids):
+        """Unlink the previous outputs of ``run_ids``, as a run does before its PRE.
+
+        A compile-only dispatch head calls it for the numbered runs, which its build job
+        never prepares.
+        """
+        self._create_vlog_sim().clear_run_outputs(run_ids)
+
     def prepare(self, *, pre_run_id=_PRE_RUN_ID_DEFAULT):
         """Create the sim instance and run PRE; return ``SetupFailResults`` or ``None``.
 

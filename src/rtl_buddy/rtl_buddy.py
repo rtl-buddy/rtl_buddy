@@ -207,6 +207,7 @@ from .runner.test_results import (
     CompileFailResults,
     DispatchFailResults,
     EarlyStopResults,
+    FilelistFailResults,
     SetupFailResults,
     EARLY_STOP_KEY,
     SkipResults,
@@ -527,6 +528,26 @@ def _annotate_build_failure(entry, *, failure, worker_error, suite_dir):
         if lines:
             entry["error_tail"] = lines[-COMPILE_ERROR_TAIL_LINES:]
     return entry
+
+
+# The failures that stop a config before its builder runs, by the kind a build envelope
+# records them under.
+_SETUP_FAILURE_RESULTS = {
+    "setup": SetupFailResults,
+    "filelist": FilelistFailResults,
+}
+
+
+def _setup_failure_record(res):
+    """``{kind, desc}`` for a result that stopped a config before its builder ran, else ``None``.
+
+    The build job records it, so a head that runs no simulation job can report the
+    failure as an in-process run would.
+    """
+    for kind, result_class in _SETUP_FAILURE_RESULTS.items():
+        if isinstance(res, result_class):
+            return {"kind": kind, "desc": res.results.get("desc")}
+    return None
 
 
 def _keeps_deterministic_failure(recorded, failure) -> bool:
@@ -3644,6 +3665,9 @@ class RtlBuddy:
             if res is not None:
                 # A setup or filelist failure never reaches a builder: reported as
                 # failed, and the job still exits 0.
+                setup_failure = _setup_failure_record(res)
+                if setup_failure is not None:
+                    setup_failures[index] = setup_failure
                 return (
                     (index, cfg.get_name(), False, None, runner, group_dir),
                     None,
@@ -3976,6 +4000,11 @@ class RtlBuddy:
         recorded_entries = {}  # plan index -> envelope record
         recorded_ok = {}  # plan index -> did it build?
 
+        def _note_setup_failure(index, entry, ok):
+            """Name the failure that stopped this config before its builder ran."""
+            if not ok and index in setup_failures:
+                entry["setup_failure"] = dict(setup_failures[index])
+
         def _record_group(rows):
             """Persist this group's outcomes; return ``None`` or why it failed.
 
@@ -3998,9 +4027,10 @@ class RtlBuddy:
                 )
                 for index, name, ok, worker_error, runner, group_dir in rows
             }
-            for index, (entry, _ok) in entries.items():
+            for index, (entry, ok) in entries.items():
                 if inputs_shas.get(index) is not None:
                     entry["inputs_sha"] = inputs_shas[index]
+                _note_setup_failure(index, entry, ok)
             with recorded_lock:
                 for index, (entry, ok) in entries.items():
                     recorded_entries[index] = entry
@@ -4228,6 +4258,8 @@ class RtlBuddy:
                             )
                     else:
                         group_leaders.setdefault(group_dir, name)
+                elif (setup_failure := _setup_failure_record(res)) is not None:
+                    setup_failures[index] = setup_failure
                 elif isinstance(res, CompileFailResults):
                     # The builder ran and failed; a filelist or setup failure never
                     # reached it and has nothing to adopt.
@@ -4376,6 +4408,8 @@ class RtlBuddy:
 
         # Per-config state the passes below share with the workers.
         inputs_shas = {}  # plan index -> compile inputs digest, once probed
+        # plan index -> {kind, desc} of a failure that stopped it before its builder ran
+        setup_failures = {}
         copied_entries = {}  # plan index -> envelope record of a row with no runner
         leader_entries = {}  # leader plan index -> its envelope record, for followers
         member_rows = {}  # plan index -> outcome row, once its group has it
@@ -4648,6 +4682,7 @@ class RtlBuddy:
             build_entry = recorded_entries.get(index)
             if build_entry is None:
                 build_entry = _build_entry(name, ok, worker_error, runner, group_dir)
+                _note_setup_failure(index, build_entry, ok)
             builds.append(build_entry)
             if ok:
                 built.append(name)
@@ -7542,11 +7577,14 @@ class RtlBuddy:
         """Give each planned row of an `-E comp` fleet its compile verdict.
 
         The build job's envelope is the only record. A test it built stops early at
-        compile, as in-process; one it failed is a compile failure; one it never
-        recorded has no result. Each row's `result.json` is written as an in-process run
-        writes it.
+        compile, as in-process. One it failed is a setup or filelist failure where the
+        build job recorded one, else a compile failure. One it never recorded has no
+        result. Each row's `result.json` is written as an in-process run writes it, after
+        the earlier outputs of its numbered run are cleared.
         """
         build_handle = state["build_handle"]
+        suite_dir = build_handle.spec.suite_dir
+        self._clear_compile_only_run_outputs(state, suite_dir=suite_dir)
         built = set(build_result["built"]) if build_result else set()
         failed = set(build_result["failed"]) if build_result else set()
         build_logs = str(build_handle.spec.log_path)
@@ -7558,7 +7596,13 @@ class RtlBuddy:
             if row.get("results") is not None:
                 continue
             name = row["test_name"]
-            if name in failed:
+            setup_failure = (build_failures.get(name) or {}).get("setup_failure")
+            setup_class = _SETUP_FAILURE_RESULTS.get((setup_failure or {}).get("kind"))
+            if name in failed and setup_class is not None:
+                results = setup_class(
+                    name=name + "/results", desc=setup_failure.get("desc") or ""
+                )
+            elif name in failed:
                 results = CompileFailResults(
                     name=name + "/results",
                     desc=self._build_compile_fail_desc(
@@ -7604,12 +7648,47 @@ class RtlBuddy:
                 results.results["plusarg_overrides"] = dict(self._plusarg_overrides)
             self._record_run_results(
                 name,
-                build_handle.spec.suite_dir,
+                suite_dir,
                 [row.get("randmode_i")],
                 [results],
                 run_token=state.get("run_token"),
             )
             row["results"] = results
+
+    def _clear_compile_only_run_outputs(self, state, *, suite_dir):
+        """Clear each planned test's numbered runs, as an in-process `-E comp` does.
+
+        The build job prepares every test once, unnumbered, so the logs and coverage of
+        an earlier `randtest` would otherwise stay beside this run's verdicts. Best
+        effort, like the clear before PRE.
+        """
+        run_ids = {}
+        for row in state["suite_results"]:
+            if row.get("results") is None and row.get("randmode_i") is not None:
+                run_ids.setdefault(row["test_name"], []).append(row["randmode_i"])
+        for name, ids in run_ids.items():
+            cfg = (state.get("test_cfgs") or {}).get(name)
+            if cfg is None:
+                continue
+            try:
+                TestRunner(
+                    name=self.name + "/compile-only",
+                    root_cfg=self.root_cfg,
+                    test_cfg=cfg,
+                    test_runner_mode={"sim_to_stdout": False},
+                    rtl_builder_mode=self.rtl_builder_mode,
+                    suite_dir=suite_dir,
+                    run_tag=self._run_tag,
+                ).clear_run_outputs(ids)
+            except Exception as exc:  # noqa: BLE001 - best effort, like the clear before PRE
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "test.stale_output_unremovable",
+                    test=name,
+                    path=str(test_artifact_dir(suite_dir, name, run_tag=self._run_tag)),
+                    error=str(exc),
+                )
 
     def _dispatch_collect_pass(
         self, backend, state, pending, *, attempt, retry_cfg, submitted_at=None

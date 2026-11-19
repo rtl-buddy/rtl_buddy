@@ -42,6 +42,7 @@ from rtl_buddy.runner.test_results import (
 )
 from rtl_buddy.seed_mode import SeedMode
 from rtl_buddy.seeding import derive_test_seed
+from rtl_buddy.tools.artifact_paths import test_artifact_dir
 
 
 class _FakeBackend(DispatchBackend):
@@ -8021,11 +8022,15 @@ class _CompileOnlyBackend(_OrphanBackend):
     With ``record=False`` the build job leaves no envelope, as a crashed one does.
     """
 
-    def __init__(self, name="slurm", failed=(), record=True, **kwargs):
+    def __init__(
+        self, name="slurm", failed=(), record=True, setup_failures=None, **kwargs
+    ):
         super().__init__(**kwargs)
         self.name = name
         self.scheduled = name == "slurm"
-        self.failed = set(failed)
+        # test -> the `setup_failure` record of a config stopped before its builder ran
+        self.setup_failures = dict(setup_failures or {})
+        self.failed = set(failed) | set(self.setup_failures)
         self.record = record
 
     def submit_build(self, spec, *, dependency=None):
@@ -8043,7 +8048,9 @@ class _CompileOnlyBackend(_OrphanBackend):
                         "duration_sec": 1.5,
                         "reused": False,
                         **(
-                            {"returncode": 1, "error_tail": [_COMPILE_ERROR]}
+                            {"setup_failure": self.setup_failures[name]}
+                            if name in self.setup_failures
+                            else {"returncode": 1, "error_tail": [_COMPILE_ERROR]}
                             if name in self.failed
                             else {}
                         ),
@@ -8361,3 +8368,67 @@ def test_a_full_run_after_a_compile_only_run_submits_every_sim(
     assert sorted(entry["test"] for entry in gates["entries"]) == ["basic", "extra"]
     rows = {row["name"]: row["result"] for row in _payload_rows(result)}
     assert rows == {"basic": "PASS", "extra": "PASS"}
+
+
+def test_compile_only_randtest_clears_each_runs_previous_outputs(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """As an in-process `-E comp` randtest does: no earlier run's log or coverage is
+    left beside a compile-only verdict, and the replay seed is kept.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _use_backend(monkeypatch, _CompileOnlyBackend())
+    run_dirs = [
+        test_artifact_dir(minimal_project, "basic", run_id=i) for i in (1, 2, 3)
+    ]
+    for run_dir in run_dirs:
+        run_dir.mkdir(parents=True)
+        for name in ("test.log", "test.err", "coverage.dat", "test.randseed"):
+            (run_dir / name).write_text("from the previous run\n")
+
+    result = _compile_only(["randtest", "basic", "3"])
+    assert result.exit_code == 0, result.output
+
+    for run_dir in run_dirs:
+        assert sorted(path.name for path in run_dir.iterdir()) == [
+            "result.json",
+            "test.randseed",
+        ]
+        recorded = json.loads((run_dir / "result.json").read_text())
+        assert recorded["result"]["results"]["early_stop"] is True
+
+
+def test_compile_only_reports_setup_and_filelist_failures_as_in_process(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A config the build job stopped before its builder ran keeps its own diagnostic
+    and stage, not a generic compile failure.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    setup_desc = "Setup failed in preproc: missing stimulus.csv"
+    filelist_desc = "filelist entry does not exist: missing.sv"
+    _use_backend(
+        monkeypatch,
+        _CompileOnlyBackend(
+            setup_failures={
+                "basic": {"kind": "setup", "desc": setup_desc},
+                "extra": {"kind": "filelist", "desc": filelist_desc},
+            }
+        ),
+    )
+    result = _compile_only(["regression", "-c", "regression.yaml", "-l", "5"])
+    assert result.exit_code == 1, result.output
+
+    rows = {row["name"]: row for row in _payload_rows(result)}
+    assert (rows["basic"]["result"], rows["basic"]["desc"]) == ("FAIL", setup_desc)
+    assert (rows["extra"]["result"], rows["extra"]["desc"]) == ("FAIL", filelist_desc)
+    for name in ("basic", "extra"):
+        recorded = json.loads(
+            (minimal_project / "artefacts" / name / "result.json").read_text()
+        )
+        assert recorded["result"]["results"]["fail_stage"] == "setup"
+        assert recorded["result"]["kind"] == (
+            "SetupFailResults" if name == "basic" else "FilelistFailResults"
+        )

@@ -89,6 +89,7 @@ def _run(
     cwd_rel=".",
     prepare_project=None,
     global_args=(),
+    dispatch="local-parallel",
 ):
     project = work_dir / "proj"
     shutil.copytree(fixture, project)
@@ -102,6 +103,7 @@ def _run(
         command=command,
         cwd_rel=cwd_rel,
         global_args=global_args,
+        dispatch=dispatch,
     )
 
 
@@ -113,8 +115,9 @@ def _rerun(
     command=("regression", "-c", "regression.yaml"),
     cwd_rel=".",
     global_args=(),
+    dispatch="local-parallel",
 ):
-    """One `rb --dispatch local-parallel` run over a project an earlier run may have used."""
+    """One `rb --dispatch <dispatch>` run over a project an earlier run may have used."""
     env = _clean_env()
     # The fake verilator lives beside the Slurm shims; RB_SHIM_DB is where they record
     # calls.
@@ -131,7 +134,7 @@ def _rerun(
             *global_args,
             *command,
             "--dispatch",
-            "local-parallel",
+            dispatch,
             *extra_args,
         ],
         cwd=project / cwd_rel,
@@ -805,3 +808,62 @@ def test_compile_only_pool_reports_a_compile_failure(tmp_path_factory):
         assert row["result"] == "FAIL", diag
         assert "Exiting due to 15 warning(s)" in row["desc"], diag
         assert "early_stop" not in row, diag
+
+
+def _break_setup_and_filelist(project: Path) -> None:
+    """alpha's preproc hook raises; beta's testbench lists a file that does not exist."""
+    suite = project / "verif" / "blk"
+    (suite / "preproc.py").write_text("raise RuntimeError('missing stimulus.csv')\n")
+    tests = (suite / "tests.yaml").read_text()
+    tests = tests.replace(
+        "    preproc:\n", "    preproc:\n      path: preproc.py\n", 1
+    ).replace(
+        "testbenches:\n",
+        "testbenches:\n"
+        "  - name: tb_missing\n    toplevel: tb_blk\n"
+        "    filelist:\n      - src.sv\n      - missing.sv\n",
+        1,
+    )
+    # The second `testbench: tb_blk` is beta's.
+    head, _, tail = tests.rpartition("    testbench: tb_blk\n")
+    (suite / "tests.yaml").write_text(head + "    testbench: tb_missing\n" + tail)
+
+
+def test_compile_only_pool_reports_setup_failures_as_in_process(tmp_path_factory):
+    """A real build job keeps a preproc failure and a filelist failure as such: the
+    rows match an in-process `-E comp` run of the same project.
+    """
+    work = tmp_path_factory.mktemp("compile_only_setup")
+    proc, envelope, project, diag = _run(
+        work,
+        _FIXTURE,
+        global_args=("-E", "comp"),
+        prepare_project=_break_setup_and_filelist,
+    )
+    assert proc.returncode == 1, diag
+    assert envelope is not None, diag
+    dispatched = {
+        r["name"]: (r["result"], r["desc"]) for r in envelope["payload"]["results"]
+    }
+    kinds = {
+        name: json.loads(
+            (project / "verif" / "blk" / "artefacts" / name / "result.json").read_text()
+        )["result"]
+        for name in ("alpha", "beta")
+    }
+
+    # The fixture's `cfg-dispatch.backend` is slurm, so in-process is asked for.
+    proc, envelope, _project, diag = _rerun(
+        project, work, global_args=("-E", "comp"), dispatch="local"
+    )
+    assert proc.returncode == 1, diag
+    in_process = {
+        r["name"]: (r["result"], r["desc"]) for r in envelope["payload"]["results"]
+    }
+    assert dispatched == in_process, diag
+    assert "missing stimulus.csv" in dispatched["alpha"][1], diag
+    assert "missing.sv" in dispatched["beta"][1], diag
+    assert kinds["alpha"]["kind"] == "SetupFailResults", kinds
+    assert kinds["beta"]["kind"] == "FilelistFailResults", kinds
+    for recorded in kinds.values():
+        assert recorded["results"]["fail_stage"] == "setup", kinds
