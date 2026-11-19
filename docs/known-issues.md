@@ -289,6 +289,14 @@ Each post-route repair round runs in fresh sessions and orders its steps to avoi
 - `global_route -start_incremental` around a resizer command that reroutes by itself delivers each netlist change twice, and a later rip-up fails with `GRT-0229` and `usage=65535` (OpenROAD#11851). A `full` round and the global-route repair run their repairs first and open the incremental route around the legalization only, as ORFS does. An `eco` round, whose repairs do not reroute, opens it before the repairs.
 - `repair_timing` on global-route parasitics fails `RSZ-0074` on nets `repair_design` split until they are rerouted, so a repair that runs both legalizes and reroutes between them.
 
+## Post-route hold repair drops the extracted parasitics of a net it leaves unchanged
+
+In an `eco` post-route repair round, the repairs time unchanged nets on the extracted SPEF and the nets they change on a placement estimate. On OpenROAD 26Q4, `repair_timing -hold` tries a buffer at a driver and rolls it back when the driver's slew grows by more than 20% or the worst setup slack drops below the setup margin. The rollback leaves the net on the estimate, although it has the driver and loads it had.
+
+Where the estimate is slower than the extraction, the endpoint behind the net reads as met and the repair skips the rest of its path. The round's extraction then reports the endpoint failing by what it failed before, and every later round repeats this.
+
+An `eco` round therefore repairs hold twice: first without a hold margin and with no signal wire RC, so no estimate is slower than its route, then with the margin at the round's RC. See [Post-route repair rounds](concepts/pnr.md#post-route-repair-rounds). An OpenROAD without `sta::scenes` or the `est::` wire RC commands (before 26Q2), and a session that sets signal wire RC per technology, run both calls at the session's RC, and `pnr.log` says so.
+
 ## Post-route `repair_design` sizes its buffering on the placement estimate
 
 A post-route round's `repair_design`, the electrical round's included, finds max-slew and max-capacitance violators on the extracted SPEF, but on OpenROAD 26Q4 it sizes the buffers that repair them on Steiner trees at the placement wire RC. A net whose extraction is far above that estimate is left as it is when the estimate is within the limit less the margin, so a larger margin does not help. It can resize a driver that has a stronger variant, which the timer judges on the SPEF, so a driver at its strongest size, such as a `buf_16` driving a long chain, is the usual case. Running the repair on detailed-routing parasitics instead would build its buffer trees from the global routes, which a fresh session rebuilds incompletely (`RSZ-0074`, see [Post-route repair works around OpenROAD routing failures](#post-route-repair-works-around-openroad-routing-failures)).

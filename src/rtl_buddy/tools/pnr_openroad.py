@@ -113,7 +113,7 @@ _HOOK_COMMANDS_FILE = "hook_commands.tcl"
 _STAGE_END_HOOK_FILE = "stage_end_hook.tcl"
 # Runs an `eco` post-route repair round's repairs on Steiner trees; see `_post_route_repair_script`.
 _ECO_REPAIR_FILE = "eco_repair.tcl"
-# Runs a post-route `repair_design` at `repair-design.wire-rc`; see `_repair_steps_tcl`.
+# Sets the signal wire RC of a post-route round's repairs: `repair-design.wire-rc`, `timing-wire-rc`, and none for an `eco` round's first hold repair; see `_repair_steps_tcl`.
 _WIRE_RC_FILE = "wire_rc.tcl"
 # Names the electrical round's violators its `repair_design` judged within limits on the placement estimate; see `_unseen_tcl`.
 _ELECTRICAL_UNSEEN_FILE = "electrical_unseen.tcl"
@@ -846,6 +846,8 @@ def _repair_steps_tcl(
     log_prefix: str | None = None,
     after_timing: str = "",
     max_buffer_percent: float | None = None,
+    ideal_hold: bool = False,
+    timing_wire_rc: WireRc | None = None,
 ) -> str:
     """Return `repair_design`, then setup and hold `repair_timing`, each after a log line naming it, each with `platform`'s repair options (`_repair_command`), then `after_timing` (the `after-timing-repair` hooks, `_after_timing_repair_block`) when a `repair_timing` ran.
 
@@ -858,13 +860,21 @@ def _repair_steps_tcl(
     Between `repair_design` and `repair_timing` runs `legalize` (`_legalize_tcl`), as in ORFS: `repair_timing` on global-route parasitics builds buffer trees from the global routes, and the nets `repair_design` split have none until they are rerouted (RSZ-0074). `None` runs nothing there, for repairs that build them from Steiner trees. The caller legalizes after the timing repair.
 
     A post-route `repair-design` may set `wire-rc`: the session's signal wire RC is saved and set to it before the first repair and restored after the last, so every `repair_design` and `repair_timing` of the steps, and the `after-timing-repair` hooks, estimate the nets they change at it (`wire_rc.tcl`); the log lines name it. The RC setters do not invalidate parasitics, so the changed nets keep that estimate until OpenROAD estimates them again. With `after-timing`, `repair_design` runs again after the timing repair.
+
+    `timing_wire_rc` (`post-route-repair.timing-wire-rc`) is the signal wire RC of the `repair_timing` calls and the `after-timing-repair` hooks alone: it is applied before the first of them, and a `repair_design` after them runs at `wire-rc` again, or at the session's RC without one.
+
+    `ideal_hold` is for repairs that time on extracted parasitics read over an estimate (an `eco` post-route round). A hold buffer `repair_timing` tries at a driver and rolls back leaves that net on the estimate; where the estimate is slower than the extraction, the endpoint reads as met and the repair leaves the rest of its path alone. So the hold repair first runs without a hold margin in `rb::rc::ideal` (`wire_rc.tcl`), which estimates with no signal wire RC: an endpoint that fails on the extracted parasitics then reads as met only once delay is on its path. The call with the hold margin follows at the steps' RC; a hold repair without a margin is that first call alone.
     """
     wire_rc = design.wire_rc if design is not None else None
-    lines = (
-        ["rb::rc::save", f"rb::rc::apply {{{_wire_rc_spec(wire_rc)}}}"]
-        if wire_rc is not None
-        else []
+    sets_rc = wire_rc is not None or timing_wire_rc is not None
+    design_rc = (
+        "rb::rc::restore"
+        if wire_rc is None
+        else f"rb::rc::apply {{{_wire_rc_spec(wire_rc)}}}"
     )
+    lines = ["rb::rc::save"] if sets_rc else []
+    if wire_rc is not None:
+        lines.append(design_rc)
     if design is not None:
         lines += _repair_design_tcl(title, design, platform=platform)
         if legalize is not None and (setup_ns is not None or hold_ns is not None):
@@ -893,23 +903,42 @@ def _repair_steps_tcl(
     for kind, margin in (("setup", setup_ns), ("hold", hold_ns)):
         if kind not in sides:
             continue
+        if not timed and timing_wire_rc is not None:
+            lines.append(
+                f"rb::rc::apply {{{_wire_rc_spec(timing_wire_rc)}}} timing-wire-rc"
+            )
         timed = True
         options = [] if margin is None else [_option(kind, margin)]
         if kind == "hold" and setup_ns is not None:
             options.append(_option("setup", setup_ns))
-        command = _repair_command(
-            f"repair_timing -{kind}"
-            + "".join(opt for opt, _ in options)
-            + (_max_buffer_option(max_buffer_percent) if kind == "hold" else ""),
-            platform,
-        )
-        note = ", ".join(n for _, n in options)
-        if any(opt for opt, _ in options):
-            note += f" in Liberty time unit {format_time_unit(ps_per_unit)}"
-        if design is not None and design.wire_rc is not None:
-            note += ", signal wire RC [rb::rc::describe] for the nets it changes"
-        note = f" ({note.removeprefix(', ')})" if note else ""
-        lines += [f'puts ">>> {prefix}{command}{note}"', command]
+
+        def _call(options: list[tuple[str, str]], ideal: bool) -> list[str]:
+            """The log line and the `repair_timing` of this side with `options`, in `rb::rc::ideal` when `ideal`."""
+            command = _repair_command(
+                f"repair_timing -{kind}"
+                + "".join(opt for opt, _ in options)
+                + (_max_buffer_option(max_buffer_percent) if kind == "hold" else ""),
+                platform,
+            )
+            note = ", ".join(n for _, n in options)
+            if any(opt for opt, _ in options):
+                note += f" in Liberty time unit {format_time_unit(ps_per_unit)}"
+            if ideal:
+                note += ", no signal wire RC for the nets it changes"
+            elif sets_rc:
+                note += ", signal wire RC [rb::rc::describe] for the nets it changes"
+            note = f" ({note.removeprefix(', ')})" if note else ""
+            return [
+                f'puts ">>> {prefix}{command}{note}"',
+                f"rb::rc::ideal {{ {command} }}" if ideal else command,
+            ]
+
+        if kind == "hold" and ideal_hold:
+            first = [_option("hold", 0.0), *options[1:]] if margin else options
+            lines += _call(first, True)
+            if not margin:
+                continue
+        lines += _call(options, False)
     if timed and after_timing:
 
         def _value(margin: float | None) -> str:
@@ -921,8 +950,10 @@ def _repair_steps_tcl(
         block = _with_margins(after_timing, _value(setup_ns), _value(held))
         lines.append(block.rstrip("\n"))
     if design is not None and design.after_timing:
+        if timed and timing_wire_rc is not None:
+            lines.append(design_rc)
         lines += _repair_design_tcl(title, design, " after timing repair", platform)
-    if wire_rc is not None:
+    if sets_rc:
         lines.append("rb::rc::restore")
     return "".join(f"{line}\n" for line in lines)
 
@@ -4236,11 +4267,11 @@ class OpenRoadPnr:
 
         The rounds work on the unfilled database; `finish` fills after the last. Each round starts with `remove_fillers`, which removes every CORE_SPACER instance that is not LOCKED, spacers a hook placed included. A repair in the session that routed fails detailed routing (DRT-0218), so each round is a fresh session that reads the routed database.
 
-        With `reroute: eco` the session keeps the routed database's wires. It removes the fillers first, since each instance `remove_fillers` destroys disconnects its pins and leaves their nets' parasitics invalid (EST-0104 in the first repair), then estimates placement parasitics and reads the SPEF over them, opens an incremental global route and runs the repairs in `rb::eco::repair` (`eco_repair.tcl`), which makes `design_is_routed` answer 0 for them alone: `repair_timing` then keeps the placement source instead of switching to detailed-routing parasitics, times the nets it does not change on the SPEF and the nets it changes on Steiner trees, and opens no incremental route of its own, so the session's one sees each netlist change once. Legalizing closes that route, which reroutes only the changed nets, and the detailed route keeps every other net's wires. On detailed-routing parasitics the repairs would build buffer trees from the global routes a fresh session rebuilds from the guides, which can miss pins (RSZ-0074), and a second incremental route open around them delivers each change twice (GRT-0229 on a later rip-up).
+        With `reroute: eco` the session keeps the routed database's wires. It removes the fillers first, since each instance `remove_fillers` destroys disconnects its pins and leaves their nets' parasitics invalid (EST-0104 in the first repair), then estimates placement parasitics and reads the SPEF over them, opens an incremental global route and runs the repairs in `rb::eco::repair` (`eco_repair.tcl`), which makes `design_is_routed` answer 0 for them alone: `repair_timing` then keeps the placement source instead of switching to detailed-routing parasitics, times the nets it does not change on the SPEF and the nets it changes on Steiner trees, and opens no incremental route of its own, so the session's one sees each netlist change once. The hold repair first clears the endpoints that fail, estimating with no signal wire RC (`ideal_hold` of `_repair_steps_tcl`). Legalizing closes that route, which reroutes only the changed nets, and the detailed route keeps every other net's wires. On detailed-routing parasitics the repairs would build buffer trees from the global routes a fresh session rebuilds from the guides, which can miss pins (RSZ-0074), and a second incremental route open around them delivers each change twice (GRT-0229 on a later rip-up).
 
         With `reroute: full` it removes the detailed route and routes globally first, then reads the SPEF over the global-route estimate; the repairs run before `global_route -start_incremental`, in ORFS order, since `repair_timing` on global-route parasitics opens its own incremental route. Its detailed route routes every net again.
 
-        The electrical round (`electrical-repair`) runs `repair_design` at its margins and `repair-design.wire-rc` on the database and SPEF `run_post_route_repair` links as `POST_ROUTE_ELECTRICAL_SOURCE`, the best round's; when the block repairs a timing side, setup and hold repair follow at the block's margins, then `repair_design` again, so clearing the violators does not hand back a timing failure.
+        The electrical round (`electrical-repair`) runs `repair_design` at its margins and `repair-design.wire-rc` on the database and SPEF `run_post_route_repair` links as `POST_ROUTE_ELECTRICAL_SOURCE`, the best round's; when the block repairs a timing side, setup and hold repair follow at the block's margins and `timing-wire-rc`, then `repair_design` again, so clearing the violators does not hand back a timing failure.
         """
         repair = self._post_route
         design = repair.repair_design
@@ -4266,10 +4297,24 @@ class OpenRoadPnr:
         spef = self._read_spef_tcl(f"[file join $RB_RUN_DIR {spef_name}]")
         parts = self._prelude(POST_ROUTE_REPAIR_STAGE, source)
         parts.append(f'\nputs ">>> {heading} (reroute {repair.reroute.value})"\n')
-        if design is not None and design.wire_rc:
+        eco = repair.reroute is PostRouteReroute.ECO
+        legalize = None if eco else _legalize_tcl("{{ dpl_options }}", gr)
+        steps = _repair_steps_tcl(
+            title,
+            design,
+            setup,
+            hold,
+            self._ps_per_unit,
+            legalize,
+            self._platform,
+            after_timing=after_timing,
+            max_buffer_percent=repair.max_buffer_percent,
+            ideal_hold=eco,
+            timing_wire_rc=repair.timing_wire_rc,
+        )
+        if "rb::rc::" in steps:
             parts.append(files(_TEMPLATE_PACKAGE).joinpath(_WIRE_RC_FILE).read_text())
-        if repair.reroute is PostRouteReroute.FULL:
-            legalize = _legalize_tcl("{{ dpl_options }}", gr)
+        if not eco:
             parts += [
                 "remove_fillers\n",
                 "[ord::get_db_block] destroyNetWires\n",
@@ -4277,31 +4322,10 @@ class OpenRoadPnr:
                 _global_route_cmd(gr),
                 "estimate_parasitics -global_routing\n",
                 spef,
-                _repair_steps_tcl(
-                    title,
-                    design,
-                    setup,
-                    hold,
-                    self._ps_per_unit,
-                    legalize,
-                    self._platform,
-                    after_timing=after_timing,
-                    max_buffer_percent=repair.max_buffer_percent,
-                ),
+                steps,
                 legalize,
             ]
         else:
-            steps = _repair_steps_tcl(
-                title,
-                design,
-                setup,
-                hold,
-                self._ps_per_unit,
-                None,
-                self._platform,
-                after_timing=after_timing,
-                max_buffer_percent=repair.max_buffer_percent,
-            )
             parts += [
                 files(_TEMPLATE_PACKAGE).joinpath(_ECO_REPAIR_FILE).read_text(),
                 "remove_fillers\n",
@@ -7464,15 +7488,18 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
-        # `repair-design.wire-rc` reads and sets RC per scene, which needs OpenSTA's scenes and `est::`.
+        # A post-route wire RC key reads and sets RC per scene, which needs OpenSTA's scenes and `est::`.
         design = self._post_route.repair_design if self._post_route else None
-        if (
-            design is not None
-            and design.wire_rc is not None
-            and not all(
-                self._has_tcl_command(command)
-                for command in ("sta::scenes", "est::set_h_wire_signal_rc_cmd")
-            )
+        rc_key = (
+            "repair-design.wire-rc"
+            if design is not None and design.wire_rc is not None
+            else "timing-wire-rc"
+            if self._post_route and self._post_route.timing_wire_rc is not None
+            else None
+        )
+        if rc_key is not None and not all(
+            self._has_tcl_command(command)
+            for command in ("sta::scenes", "est::set_h_wire_signal_rc_cmd")
         ):
             log_event(
                 logger,
@@ -7480,11 +7507,12 @@ class OpenRoadPnr:
                 "pnr.wire_rc_unsupported",
                 pnr=self.pnr_cfg.get_name(),
                 exe=self.openroad_executable,
+                key=rc_key,
             )
             return PnrFailResults(
                 name=self.name + "/results",
                 desc=(
-                    "post-route-repair.repair-design.wire-rc needs OpenROAD's "
+                    f"post-route-repair.{rc_key} needs OpenROAD's "
                     "sta::scenes and est:: wire RC commands (26Q2 or newer); "
                     "this OpenROAD has none"
                 ),
