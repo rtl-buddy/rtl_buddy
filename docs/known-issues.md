@@ -253,7 +253,11 @@ With the `default` mapped-run script, `&dch -f` choices and `&nf` area recovery 
 
 ## OpenROAD's legalizer blocks a rotated macro's unrotated footprint
 
-OpenROAD's default legalizer treats a fixed macro turned by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) as covering its unrotated width and height from its lower-left corner (OpenROAD#11735). Cells in that footprint but outside the macro are moved out, some far. By default `rb pnr` blocks the footprint during global placement, so the area stays empty. `placement.rotated-macro-footprint: diamond-legalizer` uses the diamond legalizer, which sees the real box, instead; `none` does neither. The workaround acts only when a macro entry turns a macro or a hook before global placement could.
+OpenROAD's default legalizer treats a fixed macro turned by 90 degrees (`R90`, `R270`, `MXR90`, `MYR90`) as covering its unrotated width and height from its lower-left corner (OpenROAD#11735). Cells in that footprint but outside the macro are moved out, some far. By default `rb pnr` blocks the footprint during global placement, so the area stays empty. `placement.rotated-macro-footprint: diamond-legalizer` uses the diamond legalizer, which sees the real box, instead, in every stage over `placement.legalizer`; `none` does neither. The workaround acts only when a macro entry turns a macro or a hook before global placement could.
+
+## Diamond search stays on for the rest of an OpenROAD session
+
+Once `detailed_placement -use_diamond_legalizer` runs, every later legalization in that OpenROAD session uses diamond search. That includes calls without the option and OpenROAD's own, such as the one after antenna repair inserts diodes. So in a one-session run, the stages after the first one `placement.legalizer` sets to `diamond` use diamond search too, including stages it leaves unset. A one-session run that sets a later stage to `negotiation` fails at setup and names the stages. Run with `stages: true` to give each stage its own session; see [Choose the legalizer per stage](concepts/pnr.md#choose-the-legalizer-per-stage).
 
 ## `repair_design` does not repair the slew at an output port
 

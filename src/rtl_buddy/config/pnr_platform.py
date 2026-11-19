@@ -607,6 +607,8 @@ class PnrPlatformConfig:
             pdk.get_placement_rotated_macro_footprint(),
             DEFAULT_ROTATED_MACRO_FOOTPRINT.value,
         )
+        legalizer = _pick("legalizer", pdk.get_placement_legalizer(), None)
+        self._placement_legalizer = dict(legalizer or {})
         # A whole block: a higher level's `macro-pin-limits` replaces a lower one's.
         self._placement_macro_pin_limits = _pick(
             "macro_pin_limits", pdk.get_placement_macro_pin_limits(), None
@@ -842,6 +844,10 @@ class PnrPlatformConfig:
     def get_placement_rotated_macro_footprint(self) -> str:
         """How the flow handles a macro rotated by 90 degrees (`block`, `diamond-legalizer` or `none`), platform over PDK, default `block`."""
         return self._placement_rotated_macro_footprint
+
+    def get_placement_legalizer(self) -> dict[str, str]:
+        """The `detailed_placement` engine of each stage that `placement.legalizer` names, run over platform over PDK; a stage left out passes no engine."""
+        return dict(self._placement_legalizer)
 
     def get_placement_macro_pin_limits(self) -> MacroPinLimitsFile | None:
         """`placement.macro-pin-limits`, run over platform over PDK, or `None` when the step is off."""

@@ -56,6 +56,17 @@ class RotatedMacroFootprint(StrEnum):
 DEFAULT_ROTATED_MACRO_FOOTPRINT = RotatedMacroFootprint.BLOCK
 
 
+class Legalizer(StrEnum):
+    """The engine `detailed_placement` legalizes with: OpenROAD 26Q4's default negotiation, or diamond search (`-use_diamond_legalizer`)."""
+
+    NEGOTIATION = "negotiation"
+    DIAMOND = "diamond"
+
+
+#: The flow stages whose rb steps run `detailed_placement`, which `placement.legalizer` can name.
+LEGALIZER_STAGES = ("place", "cts", "global_route", "post_route_repair")
+
+
 #: Fraction of a macro pin's limit `placement.macro-pin-limits` keeps in hand when `margin` is unset.
 DEFAULT_MACRO_PIN_LIMIT_MARGIN = 0.05
 
@@ -102,6 +113,8 @@ class PlacementFile:
     rotated_macro_footprint: str | None = field(
         rename="rotated-macro-footprint", default=None
     )
+    # One `Legalizer` for every stage or a mapping from stage to one, read by `_legalizer`; `None` inherits, and a level's value replaces a lower one's whole.
+    legalizer: Any = None
     # Opt-in macro pin repair on the legalized post-`repair_design` placement; `None` inherits, unset means off. A block replaces a lower level's whole.
     macro_pin_limits: MacroPinLimitsFile | None = field(
         rename="macro-pin-limits", default=None
@@ -249,6 +262,7 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
         routability_use_grt=placement.routability_use_grt,
         timing_driven=placement.timing_driven,
         rotated_macro_footprint=rotated,
+        legalizer=_legalizer(placement.legalizer, where),
         macro_pin_limits=_validate_macro_pin_limits(placement.macro_pin_limits, where),
         improve_placement=_optional_bool(
             placement.improve_placement, f"{where}: placement.improve-placement"
@@ -258,6 +272,32 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
         ),
         repair_design=read_placement_repair_design(where, placement.repair_design),
     )
+
+
+def _legalizer(value, where: str) -> dict[str, str] | None:
+    """`placement.legalizer` as a mapping from stage to engine: one engine stands for every stage in `LEGALIZER_STAGES`, and a stage a mapping leaves out has none. `None` passes through."""
+    if value is None:
+        return None
+    key = f"{where}: placement.legalizer"
+    engines = ", ".join(e.value for e in Legalizer)
+    if isinstance(value, str):
+        value = dict.fromkeys(LEGALIZER_STAGES, value)
+    if not isinstance(value, dict):
+        raise FatalRtlBuddyError(
+            f"{key} must be one of {engines}, or a mapping from stage to one, "
+            f"got {value!r}"
+        )
+    for stage, engine in value.items():
+        if stage not in LEGALIZER_STAGES:
+            raise FatalRtlBuddyError(
+                f"{key} names {stage!r}, not a stage that runs detailed_placement: "
+                f"{', '.join(LEGALIZER_STAGES)}"
+            )
+        if engine not in tuple(Legalizer):
+            raise FatalRtlBuddyError(
+                f"{key}.{stage} must be one of {engines}, got {engine!r}"
+            )
+    return {stage: value[stage] for stage in LEGALIZER_STAGES if stage in value}
 
 
 def _macro_channel(value, where: str) -> Any:
@@ -517,6 +557,10 @@ class PdkConfig:
     def get_placement_rotated_macro_footprint(self) -> str | None:
         """Configured `placement.rotated-macro-footprint`, or `None` when unset."""
         return self._placement.rotated_macro_footprint
+
+    def get_placement_legalizer(self) -> dict[str, str] | None:
+        """Configured `placement.legalizer` as stage -> engine, or `None` when unset."""
+        return self._placement.legalizer
 
     def get_placement_macro_pin_limits(self) -> MacroPinLimitsFile | None:
         """Configured `placement.macro-pin-limits`, validated, or `None` when unset."""

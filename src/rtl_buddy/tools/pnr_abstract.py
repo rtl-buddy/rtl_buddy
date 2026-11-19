@@ -512,6 +512,11 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 else {}
             ),
             **(
+                {"legalizer": legalizer}
+                if (legalizer := platform.get_placement_legalizer())
+                else {}
+            ),
+            **(
                 {"improve_placement": False}
                 if platform.get_placement_improve_placement() is False
                 else {}

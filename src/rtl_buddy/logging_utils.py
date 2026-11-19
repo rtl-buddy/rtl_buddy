@@ -2247,6 +2247,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('version') or fields.get('exe')} does not take; "
                 "unset the key or use a newer OpenROAD"
             )
+        case "pnr.legalizer_unsupported":
+            return (
+                f'P&R "{fields.get("pnr")}": placement.legalizer needs '
+                "detailed_placement -use_diamond_legalizer, which OpenROAD "
+                f"{fields.get('version') or fields.get('exe')} does not take; "
+                "unset the key or use OpenROAD 26Q4 or newer"
+            )
         case "pnr.match_cell_footprint_unsupported":
             return (
                 f'P&R "{fields.get("pnr")}": match-cell-footprint: true needs '
