@@ -2367,8 +2367,8 @@ class RtlBuddy:
                 master_seed=master_seed,
             )
         else:
-            # As for dispatched regressions: no stop point before POST per job, and the
-            # build job lets the sim job skip compilation, so share_build is implied.
+            # As for dispatched regressions: only `-E comp` stops early, and the build
+            # job lets the sim job skip compilation, so share_build is implied.
             self._reject_early_stop_under_dispatch(dispatch, dispatch_backend)
             if not share_build:
                 self.share_build = True
@@ -2685,6 +2685,7 @@ class RtlBuddy:
         reservation_findings = []
         summary_title = "RandTest Results Summary"
         if dispatch_backend is not None:
+            self._reject_early_stop_under_dispatch(dispatch, dispatch_backend)
             self.share_build = True
             # Before anything is submitted, as for an orphaned fleet.
             self._sweep_coverage_orphans(dispatch_backend)
@@ -4870,15 +4871,8 @@ class RtlBuddy:
             # compile, timeout) keeps FAIL; see _apply_xfail_logged.
             for res in results:
                 self._apply_xfail_logged(res, test_cfg, "suite.xfail")
-        get_resolved_seed = getattr(test_cfg, "get_resolved_seed", None)
-        resolved_seed = get_resolved_seed() if callable(get_resolved_seed) else None
-        if resolved_seed is not None:
-            seed_record = {
-                "master_seed": master_seed,
-                "resolved_seed": resolved_seed,
-                "source": getattr(test_cfg, "seed_source", None),
-                "identity": getattr(test_cfg, "seed_identity", None),
-            }
+        seed_record = self._seed_record(test_cfg, master_seed)
+        if seed_record is not None:
             for res in results:
                 res.results["seed"] = dict(seed_record)
         compile_record = test_runner.last_compile
@@ -4902,8 +4896,22 @@ class RtlBuddy:
             # Absent without the flag, so existing envelopes keep their keys.
             for res in results:
                 res.results["plusarg_overrides"] = dict(self._plusarg_overrides)
-        self._record_run_results(test_cfg, suite_dir, run_ids, results)
+        self._record_run_results(test_cfg.get_name(), suite_dir, run_ids, results)
         return results
+
+    @staticmethod
+    def _seed_record(test_cfg, master_seed):
+        """The seed a run of ``test_cfg`` resolved, as its result records it, or None."""
+        get_resolved_seed = getattr(test_cfg, "get_resolved_seed", None)
+        resolved_seed = get_resolved_seed() if callable(get_resolved_seed) else None
+        if resolved_seed is None:
+            return None
+        return {
+            "master_seed": master_seed,
+            "resolved_seed": resolved_seed,
+            "source": getattr(test_cfg, "seed_source", None),
+            "identity": getattr(test_cfg, "seed_identity", None),
+        }
 
     def _invocation_run_token(self) -> str:
         """This process's result-envelope nonce, minted on first use.
@@ -4915,21 +4923,23 @@ class RtlBuddy:
             self._run_token = uuid.uuid4().hex
         return self._run_token
 
-    def _record_run_results(self, test_cfg, suite_dir, run_ids, results):
+    def _record_run_results(
+        self, test_name, suite_dir, run_ids, results, run_token=None
+    ):
         """Write each run's result envelope into its artifact directory.
 
         The durable record of what a test did, written wherever a test runs; the
         dispatch path's `dispatch/result-*.json` exists only when a head asked for one.
-        Best-effort: a passed run is never reported failed because its side-car could
-        not be written.
+        ``run_token`` defaults to this process's own. Best-effort: a passed run is never
+        reported failed because its side-car could not be written.
         """
-        token = self._invocation_run_token()
+        token = run_token or self._invocation_run_token()
         for run_id, res in zip(run_ids, results):
             path = (
                 Path(
                     test_artifact_dir(
                         suite_dir,
-                        test_cfg.get_name(),
+                        test_name,
                         run_id=run_id,
                         run_tag=self._run_tag,
                     )
@@ -4939,7 +4949,7 @@ class RtlBuddy:
             try:
                 write_result_json(
                     path,
-                    test_name=test_cfg.get_name(),
+                    test_name=test_name,
                     run_id=run_id,
                     results=res,
                     run_token=token,
@@ -4953,7 +4963,7 @@ class RtlBuddy:
                     logger,
                     logging.WARNING,
                     "test.result_json_write_failed",
-                    test=test_cfg.get_name(),
+                    test=test_name,
                     run_id=run_id,
                     path=str(path),
                     error=str(exc),
@@ -5305,13 +5315,13 @@ class RtlBuddy:
         return "warn"
 
     def _reject_early_stop_under_dispatch(self, dispatch, backend):
-        """Reject ``--early-stop`` under dispatch, naming what selected the backend.
+        """Reject an ``--early-stop`` dispatch cannot honour, naming what chose the backend.
 
-        No stop point earlier than POST is expressible per job. The message says whether
-        ``--dispatch`` or ``cfg-dispatch.backend`` chose the backend, so the remedy it
-        offers applies.
+        ``comp`` runs the compile jobs alone. ``pre`` and ``sim`` have no job that stops
+        there. The message says whether ``--dispatch`` or ``cfg-dispatch.backend`` chose
+        the backend, so the remedy it offers applies.
         """
-        if self.run_depth == RunDepth.POST:
+        if self.run_depth in (RunDepth.POST, RunDepth.COMP):
             return
         if dispatch is not None:
             source = f"--dispatch {dispatch}"
@@ -5323,9 +5333,14 @@ class RtlBuddy:
             )
         raise FatalRtlBuddyError(
             f"--early-stop {self.run_depth.value} cannot be combined with "
-            f"dispatch ({source}): a build job compiles and the sim jobs run "
-            f"sim+post; {remedy}."
+            f"dispatch ({source}): the build job stops after compile and the sim "
+            f"jobs run sim+post, so only --early-stop comp works under dispatch; "
+            f"{remedy}."
         )
+
+    def _dispatch_early_stop(self):
+        """``"comp"`` for a fleet of compile jobs alone, else ``None``."""
+        return RunDepth.COMP.value if self.run_depth == RunDepth.COMP else None
 
     def _open_run_manifest(
         self,
@@ -5358,6 +5373,7 @@ class RtlBuddy:
                 plan=plan_path,
                 rows=rows,
                 status=STATUS_SUBMITTING,
+                early_stop=self._dispatch_early_stop(),
             )
         except (OSError, TypeError, ValueError) as e:
             log_event(
@@ -5806,6 +5822,21 @@ class RtlBuddy:
                 f"it was submitted with the {payload.get('backend')!r} backend, "
                 f"not {backend.name!r}",
             )
+        if payload.get("early_stop") != self._dispatch_early_stop():
+            # A compile-only fleet has no sim job to collect a verdict from, and a full
+            # fleet's sims are not what `-E comp` asked for.
+            raise self._adopt_mismatch(
+                manifest_path,
+                payload,
+                "it was submitted "
+                + (
+                    "with --early-stop comp"
+                    if payload.get("early_stop")
+                    else "without --early-stop"
+                )
+                + ", and this run is "
+                + ("compile-only" if self._dispatch_early_stop() else "a full run"),
+            )
         planned = [(row["test_name"], row["randmode_i"]) for row in suite_results]
         recorded = row_identities(payload)
         if recorded != planned:
@@ -5901,6 +5932,9 @@ class RtlBuddy:
             "pending": pending,
             "build_handle": build_handle,
             "verilate_handle": verilate_handle,
+            "compile_only": self._dispatch_early_stop() is not None,
+            "test_cfgs": {entry["cfg"].get_name(): entry["cfg"] for entry in entries},
+            "master_seed": master_seed,
             # The orphan's token, not this invocation's: its jobs stamp envelopes with
             # the token their own head planned.
             "run_token": payload.get("run_token"),
@@ -6442,7 +6476,14 @@ class RtlBuddy:
         fans_out_in_job = any(
             entry["compile_in_job"] and len(entry["rows"]) > 1 for entry in entries
         )
-        if any(not entry["compile_in_job"] for entry in entries) or fans_out_in_job:
+        # `-E comp`: the compile jobs are the whole fleet. The build job compiles every
+        # planned config, including those whose builder cannot share a build.
+        compile_only = self.run_depth == RunDepth.COMP
+        if (
+            compile_only
+            or any(not entry["compile_in_job"] for entry in entries)
+            or fans_out_in_job
+        ):
             # Two chained jobs when the compile can be split: verilation is
             # single-threaded at peak memory and the C++ build uses `compile.cpus` cores
             # at a fraction of it. Submitted first, because the build job takes an
@@ -6542,7 +6583,9 @@ class RtlBuddy:
         # `plan_index` is the config's position in the plan manifest: the build job's
         # index for it, and the name both processes share for "this compile key's
         # tests".
-        for plan_index, entry in enumerate(entries):
+        # Under `-E comp` there is no sim job, so the gates manifest below names none
+        # and the compile jobs release nothing.
+        for plan_index, entry in enumerate([] if compile_only else entries):
             cfg = entry["cfg"]
             # Resolved for the mode this fleet runs in, the same value the jobs carry as
             # `builder_mode`.
@@ -6826,6 +6869,10 @@ class RtlBuddy:
             # only the build job's envelope decides a compile verdict and gates the
             # fan-out.
             "verilate_handle": verilate_handle,
+            # `-E comp`: collection scores each row from the build job's envelope.
+            "compile_only": compile_only,
+            "test_cfgs": {entry["cfg"].get_name(): entry["cfg"] for entry in entries},
+            "master_seed": master_seed,
             "run_token": run_token,
             "submitted_at": submitted_at,
             # Where this suite's fleet is recorded, so collection can retire it
@@ -6870,7 +6917,8 @@ class RtlBuddy:
         `dispatch.*_submitted` events are INFO and not shown at default verbosity.
         """
         handles = [handle for _, handle in state["pending"]]
-        if not handles:
+        compile_only = bool(state.get("compile_only"))
+        if not handles and not compile_only:
             # Nothing queued (every test filtered out): no ids to report and no wait to
             # explain.
             return
@@ -6882,6 +6930,8 @@ class RtlBuddy:
             "dispatch.suite_submitted",
             backend=backend.name,
             suite=suite,
+            # `-E comp`: the compile jobs are the whole fleet.
+            compile_only=compile_only or None,
             build_job=build_handle.job_id if build_handle is not None else None,
             # The verilate half of a split compile; absent where the compile went out as
             # one job.
@@ -7196,7 +7246,7 @@ class RtlBuddy:
         """
         suite_results = state["suite_results"]
         pending = state["pending"]
-        if not pending:
+        if not pending and not state.get("compile_only"):
             self._close_run_manifest(state, STATUS_COLLECTED)
             return suite_results
         retry_cfg = self.root_cfg.get_dispatch_cfg().effective_retry()
@@ -7486,6 +7536,81 @@ class RtlBuddy:
         )
         return results.results["desc"] != desc
 
+    def _score_compile_only_rows(
+        self, state, *, build_result, build_failures, compile_records, build_state
+    ):
+        """Give each planned row of an `-E comp` fleet its compile verdict.
+
+        The build job's envelope is the only record. A test it built stops early at
+        compile, as in-process; one it failed is a compile failure; one it never
+        recorded has no result. Each row's `result.json` is written as an in-process run
+        writes it.
+        """
+        build_handle = state["build_handle"]
+        built = set(build_result["built"]) if build_result else set()
+        failed = set(build_result["failed"]) if build_result else set()
+        build_logs = str(build_handle.spec.log_path)
+        if build_handle.spec.result_json is not None:
+            build_logs += f" and {job_log_path(build_handle.spec.result_json)}"
+        state_note = f" (scheduler state {build_state})" if build_state else ""
+        test_cfgs = state.get("test_cfgs") or {}
+        for row in state["suite_results"]:
+            if row.get("results") is not None:
+                continue
+            name = row["test_name"]
+            if name in failed:
+                results = CompileFailResults(
+                    name=name + "/results",
+                    desc=self._build_compile_fail_desc(
+                        build_handle, build_failures.get(name)
+                    ),
+                )
+            elif name in built:
+                results = EarlyStopResults(
+                    name=name + "/results", desc="Stopped early at compile"
+                )
+            else:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "dispatch.result_missing",
+                    job_id=build_handle.job_id,
+                    test=name,
+                    run_id=row.get("randmode_i"),
+                    scheduler_state=build_state,
+                    error="the build job recorded no compile result for this test",
+                )
+                results = DispatchFailResults(
+                    name=name + "/results",
+                    desc=f"build job {build_handle.job_id} recorded no compile "
+                    f"result{state_note} (it crashed or was cancelled); see "
+                    f"{build_logs}",
+                )
+            # Annotated as the in-process run annotates its result.
+            cfg = test_cfgs.get(name)
+            if cfg is not None and cfg.is_xfail():
+                self._apply_xfail_logged(results, cfg, "suite.xfail")
+            seed_record = (
+                self._seed_record(cfg, state.get("master_seed"))
+                if cfg is not None
+                else None
+            )
+            if seed_record is not None:
+                results.results["seed"] = seed_record
+            compile_record = compile_records.get(name)
+            if compile_record is not None:
+                results.results["compile"] = dict(compile_record)
+            if self._plusarg_overrides:
+                results.results["plusarg_overrides"] = dict(self._plusarg_overrides)
+            self._record_run_results(
+                name,
+                build_handle.spec.suite_dir,
+                [row.get("randmode_i")],
+                [results],
+                run_token=state.get("run_token"),
+            )
+            row["results"] = results
+
     def _dispatch_collect_pass(
         self, backend, state, pending, *, attempt, retry_cfg, submitted_at=None
     ):
@@ -7657,6 +7782,12 @@ class RtlBuddy:
                 # Said once per suite, on the first pass.
                 planned_names = {
                     handle.spec.test_name for _, handle in state.get("pending") or ()
+                } or {
+                    # A compile-only fleet has no sim job; its rows still await a
+                    # verdict.
+                    row["test_name"]
+                    for row in suite_results
+                    if row.get("results") is None
                 }
                 # The scheduler's word where there is one, the backend's otherwise:
                 # `local-parallel` has no accounting (`collect_telemetry` returns {}),
@@ -7687,6 +7818,15 @@ class RtlBuddy:
                         planned=len(planned_names) or None,
                         scheduler_state=outcome,
                     )
+        if state.get("compile_only"):
+            self._score_compile_only_rows(
+                state,
+                build_result=build_result,
+                build_failures=build_failures,
+                compile_records=compile_records,
+                build_state=(state.get("build_telemetry") or {}).get("state"),
+            )
+            return retryable
         for idx, handle in pending:
             # Keyed by handle, not job id: jobs on different clusters can share an id.
             tele = telemetry.get(telemetry_key(handle))
@@ -8366,9 +8506,9 @@ class RtlBuddy:
         # compilation.
         dispatch_backend = self._resolve_dispatch_backend(dispatch, jobs=jobs)
         if dispatch_backend is not None:
-            # An early stop before POST cannot be honoured per job; the message names
-            # whether --dispatch or cfg-dispatch.backend chose the backend, so its
-            # remedy exists.
+            # Only `-E comp` stops early under dispatch; the message names whether
+            # --dispatch or cfg-dispatch.backend chose the backend, so its remedy
+            # exists.
             self._reject_early_stop_under_dispatch(dispatch, dispatch_backend)
             if not share_build:
                 self.share_build = True

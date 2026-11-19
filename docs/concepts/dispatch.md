@@ -24,7 +24,7 @@ rb test --filter '^smoke_' --dispatch slurm
 
 - `local` is the default. `rb test` dispatches only when `--dispatch` is given; it does not inherit `cfg-dispatch.backend`.
 - `rb test` takes the same name list or regex filter locally and under dispatch. See [Run tests](tests.md#run-tests).
-- Dispatch cannot be combined with `--early-stop`.
+- Of the early stops, dispatch takes only `-E comp`, which runs the build jobs and no simulation. See [Check that every build compiles](#check-that-every-build-compiles).
 - Dispatch implies [`--share-build`](tests.md#sharing-compiled-builds-across-tests).
 - `rb pnr --dispatch slurm` runs each stage of a P&R run as a chained job, sized by the run's `resources:` over `cfg-dispatch.resources`. See [Dispatch the stages to Slurm](pnr.md#dispatch-the-stages-to-slurm).
 
@@ -62,6 +62,22 @@ License waits and out-of-memory failures are treated as transient, so the next t
 `max-jobs-per-array` throttles each array, so total concurrency can approach the throttle times the number of arrays (or slices, for [large groups](#split-large-groups-into-several-arrays)).
 
 Verilator, VCS, Icarus, and xezim can share a build. Other builders, and builders with an absolute `builder-simv`, compile inside each simulation job, which then reserves the field-wise maximum of its simulation and compile reservations. If no planned test can share a build and none is fanned out over seeds, no build job is submitted (`dispatch.build_job_skipped`).
+
+## Check that every build compiles
+
+`-E comp` under dispatch submits each suite's build job, and its verilate job where [verilation is split off](#split-verilation-from-the-c-build), and no simulation:
+
+```bash
+rb -E comp regression --dispatch slurm
+rb -E comp regression --dispatch local-parallel -j 4
+```
+
+- Each test reports as an in-process `-E comp` run does: `NA` with `early_stop: true` once its build compiled, `FAIL` with the build job's error line when it did not. A compile failure exits 1.
+- The build job compiles every planned test, including those whose builder cannot share a build. Tests on one compile key share its build and its result.
+- Builds compile `compile.parallel` at a time in each suite's build job (see [Compile several builds at once](#compile-several-builds-at-once)). `-j` runs several suites' build jobs at once; it does not raise the concurrency within one suite.
+- A later full run reuses the builds and compiles nothing for unchanged inputs. Under Slurm its verilate job finds them built and releases their simulations at once.
+- `-E pre` and `-E sim` are rejected under dispatch. Run them with `--dispatch local`.
+- A compile-only run is adopted only by another compile-only run, and a full run only by a full run (see [Interrupted runs](#interrupted-runs-warn-cancel-adopt)).
 
 ## Configure dispatch
 

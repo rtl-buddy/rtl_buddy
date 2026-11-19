@@ -181,12 +181,16 @@ def write_run_manifest(
     pending=(),
     rows,
     status=STATUS_SUBMITTING,
+    early_stop=None,
 ) -> Path:
     """Create one suite's run record; return ``path``.
 
     Written before the first submission with no handles and ``status:
     "submitting"``, then grown by :func:`record_build_handle` and
     :func:`record_pending_handles`; :func:`finish_submission` closes it.
+
+    ``early_stop`` is ``"comp"`` for a fleet of compile jobs alone (``-E comp``) and
+    is omitted for a full run.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -207,6 +211,8 @@ def write_run_manifest(
         "rows": json_safe_rows(rows),
         "status": status,
     }
+    if early_stop is not None:
+        payload["early_stop"] = early_stop
     return _atomic_write(path, payload)
 
 

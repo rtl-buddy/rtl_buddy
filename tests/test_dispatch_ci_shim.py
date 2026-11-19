@@ -173,6 +173,7 @@ def _run_regression(
     extra_env=None,
     prepare_project=None,
     extra_path_dirs=(),
+    global_args=(),
 ):
     project = work_dir / "proj"
     shutil.copytree(fixture, project)
@@ -184,6 +185,7 @@ def _run_regression(
         extra_args=extra_args,
         extra_env=extra_env,
         extra_path_dirs=extra_path_dirs,
+        global_args=global_args,
     )
 
 
@@ -193,6 +195,7 @@ def _rerun_regression(
     extra_args=(),
     extra_env=None,
     extra_path_dirs=(),
+    global_args=(),
 ):
     """A second `rb regression` over a project a previous one already ran.
 
@@ -205,6 +208,7 @@ def _rerun_regression(
             "-m",
             "rtl_buddy",
             "--machine",
+            *global_args,
             "regression",
             "-c",
             "regression.yaml",
@@ -763,3 +767,88 @@ def test_shim_warm_split_build_job_runs_no_preproc(warm_split_shim_run):
     assert done["settled"] == 2, done
     events = {e.get("event") for e in build}
     assert "compile.start" not in events, diag
+
+
+@pytest.fixture(scope="module")
+def compile_only_then_full_shim_run(tmp_path_factory):
+    """A split compile-only regression, then a full one over the same tree.
+
+    Both run with `scontrol` and deferred jobs, so a compile job could release a
+    queued simulation if one existed.
+    """
+    work = tmp_path_factory.mktemp("dispatch_compile_only")
+    argv_log = work / "sbatch_argv.txt"
+    scontrol_log = work / "scontrol.txt"
+
+    def env(run):
+        return {
+            "RB_SHIM_ARGV": str(argv_log),
+            "RB_SHIM_DEFER_DIR": str(work / f"deferred-{run}"),
+            "RB_SHIM_SCONTROL_LOG": str(scontrol_log),
+        }
+
+    comp = _run_regression(
+        work,
+        prepare_project=_reserve_a_wide_build_job,
+        extra_env=env("comp"),
+        extra_path_dirs=(_SCONTROL_SHIM,),
+        global_args=("-E", "comp"),
+    )
+    comp_submissions = [
+        line for line in argv_log.read_text().splitlines() if "--parsable" in line
+    ]
+    comp_updates = (
+        scontrol_log.read_text().splitlines() if scontrol_log.exists() else []
+    )
+    full = _rerun_regression(
+        comp[2], work, extra_env=env("full"), extra_path_dirs=(_SCONTROL_SHIM,)
+    )
+    updates = scontrol_log.read_text().splitlines()[len(comp_updates) :]
+    return comp, comp_submissions, comp_updates, full, updates
+
+
+def test_shim_compile_only_submits_the_compile_jobs_alone(
+    compile_only_then_full_shim_run,
+):
+    (proc, envelope, _project, diag), submissions, updates, _full, _ = (
+        compile_only_then_full_shim_run
+    )
+    assert proc.returncode == 0, diag
+    rows = {r["name"]: r for r in envelope["payload"]["results"]}
+    assert set(rows) == {"alpha", "beta"}, diag
+    for row in rows.values():
+        assert (row["result"], row["desc"], row.get("early_stop")) == (
+            "NA",
+            "Stopped early at compile",
+            True,
+        ), diag
+    # The verilate job and the build job, and no simulation array.
+    assert len(submissions) == 2, submissions
+    assert not [line for line in submissions if "--array" in line], submissions
+    assert not [line for line in updates if line.endswith("Dependency=")], updates
+
+
+def test_shim_full_run_after_compile_only_reuses_its_builds(
+    compile_only_then_full_shim_run,
+):
+    """The warm full run finds both keys built: the verilate job releases their
+    simulations and the build job compiles nothing.
+    """
+    (comp_proc, _, project, comp_diag), _, _, full, updates = (
+        compile_only_then_full_shim_run
+    )
+    assert comp_proc.returncode == 0, comp_diag
+    proc, envelope, project, diag = full
+    assert proc.returncode == 0, diag
+    results = {r["name"]: r["result"] for r in envelope["payload"]["results"]}
+    assert results == {"alpha": "PASS", "beta": "PASS"}, diag
+
+    cleared = [line for line in updates if line.endswith("Dependency=")]
+    assert len(cleared) == 2, updates
+    verilate = _newest_job_events(project, "verilate-rtl_buddy-*.log")
+    released = [e for e in verilate if e.get("event") == "dispatch.key_released"]
+    assert {name for e in released for name in e["tests"]} == {"alpha", "beta"}
+    build = _newest_job_events(project, "build-rtl_buddy-*.log")
+    (done,) = [e for e in build if e.get("event") == "build_job.done"]
+    assert done["settled"] == 2, done
+    assert "compile.start" not in {e.get("event") for e in build}, diag
