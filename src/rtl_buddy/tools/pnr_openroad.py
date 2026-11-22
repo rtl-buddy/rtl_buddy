@@ -6687,6 +6687,11 @@ class OpenRoadPnr:
                 f"no checkpoint run {self.resume!r}: name a run directory, a run id "
                 f"under {pnr_checkpoints.checkpoints_root(self.artefact_dir)}, or latest"
             )
+        if version is not None and _parse_version_token(version) is None:
+            return (
+                f"OpenROAD reports {version!r}, which does not identify a build; "
+                "resume needs a release version such as 26Q2-911-g731f"
+            )
         inherited = self._stages[: self._stages.index(self.resume_from)]
         inputs = self._checkpoint_inputs(platform, None)
         if self._planned_netlist is not None:
