@@ -1546,11 +1546,11 @@ def _dedup_paths(paths) -> list[str]:
 MIN_OPENROAD_VERSION = "25Q1"
 
 
-def _parse_version_token(version: str) -> tuple:
-    """Return a comparable tuple from an OpenROAD version such as `26Q2-911-g...` or `v2.0`; unknown formats fall back to the raw string."""
+def _parse_version_token(version: str) -> tuple[int, int] | None:
+    """Return a comparable tuple from an OpenROAD version such as `26Q2-911-g...` or `v2.0`, or None for unknown formats such as `HEAD-HASH-NOTFOUND`."""
     m = re.match(r"^v?(\d+)(?:[.Qq](\d+))?", version.strip())
     if not m:
-        return (version,)
+        return None
     major = int(m.group(1))
     minor = int(m.group(2)) if m.group(2) else 0
     return (major, minor)
@@ -4966,9 +4966,11 @@ class OpenRoadPnr:
         return out.splitlines()[0] if out else None
 
     def _version_below_min(self, version: str) -> bool:
-        return _parse_version_token(version) < _parse_version_token(
-            MIN_OPENROAD_VERSION
-        )
+        actual = _parse_version_token(version)
+        minimum = _parse_version_token(MIN_OPENROAD_VERSION)
+        if actual is None or minimum is None:
+            return False
+        return actual < minimum
 
     def _has_tcl_command(self, command: str) -> bool:
         """Return whether the OpenROAD build has a Tcl command, such as `write_gds`; False if it cannot be determined."""

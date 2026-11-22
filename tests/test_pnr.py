@@ -1080,8 +1080,16 @@ def test_parse_version_token_handles_yyqn_and_semver():
     assert _parse_version_token("25Q1") == (25, 1)
     # Comparison: 26Q2 ranks above 25Q1
     assert _parse_version_token("26Q2") > _parse_version_token("25Q1")
-    # Unparseable falls back to a string tuple
-    assert _parse_version_token("nightly-build") == ("nightly-build",)
+    assert _parse_version_token("nightly-build") is None
+
+
+def test_version_below_min_skips_unparseable_version():
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    runner = object.__new__(OpenRoadPnr)
+    assert not runner._version_below_min("HEAD-HASH-NOTFOUND")
+    assert not runner._version_below_min("26Q2-911-g731f")
+    assert runner._version_below_min("24Q3")
 
 
 def test_resolve_klayout_exe_uses_path_first(monkeypatch):
