@@ -1269,6 +1269,23 @@ def test_resume_refuses_another_openroad_version(tmp_path, monkeypatch):
     assert "26Q2-stub" in res.results["desc"]
 
 
+def test_resume_refuses_an_openroad_version_that_names_no_build(tmp_path, monkeypatch):
+    first = _stopped_at_global_route(tmp_path, monkeypatch)
+    backend, artefacts = _backend(
+        tmp_path, monkeypatch, resume=first.name, resume_from="detailed_route"
+    )
+    monkeypatch.setattr(
+        backend, "_probe_openroad_version", lambda: "HEAD-HASH-NOTFOUND"
+    )
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "resume"
+    assert (
+        "'HEAD-HASH-NOTFOUND', which does not identify a build" in (res.results["desc"])
+    )
+
+
 def test_resume_refuses_a_changed_checkpoint(tmp_path, monkeypatch):
     first = _stopped_at_global_route(tmp_path, monkeypatch)
     (first / "04_global_route.odb").write_text("edited\n")
