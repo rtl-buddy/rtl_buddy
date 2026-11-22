@@ -1,6 +1,6 @@
 ## Run P&R on a block
 
-You need OpenROAD 25Q1 or newer on `PATH` (or named in `cfg-pnr-tools`) and a synthesis run that has written its netlist. An older OpenROAD logs a warning and runs unvalidated. KLayout is needed only for GDS and PNG output.
+You need OpenROAD 25Q1 or newer on `PATH` (or named in `cfg-pnr-tools`) and a synthesis run that has written its netlist. An older OpenROAD logs a warning and runs unvalidated. A version that does not start with a release number, such as `HEAD-HASH-NOTFOUND` from a build of an untagged tree, skips the check, and such a build cannot [resume](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#run-stages-as-separate-sessions) a run. KLayout is needed only for GDS and PNG output.
 
 Add a P&R platform to `root_config.yaml`. It picks a PDK from `cfg-pdks` (see [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/synthesis/#configure-tools-and-the-pdk)), a corner and the clock-tree buffer:
 

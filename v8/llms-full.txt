@@ -2897,7 +2897,7 @@ description: Run OpenROAD place-and-route on a synthesised netlist with rb pnr, 
 
 ## Run P&R on a block
 
-You need OpenROAD 25Q1 or newer on `PATH` (or named in `cfg-pnr-tools`) and a synthesis run that has written its netlist. An older OpenROAD logs a warning and runs unvalidated. KLayout is needed only for GDS and PNG output.
+You need OpenROAD 25Q1 or newer on `PATH` (or named in `cfg-pnr-tools`) and a synthesis run that has written its netlist. An older OpenROAD logs a warning and runs unvalidated. A version that does not start with a release number, such as `HEAD-HASH-NOTFOUND` from a build of an untagged tree, skips the check, and such a build cannot [resume](#run-stages-as-separate-sessions) a run. KLayout is needed only for GDS and PNG output.
 
 Add a P&R platform to `root_config.yaml`. It picks a PDK from `cfg-pdks` (see [Synthesis](synthesis.md#configure-tools-and-the-pdk)), a corner and the clock-tree buffer:
 
@@ -3762,7 +3762,7 @@ rb pnr alu_pnr -c pnr/alu/pnr.yaml --resume latest --from detailed_route
 - `--resume <run> --from <stage>` starts a new staged run from the checkpoint of the stage before `<stage>`. `<run>` is `latest`, a run id or a checkpoint directory. The old run is unchanged, so detailed routing can be retried from one global route.
 - The resumed run copies the inherited checkpoints' reports (`grt_antennas.rpt`, `route.drc.rpt`, `route.maze.log`, `drt_antennas.rpt`) into `artefacts/<run>/`.
 
-A resume is refused (`fail_stage: resume`) when an earlier stage's generated script or input files, or the OpenROAD version, changed, or when it resumes a probe into a closure run. [`--accept-change`](#accept-a-change-on-resume) accepts a named script or input change.
+A resume is refused (`fail_stage: resume`) when an earlier stage's generated script or input files, or the OpenROAD version, changed, when the OpenROAD version does not start with a release number and so names no build, or when it resumes a probe into a closure run. [`--accept-change`](#accept-a-change-on-resume) accepts a named script or input change.
 
 - A `constraints:` path and a map of that path to every corner count as different.
 - Settings read only from `--from` on, such as `detailed-route-verbose`, routing layers or `threads:`, may change.

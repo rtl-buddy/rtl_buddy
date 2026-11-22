@@ -11,7 +11,7 @@ rb pnr alu_pnr -c pnr/alu/pnr.yaml --resume latest --from detailed_route
 - `--resume <run> --from <stage>` starts a new staged run from the checkpoint of the stage before `<stage>`. `<run>` is `latest`, a run id or a checkpoint directory. The old run is unchanged, so detailed routing can be retried from one global route.
 - The resumed run copies the inherited checkpoints' reports (`grt_antennas.rpt`, `route.drc.rpt`, `route.maze.log`, `drt_antennas.rpt`) into `artefacts/<run>/`.
 
-A resume is refused (`fail_stage: resume`) when an earlier stage's generated script or input files, or the OpenROAD version, changed, or when it resumes a probe into a closure run. [`--accept-change`](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#accept-a-change-on-resume) accepts a named script or input change.
+A resume is refused (`fail_stage: resume`) when an earlier stage's generated script or input files, or the OpenROAD version, changed, when the OpenROAD version does not start with a release number and so names no build, or when it resumes a probe into a closure run. [`--accept-change`](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#accept-a-change-on-resume) accepts a named script or input change.
 
 - A `constraints:` path and a map of that path to every corner count as different.
 - Settings read only from `--from` on, such as `detailed-route-verbose`, routing layers or `threads:`, may change.
