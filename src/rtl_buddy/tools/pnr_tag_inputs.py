@@ -430,10 +430,10 @@ class TagInputs:
 
         Taken under the lock of the P&R suite's tree for this tag, which a same-tag `rb pnr`
         holds while it runs, so a running P&R run is waited for. Raises `RoutedRunUnavailable`
-        when the tag never ran it, or when a copy does not match its source, and
-        `BlockResolutionError` when its `blocks:` do not resolve to the copies its
-        `blocks.consumed.json` names. Each P&R run is copied once per call, and an error is
-        kept like a copy.
+        when the tag never ran it, when a copy does not match its source, or when reading or
+        copying a file fails, and `BlockResolutionError` when its `blocks:` do not resolve to
+        the copies its `blocks.consumed.json` names. Each P&R run is copied once per call, and
+        an error is kept like a copy, so it fails only the power runs that read that P&R run.
         """
         key = ("routed", os.path.realpath(pnr_suite_path), pnr_cfg.get_name())
 
@@ -442,6 +442,11 @@ class TagInputs:
                 return self._copy_routed(pnr_cfg, pnr_suite_path, top)
             except (RoutedRunUnavailable, pnr_abstract.BlockResolutionError) as e:
                 return e
+            except OSError as e:
+                return RoutedRunUnavailable(
+                    f"cannot copy pnr run '{pnr_cfg.get_name()}' under --run-tag "
+                    f"{self.run_tag} into {Path(self.root, ROUTED_COPIES_DIRNAME)}: {e}"
+                )
 
         result = self._once(key, _compute, lambda _v: True)
         if isinstance(result, Exception):
@@ -479,9 +484,13 @@ class TagInputs:
             if not dest.is_dir():
                 partial = dest.with_name(f"{dest.name}.partial")
                 shutil.rmtree(partial, ignore_errors=True)
-                partial.mkdir(parents=True)
-                for name in present:
-                    shutil.copy2(source / name, partial / name)
+                try:
+                    partial.mkdir(parents=True)
+                    for name in present:
+                        shutil.copy2(source / name, partial / name)
+                except OSError:
+                    shutil.rmtree(partial, ignore_errors=True)
+                    raise
                 changed = _first_mismatch(partial, present)
                 if changed is not None:
                     shutil.rmtree(partial, ignore_errors=True)

@@ -503,3 +503,66 @@ def test_rb_power_copies_before_opening_its_log_and_rejects_a_bad_tag(cli_projec
     assert result.exit_code != 0
     assert "not a safe path segment" in str(result.exception)
     assert not (cli_project / "power/artefacts").exists()
+
+
+def test_a_copy_that_cannot_be_written_fails_only_its_run_and_withdraws_its_report(
+    minimal_project, monkeypatch
+):
+    """An I/O error while copying one P&R run fails the power runs that read it at setup; the others still run."""
+    _project(minimal_project)
+    root_config = minimal_project / "root_config.yaml"
+    root_config.write_text(
+        root_config.read_text()
+        + "\ncfg-power-tools:\n  - name: openroad\n    tool: openroad\n"
+    )
+    pnr_yaml = minimal_project / "pnr/pnr.yaml"
+    pnr_yaml.write_text(
+        pnr_yaml.read_text()
+        + "  - name: other_pnr\n    desc: other_pnr\n    synth: s\n"
+        "    synth-path: ../synth/synth.yaml\n    floorplan: {utilization: 0.55}\n"
+        "    platform: p\n    reglvl: 0\n"
+    )
+    power_yaml = minimal_project / "power/power.yaml"
+    power_yaml.write_text(
+        power_yaml.read_text()
+        + "  - name: other_power\n    desc: other_power\n    tool: openroad\n"
+        "    mode: static\n    netlist-source: pnr\n    pnr: other_pnr\n"
+        "    pnr-path: ../pnr/pnr.yaml\n    platform: p\n    reglvl: 0\n"
+    )
+    _routed_run(_tagged_pnr_dir(minimal_project, "a"), "a")
+    _routed_run(run_artifact_root(minimal_project / "pnr", "a") / "other_pnr", "a")
+    stale = _write(
+        run_artifact_root(minimal_project / "power", "a") / "blk_power/power.rpt",
+        "Total 1.00e-03 2.00e-03 3.00e-04 3.30e-03 100.0%\n",
+    )
+    real_copy = shutil.copy2
+
+    def _copy2(src, dst, **kw):
+        if Path(src).parent.name == "blk_pnr" and Path(src).name == _ODB:
+            raise OSError(28, "No space left on device", str(dst))
+        return real_copy(src, dst, **kw)
+
+    monkeypatch.setattr(pnr_tag_inputs.shutil, "copy2", _copy2)
+    monkeypatch.setattr(
+        OpenRoadPower,
+        "_resolve_platform",
+        lambda self: _FakePlatform(liberty=str(minimal_project / "typ.lib")),
+    )
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: None)
+
+    result = _rb("power", "-c", "power/power.yaml", "--run-tag", "a")
+
+    assert result.exit_code == 1, result.output
+    rows = {r["name"]: r for r in json.loads(result.stdout)["payload"]["results"]}
+    failed = rows["blk_power"]
+    assert failed["result"] == "FAIL"
+    # The setup handler's failure, which withdraws the run's previous outputs.
+    assert failed["desc"].startswith("script generation error: power run 'blk_power': ")
+    assert "cannot copy pnr run 'blk_pnr' under --run-tag a" in failed["desc"]
+    assert "No space left on device" in failed["desc"]
+    assert not stale.exists()
+    # The other run read its own copy and went on to look for OpenROAD.
+    assert rows["other_power"]["desc"] == "'openroad' not found"
+    [copy] = _copies(minimal_project, "a")
+    assert copy.name.startswith("other_pnr-")
+    assert (copy / _ODB).read_text() == "odb a\n"
