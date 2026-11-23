@@ -877,7 +877,7 @@ def instance_payload(ctx: PhysContext, path: str, *, limit: int | None = None) -
 
 
 def runs_payload(project_root, *, limit: int | None = None) -> dict:
-    """Every run with physical artefacts under a project, newest first.
+    """Every run with physical artefacts under a project, except `--run-tag` runs, newest first.
 
     The order is that of
     :func:`~rtl_buddy.phys.manifest.discover_manifests`, so ``runs[0]`` is
