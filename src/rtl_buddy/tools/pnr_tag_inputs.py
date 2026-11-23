@@ -1,11 +1,11 @@
-"""Inputs of a `rb pnr --run-tag` call that live in trees the call does not own.
+"""Inputs of a `rb pnr --run-tag` or `rb power --run-tag` call that live in trees the call does not own.
 
 A tagged call holds the lock of its own `artefacts/.runs/<tag>/` tree only. Block
-abstracts and the upstream synthesis netlist live in other trees, which another call
-may rewrite at any time. `TagInputs` copies each one, under the lock of the tree it is
-in, into the call's tree, and the call reads only the copies. Copies are keyed by the
-digest of what they copy and never overwritten, so a saved result keeps the inputs it
-was made from until the tag's tree is removed.
+abstracts, the upstream synthesis netlist and, for `rb power`, the routed P&R run live in
+other trees, which another call may rewrite at any time. `TagInputs` copies each one,
+under the lock of the tree it is in, into the call's tree, and the call reads only the
+copies. Copies are keyed by the digest of what they copy and never overwritten, so a
+saved result keeps the inputs it was made from until the tag's tree is removed.
 """
 
 from __future__ import annotations
@@ -35,6 +35,8 @@ SYNTH_COPIES_DIRNAME = ".synth"
 CONSUMED_BLOCKS_NAME = "blocks.consumed.json"
 #: In a tagged P&R run's directory: written when a P&R attempt starts, so a directory `rb pnr-export` alone created is not taken for a run.
 ATTEMPT_MARKER_NAME = ".rb-pnr-attempted"
+#: Under a tag's tree: one copy of each routed P&R run a tagged `rb power` read, `<run>-<suite>-<digest>/`.
+ROUTED_COPIES_DIRNAME = ".pnr"
 
 _SYNTH_NETLIST = "synth_netlist.v"
 _SYNTH_FILELIST = "synth.f"
@@ -43,6 +45,25 @@ _FILELIST_PATH_OPTIONS = ("-v ", "-y ", "-f ", "-F ")
 
 class SynthCopyChanged(FatalRtlBuddyError):
     """A digest-keyed synthesis copy whose files no longer hold what its digest names."""
+
+
+class RoutedRunUnavailable(Exception):
+    """A tagged P&R run `rb power --run-tag` cannot read: never run under the tag, or its copy is unsound."""
+
+
+@dataclass(frozen=True)
+class RoutedCopy:
+    """The copy of a tagged P&R run's routed outputs that a tagged `rb power` reads.
+
+    `directory` holds whichever of `<top>.routed.odb`, `<top>.routed.sdc`, `<top>.routed.spef`,
+    `pnr.tcl` and `blocks.consumed.json` the run had, with their modification times. `source` is
+    the P&R run's own directory, where its `session` hooks run. `blocks` are its `blocks:`, resolved
+    to the abstract copies its record names.
+    """
+
+    directory: str
+    source: str
+    blocks: tuple = ()
 
 
 def _short(text: str) -> str:
@@ -92,6 +113,15 @@ def _view_mismatch(copy: Path, manifest_bytes: bytes) -> str | None:
         path = pnr_abstract.view_path(str(copy), design, view)
         if not os.path.isfile(path) or _sha256(path) != record.get("sha256"):
             return view
+    return None
+
+
+def _first_mismatch(copy: Path, expected: dict) -> str | None:
+    """Return the first file of `expected` (name to sha256) that `copy` lacks or holds other bytes for, or None."""
+    for name, sha in expected.items():
+        path = copy / name
+        if not path.is_file() or _sha256(path) != sha:
+            return name
     return None
 
 
@@ -391,6 +421,93 @@ class TagInputs:
             raise pnr_abstract.BlockResolutionError(
                 f"{where}: the copy of {source} does not match its manifest ({view})"
             )
+
+    def routed_run(self, pnr_cfg, pnr_suite_path: str, top: str) -> RoutedCopy:
+        """Return the copy of the P&R run `pnr_cfg` made under this tag, for `rb power --run-tag`.
+
+        Taken under the lock of the P&R suite's tree for this tag, which a same-tag `rb pnr`
+        holds while it runs, so a running P&R run is waited for. Raises `RoutedRunUnavailable`
+        when the tag never ran it, or when a copy does not match its source, and
+        `BlockResolutionError` when its `blocks:` do not resolve to the copies its
+        `blocks.consumed.json` names. Each P&R run is copied once per call, and an error is
+        kept like a copy.
+        """
+        key = ("routed", os.path.realpath(pnr_suite_path), pnr_cfg.get_name())
+
+        def _compute():
+            try:
+                return self._copy_routed(pnr_cfg, pnr_suite_path, top)
+            except (RoutedRunUnavailable, pnr_abstract.BlockResolutionError) as e:
+                return e
+
+        result = self._once(key, _compute, lambda _v: True)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def _copy_routed(self, pnr_cfg, pnr_suite_path: str, top: str) -> RoutedCopy:
+        run = pnr_cfg.get_name()
+        source_root = run_artifact_root(os.path.dirname(pnr_suite_path), self.run_tag)
+        source = source_root / run
+        names = (
+            f"{top}.routed.odb",
+            f"{top}.routed.sdc",
+            f"{top}.routed.spef",
+            "pnr.tcl",
+            CONSUMED_BLOCKS_NAME,
+        )
+        with tree_lock(source_root, command="power"):
+            if not (source / ATTEMPT_MARKER_NAME).is_file():
+                raise RoutedRunUnavailable(
+                    f"pnr run '{run}' has not run under --run-tag {self.run_tag} "
+                    f"(no {source}) — run `rb pnr {run} -c {pnr_suite_path} "
+                    f"--run-tag {self.run_tag}` first"
+                )
+            present = {n: _sha256(source / n) for n in names if (source / n).is_file()}
+            digest = hashlib.sha256(
+                json.dumps(sorted(present.items())).encode()
+            ).hexdigest()
+            dest = Path(
+                self.root,
+                ROUTED_COPIES_DIRNAME,
+                f"{run}-{_short(os.path.realpath(pnr_suite_path))}-{digest[:16]}",
+            )
+            if not dest.is_dir():
+                partial = dest.with_name(f"{dest.name}.partial")
+                shutil.rmtree(partial, ignore_errors=True)
+                partial.mkdir(parents=True)
+                for name in present:
+                    # copy2 keeps the modification times `routed_spef_rejection` compares.
+                    shutil.copy2(source / name, partial / name)
+                changed = _first_mismatch(partial, present)
+                if changed is not None:
+                    shutil.rmtree(partial, ignore_errors=True)
+                    raise RoutedRunUnavailable(
+                        f"the copy of {source / changed} does not match it"
+                    )
+                os.replace(partial, dest)
+            else:
+                changed = _first_mismatch(dest, present)
+                if changed is not None:
+                    raise RoutedRunUnavailable(
+                        f"the {changed} of the copy {dest} has changed since it was "
+                        f"copied — remove {dest} to have it copied again"
+                    )
+            # Under the same lock: the block copies the record names are in this P&R suite's tag tree.
+            blocks: tuple = ()
+            refs = list(pnr_cfg.get_blocks())
+            if refs:
+                suite_dir = os.path.dirname(pnr_suite_path)
+                project_root = project_root_or_none(suite_dir)
+                pinned = read_consumed_blocks(str(dest), project_root) or {}
+                consumed = TagInputs(
+                    self.run_tag,
+                    str(source_root),
+                    pinned=pinned,
+                    project_root=project_root,
+                )
+                blocks = tuple(pnr_abstract.resolve_blocks(refs, source=consumed))
+        return RoutedCopy(directory=str(dest), source=str(source), blocks=blocks)
 
     def synth_dir(self, synth_suite_path: str, synth_name: str) -> str | None:
         """Return the copy of a synthesis's netlist and filelist to read, or None when it has no netlist.

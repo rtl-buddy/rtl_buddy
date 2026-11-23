@@ -1073,7 +1073,7 @@ Synthesis is not namespaced: it writes the untagged `artefacts/<synth>/`. Untagg
 - A record naming a copy outside the project and that tree, as an absolute path does after a move, is refused; re-run under the tag.
 - Each checkpoint run directory keeps the record of the call that wrote it, which `--checkpoint` reads.
 
-`rb power` and other readers read the untagged `artefacts/<run>/` only; see [`--run-tag` readers](../known-issues.md#--run-tag-covers-the-test-and-pr-flows-not-every-reader).
+`rb power --run-tag <tag>` reads the run from the same tag; see [Power Analysis: Read a tagged P&R run](power.md#read-a-tagged-pr-run). Other readers read the untagged `artefacts/<run>/` only; see [`--run-tag` readers](../known-issues.md#--run-tag-covers-the-test-and-pr-flows-not-every-reader).
 
 ## Stream out GDS and PNG
 

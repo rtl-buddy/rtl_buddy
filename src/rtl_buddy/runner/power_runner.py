@@ -22,12 +22,16 @@ class PowerRunner:
         power_cfg: PowerConfig,
         suite_dir: str,
         reglvl_filter: int | None = None,
+        run_tag: str | None = None,
+        tag_inputs=None,
     ):
         self.name = name
         self.root_cfg = root_cfg
         self.power_cfg = power_cfg
         self.suite_dir = suite_dir
         self.reglvl_filter = reglvl_filter
+        self.run_tag = run_tag
+        self.tag_inputs = tag_inputs
 
     def run(self) -> PowerResults:
         log_event(
@@ -70,5 +74,7 @@ class PowerRunner:
             suite_dir=self.suite_dir,
             root_cfg=self.root_cfg,
             executable=executable,
+            run_tag=self.run_tag,
+            tag_inputs=self.tag_inputs,
         )
         return backend.run()

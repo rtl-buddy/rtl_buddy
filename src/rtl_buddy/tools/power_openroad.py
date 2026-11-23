@@ -39,8 +39,8 @@ from ..phys.publish import (
     withdrawal_failure_desc,
 )
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
-from . import block_params, openroad_corners, pnr_abstract
-from .artifact_paths import clear_stale_artefacts
+from . import block_params, openroad_corners, pnr_abstract, pnr_tag_inputs
+from .artifact_paths import clear_stale_artefacts, run_artifact_root
 from .pnr_openroad import (
     PNR_SCRIPT_NAME,
     ROUTED_SPEF_SUFFIX,
@@ -191,6 +191,8 @@ class OpenRoadPower(BasePower):
         suite_dir: str,
         root_cfg,
         executable: str = "openroad",
+        run_tag: str | None = None,
+        tag_inputs=None,
     ):
         super().__init__(
             name=name,
@@ -198,8 +200,12 @@ class OpenRoadPower(BasePower):
             suite_dir=suite_dir,
             root_cfg=root_cfg,
             executable=executable,
+            run_tag=run_tag,
+            tag_inputs=tag_inputs,
         )
-        artefact_root = Path(suite_dir) / "artefacts" / power_cfg.get_name()
+        if run_tag is not None and tag_inputs is None:
+            self.tag_inputs = pnr_tag_inputs.TagInputs.for_suite(suite_dir, run_tag)
+        artefact_root = run_artifact_root(suite_dir, run_tag) / power_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
         # Where `phys-model.json` and its manifest go; every other file stays in `artefact_dir`. Rebound by `_bind_phys_dir` when `phys-run:` is set.
@@ -301,6 +307,13 @@ class OpenRoadPower(BasePower):
         run = self.power_cfg.get_phys_run()
         if not run:
             return
+        if self.run_tag is not None:
+            raise RuntimeError(
+                f"power run '{self.power_cfg.get_name()}': phys-run '{run}' "
+                "publishes into the synthesis run's untagged directory, which "
+                f"--run-tag {self.run_tag} does not write — run it without "
+                "--run-tag, or drop phys-run"
+            )
         # The config layer requires `synth`/`synth-path` for `netlist-source: synth` and refuses `phys-run` on other kinds.
         suite_path = self.power_cfg.get_synth_suite_path()
         assert suite_path is not None
@@ -490,16 +503,27 @@ class OpenRoadPower(BasePower):
         if self.power_cfg.get_netlist_source() == "pnr":
             pnr_cfg = self.power_cfg.resolve_pnr_cfg()
             top = pnr_cfg.resolve_synth_cfg().get_top()
-            self._blocks = self._resolve_upstream_blocks(pnr_cfg.get_blocks())
             pnr_suite_path = self.power_cfg.get_pnr_suite_path()
             assert pnr_suite_path is not None
-            pnr_suite_dir = os.path.dirname(pnr_suite_path)
-            pnr_artefact = os.path.join(pnr_suite_dir, "artefacts", pnr_cfg.get_name())
+            tagged = {}
+            if self.run_tag is not None:
+                # Every P&R output is read from this call's copy; only the hooks run in the P&R run's own directory.
+                copy = self._routed_copy(pnr_cfg, pnr_suite_path, top)
+                self._blocks = list(copy.blocks)
+                pnr_artefact = copy.directory
+                tagged = {"pnr_dir": copy.source}
+            else:
+                self._blocks = self._resolve_upstream_blocks(pnr_cfg.get_blocks())
+                pnr_suite_dir = os.path.dirname(pnr_suite_path)
+                pnr_artefact = os.path.join(
+                    pnr_suite_dir, "artefacts", pnr_cfg.get_name()
+                )
             odb = os.path.join(pnr_artefact, f"{top}.routed.odb")
             sdc = self.power_cfg.get_constraints() or os.path.join(
                 pnr_artefact, f"{top}.routed.sdc"
             )
             return {
+                **tagged,
                 "netlist": None,
                 "odb": odb,
                 "spef": os.path.join(pnr_artefact, f"{top}{ROUTED_SPEF_SUFFIX}"),
@@ -543,6 +567,19 @@ class OpenRoadPower(BasePower):
                 [*synth_cfg.get_lef_paths(), *(b.lef for b in self._blocks)]
             ),
         }
+
+    def _routed_copy(self, pnr_cfg, pnr_suite_path: str, top: str):
+        """Return this call's copy of the P&R run under its `--run-tag`, or raise naming why there is none."""
+        try:
+            return self.tag_inputs.routed_run(pnr_cfg, pnr_suite_path, top)
+        except pnr_tag_inputs.RoutedRunUnavailable as e:
+            raise RuntimeError(
+                f"power run '{self.power_cfg.get_name()}': {e}"
+            ) from None
+        except pnr_abstract.BlockResolutionError as e:
+            raise RuntimeError(
+                f"power run '{self.power_cfg.get_name()}': upstream {e}"
+            ) from None
 
     def _resolve_upstream_blocks(self, refs) -> list[pnr_abstract.ResolvedBlock]:
         """Return the upstream run's `blocks:`, each resolved to its abstract.
@@ -781,10 +818,19 @@ class OpenRoadPower(BasePower):
                     "run it with mode: closure"
                     if pnr_cfg.get_mode() is PnrMode.PROBE
                     else "re-run `rb pnr` (older runs predate the .routed.odb artefact)"
+                    if self.run_tag is None
+                    else f"re-run `rb pnr {pnr_cfg.get_name()} -c "
+                    f"{self.power_cfg.get_pnr_suite_path()} --run-tag {self.run_tag}`"
+                )
+                # Under a tag, name the P&R run's own file, not the copy that lacks it.
+                where = (
+                    odb
+                    if self.run_tag is None
+                    else os.path.join(inputs["pnr_dir"], os.path.basename(odb))
                 )
                 raise RuntimeError(
                     f"power run '{self.power_cfg.get_name()}': "
-                    f"routed ODB not found at {odb} — {why}"
+                    f"routed ODB not found at {where} — {why}"
                 )
         else:
             if not os.path.isfile(netlist):
@@ -917,7 +963,7 @@ class OpenRoadPower(BasePower):
         return session_hooks_prelude(
             pnr_cfg,
             run_platform(pnr_cfg, self.root_cfg),
-            os.path.dirname(inputs["odb"]),
+            inputs.get("pnr_dir") or os.path.dirname(inputs["odb"]),
             os.path.abspath(self.artefact_dir),
         )
 
