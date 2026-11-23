@@ -1506,14 +1506,21 @@ def _compile_env(tmp_path, monkeypatch, sim):
         ("/usr/bin/verilator", "verilator", None, "build dir"),
         ("/usr/bin/verilator", "verilator", "/mine", "/mine"),
         ("/usr/bin/verilator", "verilator", "", ""),
+        ("/opt/bin/vl-wrapper", "verilator", None, "rb build dir"),
         ("vcs", "vcs", None, None),
     ],
-    ids=["verilator", "user's namespace", "user's empty namespace", "vcs"],
+    ids=[
+        "verilator",
+        "user's namespace",
+        "user's empty namespace",
+        "renamed verilator",
+        "vcs",
+    ],
 )
 def test_a_verilator_compile_keeps_ccache_entries_to_its_build_dir(
     tmp_path, monkeypatch, exe, family, user, expected
 ):
-    """A Verilator build gets `CCACHE_NAMESPACE` set to its absolute `--Mdir`, so ccache never hands it a precompiled header another directory built; a value the user set is kept, and the compile fingerprint, which a shared build's key hashes, does not carry it."""
+    """A Verilator build gets `CCACHE_NAMESPACE` set to its absolute `--Mdir`, so ccache never hands it a precompiled header another directory built, as does a `simulator-family: verilator` builder under another name, which rb gives no `--Mdir`; a value the user set is kept, and the compile fingerprint, which a shared build's key hashes, does not carry it."""
     if user is None:
         monkeypatch.delenv("CCACHE_NAMESPACE", raising=False)
     else:
@@ -1529,6 +1536,9 @@ def test_a_verilator_compile_keeps_ccache_entries_to_its_build_dir(
     build_dir = tmp_path / "artefacts" / "basic" / "obj_dir_basic"
     if expected == "build dir":
         assert captured["cmd"][captured["cmd"].index("--Mdir") + 1] == "obj_dir_basic"
+        expected = str(build_dir)
+    elif expected == "rb build dir":
+        assert "--Mdir" not in captured["cmd"]
         expected = str(build_dir)
     assert captured["env"].get("CCACHE_NAMESPACE") == expected
     fingerprint = sim._compile_fingerprint(
