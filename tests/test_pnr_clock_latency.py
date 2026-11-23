@@ -437,3 +437,46 @@ def test_the_report_measures_each_group_in_openroad(tmp_path, monkeypatch):
     )
     assert latency["none"]["sinks"] == 0
     assert (latency["data"]["sinks"], latency["data"]["timed_sinks"]) == (2, 1)
+
+
+#: `d` reaches `ra`'s data pin; the shared reset reaches both registers' reset pins, `en` an integrated clock gate's enable, and `e2` `rd`'s clock through a plain gate.
+_RESET_NETLIST = """\
+module top (input clk_i, input d, input rst_n, input en, input e2, output q, output q3);
+  wire n1, gclk, n3, g2;
+  DFFASRHQNx1_ASAP7_75t_R ra (.CLK(clk_i), .D(d), .RESETN(rst_n), .SETN(1'b1), .QN(n1));
+  DFFASRHQNx1_ASAP7_75t_R rb (.CLK(clk_i), .D(n1), .RESETN(rst_n), .SETN(1'b1), .QN(q));
+  ICGx1_ASAP7_75t_R u_icg (.CLK(clk_i), .ENA(en), .SE(1'b0), .GCLK(gclk));
+  DFFHQNx1_ASAP7_75t_R rc (.CLK(gclk), .D(n1), .QN(n3));
+  AND2x2_ASAP7_75t_R u_and (.A(clk_i), .B(e2), .Y(g2));
+  DFFHQNx1_ASAP7_75t_R rd (.CLK(g2), .D(n3), .QN(q3));
+endmodule
+"""
+
+
+@needs_asap7
+def test_input_capture_takes_only_registers_whose_data_pin_an_input_reaches(tmp_path):
+    (tmp_path / "top.v").write_text(_RESET_NETLIST)
+    setup = _SETUP[: _SETUP.index("read_verilog")]
+    script = tmp_path / "select.tcl"
+    script.write_text(
+        setup
+        + "read_verilog top.v\nlink_design top\n"
+        + "create_clock -name clk -period 1000 [get_ports clk_i]\n"
+        + "set_input_delay 100 -clock clk [all_inputs -no_clocks]\n"
+        + "namespace eval rb {}\n"
+        + files("rtl_buddy.pnr").joinpath("insts.tcl").read_text()
+        + files("rtl_buddy.pnr").joinpath("clock_latency.tcl").read_text()
+        + 'puts "RB-SELECTED [lsort [lmap pin [rb::clock_latency::selected input-capture]'
+        + ' {get_full_name $pin}]]"\n'
+    )
+    proc = subprocess.run(
+        [_OPENROAD, "-exit", "-no_init", str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "RB-SELECTED ra/CLK\n" in out, out

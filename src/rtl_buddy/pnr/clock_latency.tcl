@@ -8,8 +8,10 @@
 namespace eval rb::clock_latency {}
 
 # The register clock pins that a selector names: `input-capture`, the
-# registers that capture an input port through combinational logic, or
-# `output-launch`, those that launch an output port. OpenSTA 3 names the
+# registers whose data pin captures an input port through combinational logic,
+# or `output-launch`, those that launch an output port. An input's endpoints
+# also include asynchronous set and reset pins and clock-gating checks, so
+# only register data pins that are not asynchronous count. OpenSTA 3 names the
 # traversals `get_fanout` and `get_fanin`, earlier releases `all_fanout` and
 # `all_fanin`.
 proc rb::clock_latency::selected {selector} {
@@ -21,8 +23,16 @@ proc rb::clock_latency::selected {selector} {
         if {[llength $inputs] == 0} {
             return {}
         }
+        set data [dict create]
+        foreach pin [all_registers -data_pins] {
+            dict set data [get_full_name $pin] 1
+        }
+        foreach pin [all_registers -async_pins] {
+            dict unset data [get_full_name $pin]
+        }
         foreach end [$fanout -from $inputs -endpoints_only -flat] {
-            if {[sta::object_type $end] ne "Pin"} {
+            if {[sta::object_type $end] ne "Pin"
+                    || ![dict exists $data [get_full_name $end]]} {
                 continue
             }
             foreach pin [get_pins -of_objects [get_cells -of_objects $end]] {
