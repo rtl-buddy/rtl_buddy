@@ -87,6 +87,7 @@ Check `routed` before treating a `PASS` as routed. A `PASS` does not mean the de
 | `max_slew_violation_count`, `max_capacitance_violation_count`, `max_fanout_violation_count` | Pins over a Liberty or SDC limit at any corner, listed in `electrical.rpt`. |
 | `worst_path_startpoint`, `worst_path_endpoint`, `worst_path_levels`, `worst_path_resolved` | The worst setup path over all path groups at the setup-critical corner: its ends as RTL names, its combinational cells, and whether both ends resolved. See [below](#find-the-critical-path-and-loaded-nets-in-the-rtl). |
 | `max_net_fanout` | Sink pins of the highest-fanout signal net, excluding clock, reset-tree and supply nets. |
+| `cts_root_taps` | With [`cts-root-taps`](#forward-a-clock-with-a-root-tap): each pin CTS left on the root net, with that net. |
 | `macro_pin_buffered_count`, `macro_pin_unmet_count` | With `placement.macro-pin-limits`: pins it buffered, and pins still over their limit less the margin on placement parasitics. |
 | `area_um2` | Design area. |
 | `routed_cell_count` | Instances of the finished design, with added tie, buffer and clock cells and without physical-only cells. Compare experiments on this. |
@@ -353,6 +354,7 @@ Process-dependent settings live on the PDK and can be overridden on the platform
 | Clock tree | `cts-buffer`, `cts-sink-clustering`, `cts-obstruction-aware`, `cts-apply-ndr`. `cts-clock-nets` builds trees for the named clocks only. |
 | A strong root buffer with small branch buffers | `cts-root-buffer` names the root, and `cts-buffer` lists the branch buffers only. Otherwise CTS picks the root from `cts-buffer`. |
 | Slew violations on clock pins far from the nearest leaf buffer, as when many clock gates sit in a small area | `cts-sink-clustering` with `size` and `max-diameter` (µm). |
+| A buffer that forwards the clock to an output port must stay on the port's net, not become a leaf of the register tree | `cts-root-taps`, [below](#forward-a-clock-with-a-root-tap). |
 | Setup misses on flops of a clock branch CTS padded to match the deepest (`CTS-0033`, `CTS-0036`), as when a clock drives a buffer as well as flops | `cts-latency-balancing: false`. |
 | Long clock wires after CTS | `cts-repair-clock-nets: true`, or `{max-wire-length: <µm>}`. |
 | A block must leave the top layers to its parent | `routing-layers` on the run. |
@@ -376,6 +378,21 @@ Each CTS setting sits on the platform and the run, and a run's value replaces th
 ```
 
 This calls `clock_tree_synthesis -root_buf sky130_fd_sc_hd__clkbuf_16 -buf_list sky130_fd_sc_hd__clkbuf_4 -sink_clustering_enable -sink_clustering_size 20 -sink_clustering_max_diameter 25 -no_obstruction_aware`, then `repair_clock_nets -max_wire_length 1000`.
+
+### Forward a clock with a root tap
+
+TritonCTS puts a buffer it inserts in front of every input pin on a clock net. A block that forwards its clock to an output port through its own buffer wants that buffer's input on the port's net, so the forwarded clock's delay is the one buffer and its wire. `cts-root-taps` names such input pins, each `<instance>/<pin>`:
+
+```yaml
+    dont-touch: [u_fwd.u_clk_buf]
+    cts-root-taps: [u_fwd.u_clk_buf/A]
+```
+
+- Just before `clock_tree_synthesis`, after the `before-cts` hooks and `repair_clock_inverters`, each pin is taken off its net, and the log names it. After CTS and `repair_clock_nets`, and before the `after-cts` hooks, it goes back on the net of the same name: the root net, beside the tree's root buffer. The result's `cts_root_taps` lists each pin with that net. The `before-repair-clock-nets` hooks run while the pins are off.
+- A dont-touch instance, from [`dont-touch`](#keep-instances-unchanged) or a hook's `set_dont_touch`, cannot have a pin taken off (`ODB-0370`), so the mark is cleared for the two steps and set again.
+- In a flat run the forwarded clock can clock registers further on. While the pin is off, that clock would stop at the buffer, so the flow defines a temporary clock on the buffer's output, with the tap's clock's period and waveform, and CTS builds that tree too. The flow fixes the buffer during CTS, which would otherwise clone it as a clock gate, and the clone would copy the input that is off. Both are undone after CTS.
+- With `cts-clock-nets`, CTS builds trees for the named nets only: name the net the buffer drives too, or its registers get no tree.
+- A pattern that matches no pin, a pin that is not an input on a clock net, or a net gone after CTS fails the CTS stage, naming the entry. On a top without rows, where CTS does not run, the pins stay where they are.
 
 ### Threshold-voltage flavours and footprints
 
@@ -1144,7 +1161,7 @@ For maintainers and hook authors. The generated `pnr.tcl` runs:
 2. `dont-touch` instances marked, floorplan, tracks, blockages and cut-outs, tie cells, floorplan setup repair.
 3. Macro placement, tap cells, power grid, the `dont-touch` instances' supplies connected, pin placement, port buffering.
 4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and `hold-outputs-at-pins` buffers fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, `improve_placement`, `optimize_mirroring`, `placement.macro-pin-limits`, the place stage's `stage-end` hooks, `check_placement`. An illegal placement, including one a hook left, fails the stage, so no checkpoint is written and CTS does not start.
-5. `repair_clock_inverters`, CTS, post-CTS setup repair, hold repair, legalization.
+5. `repair_clock_inverters`, the `cts-root-taps` pins taken off their nets, CTS, `repair_clock_nets`, the pins put back, post-CTS setup repair, hold repair, legalization.
 6. Global route, global-route repair, antenna repair, detailed route, antenna repair with detailed routes, the optional post-route repair stage, whose rounds each repair antennas after their detailed route.
 7. Fill, global connections, extraction with `rcx-rules`, final reports, outputs.
 8. After OpenROAD: the routed-floorplan check, then stream-out and abstract.
