@@ -5998,7 +5998,7 @@ class OpenRoadPnr:
         )
 
     def _no_rows_qualifier(self, log_text: str) -> str:
-        """Warn that the top had no rows and nothing to place, so placement, CTS, timing and antenna repair and fill did not run, and return the result qualifier, or `""` when it had rows (`_NO_ROWS_TAG`)."""
+        """Warn that the top had no rows and nothing to place, so placement, CTS, the post-CTS and global-route repairs, antenna diode insertion and fill did not run (the floorplan's setup repair and any post-route repair rounds still run), and return the result qualifier, or `""` when it had rows (`_NO_ROWS_TAG`)."""
         if not re.search(rf"^{re.escape(_NO_ROWS_TAG)}", log_text, re.MULTILINE):
             return ""
         log_event(
@@ -6010,7 +6010,8 @@ class OpenRoadPnr:
         )
         return (
             "pnr.no_rows_skip_placement: no rows and no standard cell to place; "
-            "placement, CTS, timing and antenna repair and fill did not run"
+            "placement, CTS, the post-CTS and global-route repairs, antenna diode "
+            "insertion and fill did not run"
         )
 
     def _allow_congestion_qualifier(self, platform, log_text: str) -> str:

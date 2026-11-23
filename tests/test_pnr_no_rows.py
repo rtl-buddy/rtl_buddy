@@ -58,7 +58,8 @@ def test_a_top_with_nothing_to_place_skips_the_steps_that_need_rows(
     assert level == logging.WARNING
     assert _human_message("pnr.no_rows_skip_placement", fields) == (
         'P&R "demo_pnr": the core has no rows and the top no standard cell to '
-        "place, so placement, CTS, timing and antenna repair and fill did not run"
+        "place, so placement, CTS, the post-CTS and global-route repairs, antenna "
+        "diode insertion and fill did not run"
     )
 
 
