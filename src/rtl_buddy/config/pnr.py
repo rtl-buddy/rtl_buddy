@@ -897,6 +897,27 @@ def _validate_report_fanout_nets(run: str, value) -> int:
     )
 
 
+def _load_dont_touch(run: str, value) -> tuple[str, ...]:
+    """Validate a run's `dont-touch:`: one instance name or glob, or a list of them; unset is empty."""
+    if value is None:
+        return ()
+    where = f"pnr run '{run}': dont-touch"
+    names = [value] if isinstance(value, str) else value
+    if not isinstance(names, list) or not names:
+        raise FatalRtlBuddyError(
+            f"{where} must be an instance name or glob, or a list of them, got {value!r}"
+        )
+    for index, name in enumerate(names):
+        if not isinstance(name, str) or not name or _TCL_UNSAFE.search(name):
+            raise FatalRtlBuddyError(
+                f"{where}[{index}] must be a non-empty instance name or glob without "
+                f"whitespace, braces, quotes, '$', ';' or a trailing backslash, got {name!r}"
+            )
+    if len(set(names)) != len(names):
+        raise FatalRtlBuddyError(f"{where} repeats an entry")
+    return tuple(names)
+
+
 @serde
 class PnrPdnRingFile:
     # [horizontal, vertical] routing layers.
@@ -1396,6 +1417,8 @@ class PnrConfigFile:
     report_fanout_nets: int | float | str | None = field(
         rename="report-fanout-nets", default=None
     )
+    # Instances marked dont-touch from the start of the floorplan. Typed loosely so `initialise` names a bad value.
+    dont_touch: Any = field(rename="dont-touch", default=None)
     # Either flag marks the run expected-to-fail; `xfail_strict` fails on an unexpected pass. See docs/concepts/expected-failures.md.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
@@ -1437,6 +1460,7 @@ class PnrConfigFile:
         report_fanout_nets = _validate_report_fanout_nets(
             self.name, self.report_fanout_nets
         )
+        dont_touch = _load_dont_touch(self.name, self.dont_touch)
 
         hooks = _normalise_hooks(self.name, self.hooks, config_dir)
         macro_hook = "macro-placement" in hooks
@@ -1625,6 +1649,7 @@ class PnrConfigFile:
             resources=resources,
             detailed_route_verbose=detailed_route_verbose,
             report_fanout_nets=report_fanout_nets,
+            dont_touch=dont_touch,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
             xfail_match=self.xfail_match,
@@ -1701,6 +1726,8 @@ class PnrConfig:
     resources: PnrResources | None = None
     detailed_route_verbose: int = DEFAULT_DETAILED_ROUTE_VERBOSE
     report_fanout_nets: int = DEFAULT_REPORT_FANOUT_NETS
+    # `dont-touch:` instance names or globs, in the order written.
+    dont_touch: tuple[str, ...] = ()
     checkpoints: tuple[str, ...] | None = None
     stages: bool = False
     # Absolute paths by flow point, in flow order; only points with a file.
@@ -1845,6 +1872,10 @@ class PnrConfig:
     def get_report_fanout_nets(self) -> int:
         """Validated `report-fanout-nets:`, the signal nets `fanout.rpt` lists."""
         return self.report_fanout_nets
+
+    def get_dont_touch(self) -> tuple[str, ...]:
+        """The `dont-touch:` instance names or globs; empty when unset."""
+        return self.dont_touch
 
     def get_checkpoints(self) -> tuple[str, ...] | None:
         """The stages to checkpoint, in flow order; ``None`` when off."""

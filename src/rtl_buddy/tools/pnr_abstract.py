@@ -646,6 +646,12 @@ def abstract_config(pnr_cfg, platform) -> dict:
             if pnr_cfg.get_inputs()
             else {}
         ),
+        # Emitted only when set so existing digests do not change.
+        **(
+            {"dont_touch": list(pnr_cfg.get_dont_touch())}
+            if pnr_cfg.get_dont_touch()
+            else {}
+        ),
         # Emitted only when non-default so existing digests do not change; a change regenerates.
         **(
             {

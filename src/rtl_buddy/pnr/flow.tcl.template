@@ -89,7 +89,7 @@ link_design  $DESIGN
 
 puts ">>> Reading SDC"
 {{ read_sdc }}{{ @session }}{{ max_fanout_block }}{{ layer_rc_block }}{{ dont_use_block }}{{ keep_sizing_vt_block }}{{ hook_session_block }}
-{{ @floorplan }}puts ">>> Initializing floorplan"
+{{ @floorplan }}{{ dont_touch_block }}puts ">>> Initializing floorplan"
 {{ initialize_floorplan }}
 {{ make_tracks }}
 {{ blockages_block }}
@@ -135,7 +135,7 @@ foreach inst [$block getInsts] {
         $inst
   }
 }{{ no_macros_block }}
-{{ tapcell_block }}{{ pdn_block }}{{ hook_after_pdn_block }}
+{{ dont_touch_lift_block }}{{ tapcell_block }}{{ pdn_block }}{{ dont_touch_restore_block }}{{ hook_after_pdn_block }}
 # Pins are placed after the macros and power grid so the pin placer sees placed
 # macros (unplaced ones raise PPL-0015). `place_pins` only avoids boundary
 # stretches a placed macro touches.
