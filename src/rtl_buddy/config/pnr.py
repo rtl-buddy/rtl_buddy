@@ -944,6 +944,107 @@ def _load_cts_root_taps(run: str, value) -> tuple[str, ...]:
 
 
 @serde
+class PnrClockLatencyFile:
+    """One `clock-latency:` entry. Typed loosely so `_load_clock_latency` names a bad value."""
+
+    name: Any = None
+    sinks: Any = None
+    target_ps: Any = field(rename="target-ps", default=None)
+    tolerance_ps: Any = field(rename="tolerance-ps", default=None)
+
+
+#: `clock-latency` sink selectors: the registers that capture an input port, and those that launch an output port, through combinational logic.
+CLOCK_LATENCY_SELECTORS = ("input-capture", "output-launch")
+_CLOCK_LATENCY_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+
+
+@dataclass(frozen=True)
+class ClockLatencyGroup:
+    """A named group of clock sinks whose routed clock arrival the final reports print, with an optional target and tolerance in ps."""
+
+    name: str
+    sinks: tuple[str, ...]
+    target_ps: float | None = None
+    tolerance_ps: float | None = None
+
+
+def _load_clock_latency(run: str, value) -> tuple[ClockLatencyGroup, ...]:
+    """Validate a run's `clock-latency:`: a list of groups, each a `name`, its `sinks` and an optional `target-ps` and `tolerance-ps`; unset is empty."""
+    if value is None:
+        return ()
+    where = f"pnr run '{run}': clock-latency"
+    if not isinstance(value, list) or not value:
+        raise FatalRtlBuddyError(
+            f"{where} must be a list of groups, each with a name and sinks, got {value!r}"
+        )
+    groups = []
+    for index, raw in enumerate(value):
+        here = f"{where}[{index}]"
+        if not isinstance(raw, dict):
+            raise FatalRtlBuddyError(
+                f"{here} must be a mapping with name and sinks, got {raw!r}"
+            )
+        entry = config_from_data(PnrClockLatencyFile, raw)
+        name = entry.name
+        if not isinstance(name, str) or not _CLOCK_LATENCY_NAME.match(name):
+            raise FatalRtlBuddyError(
+                f"{here}.name must be a name of letters, digits, '_', '.' and '-' "
+                f"that starts with a letter or '_', got {name!r}"
+            )
+        sinks = [entry.sinks] if isinstance(entry.sinks, str) else entry.sinks
+        if not isinstance(sinks, list) or not sinks:
+            raise FatalRtlBuddyError(
+                f"{here}.sinks must be a selector or <instance>/<pin>, or a list of "
+                f"them, got {entry.sinks!r}"
+            )
+        for position, sink in enumerate(sinks):
+            if sink in CLOCK_LATENCY_SELECTORS:
+                continue
+            instance, slash, pin = (
+                sink.rpartition("/") if isinstance(sink, str) else ("", "", "")
+            )
+            if not instance or not slash or not pin or _TCL_UNSAFE.search(sink):
+                raise FatalRtlBuddyError(
+                    f"{here}.sinks[{position}] must be "
+                    f"{' or '.join(CLOCK_LATENCY_SELECTORS)}, or <instance>/<pin> with "
+                    "each part a name or glob without whitespace, braces, quotes, "
+                    f"'$', ';' or a trailing backslash, got {sink!r}"
+                )
+        if len(set(sinks)) != len(sinks):
+            raise FatalRtlBuddyError(f"{here}.sinks repeats an entry")
+        numbers = {}
+        for key, field_value, least in (
+            ("target-ps", entry.target_ps, None),
+            ("tolerance-ps", entry.tolerance_ps, 0.0),
+        ):
+            if field_value is None:
+                continue
+            if not _finite_number(field_value) or (
+                least is not None and field_value < least
+            ):
+                bound = " of at least 0" if least is not None else ""
+                raise FatalRtlBuddyError(
+                    f"{here}.{key} must be a number{bound} in ps, got {field_value!r}"
+                )
+            numbers[key] = float(field_value)
+        if "tolerance-ps" in numbers and "target-ps" not in numbers:
+            raise FatalRtlBuddyError(f"{here}.tolerance-ps needs target-ps")
+        groups.append(
+            ClockLatencyGroup(
+                name=name,
+                sinks=tuple(sinks),
+                target_ps=numbers.get("target-ps"),
+                tolerance_ps=numbers.get("tolerance-ps"),
+            )
+        )
+    names = [g.name for g in groups]
+    repeated = sorted({n for n in names if names.count(n) > 1})
+    if repeated:
+        raise FatalRtlBuddyError(f"{where} names group {repeated[0]!r} twice")
+    return tuple(groups)
+
+
+@serde
 class PnrPdnRingFile:
     # [horizontal, vertical] routing layers.
     layers: list[str]
@@ -1424,6 +1525,8 @@ class PnrConfigFile:
     cts_clock_nets: str | list | None = field(rename="cts-clock-nets", default=None)
     # Clock-net input pins CTS leaves on the root net; run only. Typed loosely so `initialise` names a bad value.
     cts_root_taps: Any = field(rename="cts-root-taps", default=None)
+    # Groups of clock sinks whose routed clock arrival the final reports print. Typed loosely so `initialise` names a bad value.
+    clock_latency: Any = field(rename="clock-latency", default=None)
     # Over the platform's `global-route:` field by field. Read by `pnr_global_route`.
     global_route: PnrGlobalRouteFile | None = field(rename="global-route", default=None)
     # `closure` (default) or `probe`: no timing repair, stop after global route.
@@ -1489,6 +1592,7 @@ class PnrConfigFile:
         )
         dont_touch = _load_dont_touch(self.name, self.dont_touch)
         cts_root_taps = _load_cts_root_taps(self.name, self.cts_root_taps)
+        clock_latency = _load_clock_latency(self.name, self.clock_latency)
 
         hooks = _normalise_hooks(self.name, self.hooks, config_dir)
         macro_hook = "macro-placement" in hooks
@@ -1679,6 +1783,7 @@ class PnrConfigFile:
             report_fanout_nets=report_fanout_nets,
             dont_touch=dont_touch,
             cts_root_taps=cts_root_taps,
+            clock_latency=clock_latency,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
             xfail_match=self.xfail_match,
@@ -1721,6 +1826,7 @@ PNR_RUN_SPEC = KeySpec(
         "cts-sink-clustering": CTS_SINK_CLUSTERING_SPEC,
         "cts-repair-clock-nets": CTS_REPAIR_CLOCK_NETS_SPEC,
         "blocks": KeySpec(BlockRefFile, many=True),
+        "clock-latency": KeySpec(PnrClockLatencyFile, many=True),
         "resources": KeySpec(PnrResourcesFile, {"stages": _STAGE_RESOURCES_SPEC}),
         "signoff": SIGNOFF_SPEC,
     },
@@ -1759,6 +1865,8 @@ class PnrConfig:
     dont_touch: tuple[str, ...] = ()
     # `cts-root-taps:` `<instance>/<pin>` names or globs, in the order written.
     cts_root_taps: tuple[str, ...] = ()
+    # The validated `clock-latency:` groups, in the order written.
+    clock_latency: tuple["ClockLatencyGroup", ...] = ()
     checkpoints: tuple[str, ...] | None = None
     stages: bool = False
     # Absolute paths by flow point, in flow order; only points with a file.
@@ -1911,6 +2019,10 @@ class PnrConfig:
     def get_cts_root_taps(self) -> tuple[str, ...]:
         """The `cts-root-taps:` pins, each `<instance>/<pin>`; empty when unset."""
         return self.cts_root_taps
+
+    def get_clock_latency(self) -> tuple["ClockLatencyGroup", ...]:
+        """The `clock-latency:` groups the final reports measure; empty when unset."""
+        return self.clock_latency
 
     def get_checkpoints(self) -> tuple[str, ...] | None:
         """The stages to checkpoint, in flow order; ``None`` when off."""

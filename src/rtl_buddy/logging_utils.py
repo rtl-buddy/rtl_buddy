@@ -3484,6 +3484,26 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"pnr {fields.get('pnr')}: worst_paths.rpt and fanout.rpt could not be "
                 f"written ({fields.get('error')}); their result fields are left out"
             )
+        case "pnr.clock_latency_unclocked":
+            if not fields.get("sinks"):
+                return (
+                    f"pnr {fields.get('pnr')}: clock-latency group "
+                    f"{fields.get('group')!r} names no sink in the routed design; "
+                    "check its sinks against the netlist's instance and pin names"
+                )
+            return (
+                f"pnr {fields.get('pnr')}: clock-latency group {fields.get('group')!r}: "
+                f"no clock reaches {fields.get('sinks', 0) - fields.get('timed', 0)} "
+                f"of its {fields.get('sinks')} sink(s), which are left out of its "
+                "figures; name clock pins, or check the SDC"
+            )
+        case "pnr.clock_latency_off_target":
+            return (
+                f"pnr {fields.get('pnr')}: clock-latency group {fields.get('group')!r} "
+                f"arrives at {fields.get('min_ps'):.1f} to {fields.get('max_ps'):.1f} ps "
+                f"at {fields.get('corner')}, outside {fields.get('target_ps'):g} ± "
+                f"{fields.get('tolerance_ps'):g} ps"
+            )
         case "pnr.macro_pin_limits_unmet":
             return (
                 f"pnr {fields.get('pnr')}: {fields.get('unmet')} macro pin(s) stayed "
