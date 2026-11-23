@@ -1601,6 +1601,22 @@ endmodule
 _REAL_BUILD_TIMEOUT_S = 300
 
 
+def _ccache_calls() -> int:
+    """The compiler calls ccache has looked up in `$CCACHE_DIR`, hits and misses."""
+    stats = subprocess.run(
+        ["ccache", "--print-stats"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    ).stdout
+    counters = dict(line.split("\t", 1) for line in stats.splitlines() if "\t" in line)
+    return sum(
+        int(counters.get(key, 0))
+        for key in ("direct_cache_hit", "preprocessed_cache_hit", "cache_miss")
+    )
+
+
 @pytest.mark.skipif(
     not all(shutil.which(tool) for tool in ("verilator", "ccache", "clang++")),
     reason="needs verilator, ccache and clang++",
@@ -1608,7 +1624,7 @@ _REAL_BUILD_TIMEOUT_S = 300
 def test_a_verilator_build_never_compiles_against_another_dirs_precompiled_header(
     tmp_path, monkeypatch
 ):
-    """ccache does not hash the build directory, so without a namespace a later build reuses the precompiled header an earlier one cached, which Clang then checks against the earlier directory's headers: a test in another directory fails to compile once that directory was rebuilt with another design."""
+    """ccache does not hash the build directory, so without a namespace a later build reuses the precompiled header an earlier one cached, which Clang then checks against the earlier directory's headers: a test in another directory fails to compile once that directory was rebuilt with another design. Skipped where Verilator does not compile through ccache."""
     tb = tmp_path / "tb.sv"
     tb.write_text(_PCH_TB)
     monkeypatch.setenv("CCACHE_DIR", str(tmp_path / "ccache"))
@@ -1661,3 +1677,5 @@ def test_a_verilator_build_never_compiles_against_another_dirs_precompiled_heade
     ):
         returncode, transcript = _build(test_name, *defines)
         assert returncode == 0, Path(transcript).read_text()[-2000:]
+        if _ccache_calls() == 0:
+            pytest.skip("this Verilator does not compile through ccache")
