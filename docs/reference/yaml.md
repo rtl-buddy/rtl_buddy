@@ -939,7 +939,7 @@ Each `floorplan.blockages` entry:
 
 Blockages need OpenROAD 26Q1.
 
-Each `floorplan.macros` entry has `instance` (a name, or a glob where `*` crosses `/`) and at least one of:
+Each `floorplan.macros` entry has `instance` (the netlist's instance name, such as `g_bank[0].u_ram`, or a glob where `*` crosses `/`; brackets are literal and `*` and `?` the only wildcards, see [Place macros](../concepts/pnr.md#place-macros)) and at least one of:
 
 - `location: [x, y]`: lower-left corner after orientation, die µm. Must match one macro.
 - `orientation`: `R0`, `R90`, `R180`, `R270`, `MX`, `MY`, `MXR90` or `MYR90`. It needs a `location`, unless a `macro-placement` hook places the macros.
