@@ -1305,7 +1305,7 @@ ABSTRACT_BLOAT_OCCUPIED = "occupied"
 
 @serde
 class PnrAbstractFile:
-    """`abstract:` of a `harden: true` run: the obstruction style of the abstract LEF (#768) and whether it has a GDS."""
+    """`abstract:` of a `harden: true` run: the obstruction style of the abstract LEF (#768), whether it has a GDS, and how the timing model writes a forwarded clock."""
 
     # `str` first so `occupied` is not read as a number.
     bloat: str | float | int | None = None
@@ -1314,24 +1314,33 @@ class PnrAbstractFile:
         rename="feedthrough-layers", default=None
     )
     gds: bool | None = None
+    # `str` so a YAML boolean is named in the error rather than read as a value.
+    forwarded_clocks: Any = field(rename="forwarded-clocks", default=None)
+
+
+#: `abstract.forwarded-clocks` values: `none` (default) keeps OpenSTA's clock-to-output arcs on a forwarded clock's output; `arc` writes one combinational arc from its source port.
+FORWARDED_CLOCKS_NONE = "none"
+FORWARDED_CLOCKS_ARC = "arc"
 
 
 @dataclass(frozen=True)
 class PnrAbstract:
     """A hardened run's abstract LEF obstruction style.
 
-    `bloat` is `occupied` (every layer the block uses is blocked over its whole footprint) or OpenROAD's `-bloat_factor`. `feedthrough_layers` are written with the block's real shapes as obstructions instead, so a parent can route between them. Without `gds` the abstract has no GDS and the run needs no stream-out.
+    `bloat` is `occupied` (every layer the block uses is blocked over its whole footprint) or OpenROAD's `-bloat_factor`. `feedthrough_layers` are written with the block's real shapes as obstructions instead, so a parent can route between them. Without `gds` the abstract has no GDS and the run needs no stream-out. `forwarded_clocks` is `arc` to give each clock the block forwards from an input port to an output port a combinational arc in the timing model (see `pnr_forwarded_clocks`).
     """
 
     bloat: str | float = ABSTRACT_BLOAT_OCCUPIED
     feedthrough_layers: tuple[str, ...] = ()
     gds: bool = True
+    forwarded_clocks: str = FORWARDED_CLOCKS_NONE
 
     def is_default(self) -> bool:
         return (
             self.bloat == ABSTRACT_BLOAT_OCCUPIED
             and not self.feedthrough_layers
             and self.gds
+            and self.forwarded_clocks == FORWARDED_CLOCKS_NONE
         )
 
 
@@ -1368,7 +1377,17 @@ def _load_abstract(
     if len(set(names)) != len(names):
         raise FatalRtlBuddyError(f"{where}.feedthrough-layers repeats a layer")
     gds = True if entry.gds is None else entry.gds
-    return PnrAbstract(bloat=bloat, feedthrough_layers=names, gds=gds)
+    forwarded = entry.forwarded_clocks
+    if forwarded is None:
+        forwarded = FORWARDED_CLOCKS_NONE
+    elif forwarded not in (FORWARDED_CLOCKS_NONE, FORWARDED_CLOCKS_ARC):
+        raise FatalRtlBuddyError(
+            f"{where}.forwarded-clocks must be {FORWARDED_CLOCKS_NONE!r} or "
+            f"{FORWARDED_CLOCKS_ARC!r}, got {entry.forwarded_clocks!r}"
+        )
+    return PnrAbstract(
+        bloat=bloat, feedthrough_layers=names, gds=gds, forwarded_clocks=forwarded
+    )
 
 
 @serde

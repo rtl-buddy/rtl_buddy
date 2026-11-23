@@ -1132,6 +1132,30 @@ A block that must use the top layer, such as one with an OpenRAM sky130 SRAM, ex
 - Define the parent's macro grids with `-cells` or `-instances` instead of `-default`.
 - A pin rb cannot join fails the run with `block power: <inst>/<pin> ...`.
 
+### Forward a clock through a hardened block
+
+A block that passes its clock on to an output port, for blocks abutted in a chain, declares it in its SDC as a generated clock of ratio 1:
+
+```tcl
+create_generated_clock -name clk_fwd -source [get_ports clk_i] -divide_by 1 [get_ports clk_o]
+```
+
+OpenSTA's `write_timing_model` writes `clk_o`'s arcs in `<top>.lib` as clock-to-output arcs, related to `clk_o` itself with that clock and to `clk_i` without it. Timing does not carry a clock through either, so in the parent the clock stops at the first block's `clk_i` and every block after it is unclocked ([Known Issues](../known-issues.md#a-hardened-blocks-timing-model-stops-a-forwarded-clock)).
+
+`abstract: {forwarded-clocks: arc}` makes `clk_o` a clock path:
+
+```yaml
+    harden: true
+    abstract: {forwarded-clocks: arc}
+```
+
+- The harden step writes the timing model a second time without the generated clocks defined on output ports. For each generated clock from one input port to one output port with `-divide_by 1`, `-multiply_by 1` or `-combinational`, optionally `-invert`, the output's timing groups become one `combinational` arc from the input, `positive_unate` (`negative_unate` with `-invert`): the rise from the second model's `rising_edge` arc, the fall from its `falling_edge` arc, each by output load. It is the forwarding delay from the input pin, the block's wire and buffers.
+- Every other group of `<top>.lib` is kept as written, including the setup, hold and clock-to-output arcs with the block's insertion delay and the input's `min_clock_tree_path` and `max_clock_tree_path`.
+- `abstract.manifest.json` lists the arcs under `forwarded_clocks`, each `{from, to, sense}`. A generated clock on an output port that does not qualify warns `pnr.abstract_forwarded_clock_skipped`, and a block with none warns `pnr.abstract_no_forwarded_clocks`. A forwarding arc that falls with the input when the SDC says it does not (a wrong `-invert`) fails the abstract.
+- The parent needs no SDC for the forwarded clock; a `create_generated_clock` on `u_blk/clk_o` still names it. Sign off with flat timing of the stitched netlist and parasitics: the abstract times the boundary on scalar setup and hold values.
+
+Without the key, restate the forwarded clock on each instance's `clk_o` in the parent's SDC, with the block's forwarding delay as source latency.
+
 ## Assemble hardened blocks
 
 A top run names its blocks under `blocks:`, in `pnr.yaml` and in the `synth.yaml` entry it reads. The top's filelist must leave the module a blackbox (a port-only stub).

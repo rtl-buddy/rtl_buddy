@@ -3484,6 +3484,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"pnr {fields.get('pnr')}: worst_paths.rpt and fanout.rpt could not be "
                 f"written ({fields.get('error')}); their result fields are left out"
             )
+        case "pnr.abstract_forwarded_clock_skipped":
+            return (
+                f"pnr {fields.get('pnr')}: generated clock {fields.get('clock')!r} on an "
+                f"output port keeps OpenSTA's clock-to-output arcs in the abstract: "
+                f"{fields.get('reason')}; abstract.forwarded-clocks takes a ratio-1 "
+                "generated clock from one input port to one output port"
+            )
+        case "pnr.abstract_no_forwarded_clocks":
+            return (
+                f"pnr {fields.get('pnr')}: abstract.forwarded-clocks is arc, but the "
+                "block's SDC declares no generated clock of ratio 1 from an input port "
+                "to an output port, so the timing model forwards no clock"
+            )
         case "pnr.clock_latency_unclocked":
             if not fields.get("sinks"):
                 return (

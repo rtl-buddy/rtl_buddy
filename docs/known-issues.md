@@ -271,6 +271,10 @@ OpenROAD's default legalizer treats a fixed macro turned by 90 degrees (`R90`, `
 
 Once `detailed_placement -use_diamond_legalizer` runs, every later legalization in that OpenROAD session uses diamond search. That includes calls without the option and OpenROAD's own, such as the one after antenna repair inserts diodes. So in a one-session run, the stages after the first one `placement.legalizer` sets to `diamond` use diamond search too, including stages it leaves unset. A one-session run that sets a later stage to `negotiation` fails at setup and names the stages. Run with `stages: true` to give each stage its own session; see [Choose the legalizer per stage](concepts/pnr.md#choose-the-legalizer-per-stage).
 
+## A hardened block's timing model stops a forwarded clock
+
+OpenSTA's `write_timing_model` writes a block's clock output as clock-to-output arcs: `rising_edge` and `falling_edge` related to the output itself when the SDC declares a generated clock on it, related to the clock input when it does not. Static timing does not propagate a clock through either, so a parent that instances such blocks in a chain sees the clock stop at the first block's clock input. Harden the block with [`abstract: {forwarded-clocks: arc}`](concepts/pnr.md#forward-a-clock-through-a-hardened-block), which rewrites the output's arcs as one combinational arc, or restate the clock on each instance's output in the parent's SDC.
+
 ## CTS puts a buffer in front of every input pin on a clock net
 
 TritonCTS treats each input pin on a clock net as a sink and moves it behind a buffer it inserts. A buffer that forwards the clock to an output port then sits behind part of the tree, so the forwarded clock's delay depends on the tree, and on a dont-touch buffer CTS stops with `ODB-0370`. OpenROAD has no option to leave one pin on the root net: `set_cts_config -skip_nets` skips whole nets. Name such pins in [`cts-root-taps`](concepts/pnr.md#forward-a-clock-with-a-root-tap), which takes them off their net around CTS.
