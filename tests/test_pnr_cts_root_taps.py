@@ -236,6 +236,7 @@ set insts {
     u_blk.u_clk_buf {A SIGNAL Y SIGNAL VDD POWER VSS GROUND}
     {g_fwd\[0\].u_buf} {A SIGNAL Y SIGNAL}
     r0 {CLK SIGNAL D SIGNAL QN SIGNAL}
+    u_ram {CLK[0] SIGNAL CLK0 SIGNAL}
 }
 set handles {}
 set n 0
@@ -296,6 +297,10 @@ proc block {cmd args} {
         ("*/A", r"u_blk.u_clk_buf/A {g_fwd\[0\].u_buf/A}"),
         ("r0/C*", "r0/CLK"),
         ("u_nope/A", ""),
+        ("u_ram/CLK[0]", "{u_ram/CLK[0]}"),
+        (r"u_ram/CLK\[0\]", "{u_ram/CLK[0]}"),
+        ("u_ram/CLK[*]", "{u_ram/CLK[0]}"),
+        ("u_ram/CLK?", "u_ram/CLK0"),
     ],
     ids=[
         "one pin",
@@ -304,6 +309,10 @@ proc block {cmd args} {
         "instance glob",
         "pin prefix",
         "no instance",
+        "bus pin, brackets literal",
+        "escaped bus pin",
+        "bus pin glob",
+        "no character class",
     ],
 )
 def test_a_pin_is_named_as_instance_slash_pin(spec, expected):
@@ -380,18 +389,35 @@ foreach {inst pin} $rb_pins {
 }
 set inst [[ord::get_db_block] findInst u_clk_buf]
 puts "RB-STATE [$inst isDoNotTouch] [$inst getPlacementStatus] [lmap c [all_clocks] {get_name $c}]"
+puts "RB-CLOCKS [lmap c [all_clocks] {list [get_name $c] [get_property $c period]}]"
+foreach inst [[ord::get_db_block] getInsts] {
+  puts "RB-PLACED [$inst getName] [$inst getPlacementStatus]"
+}
 """
 
 
-def _cts_run(tmp_path, *, flat: bool) -> dict:
-    (tmp_path / "fwd.v").write_text(
-        _NETLIST.format(ports=", output q2" if flat else "", more=_FLAT if flat else "")
-    )
-    detach, reattach = _cts_root_taps_tcl(("u_clk_buf/A",))
-    pins = "u_clk_buf A r0 CLK r1 CLK" + (" r2 CLK r3 CLK" if flat else "")
+def _cts_run(
+    tmp_path,
+    *,
+    flat: bool = False,
+    ports: str | None = None,
+    more: str | None = None,
+    sdc: str = "",
+    taps: tuple[str, ...] = ("u_clk_buf/A",),
+    pins: str = "",
+) -> dict:
+    """Run the steps around CTS; `ports` and `more` replace the flat netlist's, `sdc` follows the clock."""
+    if ports is None:
+        ports = ", output q2" if flat else ""
+    if more is None:
+        more = _FLAT if flat else ""
+    (tmp_path / "fwd.v").write_text(_NETLIST.format(ports=ports, more=more))
+    detach, reattach = _cts_root_taps_tcl(taps)
+    pins = "u_clk_buf A r0 CLK r1 CLK" + (" r2 CLK r3 CLK" if flat else "") + pins
     script = tmp_path / "cts.tcl"
     script.write_text(
         _SETUP
+        + sdc
         + detach
         + "clock_tree_synthesis -buf_list BUFx4_ASAP7_75t_R -sink_clustering_enable\n"
         + reattach
@@ -415,7 +441,19 @@ def _cts_run(tmp_path, *, flat: bool) -> dict:
             _, pin, net, driver = line.split()
             nets[pin] = (net, driver)
     state = next(line for line in out.splitlines() if line.startswith("RB-STATE "))
-    return {"nets": nets, "state": state, "log": out}
+    clocks = next(line for line in out.splitlines() if line.startswith("RB-CLOCKS "))
+    placed = {
+        line.split()[1]: line.split()[2]
+        for line in out.splitlines()
+        if line.startswith("RB-PLACED ")
+    }
+    return {
+        "nets": nets,
+        "state": state,
+        "clocks": clocks,
+        "placed": placed,
+        "log": out,
+    }
 
 
 @needs_asap7
@@ -445,3 +483,111 @@ def test_a_forwarded_clock_that_clocks_registers_gets_its_own_tree(tmp_path):
     assert all("clone" not in driver for _, driver in run["nets"].values())
     assert "temporary clock rb_cts_root_tap_0 on its output" in run["log"]
     assert run["state"] == "RB-STATE 1 PLACED clk"
+
+
+def _all_placed(run) -> None:
+    """Every instance CTS found is as legalization left it: placed, not fixed."""
+    assert set(run["placed"].values()) == {"PLACED"}, run["placed"]
+
+
+@needs_asap7
+def test_a_forwarded_clock_the_sdc_names_keeps_its_tree_and_buffer(tmp_path):
+    """A generated clock on the buffer's output is a CTS root of its own: no temporary clock, and the buffer is fixed for CTS all the same."""
+    run = _cts_run(
+        tmp_path,
+        flat=True,
+        sdc=(
+            "create_generated_clock -name fwd -source [get_ports clk_i] -divide_by 1 "
+            "[get_pins u_clk_buf/Y]\nset_propagated_clock [all_clocks]\n"
+        ),
+    )
+
+    assert run["nets"]["u_clk_buf/A"] == ("clk_i", "port")
+    for reg in ("r2/CLK", "r3/CLK"):
+        net, driver = run["nets"][reg]
+        assert driver.startswith("clkbuf_") and net.endswith("clk_o"), run["log"]
+    assert all("clone" not in driver for _, driver in run["nets"].values())
+    assert "temporary clock" not in run["log"]
+    assert run["clocks"] == "RB-CLOCKS {clk 1000.000000} {fwd 1000.000000}"
+    _all_placed(run)
+
+
+#: A forwarded clock gated by a plain AND gate before its eight registers.
+_GATED = "".join(
+    ["  wire gclk;\n  AND2x2_ASAP7_75t_R u_gate (.A(clk_o), .B(en), .Y(gclk));\n"]
+    + [
+        f"  DFFHQNx1_ASAP7_75t_R g{i} (.CLK(gclk), .D(q), .QN(gq[{i}]));\n"
+        for i in range(8)
+    ]
+)
+
+
+@needs_asap7
+def test_registers_behind_a_gate_on_the_forwarded_clock_get_a_tree(tmp_path):
+    """The gate's Liberty pins carry no clock attribute; the timer's clock network runs through it, as CTS's does."""
+    run = _cts_run(
+        tmp_path,
+        ports=", input en, output [7:0] gq",
+        more=_GATED,
+        pins="".join(f" g{i} CLK" for i in range(8)),
+    )
+
+    for i in range(8):
+        net, driver = run["nets"][f"g{i}/CLK"]
+        assert driver.startswith("clkbuf_") and net.endswith("gclk"), run["log"]
+    # The gate is on the temporary root's net, where CTS would clone it as a clock gate.
+    assert all("clone" not in driver for _, driver in run["nets"].values())
+    assert "temporary clock rb_cts_root_tap_0 on its output" in run["log"]
+    assert run["clocks"] == "RB-CLOCKS {clk 1000.000000}"
+    _all_placed(run)
+
+
+@needs_asap7
+def test_a_temporary_clock_takes_a_name_no_sdc_clock_has(tmp_path):
+    run = _cts_run(
+        tmp_path,
+        flat=True,
+        ports=", output q2, input clk2, output q3",
+        more=_FLAT + "  DFFHQNx1_ASAP7_75t_R r4 (.CLK(clk2), .D(d), .QN(q3));\n",
+        sdc=(
+            "create_clock -name rb_cts_root_tap_0 -period 500 [get_ports clk2]\n"
+            "set_propagated_clock [all_clocks]\n"
+        ),
+    )
+
+    assert "temporary clock rb_cts_root_tap_1 on its output" in run["log"]
+    assert run["clocks"] == (
+        "RB-CLOCKS {clk 1000.000000} {rb_cts_root_tap_0 500.000000}"
+    )
+    for reg in ("r2/CLK", "r3/CLK"):
+        assert run["nets"][reg][1].startswith("clkbuf_"), run["log"]
+
+
+@needs_asap7
+def test_only_an_output_that_clocks_registers_gets_a_temporary_clock(tmp_path):
+    """A half adder on the clock: its carry clocks two registers, its sum feeds two data pins."""
+    run = _cts_run(
+        tmp_path,
+        ports=", output q2, output q3",
+        more=(
+            "  wire con, sn, n2, n3;\n"
+            "  HAxp5_ASAP7_75t_R u_ha (.A(clk_i), .B(d), .CON(con), .SN(sn));\n"
+            "  DFFHQNx1_ASAP7_75t_R r2 (.CLK(con), .D(q),  .QN(n2));\n"
+            "  DFFHQNx1_ASAP7_75t_R r3 (.CLK(con), .D(n2), .QN(q2));\n"
+            "  DFFHQNx1_ASAP7_75t_R r4 (.CLK(clk_i), .D(sn), .QN(n3));\n"
+            "  DFFHQNx1_ASAP7_75t_R r5 (.CLK(clk_i), .D(sn), .QN(q3));\n"
+        ),
+        sdc="unset_dont_touch [get_cells u_clk_buf]\n",
+        taps=("u_ha/A",),
+        pins=" u_ha A r2 CLK r3 CLK r4 D r5 D",
+    )
+
+    assert run["log"].count("temporary clock") == 1
+    assert "temporary clock rb_cts_root_tap_0 on its output" in run["log"]
+    assert 'Net "con" found for clock "rb_cts_root_tap_0"' in run["log"]
+    assert run["nets"]["u_ha/A"] == ("clk_i", "port")
+    for reg in ("r2/CLK", "r3/CLK"):
+        assert run["nets"][reg][1].startswith("clkbuf_"), run["log"]
+    for reg in ("r4/D", "r5/D"):
+        assert run["nets"][reg] == ("sn", "u_ha"), run["log"]
+    _all_placed(run)

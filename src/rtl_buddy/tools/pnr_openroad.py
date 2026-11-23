@@ -802,10 +802,12 @@ def _cts_root_taps_tcl(pins: tuple[str, ...]) -> tuple[str, str]:
     )
 
 
-def _clock_latency_tcl(groups, corners: list[str], primary: str) -> str:
+def _clock_latency_tcl(
+    groups, corners: list[str], primary: str, modes: bool = False
+) -> str:
     """Return the final reports' `clock-latency` step, or `""` without groups: each group's late clock arrival per corner, on `_CLOCK_LATENCY_TAG` lines.
 
-    `corners` are a multi-corner platform's corners, each measured in its own scene; a single-corner platform's one corner is `primary`, measured in the default one. The step carries its own leading newline and no trailing one, as `corner_reports` does.
+    `corners` are a multi-corner platform's corners, each measured in its own scene; a single-corner platform's one corner is `primary`, measured in the default one. With `modes`, each corner's scene times its own SDC mode, named after the corner, and the step makes that mode current while it measures the corner, since which clocks reach a pin is read in the current mode. The step carries its own leading newline and no trailing one, as `corner_reports` does.
     """
     if not groups:
         return ""
@@ -814,7 +816,11 @@ def _clock_latency_tcl(groups, corners: list[str], primary: str) -> str:
         for g in groups
     )
     corner_list = (
-        " ".join(f"[list {c} [rb::clock_latency::corner_args {c}]]" for c in corners)
+        " ".join(
+            f"[list {c} [rb::clock_latency::corner_args {c}]"
+            + (f" {c}]" if modes else "]")
+            for c in corners
+        )
         if corners
         else f"[list {primary} {{}}]"
     )
@@ -4011,6 +4017,7 @@ class OpenRoadPnr:
                 self.pnr_cfg.get_clock_latency(),
                 list(corner_libs),
                 platform.get_sta_corner(),
+                modes,
             ),
             "tie_cells_block": tie_cells_block,
             "tie_fanout_block": tie_fanout_block,

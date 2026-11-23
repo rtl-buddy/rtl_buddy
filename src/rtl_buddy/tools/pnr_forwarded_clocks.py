@@ -11,6 +11,7 @@ import os
 import re
 from dataclasses import dataclass
 
+from ..constraints.tcl_tokenizer import _extract_names, _tokenize
 from .artifact_paths import atomic_tmp_name
 
 #: The second timing model the harden step writes beside `<top>.lib`; read and removed before publishing.
@@ -40,14 +41,59 @@ class ForwardedClock:
         return {"from": self.source, "to": self.target, "sense": self.sense()}
 
 
-_GENERATED = re.compile(r"^create_generated_clock (.*)$", re.MULTILINE)
-_PORTS = r"\[get_ports \{([^{}]*)\}\]"
-_NAME = re.compile(r"-name (\S+)")
-_SOURCE = re.compile(r"-source " + _PORTS)
-_TARGET = re.compile(_PORTS + r"\s*$")
-_RATIO = re.compile(r"-(divide_by|multiply_by) (\S+)")
+#: `create_generated_clock` options that take a value, and those that take none; any other word is the clock's objects.
+_VALUED = frozenset(
+    {
+        "-name",
+        "-source",
+        "-master_clock",
+        "-divide_by",
+        "-multiply_by",
+        "-duty_cycle",
+        "-edges",
+        "-edge_shift",
+        "-comment",
+        "-pll_output",
+        "-pll_feedback",
+    }
+)
+_FLAGS = frozenset({"-invert", "-combinational", "-add"})
 #: Options that make a generated clock's waveform other than its master's, or its master's inverted.
 _SHAPING = ("-edges", "-edge_shift", "-duty_cycle")
+
+
+def _ports(word: str | None) -> list[str]:
+    """The port names of a `[get_ports {...}]` word; empty for anything else, such as `get_pins`."""
+    if word is None or not word.startswith("[get_ports"):
+        return []
+    return _extract_names(word)[0]
+
+
+def _options(words: list[str]) -> tuple[dict[str, str], set[str], list[str]]:
+    """Split a tokenized `create_generated_clock`'s words after the command into valued options, flags and objects. A braced `-comment` is one word, so the option names it mentions are not options."""
+    valued: dict[str, str] = {}
+    flags: set[str] = set()
+    objects: list[str] = []
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if word in _VALUED and i + 1 < len(words):
+            valued[word] = words[i + 1]
+            i += 2
+            continue
+        if word in _FLAGS:
+            flags.add(word)
+        else:
+            objects.append(word)
+        i += 1
+    return valued, flags, objects
+
+
+def _is_one(value: str) -> bool:
+    try:
+        return float(value) == 1.0
+    except ValueError:
+        return False
 
 
 def forwarded_clocks(
@@ -55,42 +101,52 @@ def forwarded_clocks(
 ) -> tuple[list[ForwardedClock], list[tuple[str, str]]]:
     """Return the generated clocks of the routed SDC text `sdc` that forward an input port to an output port at ratio 1, and `(name, reason)` for each other generated clock on an output port.
 
-    `inputs` and `outputs` are the block's port names. A clock qualifies with one source port among `inputs`, one target among `outputs`, `-divide_by 1`, `-multiply_by 1` or `-combinational`, optionally `-invert`, and none of `-edges`, `-edge_shift` and `-duty_cycle`. Two qualifying clocks on one output that disagree on `-invert` are both left out.
+    `inputs` and `outputs` are the block's port names. A clock qualifies with one source port among `inputs`, one target among `outputs`, `-divide_by 1` or `-multiply_by 1`, or `-combinational` without either, optionally `-invert`, and none of `-edges`, `-edge_shift` and `-duty_cycle`. Two qualifying clocks on one output that disagree on `-invert` are both left out, as is a qualifying clock on an output that also has one that does not qualify, so the output keeps its original arcs. The SDC is tokenized as Tcl, so a braced `-comment` is one word.
     """
     found: list[ForwardedClock] = []
     skipped: list[tuple[str, str]] = []
-    for match in _GENERATED.finditer(sdc):
-        options = match.group(1)
-        name = (_NAME.search(options) or [None, "?"])[1]
-        target = _TARGET.search(options)
-        targets = target.group(1).split() if target else []
+    # Outputs with a generated clock that is not forwarded.
+    kept_as_written: set[str] = set()
+    for words in _tokenize(sdc):
+        if words[0] != "create_generated_clock":
+            continue
+        valued, flags, objects = _options(words[1:])
+        name = valued.get("-name", "?")
+        targets = [t for word in objects for t in _ports(word)]
         if not any(t in outputs for t in targets):
             continue
-        source = _SOURCE.search(options)
-        sources = source.group(1).split() if source else []
-        ratios = {kind: value for kind, value in _RATIO.findall(options)}
+        sources = _ports(valued.get("-source"))
+        ratios = [valued[k] for k in ("-divide_by", "-multiply_by") if k in valued]
         if len(targets) != 1:
-            skipped.append((name, "it is defined on more than one port"))
+            reason = "it is defined on more than one port"
         elif len(sources) != 1 or sources[0] not in inputs:
-            skipped.append((name, "its -source is not one input port"))
-        elif any(option in options.split() for option in _SHAPING):
-            skipped.append((name, "it changes the waveform"))
-        elif "-combinational" not in options.split() and (
-            len(ratios) != 1 or next(iter(ratios.values())) not in ("1", "1.0")
+            reason = "its -source is not one input port"
+        elif any(option in valued for option in _SHAPING):
+            reason = "it changes the waveform"
+        elif (
+            not all(_is_one(r) for r in ratios)
+            if ratios
+            else "-combinational" not in flags
         ):
-            skipped.append((name, "its ratio is not 1"))
+            reason = "its ratio is not 1"
         else:
             found.append(
-                ForwardedClock(
-                    name, sources[0], targets[0], "-invert" in options.split()
-                )
+                ForwardedClock(name, sources[0], targets[0], "-invert" in flags)
             )
+            continue
+        skipped.append((name, reason))
+        kept_as_written.update(t for t in targets if t in outputs)
     by_target: dict[str, list[ForwardedClock]] = {}
     for clock in found:
         by_target.setdefault(clock.target, []).append(clock)
     kept = []
     for target, clocks in by_target.items():
-        if len({(c.source, c.invert) for c in clocks}) > 1:
+        if target in kept_as_written:
+            skipped.extend(
+                (c.name, f"another generated clock on {target} is not forwarded")
+                for c in clocks
+            )
+        elif len({(c.source, c.invert) for c in clocks}) > 1:
             skipped.extend(
                 (c.name, f"another generated clock on {target} differs from it")
                 for c in clocks

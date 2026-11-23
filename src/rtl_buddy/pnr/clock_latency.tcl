@@ -8,8 +8,10 @@
 namespace eval rb::clock_latency {}
 
 # The register clock pins that a selector names: `input-capture`, the
-# registers that capture an input port through combinational logic, or
-# `output-launch`, those that launch an output port. OpenSTA 3 names the
+# registers whose data pin captures an input port through combinational logic,
+# or `output-launch`, those that launch an output port. An input's endpoints
+# also include asynchronous set and reset pins and clock-gating checks, so
+# only register data pins that are not asynchronous count. OpenSTA 3 names the
 # traversals `get_fanout` and `get_fanin`, earlier releases `all_fanout` and
 # `all_fanin`.
 proc rb::clock_latency::selected {selector} {
@@ -21,8 +23,16 @@ proc rb::clock_latency::selected {selector} {
         if {[llength $inputs] == 0} {
             return {}
         }
+        set data [dict create]
+        foreach pin [all_registers -data_pins] {
+            dict set data [get_full_name $pin] 1
+        }
+        foreach pin [all_registers -async_pins] {
+            dict unset data [get_full_name $pin]
+        }
         foreach end [$fanout -from $inputs -endpoints_only -flat] {
-            if {[sta::object_type $end] ne "Pin"} {
+            if {[sta::object_type $end] ne "Pin"
+                    || ![dict exists $data [get_full_name $end]]} {
                 continue
             }
             foreach pin [get_pins -of_objects [get_cells -of_objects $end]] {
@@ -113,9 +123,17 @@ proc rb::clock_latency::late_arrival {pin corner_args} {
 }
 
 # Print `tag group corner sinks timed min max mean` for each group, each
-# {name sinks}, at each of `corners`, each {name corner_args}; `-` for a
-# value without timed sinks. Times are in the timer's unit.
+# {name sinks}, at each of `corners`, each {name corner_args ?mode?}; `-` for a
+# value without timed sinks. Times are in the timer's unit. A corner with a
+# `mode` is measured with that SDC mode current, since a pin's clocks are read
+# in the current mode, not the scene's; the mode current before is restored.
 proc rb::clock_latency::report {tag groups corners} {
+    set restore ""
+    foreach corner $corners {
+        if {[lindex $corner 2] ne ""} {
+            set restore [sta::cmd_mode_name]
+        }
+    }
     foreach group $groups {
         lassign $group name specs
         if {[catch {set pins [sinks $specs]} err]} {
@@ -123,8 +141,11 @@ proc rb::clock_latency::report {tag groups corners} {
             continue
         }
         foreach corner $corners {
-            lassign $corner corner_name corner_args
+            lassign $corner corner_name corner_args mode
             if {[catch {
+                if {$mode ne ""} {
+                    set_mode $mode
+                }
                 set arrivals {}
                 foreach pin $pins {
                     set late [late_arrival $pin $corner_args]
@@ -148,6 +169,9 @@ proc rb::clock_latency::report {tag groups corners} {
             } err]} {
                 puts "rb: clock latency of $name at $corner_name unavailable: $err"
             }
+        }
+        if {$restore ne ""} {
+            set_mode $restore
         }
     }
 }

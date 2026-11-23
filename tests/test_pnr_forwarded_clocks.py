@@ -4,6 +4,7 @@ The fixtures are the two models OpenROAD 26Q2-911's `write_timing_model` wrote f
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -56,8 +57,23 @@ def _sdc(*lines: str) -> str:
             "[get_ports {clk_o}]",
             ForwardedClock("f", "clk_i", "clk_o"),
         ),
+        (
+            "-name f -source [get_ports {clk_i}] -combinational [get_ports {clk_o}]",
+            ForwardedClock("f", "clk_i", "clk_o"),
+        ),
+        (
+            "-name f -source [get_ports {clk_i}] -divide_by 1 "
+            "-comment {not -invert, nor -edges {1 3 5}} [get_ports {clk_o}]",
+            ForwardedClock("f", "clk_i", "clk_o"),
+        ),
     ],
-    ids=["divide by 1", "multiply by 1, inverted", "combinational"],
+    ids=[
+        "divide by 1",
+        "multiply by 1, inverted",
+        "combinational, divide by 1",
+        "combinational alone",
+        "options named in a comment",
+    ],
 )
 def test_a_ratio_1_clock_from_an_input_to_an_output_is_forwarded(line, expected):
     assert forwarded_clocks(_sdc(line), _INPUTS, _OUTPUTS) == ([expected], [])
@@ -86,6 +102,11 @@ def test_a_ratio_1_clock_from_an_input_to_an_output_is_forwarded(line, expected)
             "-name f -source [get_ports {clk_i}] -divide_by 1 [get_ports {clk_o q}]",
             "it is defined on more than one port",
         ),
+        (
+            "-name f -source [get_ports {clk_i}] -combinational -multiply_by 2 "
+            "[get_ports {clk_o}]",
+            "its ratio is not 1",
+        ),
     ],
     ids=[
         "divide by 2",
@@ -93,6 +114,7 @@ def test_a_ratio_1_clock_from_an_input_to_an_output_is_forwarded(line, expected)
         "pin source",
         "edges",
         "two ports",
+        "combinational, multiply by 2",
     ],
 )
 def test_another_generated_clock_on_an_output_is_named_and_left(line, reason):
@@ -113,6 +135,22 @@ def test_two_clocks_on_one_output_that_disagree_are_both_left():
     found, skipped = forwarded_clocks(sdc, _INPUTS, _OUTPUTS)
     assert found == []
     assert [name for name, _ in skipped] == ["a", "b"]
+
+
+def test_a_forwarded_clock_beside_one_that_is_not_leaves_the_output_as_written():
+    """A clock mux output with a bypass and a divided clock keeps both clocks' arcs."""
+    sdc = _sdc(
+        "-name bypass -source [get_ports {clk_i}] -divide_by 1 [get_ports {clk_o}]",
+        "-name slow -add -source [get_ports {clk_i}] -master_clock [get_clocks {clk}] "
+        "-divide_by 2 [get_ports {clk_o}]",
+    )
+    assert forwarded_clocks(sdc, _INPUTS, _OUTPUTS) == (
+        [],
+        [
+            ("slow", "its ratio is not 1"),
+            ("bypass", "another generated clock on clk_o is not forwarded"),
+        ],
+    )
 
 
 def test_the_ports_are_read_from_the_model():
@@ -335,6 +373,57 @@ def test_a_block_without_a_forwarded_clock_warns_and_publishes(tmp_path, monkeyp
     )
 
 
+def test_a_bypass_beside_a_divided_clock_keeps_the_output_s_arcs(tmp_path, monkeypatch):
+    events = _capture_pnr_events(monkeypatch)
+    backend = _harden(
+        tmp_path,
+        monkeypatch,
+        sdc=_sdc(
+            "-name bypass -source [get_ports {clk_i}] -divide_by 1 [get_ports {clk_o}]",
+            "-name slow -add -source [get_ports {clk_i}] -divide_by 2 "
+            "[get_ports {clk_o}]",
+        ),
+    )
+
+    res = backend.run()
+
+    assert isinstance(res, PnrPassResults), res.results
+    out = Path(backend.artefact_dir) / "abstract"
+    manifest = json.loads((out / "abstract.manifest.json").read_text())
+    assert manifest["forwarded_clocks"] == []
+    assert "rising_edge" in _pin((out / "demo_top.lib").read_text(), "clk_o")
+    reasons = {
+        fields["clock"]: fields["reason"]
+        for _, name, fields in events
+        if name == "pnr.abstract_forwarded_clock_skipped"
+    }
+    assert reasons == {
+        "slow": "its ratio is not 1",
+        "bypass": "another generated clock on clk_o is not forwarded",
+    }
+
+
+def test_an_option_named_in_a_comment_does_not_invert_the_arc(tmp_path, monkeypatch):
+    backend = _harden(
+        tmp_path,
+        monkeypatch,
+        sdc=_sdc(
+            "-name clk_fwd -source [get_ports {clk_i}] -divide_by 1 "
+            "-comment {Do not use -invert here} [get_ports {clk_o}]"
+        ),
+    )
+
+    res = backend.run()
+
+    assert isinstance(res, PnrPassResults), res.results
+    manifest = json.loads(
+        (Path(backend.artefact_dir) / "abstract" / "abstract.manifest.json").read_text()
+    )
+    assert manifest["forwarded_clocks"] == [
+        {"from": "clk_i", "to": "clk_o", "sense": "positive_unate"}
+    ]
+
+
 def test_a_missing_second_model_fails_the_abstract(tmp_path, monkeypatch):
     backend = _harden(tmp_path, monkeypatch, second=False)
 
@@ -451,3 +540,90 @@ def test_the_second_block_of_a_chain_is_clocked_through_the_first(tmp_path):
     assert re.search(r"\^ u0/clk_o \(fwd\)", forwarded)
     assert re.search(r"\^ u1/clk_i \(fwd\)", forwarded)
     assert "slack (MET)" in forwarded
+
+
+_ASAP7 = os.environ.get("RTL_BUDDY_ASAP7_DIR")
+needs_asap7 = pytest.mark.skipif(
+    _OPENROAD is None or not _ASAP7,
+    reason="needs openroad and RTL_BUDDY_ASAP7_DIR (an ORFS platforms/asap7 directory)",
+)
+
+#: A block that forwards its clock inverted, through one inverter, and registers `d`.
+_INVERTING_BLOCK = """\
+module fwd (input clk_i, input d, output q, output clk_o);
+  DFFHQNx1_ASAP7_75t_R r0 (.CLK(clk_i), .D(d), .QN(q));
+  INVx2_ASAP7_75t_R u_clk_inv (.A(clk_i), .Y(clk_o));
+endmodule
+"""
+
+#: Placed, not routed, and characterised by the harden step's own Tcl.
+_INVERTING_HARDEN = """\
+set p $::env(RTL_BUDDY_ASAP7_DIR)
+read_lef $p/lef/asap7_tech_1x_201209.lef
+read_lef $p/lef/asap7sc7p5t_28_R_1x_220121a.lef
+foreach l {INVBUF_RVT_TT_nldm_220122.lib.gz SEQ_RVT_TT_nldm_220123.lib} {
+  read_liberty $p/lib/NLDM/asap7sc7p5t_$l
+}
+read_verilog fwd.v
+link_design fwd
+create_clock -name clk -period 1000 [get_ports clk_i]
+create_generated_clock -name clk_fwd -source [get_ports clk_i] -divide_by 1 -invert [get_ports clk_o]
+set_input_delay 100 -clock clk [get_ports d]
+set_output_delay 100 -clock clk [get_ports q]
+initialize_floorplan -die_area {0 0 10 10} -core_area {1.08 1.08 8.92 8.92} -site asap7sc7p5t
+source $p/openRoad/make_tracks.tcl
+set_wire_rc -signal -layer M3
+set_wire_rc -clock -layer M5
+place_pins -hor_layers M4 -ver_layers M5
+global_placement -skip_initial_place -density 0.6
+detailed_placement
+set_propagated_clock [all_clocks]
+estimate_parasitics -placement
+set OUT_DIR [pwd]
+set DESIGN fwd
+write_sdc fwd.routed.sdc
+"""
+
+
+@needs_asap7
+def test_an_inverting_block_forwards_its_clock_inverted_through_the_chain(tmp_path):
+    """The crossed edge arcs, from a model OpenSTA characterised: the forwarded clock falls as the input rises."""
+    (tmp_path / "fwd.v").write_text(_INVERTING_BLOCK)
+    script = tmp_path / "harden.tcl"
+    script.write_text(
+        _INVERTING_HARDEN + pnr_abstract.harden_tcl(PnrAbstract(forwarded_clocks="arc"))
+    )
+    proc = subprocess.run(
+        [_OPENROAD, "-exit", "-no_init", str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    staging = tmp_path / pnr_abstract.ABSTRACT_STAGING_NAME
+    lib = staging / "fwd.lib"
+    second = staging / "fwd.forwarded.lib"
+
+    inputs, outputs = port_names(str(lib))
+    clocks, skipped = forwarded_clocks(
+        (tmp_path / "fwd.routed.sdc").read_text(), inputs, outputs
+    )
+    assert clocks == [ForwardedClock("clk_fwd", "clk_i", "clk_o", invert=True)]
+    assert skipped == []
+    rewrite(str(lib), str(second), clocks)
+    clk_o = _pin(lib.read_text(), "clk_o")
+    assert "timing_sense : negative_unate;" in clk_o
+    assert "timing_type : combinational;" in clk_o
+
+    chain = _time_chain(tmp_path, lib)
+    assert "RB-CLOCKS clk" in chain
+    # The second block captures on the inverted clock, half a period on: its
+    # rising edge is the input's falling edge through the first block's arc.
+    assert "clocked by clk')" in chain, chain
+    assert re.search(r"500\.000 +500\.000 +clock clk' \(rise edge\)", chain), chain
+    arc = re.search(r"v clk \(in\)\n +(\S+) +\S+ \^ u0/clk_o \(fwd\)", chain)
+    assert arc and float(arc.group(1)) > 0, chain
+    assert "slack (MET)" in chain
