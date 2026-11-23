@@ -58,7 +58,7 @@ rb sets `CCACHE_NAMESPACE` to the absolute build directory of each compile of a 
 - ccache before 4.8 ignores `CCACHE_NAMESPACE` and can still fail this way. There, set `CCACHE_DISABLE=1` for `rb test`.
 - An empty `CCACHE_NAMESPACE=` in the environment shares the cache across directories again, with the failure above.
 
-rb drops the namespace once Verilator or ccache keeps a precompiled header to the directory that built it.
+rb drops the namespace once Verilator or ccache keeps a precompiled header to the directory that built it; rtl_buddy#1083 tracks that.
 
 ## Tool-path fallback can select another installation
 
