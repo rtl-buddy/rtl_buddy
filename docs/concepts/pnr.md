@@ -109,6 +109,7 @@ A passing run's description can carry these qualifiers:
 | Qualifier | Meaning |
 | --- | --- |
 | `pnr.no_wire_rc` | Placement and CTS ran without [wire RC](#set-wire-rc). |
+| `pnr.no_rows_skip_placement` | The top had no rows and nothing to place, so placement, CTS, timing and antenna repair and fill did not run. See [Assemble hardened blocks](#assemble-hardened-blocks). |
 | `electrical N max-slew, ... violator(s)` | Electrical violators remain. `fail-on-electrical: true` or `electrical` in `signoff.fail-on` fails such runs. |
 | `post-route repair ...` | A repair round was passed over, or its failed session was set aside. |
 | `post-route electrical round N kept`, `not kept`, `failed` | The [electrical round](#repair-electrical-violators-after-routing) ran. |
@@ -218,6 +219,7 @@ Read the row's description and `fail_stage`, then `pnr.log`, and find the stage 
 | `openroad.threads_capped` | `threads:` exceeds the allocation. Raise the reservation or use `threads: auto`. |
 | `floorplan.pins[i]: no port matches`, `floorplan.macros[i]: no instance matches` | Fix the name or glob. A macro name is the netlist's, brackets included; see [Place macros](#place-macros). |
 | `floorplan.macros: the netlist has no hard macros` | Check that synthesis kept the macro instances. |
+| `floorplan: no rows left for N standard cell(s)` | The blocks cover the core. Leave a strip of core without blocks, or remove the cells, such as port buffers with `buffer-ports: false`. See [Assemble hardened blocks](#assemble-hardened-blocks). |
 | Missing or stale block abstract, platform or corner mismatch | Run the `rb pnr` command the message names, or `rb pnr` with no run name. |
 | `block power: ...` | A block's top-layer supply pins miss the parent's straps. See [Harden a block](#harden-a-block). |
 | `port 'd' is connected to N bit(s)`, `instance ... sets <P>=...` | The parent's ports or parameters differ from the hardened block's. See [Instance a parameterised block](#instance-a-parameterised-block). |
@@ -1098,6 +1100,7 @@ A top run names its blocks under `blocks:`, in `pnr.yaml` and in the `synth.yaml
 - A run whose block failed is not attempted (`fail_stage: blocked`, with `blocked_by`).
 - The block must use the top's technology LEF and corner.
 - An abstract is refused, naming what changed, when its inputs changed since hardening or a major rb version with different built-in flow steps or defaults hardened it. Re-harden it, or pass `--accept-stale`.
+- A top whose blocks cover the core has no rows once rows are cut around them. With no standard cell left to place, rb skips global placement, resize, legalization, CTS and its repairs, the timing repairs, antenna repair and fill, routes the top-level nets, and qualifies the pass with `pnr.no_rows_skip_placement`. Clocks stay propagated, and the `after-timing-repair` hooks of a skipped repair do not run. A top with standard cells, such as port buffers (`buffer-ports`, on by default with `harden`), needs a strip of core rows for them; without one the floorplan stops with `no rows left for N standard cell(s)`.
 - A block hardened with `abstract: {gds: false}` has no GDS. A parent's `strict` stream-out (its own `harden` and `rb pnr-export --gds-mode strict` included) fails at setup naming it. A `preview` stream-out, `--png` included, leaves it out of the layout and names it, as in [Stream out GDS and PNG](#stream-out-gds-and-png).
 
 ## Instance a parameterised block

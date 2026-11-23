@@ -62,6 +62,7 @@ DESIGN = "demo_top"
 # `RB_STUB_DRC=<n>` makes `detailed_route` report n DRC violations and write a maze log;
 # `RB_STUB_ERRLINE=<cmd>` prints an OpenROAD `[ERROR` line in that command, which returns.
 # `RB_STUB_CKPT_FAIL=<NN_stage>` makes `write_db` of that checkpoint fail without an `[ERROR` line.
+# `RB_STUB_NO_ROWS=1` leaves the core without rows; it has one otherwise.
 # `RB_STUB_ANTENNAS=<n>` makes `check_antennas` report n violating nets, one fewer after each
 # `repair_antennas`, which returns whether there were any. Its `-report_file` names the count
 # and the session's script.
@@ -76,6 +77,10 @@ proc unknown {args} {
     global env
     if {[lindex $args 1] eq "getGlobalConnects" && [info exists env(RB_STUB_RULES)]} {
         return rule
+    }
+    # The core has one row unless `RB_STUB_NO_ROWS` is set.
+    if {[lindex $args 1] eq "getRows" && ![info exists env(RB_STUB_NO_ROWS)]} {
+        return row
     }
     return ""
 }

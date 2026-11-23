@@ -547,7 +547,7 @@ def test_the_hook_runs_between_global_placement_and_tie_fanout_repair(tmp_path):
     hook = text.index("rb::hook::run after-global-placement")
     tie = text.index(">>> Repair tie fanout")
     assert gp < hook < tie
-    assert text[gp:hook].count("\n") <= 4
+    assert text[gp:hook].count("\n") <= 5
 
 
 def test_pin_constraints_stay_where_they_are(tmp_path):
@@ -768,6 +768,7 @@ proc ord::get_db_block {} { return rb_blk }
 proc rb_blk {cmd args} {
     switch $cmd {
         getInsts { return {rb_macro} }
+        getRows { return {rb_row} }
         default { return "" }
     }
 }

@@ -3765,7 +3765,7 @@ def test_pnr_flow_without_rcx_rules_keeps_the_estimated_final_reports(tmp_path):
     )
 
     assert (
-        'filler_placement $FILL_CELLS\nrb::global_connect\n\nputs ">>> Supply ports"\n'
+        'filler_placement $FILL_CELLS\n}\nrb::global_connect\n\nputs ">>> Supply ports"\n'
     ) in text
     assert (
         "rb::supply_ports::reassert\n"
@@ -4960,6 +4960,7 @@ def test_pnr_flow_repairs_hold_again_on_global_route_parasitics(tmp_path):
     assert (
         "global_route -congestion_iterations 30 "
         "-congestion_report_file $CONGESTION_RPT -verbose\n"
+        "if {[rb::has_rows]} {\n"
         'puts ">>> Post-global-route hold repair"\n'
         "estimate_parasitics -global_routing\n"
         "repair_timing -hold\n"
@@ -4968,6 +4969,7 @@ def test_pnr_flow_repairs_hold_again_on_global_route_parasitics(tmp_path):
         "global_route -end_incremental -congestion_report_file $CONGESTION_RPT "
         "-verbose\n"
         "check_placement -verbose\n"
+        "}\n"
     ) in text
     assert text.index("global_route -end_incremental") < text.index(">>> Detail route")
     # The post-CTS repair still runs, on placement parasitics.
@@ -5016,7 +5018,8 @@ def test_pnr_flow_passes_the_cts_apply_ndr(tmp_path, clustering):
     options = "-sink_clustering_enable" if clustering else ""
     assert (
         "    -buf_list $CTS_BUF \\\n"
-        f"    {options} -apply_ndr none\n\n"
+        f"    {options} -apply_ndr none\n}}\n"
+        "if {[rb::has_rows]} {\n"
         'puts ">>> Detail placement (post-CTS)"'
     ) in text
     assert text.count("-apply_ndr") == 1

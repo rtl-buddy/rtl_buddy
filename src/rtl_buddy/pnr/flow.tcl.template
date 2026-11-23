@@ -48,6 +48,34 @@ proc rb::global_connect {} {
     ::global_connect
   }
 }
+# A top whose blocks cover the core has no rows once they are cut around the
+# blocks. It needs none when no standard cell is left to place (`rb::check_rows`
+# stops the floorplan otherwise), so the steps that place, legalize, buffer,
+# repair or fill cells run only where there are rows; `rb::skip` logs each
+# step left out.
+proc rb::has_rows {} {
+  return [expr {[llength [[ord::get_db_block] getRows]] > 0}]
+}
+proc rb::skip {what} {
+  puts ">>> rb: no rows: $what skipped"
+}
+# At the end of the floorplan: without rows, every standard cell must be fixed.
+proc rb::check_rows {} {
+  if {[rb::has_rows]} { return }
+  set cells {}
+  foreach inst [[ord::get_db_block] getInsts] {
+    if {[string match CORE* [[$inst getMaster] getType]] && ![$inst isFixed]} {
+      lappend cells [$inst getName]
+    }
+  }
+  if {[llength $cells] > 0} {
+    set more [expr {[llength $cells] > 3 ? ", ..." : ""}]
+    error "floorplan: no rows left for [llength $cells] standard cell(s)\
+      ([join [lrange $cells 0 2] {, }]$more): leave a strip of the core\
+      without blocks for them, or turn off buffer-ports if they are port buffers"
+  }
+  puts "{{ no_rows_tag }} no rows and no standard cell to place"
+}
 {{ threads_block }}{{ checkpoint_block }}{{ platform_tcl_block }}{{ hook_procs_block }}
 puts ">>> Reading Liberty + LEF"
 {{ read_liberty }}
@@ -70,9 +98,13 @@ puts ">>> Tie cells"
 puts ">>> Macro placement"
 {{ @design }}set block [ord::get_db_block]
 # Macro origins snap to the site grid from the core corner; a bottom edge
-# between two rows can fail DPL-0011 after legalization.
-set site_obj [[lindex [$block getRows] 0] getSite]
-set site_grid_dbu [list [$site_obj getWidth] [$site_obj getHeight]]
+# between two rows can fail DPL-0011 after legalization. A later session of a
+# top without rows has no grid.
+set site_grid_dbu {}
+if {[rb::has_rows]} {
+  set site_obj [[lindex [$block getRows] 0] getSite]
+  set site_grid_dbu [list [$site_obj getWidth] [$site_obj getHeight]]
+}
 set dbu_per_micron [expr {int([ord::microns_to_dbu 1.0])}]
 set macros {}
 foreach inst [$block getInsts] {
@@ -112,22 +144,32 @@ puts ">>> IO pin placement"
 {{ place_pins_block }}
 {{ hook_after_pins_block }}{{ buffer_ports_block }}
 rb::global_connect
-{{ hook_stage_end_floorplan_block }}{{ keepout_recheck_block }}{{ @place }}puts ">>> Global placement"
+{{ hook_stage_end_floorplan_block }}{{ keepout_recheck_block }}rb::check_rows
+{{ @place }}if {![rb::has_rows]} {
+{{ skip_global_placement }}} else {
+puts ">>> Global placement"
 {{ gp_blockages_create }}global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}{{ routability_options }}{{ timing_driven_option }}
-{{ free_port_buffers_block }}{{ gp_blockages_destroy }}{{ hook_after_global_placement_block }}{{ tie_fanout_block }}
+{{ free_port_buffers_block }}{{ gp_blockages_destroy }}}
+{{ hook_after_global_placement_block }}if {[rb::has_rows]} {
+{{ tie_fanout_block }}
 puts ">>> Resize"
 estimate_parasitics -placement
 repair_design{{ place_repair_design_options }}{{ match_cell_footprint }}
-{{ hook_after_repair_design_block }}
+}
+{{ hook_after_repair_design_block }}if {[rb::has_rows]} {
 puts ">>> Detail placement (legalize)"
 detailed_placement{{ place_dpl_options }}
-{{ detailed_placement_optimization }}{{ macro_pin_limits_block }}rb::global_connect
-{{ hook_stage_end_place_block }}check_placement -verbose
+{{ detailed_placement_optimization }}{{ macro_pin_limits_block }}}
+rb::global_connect
+{{ hook_stage_end_place_block }}if {[rb::has_rows]} { check_placement -verbose }
 
 {{ @cts }}puts ">>> Clock tree synthesis"
-{{ @clocks }}{{ propagated_clocks }}{{ @/clocks }}{{ hook_before_cts_block }}{{ cts_dont_use_block }}clock_tree_synthesis \
+{{ @clocks }}{{ propagated_clocks }}{{ @/clocks }}{{ hook_before_cts_block }}{{ cts_dont_use_block }}if {![rb::has_rows]} {
+{{ skip_cts }}} else {
+clock_tree_synthesis \
 {{ cts_buffer_options }}    {{ cts_clustering_option }}{{ cts_ndr_option }}{{ cts_clock_nets_option }}{{ cts_insertion_delay_option }}{{ cts_obstruction_option }}
-{{ hook_before_repair_clock_nets_block }}{{ cts_repair_clock_nets }}{{ cts_dont_use_restore_block }}{{ hook_after_cts_block }}
+}
+{{ hook_before_repair_clock_nets_block }}{{ cts_repair_clock_nets }}{{ cts_dont_use_restore_block }}{{ hook_after_cts_block }}if {[rb::has_rows]} {
 puts ">>> Detail placement (post-CTS)"
 detailed_placement{{ cts_dpl_options }}
 {{ post_cts_repair }}
@@ -137,6 +179,7 @@ puts ">>> Detail placement (legalize repair cells)"
 detailed_placement{{ cts_dpl_options }}
 # -verbose names each failing instance.
 check_placement -verbose
+}
 {{ hook_after_cts_repair_block }}rb::global_connect
 {{ hook_stage_end_cts_block }}
 {{ @global_route }}# -verbose logs the per-layer usage table (GRT-0096) of every global route.
@@ -177,7 +220,11 @@ detailed_route \
 {{ detailed_route_antenna_repair }}rb::global_connect
 {{ hook_stage_end_detailed_route_block }}{{ @finish }}{{ dont_use_check_block }}
 puts ">>> Fill insertion"
+if {![rb::has_rows]} {
+  rb::skip "fill insertion"
+} else {
 filler_placement $FILL_CELLS
+}
 rb::global_connect
 {{ rcx_block }}{{ hook_after_extraction_block }}{{ hook_before_reports_block }}{{ supply_ports_block }}
 puts ">>> Final reports"

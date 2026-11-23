@@ -68,7 +68,7 @@ def test_a_run_without_port_buffers_renders_the_pin_to_placement_step_unchanged(
     assert (
         "place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V\n\n"
         "rb::global_connect\n"
-        'puts ">>> Global placement"'
+        "rb::check_rows\n"
     ) in text
 
 

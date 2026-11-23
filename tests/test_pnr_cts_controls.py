@@ -554,9 +554,12 @@ def test_every_new_key_renders_into_one_cts_call(tmp_path):
         "    -buf_list $CTS_BUF \\\n"
         "    -sink_clustering_enable -sink_clustering_size 20 "
         "-sink_clustering_max_diameter 25 -no_obstruction_aware\n"
+        "}\n"
+        "if {[rb::has_rows]} {\n"
         'puts ">>> Repair clock nets"\n'
         "estimate_parasitics -placement\n"
         "repair_clock_nets -max_wire_length 1000\n"
+        "}\n"
     ) in text
 
 
