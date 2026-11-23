@@ -1,9 +1,11 @@
 """The `dont-touch:` run key (rtl_buddy#1077): its validation, where the flow marks the instances, the global connections around the power grid, and the config digest.
 
-The Tcl procedures are run under a bare Tcl interpreter against a mock block.
+The Tcl procedures are run under a bare Tcl interpreter against a mock block. The end-to-end cases run them, and the macro pin-limit repair beside a dont-touch macro, on OpenROAD; they need `RTL_BUDDY_ASAP7_DIR`, an ORFS `platforms/asap7` directory.
 """
 
 import os
+import shutil
+import subprocess
 from importlib.resources import files
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -324,3 +326,198 @@ def test_restore_connects_the_supplies_before_marking_and_names_an_unpowered_pin
         )
         == "1"
     )
+
+
+# -- end to end --------------------------------------------------------------------
+
+_OPENROAD = shutil.which("openroad")
+_ASAP7 = os.environ.get("RTL_BUDDY_ASAP7_DIR")
+needs_asap7 = pytest.mark.skipif(
+    _OPENROAD is None
+    or not _ASAP7
+    or not (Path(_ASAP7) / "lef" / "fakeram7_64x21.lef").is_file(),
+    reason="needs openroad and RTL_BUDDY_ASAP7_DIR (an ORFS platforms/asap7 directory)",
+)
+
+#: Two SRAM macros whose enable inputs are each driven by a register; `u_kept` is dont-touch.
+_MACROS_NETLIST = """\
+module two_rams (input clk, input d, input e, output q, output q2);
+  wire n0, n1, n2, n3;
+  wire [20:0] rd, rd2;
+  DFFHQNx1_ASAP7_75t_R r0 (.CLK(clk), .D(d), .QN(n0));
+  DFFHQNx1_ASAP7_75t_R r1 (.CLK(clk), .D(e), .QN(n1));
+  DFFHQNx1_ASAP7_75t_R r2 (.CLK(clk), .D(d), .QN(n2));
+  DFFHQNx1_ASAP7_75t_R r3 (.CLK(clk), .D(e), .QN(n3));
+  fakeram7_64x21 u_kept (.clk(clk), .we_in(n0), .ce_in(n1), .addr_in(6'b0),
+    .wd_in(21'b0), .rd_out(rd));
+  fakeram7_64x21 u_free (.clk(clk), .we_in(n2), .ce_in(n3), .addr_in(6'b0),
+    .wd_in(21'b0), .rd_out(rd2));
+  DFFHQNx1_ASAP7_75t_R r4 (.CLK(clk), .D(rd[0]), .QN(q));
+  DFFHQNx1_ASAP7_75t_R r5 (.CLK(clk), .D(rd2[0]), .QN(q2));
+endmodule
+"""
+
+_MACROS_SCRIPT = """\
+set p $::env(RTL_BUDDY_ASAP7_DIR)
+read_lef $p/lef/asap7_tech_1x_201209.lef
+read_lef $p/lef/asap7sc7p5t_28_R_1x_220121a.lef
+read_lef $p/lef/fakeram7_64x21.lef
+foreach l {INVBUF_RVT_TT_nldm_220122.lib.gz SEQ_RVT_TT_nldm_220123.lib SIMPLE_RVT_TT_nldm_211120.lib.gz} {
+  read_liberty $p/lib/NLDM/asap7sc7p5t_$l
+}
+read_liberty $p/lib/NLDM/fakeram7_64x21.lib
+read_verilog two_rams.v
+link_design two_rams
+create_clock -name clk -period 1000 [get_ports clk]
+initialize_floorplan -die_area {0 0 50 40} -core_area {1.08 1.08 48.92 38.92} -site asap7sc7p5t
+source $p/openRoad/make_tracks.tcl
+set_wire_rc -signal -layer M3
+set_wire_rc -clock -layer M5
+foreach {name x} {u_kept 10000 u_free 32000} {
+  set m [[ord::get_db_block] findInst $name]
+  $m setLocation $x 12000
+  $m setPlacementStatus FIRM
+}
+place_pins -hor_layers M4 -ver_layers M5
+global_placement -skip_initial_place -density 0.6
+detailed_placement
+# Every macro input is over this limit, and every output inside it.
+set_max_transition 30 [current_design]
+[[ord::get_db_block] findInst u_kept] setDoNotTouch 1
+namespace eval rb {}
+proc rb::global_connect {} {}
+"""
+
+
+@needs_asap7
+def test_macro_pin_limits_leave_a_dont_touch_macro_s_pins_unbuffered(tmp_path):
+    """OpenROAD refuses to move a dont-touch instance's pin to a new net (RSZ-3017), which aborted the step."""
+    (tmp_path / "two_rams.v").write_text(_MACROS_NETLIST)
+    procs = "".join(
+        files("rtl_buddy.pnr").joinpath(name).read_text()
+        for name in ("check_reports.tcl", "macro_pin_limits.tcl")
+    )
+    script = tmp_path / "run.tcl"
+    script.write_text(
+        _MACROS_SCRIPT
+        + procs
+        + "rb::macro_pins::repair {BUFx2_ASAP7_75t_R BUFx4_ASAP7_75t_R} 0.1 0.1 0 "
+        "RB-MPL [list]\n"
+        "foreach pin {u_kept/we_in u_kept/ce_in u_free/we_in u_free/ce_in} {\n"
+        '  puts "RB-NET $pin [get_name [get_nets -of_objects [get_pins $pin]]]"\n'
+        "}\n"
+    )
+    proc = subprocess.run(
+        [_OPENROAD, "-exit", "-no_init", str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=300,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "[ERROR" not in out, out
+    nets = dict(
+        line.split()[1:] for line in out.splitlines() if line.startswith("RB-NET ")
+    )
+    # The dont-touch macro keeps its nets and counts as unmet; the other is buffered.
+    assert nets["u_kept/we_in"] == "n0" and nets["u_kept/ce_in"] == "n1", out
+    assert nets["u_free/we_in"] != "n2" and nets["u_free/ce_in"] != "n3", out
+    assert "u_kept/we_in (input)" in out and "the macro is dont-touch" in out
+    assert "RB-MPL buffered 2 unmet 2" in out, out
+
+
+_FWD_NETLIST = """\
+module fwd (input clk_i, input d, output q, output clk_o);
+  DFFHQNx1_ASAP7_75t_R r0 (.CLK(clk_i), .D(d), .QN(q));
+  BUFx4_ASAP7_75t_R u_clk_buf (.A(clk_i), .Y(clk_o));
+endmodule
+"""
+
+_FWD_SCRIPT = """\
+set p $::env(RTL_BUDDY_ASAP7_DIR)
+read_lef $p/lef/asap7_tech_1x_201209.lef
+read_lef $p/lef/asap7sc7p5t_28_R_1x_220121a.lef
+foreach l {INVBUF_RVT_TT_nldm_220122.lib.gz SEQ_RVT_TT_nldm_220123.lib} {
+  read_liberty $p/lib/NLDM/asap7sc7p5t_$l
+}
+read_verilog fwd.v
+link_design fwd
+initialize_floorplan -die_area {0 0 20 20} -core_area {1.08 1.08 18.92 18.92} -site asap7sc7p5t
+namespace eval rb {}
+proc rb::global_connect {} {
+  if {[llength [[ord::get_db_block] getGlobalConnects]] > 0} {
+    ::global_connect
+  }
+}
+"""
+
+_FWD_REPORT = """\
+foreach name {u_clk_buf r0} {
+  set inst [[ord::get_db_block] findInst $name]
+  set nets [lmap pin {VDD VSS} {
+    set net [[$inst findITerm $pin] getNet]
+    expr {$net eq "NULL" ? "none" : [$net getName]}
+  }]
+  puts "RB-INST $name [$inst isDoNotTouch] $nets"
+}
+"""
+
+
+def _fwd_run(tmp_path, steps: str) -> dict[str, str]:
+    (tmp_path / "fwd.v").write_text(_FWD_NETLIST)
+    source = "".join(
+        files("rtl_buddy.pnr").joinpath(name).read_text()
+        for name in ("insts.tcl", "dont_touch.tcl")
+    )
+    script = tmp_path / "run.tcl"
+    script.write_text(_FWD_SCRIPT + source + steps + _FWD_REPORT)
+    proc = subprocess.run(
+        [_OPENROAD, "-exit", "-no_init", str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    return {
+        line.split(maxsplit=2)[1]: line.split(maxsplit=2)[2]
+        for line in out.splitlines()
+        if line.startswith("RB-INST ")
+    } | {"log": out}
+
+
+_RULES = (
+    "add_global_connection -net VDD -pin_pattern {^VDD$} -power\n"
+    "add_global_connection -net VSS -pin_pattern {^VSS$} -ground\n"
+)
+
+
+@needs_asap7
+def test_the_marked_instance_is_powered_and_marked_again_on_openroad(tmp_path):
+    """The steps the flow runs around the power grid, with global connections standing in for it."""
+    run = _fwd_run(
+        tmp_path,
+        "rb::dont_touch::apply [list [list {dont-touch[0]} u_clk_buf]]\n"
+        "rb::dont_touch::lift\n" + _RULES + "rb::dont_touch::restore\n",
+    )
+    assert "dont-touch u_clk_buf: 1 instance(s)" in run["log"]
+    assert run["u_clk_buf"] == "1 VDD VSS", run["log"]
+    assert run["r0"] == "0 VDD VSS", run["log"]
+
+
+@needs_asap7
+def test_without_the_lift_openroad_leaves_the_instance_unpowered(tmp_path):
+    """Why the flow lifts the mark: OpenROAD's global connections skip a dont-touch instance (ODB-0383)."""
+    run = _fwd_run(
+        tmp_path,
+        "rb::dont_touch::apply [list [list {dont-touch[0]} u_clk_buf]]\n"
+        + _RULES
+        + "rb::global_connect\n",
+    )
+    assert "ODB-0383" in run["log"], run["log"]
+    assert run["u_clk_buf"] == "1 none none", run["log"]
+    assert run["r0"] == "0 VDD VSS", run["log"]

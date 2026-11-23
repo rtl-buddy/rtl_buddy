@@ -275,6 +275,10 @@ Once `detailed_placement -use_diamond_legalizer` runs, every later legalization 
 
 TritonCTS treats each input pin on a clock net as a sink and moves it behind a buffer it inserts. A buffer that forwards the clock to an output port then sits behind part of the tree, so the forwarded clock's delay depends on the tree, and on a dont-touch buffer CTS stops with `ODB-0370`. OpenROAD has no option to leave one pin on the root net: `set_cts_config -skip_nets` skips whole nets. Name such pins in [`cts-root-taps`](concepts/pnr.md#forward-a-clock-with-a-root-tap), which takes them off their net around CTS.
 
+## CTS stops on a dont-touch instance whose input is on a clock net
+
+TritonCTS moves every input pin on a clock net it buffers behind a buffer it inserts, and OpenROAD cannot reconnect a pin of a dont-touch instance, so `clock_tree_synthesis` stops with `ODB-0370`. A buffer that forwards a clock to an output port hits this once it is in [`dont-touch`](concepts/pnr.md#keep-instances-unchanged). Name its input pin in [`cts-root-taps`](concepts/pnr.md#forward-a-clock-with-a-root-tap), which takes the pin off its net around CTS and clears the mark for those steps only.
+
 ## `repair_design` does not repair the slew at an output port
 
 OpenROAD's `repair_design` checks a net that ends at an output port only at its driver, so a long net to an output pin keeps its slew even when the SDC sets `set_max_transition` on the port. A port has no limit unless the SDC sets one, so without it the electrical counts do not list the pin either. Set the limit in the SDC and buffer the outputs with `buffer-ports: {outputs: true, hold-outputs-at-pins: true}`; see [Check and repair slew at output ports](concepts/pnr.md#check-and-repair-slew-at-output-ports).
