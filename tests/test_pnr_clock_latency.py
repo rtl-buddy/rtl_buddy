@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 from pnr_events import _capture_pnr_events, _one_event
 from pnr_stub_openroad import _pdk, _platform, _pnr_cfg
+from tcl_eval import _tcl_eval
 
 from rtl_buddy.config.pnr import (
     CHECKPOINT_STAGES,
@@ -211,6 +212,66 @@ def test_a_multi_corner_platform_measures_each_corner_in_its_scene():
         "[list ff [rb::clock_latency::corner_args ff]]]"
     )
     assert _clock_latency_tcl((), ["ss"], "ss") == ""
+
+
+def test_each_corner_with_a_mode_is_measured_in_that_mode():
+    step = _clock_latency_tcl(_GROUPS[:1], ["ss", "ff"], "ss", modes=True)
+    assert step.endswith(
+        "[list [list ss [rb::clock_latency::corner_args ss] ss] "
+        "[list ff [rb::clock_latency::corner_args ff] ff]]"
+    )
+
+
+#: A timer whose pin `b` is clocked only in mode `ff`, as when the two corners' SDCs set a clock mux's select apart. Each arrival is 10 in `ss` and 8 in `ff`.
+_MODES = r"""
+namespace eval sta {}
+set ::mode ss
+set ::modes {}
+proc sta::cmd_mode_name {} { return $::mode }
+proc sta::find_scene {name} { return $name }
+proc set_mode {name} { lappend ::modes $name; set ::mode $name }
+proc get_property {pin property} {
+    if {$pin eq "a" || ($pin eq "b" && $::mode eq "ff")} { return clk }
+    return {}
+}
+proc with_output_to_variable {var cmd} {
+    upvar 1 $var text
+    set text [uplevel 1 $cmd]
+}
+proc report_arrival {args} {
+    set scene [lindex $args [expr {[lsearch $args -scene] + 1}]]
+    set t [expr {$scene eq "ff" ? 8.0 : 10.0}]
+    return "  (clk ^) r $t:$t f $t:$t
+"
+}
+proc puts {line} { lappend ::lines $line }
+"""
+
+
+def test_a_secondary_corner_counts_the_sinks_its_own_mode_clocks():
+    source = "".join(
+        files("rtl_buddy.pnr").joinpath(name).read_text()
+        for name in ("insts.tcl", "clock_latency.tcl")
+    )
+    result = _tcl_eval(
+        _MODES
+        + source
+        + "proc rb::clock_latency::sinks {specs} { return {a b} }\n"
+        + "rb::clock_latency::report T [list [list g {x}] [list h {y}]] [list "
+        + "[list ss [rb::clock_latency::corner_args ss] ss] "
+        + "[list ff [rb::clock_latency::corner_args ff] ff]]\n"
+        + 'set result [join [list [join $::lines |] $::modes $::mode] "\\n"]'
+    )
+    lines, modes, current = result.split("\n")
+    assert lines.split("|") == [
+        "T g ss 2 1 10.0 10.0 10.0",
+        "T g ff 2 2 8.0 8.0 8.0",
+        "T h ss 2 1 10.0 10.0 10.0",
+        "T h ff 2 2 8.0 8.0 8.0",
+    ]
+    # Each corner's mode while it is measured, and the first mode again after each group.
+    assert modes.split() == ["ss", "ff", "ss", "ss", "ff", "ss"]
+    assert current == "ss"
 
 
 def test_the_report_changes_no_abstract(tmp_path):

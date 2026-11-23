@@ -123,9 +123,17 @@ proc rb::clock_latency::late_arrival {pin corner_args} {
 }
 
 # Print `tag group corner sinks timed min max mean` for each group, each
-# {name sinks}, at each of `corners`, each {name corner_args}; `-` for a
-# value without timed sinks. Times are in the timer's unit.
+# {name sinks}, at each of `corners`, each {name corner_args ?mode?}; `-` for a
+# value without timed sinks. Times are in the timer's unit. A corner with a
+# `mode` is measured with that SDC mode current, since a pin's clocks are read
+# in the current mode, not the scene's; the mode current before is restored.
 proc rb::clock_latency::report {tag groups corners} {
+    set restore ""
+    foreach corner $corners {
+        if {[lindex $corner 2] ne ""} {
+            set restore [sta::cmd_mode_name]
+        }
+    }
     foreach group $groups {
         lassign $group name specs
         if {[catch {set pins [sinks $specs]} err]} {
@@ -133,8 +141,11 @@ proc rb::clock_latency::report {tag groups corners} {
             continue
         }
         foreach corner $corners {
-            lassign $corner corner_name corner_args
+            lassign $corner corner_name corner_args mode
             if {[catch {
+                if {$mode ne ""} {
+                    set_mode $mode
+                }
                 set arrivals {}
                 foreach pin $pins {
                     set late [late_arrival $pin $corner_args]
@@ -158,6 +169,9 @@ proc rb::clock_latency::report {tag groups corners} {
             } err]} {
                 puts "rb: clock latency of $name at $corner_name unavailable: $err"
             }
+        }
+        if {$restore ne ""} {
+            set_mode $restore
         }
     }
 }
