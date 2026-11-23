@@ -4,6 +4,7 @@ The fixtures are the two models OpenROAD 26Q2-911's `write_timing_model` wrote f
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -539,3 +540,90 @@ def test_the_second_block_of_a_chain_is_clocked_through_the_first(tmp_path):
     assert re.search(r"\^ u0/clk_o \(fwd\)", forwarded)
     assert re.search(r"\^ u1/clk_i \(fwd\)", forwarded)
     assert "slack (MET)" in forwarded
+
+
+_ASAP7 = os.environ.get("RTL_BUDDY_ASAP7_DIR")
+needs_asap7 = pytest.mark.skipif(
+    _OPENROAD is None or not _ASAP7,
+    reason="needs openroad and RTL_BUDDY_ASAP7_DIR (an ORFS platforms/asap7 directory)",
+)
+
+#: A block that forwards its clock inverted, through one inverter, and registers `d`.
+_INVERTING_BLOCK = """\
+module fwd (input clk_i, input d, output q, output clk_o);
+  DFFHQNx1_ASAP7_75t_R r0 (.CLK(clk_i), .D(d), .QN(q));
+  INVx2_ASAP7_75t_R u_clk_inv (.A(clk_i), .Y(clk_o));
+endmodule
+"""
+
+#: Placed, not routed, and characterised by the harden step's own Tcl.
+_INVERTING_HARDEN = """\
+set p $::env(RTL_BUDDY_ASAP7_DIR)
+read_lef $p/lef/asap7_tech_1x_201209.lef
+read_lef $p/lef/asap7sc7p5t_28_R_1x_220121a.lef
+foreach l {INVBUF_RVT_TT_nldm_220122.lib.gz SEQ_RVT_TT_nldm_220123.lib} {
+  read_liberty $p/lib/NLDM/asap7sc7p5t_$l
+}
+read_verilog fwd.v
+link_design fwd
+create_clock -name clk -period 1000 [get_ports clk_i]
+create_generated_clock -name clk_fwd -source [get_ports clk_i] -divide_by 1 -invert [get_ports clk_o]
+set_input_delay 100 -clock clk [get_ports d]
+set_output_delay 100 -clock clk [get_ports q]
+initialize_floorplan -die_area {0 0 10 10} -core_area {1.08 1.08 8.92 8.92} -site asap7sc7p5t
+source $p/openRoad/make_tracks.tcl
+set_wire_rc -signal -layer M3
+set_wire_rc -clock -layer M5
+place_pins -hor_layers M4 -ver_layers M5
+global_placement -skip_initial_place -density 0.6
+detailed_placement
+set_propagated_clock [all_clocks]
+estimate_parasitics -placement
+set OUT_DIR [pwd]
+set DESIGN fwd
+write_sdc fwd.routed.sdc
+"""
+
+
+@needs_asap7
+def test_an_inverting_block_forwards_its_clock_inverted_through_the_chain(tmp_path):
+    """The crossed edge arcs, from a model OpenSTA characterised: the forwarded clock falls as the input rises."""
+    (tmp_path / "fwd.v").write_text(_INVERTING_BLOCK)
+    script = tmp_path / "harden.tcl"
+    script.write_text(
+        _INVERTING_HARDEN + pnr_abstract.harden_tcl(PnrAbstract(forwarded_clocks="arc"))
+    )
+    proc = subprocess.run(
+        [_OPENROAD, "-exit", "-no_init", str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    staging = tmp_path / pnr_abstract.ABSTRACT_STAGING_NAME
+    lib = staging / "fwd.lib"
+    second = staging / "fwd.forwarded.lib"
+
+    inputs, outputs = port_names(str(lib))
+    clocks, skipped = forwarded_clocks(
+        (tmp_path / "fwd.routed.sdc").read_text(), inputs, outputs
+    )
+    assert clocks == [ForwardedClock("clk_fwd", "clk_i", "clk_o", invert=True)]
+    assert skipped == []
+    rewrite(str(lib), str(second), clocks)
+    clk_o = _pin(lib.read_text(), "clk_o")
+    assert "timing_sense : negative_unate;" in clk_o
+    assert "timing_type : combinational;" in clk_o
+
+    chain = _time_chain(tmp_path, lib)
+    assert "RB-CLOCKS clk" in chain
+    # The second block captures on the inverted clock, half a period on: its
+    # rising edge is the input's falling edge through the first block's arc.
+    assert "clocked by clk')" in chain, chain
+    assert re.search(r"500\.000 +500\.000 +clock clk' \(rise edge\)", chain), chain
+    arc = re.search(r"v clk \(in\)\n +(\S+) +\S+ \^ u0/clk_o \(fwd\)", chain)
+    assert arc and float(arc.group(1)) > 0, chain
+    assert "slack (MET)" in chain
