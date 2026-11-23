@@ -1597,6 +1597,10 @@ endmodule
 """
 
 
+#: Seconds any one subprocess of the real Verilator builds may take before the test fails.
+_REAL_BUILD_TIMEOUT_S = 300
+
+
 @pytest.mark.skipif(
     not all(shutil.which(tool) for tool in ("verilator", "ccache", "clang++")),
     reason="needs verilator, ccache and clang++",
@@ -1614,6 +1618,14 @@ def test_a_verilator_build_never_compiles_against_another_dirs_precompiled_heade
     monkeypatch.setattr(
         vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
     )
+    run_managed_process = vlog_sim_module.run_managed_process
+
+    def _bounded(cmd, **kwargs):
+        kwargs.setdefault("timeout", _REAL_BUILD_TIMEOUT_S)
+        kwargs.setdefault("timeout_returncode", 124)
+        return run_managed_process(cmd, **kwargs)
+
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _bounded)
 
     def _build(test_name, *defines):
         # `--output-split` makes even this design compile several files against a
