@@ -1,7 +1,7 @@
 import logging
 import os
 import pprint
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass, field as dc_field, replace
 from typing import Literal
 
 from serde import field, serde
@@ -271,6 +271,16 @@ class PowerConfig:
 
     def get_pnr_suite_path(self) -> str | None:
         return self.pnr_suite_path
+
+    def with_real_pnr_path(self) -> "PowerConfig":
+        """This run with `pnr-path` resolved through symlinks, as `rb pnr` resolves its `pnr.yaml`.
+
+        For `--run-tag`: a tagged P&R run is under the tree beside the real file, and the P&R
+        run's own paths resolve from there as `rb pnr` resolved them.
+        """
+        if not self.pnr_suite_path:
+            return self
+        return replace(self, pnr_suite_path=os.path.realpath(self.pnr_suite_path))
 
     def get_phys_run(self) -> str | None:
         """Return the synthesis run whose artefact directory receives this run's model half.

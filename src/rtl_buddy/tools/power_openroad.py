@@ -200,6 +200,9 @@ class OpenRoadPower(BasePower):
         run_tag: str | None = None,
         tag_inputs=None,
     ):
+        if run_tag is not None:
+            # The P&R suite as `rb pnr` saw it, for its tagged tree and its config-owned paths.
+            power_cfg = power_cfg.with_real_pnr_path()
         super().__init__(
             name=name,
             power_cfg=power_cfg,

@@ -13267,6 +13267,8 @@ class RtlBuddy:
         for run in suite_cfg.get_runs(power_name):
             if run.get_netlist_source() != "pnr":
                 continue
+            # As the run's backend reads it: one canonical P&R suite for the lock and the copy.
+            run = run.with_real_pnr_path()
             if (
                 reg_level is not None
                 and run.get_reglvl(run.get_tool_name()) > reg_level
@@ -13284,7 +13286,7 @@ class RtlBuddy:
             self._artifact_locks,
             ctx.artifact_root,
             [
-                run_artifact_root(Path(path).resolve().parent, run_tag)
+                run_artifact_root(os.path.dirname(path), run_tag)
                 for _cfg, path, _top in reads
             ],
             command="power",

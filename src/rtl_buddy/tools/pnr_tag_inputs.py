@@ -435,7 +435,9 @@ class TagInputs:
         the copies its `blocks.consumed.json` names. Each P&R run is copied once per call, and
         an error is kept like a copy, so it fails only the power runs that read that P&R run.
         """
-        key = ("routed", os.path.realpath(pnr_suite_path), pnr_cfg.get_name())
+        # The tree `rb pnr` wrote is beside the real pnr.yaml; the lock, the copy and the block record all use it.
+        pnr_suite_path = os.path.realpath(pnr_suite_path)
+        key = ("routed", pnr_suite_path, pnr_cfg.get_name())
 
         def _compute():
             try:

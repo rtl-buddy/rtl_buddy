@@ -566,3 +566,30 @@ def test_a_copy_that_cannot_be_written_fails_only_its_run_and_withdraws_its_repo
     [copy] = _copies(minimal_project, "a")
     assert copy.name.startswith("other_pnr-")
     assert (copy / _ODB).read_text() == "odb a\n"
+
+
+def test_a_pnr_path_linked_into_another_directory_reads_the_tree_rb_pnr_wrote(
+    cli_project,
+):
+    """`rb pnr` resolves its `pnr.yaml` before choosing its tree; a tagged power read through the same link finds that tree."""
+    (cli_project / "aliases").mkdir()
+    (cli_project / "aliases/pnr.yaml").symlink_to("../pnr/pnr.yaml")
+    power_yaml = cli_project / "power/power.yaml"
+    power_yaml.write_text(
+        power_yaml.read_text().replace("../pnr/pnr.yaml", "../aliases/pnr.yaml")
+    )
+    result = _rb("pnr", "blk_pnr", "-c", "aliases/pnr.yaml", "--run-tag", "a")
+    assert result.exit_code == 0, result.output
+    assert (_tagged_pnr_dir(cli_project, "a") / _ODB).is_file()
+
+    result = _rb("power", "blk_power", "-c", "power/power.yaml", "--run-tag", "a")
+
+    assert result.exit_code == 0, result.output
+    tagged = cli_project / "power/artefacts" / RUNS_DIRNAME / "a"
+    inputs = json.loads((tagged / "blk_power/inputs.json").read_text())
+    [copy] = _copies(cli_project, "a")
+    assert inputs["odb"] == str(copy / _ODB)
+    assert (copy / _ODB).read_text() == "odb a\n"
+    assert inputs["pnr_dir"] == str(_tagged_pnr_dir(cli_project, "a"))
+    # Nothing was locked or looked for beside the link.
+    assert not (cli_project / "aliases/artefacts").exists()
