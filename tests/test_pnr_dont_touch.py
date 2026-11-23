@@ -4,6 +4,8 @@ The Tcl procedures are run under a bare Tcl interpreter against a mock block.
 """
 
 import os
+import shutil
+import subprocess
 from importlib.resources import files
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -324,3 +326,103 @@ def test_restore_connects_the_supplies_before_marking_and_names_an_unpowered_pin
         )
         == "1"
     )
+
+
+# -- end to end --------------------------------------------------------------------
+
+_OPENROAD = shutil.which("openroad")
+_ASAP7 = os.environ.get("RTL_BUDDY_ASAP7_DIR")
+needs_asap7 = pytest.mark.skipif(
+    _OPENROAD is None
+    or not _ASAP7
+    or not (Path(_ASAP7) / "lef" / "fakeram7_64x21.lef").is_file(),
+    reason="needs openroad and RTL_BUDDY_ASAP7_DIR (an ORFS platforms/asap7 directory)",
+)
+
+#: Two SRAM macros whose enable inputs are each driven by a register; `u_kept` is dont-touch.
+_MACROS_NETLIST = """\
+module two_rams (input clk, input d, input e, output q, output q2);
+  wire n0, n1, n2, n3;
+  wire [20:0] rd, rd2;
+  DFFHQNx1_ASAP7_75t_R r0 (.CLK(clk), .D(d), .QN(n0));
+  DFFHQNx1_ASAP7_75t_R r1 (.CLK(clk), .D(e), .QN(n1));
+  DFFHQNx1_ASAP7_75t_R r2 (.CLK(clk), .D(d), .QN(n2));
+  DFFHQNx1_ASAP7_75t_R r3 (.CLK(clk), .D(e), .QN(n3));
+  fakeram7_64x21 u_kept (.clk(clk), .we_in(n0), .ce_in(n1), .addr_in(6'b0),
+    .wd_in(21'b0), .rd_out(rd));
+  fakeram7_64x21 u_free (.clk(clk), .we_in(n2), .ce_in(n3), .addr_in(6'b0),
+    .wd_in(21'b0), .rd_out(rd2));
+  DFFHQNx1_ASAP7_75t_R r4 (.CLK(clk), .D(rd[0]), .QN(q));
+  DFFHQNx1_ASAP7_75t_R r5 (.CLK(clk), .D(rd2[0]), .QN(q2));
+endmodule
+"""
+
+_MACROS_SCRIPT = """\
+set p $::env(RTL_BUDDY_ASAP7_DIR)
+read_lef $p/lef/asap7_tech_1x_201209.lef
+read_lef $p/lef/asap7sc7p5t_28_R_1x_220121a.lef
+read_lef $p/lef/fakeram7_64x21.lef
+foreach l {INVBUF_RVT_TT_nldm_220122.lib.gz SEQ_RVT_TT_nldm_220123.lib SIMPLE_RVT_TT_nldm_211120.lib.gz} {
+  read_liberty $p/lib/NLDM/asap7sc7p5t_$l
+}
+read_liberty $p/lib/NLDM/fakeram7_64x21.lib
+read_verilog two_rams.v
+link_design two_rams
+create_clock -name clk -period 1000 [get_ports clk]
+initialize_floorplan -die_area {0 0 50 40} -core_area {1.08 1.08 48.92 38.92} -site asap7sc7p5t
+source $p/openRoad/make_tracks.tcl
+set_wire_rc -signal -layer M3
+set_wire_rc -clock -layer M5
+foreach {name x} {u_kept 10000 u_free 32000} {
+  set m [[ord::get_db_block] findInst $name]
+  $m setLocation $x 12000
+  $m setPlacementStatus FIRM
+}
+place_pins -hor_layers M4 -ver_layers M5
+global_placement -skip_initial_place -density 0.6
+detailed_placement
+# Every macro input is over this limit, and every output inside it.
+set_max_transition 30 [current_design]
+[[ord::get_db_block] findInst u_kept] setDoNotTouch 1
+namespace eval rb {}
+proc rb::global_connect {} {}
+"""
+
+
+@needs_asap7
+def test_macro_pin_limits_leave_a_dont_touch_macro_s_pins_unbuffered(tmp_path):
+    """OpenROAD refuses to move a dont-touch instance's pin to a new net (RSZ-3017), which aborted the step."""
+    (tmp_path / "two_rams.v").write_text(_MACROS_NETLIST)
+    procs = "".join(
+        files("rtl_buddy.pnr").joinpath(name).read_text()
+        for name in ("check_reports.tcl", "macro_pin_limits.tcl")
+    )
+    script = tmp_path / "run.tcl"
+    script.write_text(
+        _MACROS_SCRIPT
+        + procs
+        + "rb::macro_pins::repair {BUFx2_ASAP7_75t_R BUFx4_ASAP7_75t_R} 0.1 0.1 0 "
+        "RB-MPL [list]\n"
+        "foreach pin {u_kept/we_in u_kept/ce_in u_free/we_in u_free/ce_in} {\n"
+        '  puts "RB-NET $pin [get_name [get_nets -of_objects [get_pins $pin]]]"\n'
+        "}\n"
+    )
+    proc = subprocess.run(
+        [_OPENROAD, "-exit", "-no_init", str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=300,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "[ERROR" not in out, out
+    nets = dict(
+        line.split()[1:] for line in out.splitlines() if line.startswith("RB-NET ")
+    )
+    # The dont-touch macro keeps its nets and counts as unmet; the other is buffered.
+    assert nets["u_kept/we_in"] == "n0" and nets["u_kept/ce_in"] == "n1", out
+    assert nets["u_free/we_in"] != "n2" and nets["u_free/ce_in"] != "n3", out
+    assert "u_kept/we_in (input)" in out and "the macro is dont-touch" in out
+    assert "RB-MPL buffered 2 unmet 2" in out, out

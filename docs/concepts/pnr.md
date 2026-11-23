@@ -414,6 +414,7 @@ On a library with several threshold-voltage flavours, such as ASAP7 RVT and LVT 
 
 - Each macro data pin over its limit less the margin gets a buffer fixed on the nearest free row site; an input also gets a pre-driver. Buffers are sized from `buffers` weakest first and marked `dont_touch`, so later repair leaves them alone.
 - When no pair meets the limit less the margin, the closest pair stays (for an input, the lowest slew), which is not always the strongest, and the pin counts in `macro_pin_unmet_count`.
+- A pin of a [`dont-touch`](#keep-instances-unchanged) macro is left unbuffered, since OpenROAD cannot move it to a new net, and counts in `macro_pin_unmet_count`.
 - `pnr.log` has one `>>>` line per pin.
 
 The step judges on placement parasitics, so check `electrical.rpt`:
@@ -457,7 +458,7 @@ The log shows each call's engine on its `legalizer` line, under `Detailed Placem
 - The flow marks them at the start of the floorplan, so the floorplan's setup repair and every later step see the mark. It is stored in the database, so checkpoints, later sessions and `--resume` keep it.
 - OpenROAD's global connections skip a dont-touch instance (`ODB-0383`), and nothing connects its supplies later. The flow clears the mark just before the tap cells and the power grid, connects the supplies after them and marks the instances again, before the `after-pdn` hooks. An instance left with a supply pin on no net then fails the floorplan, naming the pin.
 - A hook that marks cells itself with `set_dont_touch` should do it in `after-pdn` or later, for the same reason.
-- OpenROAD does not reconnect a dont-touch instance's pins. `buffer_ports` leaves unbuffered an input port that drives one (`RSZ-0085`), and CTS stops with `ODB-0370` on one whose input is on a clock net it buffers.
+- OpenROAD does not reconnect a dont-touch instance's pins. `buffer_ports` leaves unbuffered an input port that drives one (`RSZ-0085`), `placement.macro-pin-limits` leaves a dont-touch macro's pins unbuffered and counts them unmet, and CTS stops with `ODB-0370` on one whose input is on a clock net it buffers.
 
 ### Optimisation steps
 
