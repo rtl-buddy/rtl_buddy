@@ -3345,7 +3345,7 @@ def test_repair_steps_set_the_wire_rc_around_all_their_repairs():
     ]
 
 
-#: OpenROAD's signal and clock wire RC per scene, horizontal and vertical apart, as `est` keeps them: two scenes whose session RC differs, a layer `M5` with RC set for scene `ss` only. The signal RC setters check their arguments as SWIG does, the count and then each value, before they set anything, and take `::est_arity` of them: 4 (a technology, NULL here, then scene, res, cap) by default, 3 (no technology) for an OpenROAD built before July 2026 such as 26Q2. A scene is an object for `sta::get_name` unless `::scene_objects` is 0, as on 26Q2, where it is its name.
+#: OpenROAD's signal and clock wire RC per scene, horizontal and vertical apart, as `est` keeps them: two scenes whose session RC differs, a layer `M5` with RC set for scene `ss` only. The signal RC setters check their arguments as SWIG does, the count and then each value, before they set anything, and take `::est_arity` of them: 4 (a technology, NULL here, then scene, res, cap) by default, 3 (no technology) for an OpenROAD built before July 2026 such as 26Q2. A scene is an object unless `::scene_objects` is 0, as on 26Q2, where it is its name: `sta::get_name` gives an object's name (`slow` for `ss`, `fast` for `ff`, so a describe that skips it names the handle) and raises on a name.
 _EST_STUBS = r"""
 namespace eval sta {}
 namespace eval est {}
@@ -3357,7 +3357,7 @@ proc sta::scenes {} { return {ss ff} }
 proc sta::is_object {object} { return $::scene_objects }
 proc sta::get_name {scene} {
     if {!$::scene_objects} { error "get_property $scene is not an object." }
-    return $scene
+    return [dict get {ss slow ff fast} $scene]
 }
 proc est_set_signal {dir args} {
     if {[llength $args] != $::est_arity} {
@@ -3573,9 +3573,10 @@ def test_the_signal_rc_setters_are_probed_once_and_the_probe_sets_nothing(build)
 
 @pytest.mark.parametrize("build", list(_BUILDS))
 def test_the_signal_wire_rc_is_described_per_scene_by_name(build):
-    """Scenes whose RC differs are named, from the scene object or, on 26Q2, the name `sta::scenes` gives."""
+    """Scenes whose RC differs are named, by `sta::get_name` from the scene object or, on 26Q2, by the name `sta::scenes` gives."""
     result = _wire_rc_tcl("set result [rb::rc::describe]\n", build)
-    assert result == "ss 0.003 kohm/um, 0.2 fF/um; ff 0.001 kohm/um, 0.1 fF/um"
+    slow, fast = ("ss", "ff") if build == "26Q2" else ("slow", "fast")
+    assert result == f"{slow} 0.003 kohm/um, 0.2 fF/um; {fast} 0.001 kohm/um, 0.1 fF/um"
 
 
 def test_a_failed_ideal_hold_repair_puts_the_signal_wire_rc_back():
