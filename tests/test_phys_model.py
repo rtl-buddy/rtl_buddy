@@ -684,6 +684,19 @@ def test_manifest_discovery_and_project_root_inference(tmp_path):
     assert json.loads((artefacts / MANIFEST_FILENAME).read_text())["command"] == "synth"
 
 
+def test_discovery_passes_over_a_newer_tagged_run(tmp_path):
+    """A `--run-tag` run's manifest is read through `--phys-dir`, never as the default, however new."""
+    root, artefacts = _project(tmp_path)
+    flat = write_manifest(_synth_manifest(root, artefacts, None), artefacts)
+    tagged = artefacts.parent / ".runs" / "t" / "demo_power"
+    tagged.mkdir(parents=True)
+    tagged_manifest = write_manifest(_synth_manifest(root, tagged, None), tagged)
+    os.utime(flat, ns=(10**9, 10**9))
+
+    assert os.path.getmtime(tagged_manifest) > os.path.getmtime(flat)
+    assert discover_manifests(root) == [flat]
+
+
 def test_discovery_does_not_pick_up_a_coverage_manifest(tmp_path):
     """A coverage manifest in the same tree is not mistaken for a physical manifest, which has its own filename."""
     root, artefacts = _project(tmp_path)
