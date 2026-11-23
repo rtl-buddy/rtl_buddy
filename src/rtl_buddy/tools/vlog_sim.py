@@ -2341,15 +2341,17 @@ class VlogSim:
         """The environment of a compile subprocess for ``plan``, or None to inherit rb's.
 
         :meth:`_get_extra_compile_env` over rb's own. A Verilator build also gets
-        ``CCACHE_NAMESPACE`` set to its absolute ``--Mdir`` unless either already sets
-        it: ccache can otherwise hand one build directory the Clang precompiled header
-        another compiled, which names the other's headers (Known Issues). It stays out
+        ``CCACHE_NAMESPACE`` set to its absolute build directory (the ``--Mdir`` rb
+        passes an executable named ``verilator*``) unless either already sets it:
+        ccache can otherwise hand one build directory the Clang precompiled header
+        another compiled, which names the other's headers (Known Issues). A builder
+        of ``simulator-family: verilator`` under another name gets it too. It stays out
         of :meth:`_get_extra_compile_env`, which the compile fingerprint hashes, so a
         shared build's key never names a directory.
         """
         env = self._get_extra_compile_env()
         if (
-            plan.is_verilator
+            (plan.is_verilator or self._get_simulator_family() == "verilator")
             and "CCACHE_NAMESPACE" not in env
             and "CCACHE_NAMESPACE" not in os.environ
         ):

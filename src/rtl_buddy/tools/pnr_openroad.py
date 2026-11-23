@@ -2059,6 +2059,8 @@ _SESSION_SET_ASIDE_MARKER = ">>> rb: set aside "
 _HOOK_BEGIN_MARKER = ">>> rb: hook begin "
 #: Follows each hook file's part of the log, followed by its point and `ok` when the hook returned, else `error`.
 _HOOK_END_MARKER = ">>> rb: hook end "
+#: What `_HOOK_BEGIN_MARKER` and `_HOOK_END_MARKER` start with.
+_HOOK_MARKER = ">>> rb: hook "
 #: What to change when an `eco` post-route repair round's repair failed RSZ-0074.
 _ECO_HINT = (
     "the eco round's repair could not use the routes rebuilt from the "
@@ -3173,10 +3175,19 @@ class HookErrorLines:
     lines: tuple[str, ...]
 
 
+def _hook_marker_lines(text: str):
+    """The lines of a log, each hook marker (`_HOOK_MARKER`) split from the output before it on its line."""
+    for line in text.splitlines():
+        while (at := line.find(_HOOK_MARKER, 1)) > 0:
+            yield line[:at]
+            line = line[at:]
+        yield line
+
+
 def _scan_error_lines(text: str) -> tuple[list[str], list[HookErrorLines]]:
     """The `[ERROR` lines of a log that fail the run (`_error_lines`), and those it leaves out because a hook that returned printed them, per hook file.
 
-    A post-route repair session the stage set aside, from its `_SESSION_BEGIN_MARKER` line to the `_SESSION_SET_ASIDE_MARKER` line after it, has neither. A hook's lines are those between its `_HOOK_BEGIN_MARKER` line and its `_HOOK_END_MARKER` line; they count when that line says `error`, or when there is none, as after a crash in the hook.
+    A post-route repair session the stage set aside, from its `_SESSION_BEGIN_MARKER` line to the `_SESSION_SET_ASIDE_MARKER` line after it, has neither. A hook's lines are those between its `_HOOK_BEGIN_MARKER` line and its `_HOOK_END_MARKER` line, less those of a hook it ran, which go by that hook's end line; they count when that line says `error`, or when there is none, as after a crash in the hook. A hook marker starts a line of its own even where a hook's output before it did not end its line (`puts -nonewline`).
     """
     counted: list[str] = []
     excused: list[HookErrorLines] = []
@@ -3190,7 +3201,7 @@ def _scan_error_lines(text: str) -> tuple[list[str], list[HookErrorLines]]:
             pending.extend(lines)
         running.clear()
 
-    for line in text.splitlines():
+    for line in _hook_marker_lines(text):
         if line.startswith(_SESSION_BEGIN_MARKER):
             _unended()
             counted += pending
@@ -3207,7 +3218,7 @@ def _scan_error_lines(text: str) -> tuple[list[str], list[HookErrorLines]]:
         elif line.startswith(_HOOK_END_MARKER) and running:
             point, path, lines = running.pop()
             if line.rpartition(" ")[2] != "ok":
-                (running[-1][2] if running else pending).extend(lines)
+                pending.extend(lines)
             elif lines:
                 pending_excused.append(HookErrorLines(point, path, tuple(lines)))
         elif line.startswith("[ERROR "):

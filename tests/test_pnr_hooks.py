@@ -1153,6 +1153,16 @@ def _hook_log(point, status, *lines, path="/p/h.tcl"):
         ),
         (
             [
+                *_hook_log("session", None, path="/p/s.tcl"),
+                *_hook_log("after-cts", "error", _CAUGHT),
+                _ERR,
+                ">>> rb: hook end session ok",
+            ],
+            [_CAUGHT],
+            [HookErrorLines("session", "/p/s.tcl", (_ERR,))],
+        ),
+        (
+            [
                 *_hook_log("after-cts", None, _CAUGHT),
                 ">>> rb: begin post_route_repair round 1 repair",
                 *_hook_log("after-cts", "ok", _ERR),
@@ -1170,6 +1180,34 @@ def _hook_log(point, status, *lines, path="/p/h.tcl"):
             [],
             [],
         ),
+        (
+            _hook_log("after-reports", None, _CAUGHT)
+            + ["report complete>>> rb: hook end after-reports ok"],
+            [],
+            [HookErrorLines("after-reports", "/p/h.tcl", (_CAUGHT,))],
+        ),
+        (
+            [
+                *_hook_log("session", None, path="/p/s.tcl"),
+                *_hook_log("after-cts", None, _CAUGHT),
+                "gave up>>> rb: hook end after-cts error",
+                _ERR,
+                ">>> rb: hook end session ok",
+            ],
+            [_CAUGHT],
+            [HookErrorLines("session", "/p/s.tcl", (_ERR,))],
+        ),
+        (
+            [
+                *_hook_log("session", None, path="/p/s.tcl"),
+                "partial>>> rb: hook begin after-cts /p/h.tcl",
+                _ERR,
+                ">>> rb: hook end after-cts ok",
+                ">>> rb: hook end session ok",
+            ],
+            [],
+            [HookErrorLines("after-cts", "/p/h.tcl", (_ERR,))],
+        ),
     ],
     ids=[
         "returned",
@@ -1178,12 +1216,16 @@ def _hook_log(point, status, *lines, path="/p/h.tcl"):
         "no end line",
         "path with a space",
         "nested",
+        "nested failure caught",
         "crash before a session",
         "set aside",
+        "partial line before ok end",
+        "partial line before error end",
+        "partial line before begin",
     ],
 )
 def test_error_lines_leave_out_those_of_a_hook_that_returned(log, counted, excused):
-    """An `[ERROR` line between a hook's begin line and its `ok` end line does not fail the run but is reported with the hook; one in a hook that ended with an error, or never ended, or outside every hook, does."""
+    """An `[ERROR` line between a hook's begin line and its `ok` end line does not fail the run but is reported with the hook; one in a hook that ended with an error, or never ended, or outside every hook, does. A hook another hook ran is judged by its own end line."""
     text = "\n".join(log) + "\n"
     assert _scan_error_lines(text) == (counted, excused)
     assert _error_lines(text) == counted
@@ -1205,13 +1247,15 @@ _CATCHING_HOOK = (
 @pytest.mark.parametrize("point", ["after-reports", "stage-end"])
 @pytest.mark.parametrize("ending", ["returns", "fails"])
 @pytest.mark.parametrize("stages", [False, True], ids=["one session", "staged"])
+@pytest.mark.parametrize("partial", [False, True], ids=["line ended", "partial line"])
 def test_an_error_line_a_hook_prints_fails_the_run_only_with_the_hook(
-    tmp_path, monkeypatch, point, ending, stages
+    tmp_path, monkeypatch, point, ending, stages, partial
 ):
-    """A hook that returns after OpenROAD printed `[ERROR` lines lets the run pass with its routed database and a `pnr.hook_error_lines` warning; one that then ends with a Tcl error fails it and loses the database."""
+    """A hook that returns after OpenROAD printed `[ERROR` lines lets the run pass with its routed database and a `pnr.hook_error_lines` warning; one that then ends with a Tcl error fails it and loses the database. Either holds when the hook's last output does not end its line, which puts its end line on that line."""
+    tail = 'puts -nonewline "report complete"\n' if partial else ""
     hook = _write(
         tmp_path / "catching.tcl",
-        _CATCHING_HOOK + ('error "gave up"\n' if ending == "fails" else ""),
+        _CATCHING_HOOK + tail + ('error "gave up"\n' if ending == "fails" else ""),
     )
     backend, artefacts = _hooked_backend(
         tmp_path, monkeypatch, {point: (str(hook),)}, stages=stages
@@ -1222,6 +1266,8 @@ def test_an_error_line_a_hook_prints_fails_the_run_only_with_the_hook(
 
     log = (artefacts / "pnr.log").read_text()
     assert "[ERROR ORD-9999] example failure inside catch" in log.splitlines()
+    status = "error" if ending == "fails" else "ok"
+    assert partial == (f"report complete>>> rb: hook end {point} {status}" in log)
     warned = [
         fields for _level, name, fields in events if name == "pnr.hook_error_lines"
     ]
