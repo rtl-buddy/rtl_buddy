@@ -56,8 +56,23 @@ def _sdc(*lines: str) -> str:
             "[get_ports {clk_o}]",
             ForwardedClock("f", "clk_i", "clk_o"),
         ),
+        (
+            "-name f -source [get_ports {clk_i}] -combinational [get_ports {clk_o}]",
+            ForwardedClock("f", "clk_i", "clk_o"),
+        ),
+        (
+            "-name f -source [get_ports {clk_i}] -divide_by 1 "
+            "-comment {not -invert, nor -edges {1 3 5}} [get_ports {clk_o}]",
+            ForwardedClock("f", "clk_i", "clk_o"),
+        ),
     ],
-    ids=["divide by 1", "multiply by 1, inverted", "combinational"],
+    ids=[
+        "divide by 1",
+        "multiply by 1, inverted",
+        "combinational, divide by 1",
+        "combinational alone",
+        "options named in a comment",
+    ],
 )
 def test_a_ratio_1_clock_from_an_input_to_an_output_is_forwarded(line, expected):
     assert forwarded_clocks(_sdc(line), _INPUTS, _OUTPUTS) == ([expected], [])
@@ -86,6 +101,11 @@ def test_a_ratio_1_clock_from_an_input_to_an_output_is_forwarded(line, expected)
             "-name f -source [get_ports {clk_i}] -divide_by 1 [get_ports {clk_o q}]",
             "it is defined on more than one port",
         ),
+        (
+            "-name f -source [get_ports {clk_i}] -combinational -multiply_by 2 "
+            "[get_ports {clk_o}]",
+            "its ratio is not 1",
+        ),
     ],
     ids=[
         "divide by 2",
@@ -93,6 +113,7 @@ def test_a_ratio_1_clock_from_an_input_to_an_output_is_forwarded(line, expected)
         "pin source",
         "edges",
         "two ports",
+        "combinational, multiply by 2",
     ],
 )
 def test_another_generated_clock_on_an_output_is_named_and_left(line, reason):
@@ -113,6 +134,22 @@ def test_two_clocks_on_one_output_that_disagree_are_both_left():
     found, skipped = forwarded_clocks(sdc, _INPUTS, _OUTPUTS)
     assert found == []
     assert [name for name, _ in skipped] == ["a", "b"]
+
+
+def test_a_forwarded_clock_beside_one_that_is_not_leaves_the_output_as_written():
+    """A clock mux output with a bypass and a divided clock keeps both clocks' arcs."""
+    sdc = _sdc(
+        "-name bypass -source [get_ports {clk_i}] -divide_by 1 [get_ports {clk_o}]",
+        "-name slow -add -source [get_ports {clk_i}] -master_clock [get_clocks {clk}] "
+        "-divide_by 2 [get_ports {clk_o}]",
+    )
+    assert forwarded_clocks(sdc, _INPUTS, _OUTPUTS) == (
+        [],
+        [
+            ("slow", "its ratio is not 1"),
+            ("bypass", "another generated clock on clk_o is not forwarded"),
+        ],
+    )
 
 
 def test_the_ports_are_read_from_the_model():
@@ -333,6 +370,57 @@ def test_a_block_without_a_forwarded_clock_warns_and_publishes(tmp_path, monkeyp
     assert "ratio is not 1" in _human_message(
         "pnr.abstract_forwarded_clock_skipped", skipped
     )
+
+
+def test_a_bypass_beside_a_divided_clock_keeps_the_output_s_arcs(tmp_path, monkeypatch):
+    events = _capture_pnr_events(monkeypatch)
+    backend = _harden(
+        tmp_path,
+        monkeypatch,
+        sdc=_sdc(
+            "-name bypass -source [get_ports {clk_i}] -divide_by 1 [get_ports {clk_o}]",
+            "-name slow -add -source [get_ports {clk_i}] -divide_by 2 "
+            "[get_ports {clk_o}]",
+        ),
+    )
+
+    res = backend.run()
+
+    assert isinstance(res, PnrPassResults), res.results
+    out = Path(backend.artefact_dir) / "abstract"
+    manifest = json.loads((out / "abstract.manifest.json").read_text())
+    assert manifest["forwarded_clocks"] == []
+    assert "rising_edge" in _pin((out / "demo_top.lib").read_text(), "clk_o")
+    reasons = {
+        fields["clock"]: fields["reason"]
+        for _, name, fields in events
+        if name == "pnr.abstract_forwarded_clock_skipped"
+    }
+    assert reasons == {
+        "slow": "its ratio is not 1",
+        "bypass": "another generated clock on clk_o is not forwarded",
+    }
+
+
+def test_an_option_named_in_a_comment_does_not_invert_the_arc(tmp_path, monkeypatch):
+    backend = _harden(
+        tmp_path,
+        monkeypatch,
+        sdc=_sdc(
+            "-name clk_fwd -source [get_ports {clk_i}] -divide_by 1 "
+            "-comment {Do not use -invert here} [get_ports {clk_o}]"
+        ),
+    )
+
+    res = backend.run()
+
+    assert isinstance(res, PnrPassResults), res.results
+    manifest = json.loads(
+        (Path(backend.artefact_dir) / "abstract" / "abstract.manifest.json").read_text()
+    )
+    assert manifest["forwarded_clocks"] == [
+        {"from": "clk_i", "to": "clk_o", "sense": "positive_unate"}
+    ]
 
 
 def test_a_missing_second_model_fails_the_abstract(tmp_path, monkeypatch):
