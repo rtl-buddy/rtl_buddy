@@ -236,6 +236,7 @@ set insts {
     u_blk.u_clk_buf {A SIGNAL Y SIGNAL VDD POWER VSS GROUND}
     {g_fwd\[0\].u_buf} {A SIGNAL Y SIGNAL}
     r0 {CLK SIGNAL D SIGNAL QN SIGNAL}
+    u_ram {CLK[0] SIGNAL CLK0 SIGNAL}
 }
 set handles {}
 set n 0
@@ -296,6 +297,10 @@ proc block {cmd args} {
         ("*/A", r"u_blk.u_clk_buf/A {g_fwd\[0\].u_buf/A}"),
         ("r0/C*", "r0/CLK"),
         ("u_nope/A", ""),
+        ("u_ram/CLK[0]", "{u_ram/CLK[0]}"),
+        (r"u_ram/CLK\[0\]", "{u_ram/CLK[0]}"),
+        ("u_ram/CLK[*]", "{u_ram/CLK[0]}"),
+        ("u_ram/CLK?", "u_ram/CLK0"),
     ],
     ids=[
         "one pin",
@@ -304,6 +309,10 @@ proc block {cmd args} {
         "instance glob",
         "pin prefix",
         "no instance",
+        "bus pin, brackets literal",
+        "escaped bus pin",
+        "bus pin glob",
+        "no character class",
     ],
 )
 def test_a_pin_is_named_as_instance_slash_pin(spec, expected):

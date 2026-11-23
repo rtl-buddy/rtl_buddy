@@ -381,7 +381,7 @@ This calls `clock_tree_synthesis -root_buf sky130_fd_sc_hd__clkbuf_16 -buf_list 
 
 ### Forward a clock with a root tap
 
-TritonCTS puts a buffer it inserts in front of every input pin on a clock net. A block that forwards its clock to an output port through its own buffer wants that buffer's input on the port's net, so the forwarded clock's delay is the one buffer and its wire. `cts-root-taps` names such input pins, each `<instance>/<pin>`:
+TritonCTS puts a buffer it inserts in front of every input pin on a clock net. A block that forwards its clock to an output port through its own buffer wants that buffer's input on the port's net, so the forwarded clock's delay is the one buffer and its wire. `cts-root-taps` names such input pins, each `<instance>/<pin>`, brackets literal in both parts (`u_ram/CLK[0]`):
 
 ```yaml
     dont-touch: [u_fwd.u_clk_buf]
