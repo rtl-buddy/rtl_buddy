@@ -1,4 +1,10 @@
-"""Stand-ins for the platform and PDK an `rb power` backend reads, for tests that generate its script."""
+"""Stand-ins for the platform and PDK an `rb power` backend reads, and a tree lock held by another call, for `rb power` tests."""
+
+import contextlib
+import select
+import subprocess
+import sys
+from pathlib import Path
 
 
 class _FakePdk:
@@ -74,3 +80,37 @@ class _FakePlatform:
 
     def get_max_fanout(self):
         return self._max_fanout
+
+
+@contextlib.contextmanager
+def tree_lock_held_by(lock: Path, command: str):
+    """Hold the artefact-tree lock file `lock` from another process recording `rb <command>`, as a running call does.
+
+    The record names no host, so it is never reclaimed as stale. The holder is killed on exit.
+    """
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import fcntl, json, os, sys, time\n"
+            f"f = open({str(lock)!r}, 'r+' if os.path.exists({str(lock)!r}) else 'w+')\n"
+            "fcntl.flock(f, fcntl.LOCK_EX)\n"
+            "f.truncate(0)\n"
+            "f.write(json.dumps({'pid': os.getpid(), 'command': "
+            f"{command!r}, 'started': 'now'}}))\n"
+            "f.flush()\n"
+            "print('held', flush=True)\n"
+            "time.sleep(60)\n",
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        ready, _, _ = select.select([holder.stdout], [], [], 10)
+        assert ready and holder.stdout.readline().strip() == "held"
+        yield holder
+    finally:
+        holder.kill()
+        holder.wait(timeout=10)
+        holder.stdout.close()

@@ -15,10 +15,10 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from power_support import _FakePlatform
+from power_support import _FakePlatform, tree_lock_held_by
 from typer.testing import CliRunner
 
-from rtl_buddy.artifact_lock import LOCK_FILENAME
+from rtl_buddy.artifact_lock import LOCK_FILENAME, ArtifactLockContended
 from rtl_buddy.config.power import PowerSuiteConfig
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.runner.pnr_results import PnrPassResults
@@ -593,3 +593,36 @@ def test_a_pnr_path_linked_into_another_directory_reads_the_tree_rb_pnr_wrote(
     assert inputs["pnr_dir"] == str(_tagged_pnr_dir(cli_project, "a"))
     # Nothing was locked or looked for beside the link.
     assert not (cli_project / "aliases/artefacts").exists()
+
+
+def test_a_power_yaml_beside_the_pnr_yaml_shares_its_tree_and_refuses_a_running_pnr(
+    cli_project,
+):
+    """With both YAML files in one directory, a tag's P&R and power calls share one tree; a busy one refuses, as for any two calls on a tree."""
+    _write(
+        cli_project / "pnr/power.yaml",
+        (cli_project / "power/power.yaml")
+        .read_text()
+        .replace("../pnr/pnr.yaml", "pnr.yaml"),
+    )
+    assert _rb("pnr", "blk_pnr", "-c", "pnr/pnr.yaml", "--run-tag", "a").exit_code == 0
+    tree = run_artifact_root(cli_project / "pnr", "a")
+
+    with tree_lock_held_by(tree / LOCK_FILENAME, "pnr") as holder:
+        refused = _rb("power", "blk_power", "-c", "pnr/power.yaml", "--run-tag", "a")
+
+    # A fatal error, which the `rb` entry point turns into exit code 2.
+    assert isinstance(refused.exception, ArtifactLockContended), refused.output
+    assert str(refused.exception).startswith(
+        f"{tree}: another rtl-buddy run is already using this artefact tree "
+        f"(pid {holder.pid}, rb pnr"
+    )
+    assert not (tree / "blk_power").exists()
+
+    result = _rb("power", "blk_power", "-c", "pnr/power.yaml", "--run-tag", "a")
+
+    assert result.exit_code == 0, result.output
+    inputs = json.loads((tree / "blk_power/inputs.json").read_text())
+    [copy] = sorted((tree / ROUTED_COPIES_DIRNAME).iterdir())
+    assert inputs["odb"] == str(copy / _ODB)
+    assert inputs["pnr_dir"] == str(tree / "blk_pnr")
