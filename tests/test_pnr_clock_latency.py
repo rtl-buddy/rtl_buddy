@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 from pnr_events import _capture_pnr_events, _one_event
 from pnr_stub_openroad import _pdk, _platform, _pnr_cfg
+from tcl_eval import _tcl_eval
 
 from rtl_buddy.config.pnr import (
     CHECKPOINT_STAGES,
@@ -211,6 +212,66 @@ def test_a_multi_corner_platform_measures_each_corner_in_its_scene():
         "[list ff [rb::clock_latency::corner_args ff]]]"
     )
     assert _clock_latency_tcl((), ["ss"], "ss") == ""
+
+
+def test_each_corner_with_a_mode_is_measured_in_that_mode():
+    step = _clock_latency_tcl(_GROUPS[:1], ["ss", "ff"], "ss", modes=True)
+    assert step.endswith(
+        "[list [list ss [rb::clock_latency::corner_args ss] ss] "
+        "[list ff [rb::clock_latency::corner_args ff] ff]]"
+    )
+
+
+#: A timer whose pin `b` is clocked only in mode `ff`, as when the two corners' SDCs set a clock mux's select apart. Each arrival is 10 in `ss` and 8 in `ff`.
+_MODES = r"""
+namespace eval sta {}
+set ::mode ss
+set ::modes {}
+proc sta::cmd_mode_name {} { return $::mode }
+proc sta::find_scene {name} { return $name }
+proc set_mode {name} { lappend ::modes $name; set ::mode $name }
+proc get_property {pin property} {
+    if {$pin eq "a" || ($pin eq "b" && $::mode eq "ff")} { return clk }
+    return {}
+}
+proc with_output_to_variable {var cmd} {
+    upvar 1 $var text
+    set text [uplevel 1 $cmd]
+}
+proc report_arrival {args} {
+    set scene [lindex $args [expr {[lsearch $args -scene] + 1}]]
+    set t [expr {$scene eq "ff" ? 8.0 : 10.0}]
+    return "  (clk ^) r $t:$t f $t:$t
+"
+}
+proc puts {line} { lappend ::lines $line }
+"""
+
+
+def test_a_secondary_corner_counts_the_sinks_its_own_mode_clocks():
+    source = "".join(
+        files("rtl_buddy.pnr").joinpath(name).read_text()
+        for name in ("insts.tcl", "clock_latency.tcl")
+    )
+    result = _tcl_eval(
+        _MODES
+        + source
+        + "proc rb::clock_latency::sinks {specs} { return {a b} }\n"
+        + "rb::clock_latency::report T [list [list g {x}] [list h {y}]] [list "
+        + "[list ss [rb::clock_latency::corner_args ss] ss] "
+        + "[list ff [rb::clock_latency::corner_args ff] ff]]\n"
+        + 'set result [join [list [join $::lines |] $::modes $::mode] "\\n"]'
+    )
+    lines, modes, current = result.split("\n")
+    assert lines.split("|") == [
+        "T g ss 2 1 10.0 10.0 10.0",
+        "T g ff 2 2 8.0 8.0 8.0",
+        "T h ss 2 1 10.0 10.0 10.0",
+        "T h ff 2 2 8.0 8.0 8.0",
+    ]
+    # Each corner's mode while it is measured, and the first mode again after each group.
+    assert modes.split() == ["ss", "ff", "ss", "ss", "ff", "ss"]
+    assert current == "ss"
 
 
 def test_the_report_changes_no_abstract(tmp_path):
@@ -437,3 +498,46 @@ def test_the_report_measures_each_group_in_openroad(tmp_path, monkeypatch):
     )
     assert latency["none"]["sinks"] == 0
     assert (latency["data"]["sinks"], latency["data"]["timed_sinks"]) == (2, 1)
+
+
+#: `d` reaches `ra`'s data pin; the shared reset reaches both registers' reset pins, `en` an integrated clock gate's enable, and `e2` `rd`'s clock through a plain gate.
+_RESET_NETLIST = """\
+module top (input clk_i, input d, input rst_n, input en, input e2, output q, output q3);
+  wire n1, gclk, n3, g2;
+  DFFASRHQNx1_ASAP7_75t_R ra (.CLK(clk_i), .D(d), .RESETN(rst_n), .SETN(1'b1), .QN(n1));
+  DFFASRHQNx1_ASAP7_75t_R rb (.CLK(clk_i), .D(n1), .RESETN(rst_n), .SETN(1'b1), .QN(q));
+  ICGx1_ASAP7_75t_R u_icg (.CLK(clk_i), .ENA(en), .SE(1'b0), .GCLK(gclk));
+  DFFHQNx1_ASAP7_75t_R rc (.CLK(gclk), .D(n1), .QN(n3));
+  AND2x2_ASAP7_75t_R u_and (.A(clk_i), .B(e2), .Y(g2));
+  DFFHQNx1_ASAP7_75t_R rd (.CLK(g2), .D(n3), .QN(q3));
+endmodule
+"""
+
+
+@needs_asap7
+def test_input_capture_takes_only_registers_whose_data_pin_an_input_reaches(tmp_path):
+    (tmp_path / "top.v").write_text(_RESET_NETLIST)
+    setup = _SETUP[: _SETUP.index("read_verilog")]
+    script = tmp_path / "select.tcl"
+    script.write_text(
+        setup
+        + "read_verilog top.v\nlink_design top\n"
+        + "create_clock -name clk -period 1000 [get_ports clk_i]\n"
+        + "set_input_delay 100 -clock clk [all_inputs -no_clocks]\n"
+        + "namespace eval rb {}\n"
+        + files("rtl_buddy.pnr").joinpath("insts.tcl").read_text()
+        + files("rtl_buddy.pnr").joinpath("clock_latency.tcl").read_text()
+        + 'puts "RB-SELECTED [lsort [lmap pin [rb::clock_latency::selected input-capture]'
+        + ' {get_full_name $pin}]]"\n'
+    )
+    proc = subprocess.run(
+        [_OPENROAD, "-exit", "-no_init", str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out
+    assert "RB-SELECTED ra/CLK\n" in out, out

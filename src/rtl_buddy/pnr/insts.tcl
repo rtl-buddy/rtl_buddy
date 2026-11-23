@@ -37,17 +37,18 @@ proc rb::insts::match {block pattern} {
 
 # The instance terminals `spec`, `<instance>/<pin>`, names: the instance part
 # as `match` takes it, the pin part a pin name or a glob over the instance's
-# pin names. Supply pins are left out.
+# pin names, brackets literal as in instance names. Supply pins are left out.
 proc rb::insts::pins {block spec} {
     set slash [string last / $spec]
     set inst_pattern [string range $spec 0 [expr {$slash - 1}]]
-    set pin_pattern [string range $spec [expr {$slash + 1}] end]
+    set pin_pattern [string map {"\\" "\\\\" "[" "\\[" "]" "\\]"} \
+        [unescaped [string range $spec [expr {$slash + 1}] end]]]
     set iterms {}
     foreach inst [match $block $inst_pattern] {
         foreach iterm [$inst getITerms] {
             set mterm [$iterm getMTerm]
             if {[$mterm getSigType] ni {POWER GROUND}
-                    && [string match $pin_pattern [$mterm getName]]} {
+                    && [string match $pin_pattern [unescaped [$mterm getName]]]} {
                 lappend iterms $iterm
             }
         }

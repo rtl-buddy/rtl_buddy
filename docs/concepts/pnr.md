@@ -383,7 +383,7 @@ This calls `clock_tree_synthesis -root_buf sky130_fd_sc_hd__clkbuf_16 -buf_list 
 
 ### Forward a clock with a root tap
 
-TritonCTS puts a buffer it inserts in front of every input pin on a clock net. A block that forwards its clock to an output port through its own buffer wants that buffer's input on the port's net, so the forwarded clock's delay is the one buffer and its wire. `cts-root-taps` names such input pins, each `<instance>/<pin>`:
+TritonCTS puts a buffer it inserts in front of every input pin on a clock net. A block that forwards its clock to an output port through its own buffer wants that buffer's input on the port's net, so the forwarded clock's delay is the one buffer and its wire. `cts-root-taps` names such input pins, each `<instance>/<pin>`, brackets literal in both parts (`u_ram/CLK[0]`):
 
 ```yaml
     dont-touch: [u_fwd.u_clk_buf]
@@ -392,7 +392,8 @@ TritonCTS puts a buffer it inserts in front of every input pin on a clock net. A
 
 - Just before `clock_tree_synthesis`, after the `before-cts` hooks and `repair_clock_inverters`, each pin is taken off its net, and the log names it. After CTS and `repair_clock_nets`, and before the `after-cts` hooks, it goes back on the net of the same name: the root net, beside the tree's root buffer. The result's `cts_root_taps` lists each pin with that net. The `before-repair-clock-nets` hooks run while the pins are off.
 - A dont-touch instance, from [`dont-touch`](#keep-instances-unchanged) or a hook's `set_dont_touch`, cannot have a pin taken off (`ODB-0370`), so the mark is cleared for the two steps and set again.
-- In a flat run the forwarded clock can clock registers further on. While the pin is off, that clock would stop at the buffer, so the flow defines a temporary clock on the buffer's output, with the tap's clock's period and waveform, and CTS builds that tree too. The flow fixes the buffer during CTS, which would otherwise clone it as a clock gate, and the clone would copy the input that is off. Both are undone after CTS.
+- In a flat run the forwarded clock can clock registers further on, directly or through gates. While the pin is off, that clock would stop at the buffer, so the flow defines a temporary clock on each of the buffer's outputs that carries it to a register or macro clock pin, as the timer's clock network runs, with the tap's clock's period and waveform, and CTS builds that tree too. An output that an SDC clock already starts on, such as a `create_generated_clock` on the buffer's output, keeps that clock instead. A temporary clock is named `rb_cts_root_tap_<n>`, skipping names the SDC uses.
+- The flow fixes, during CTS, each tapped instance that drives clock pins, which CTS would otherwise clone as a clock gate with a copy of the input that is off, and each gate on a temporary clock's net, which CTS would clone where it would not on the original net. All is read from the timer before any pin is taken off, and undone after CTS.
 - With `cts-clock-nets`, CTS builds trees for the named nets only: name the net the buffer drives too, or its registers get no tree.
 - A pattern that matches no pin, a pin that is not an input on a clock net, or a net gone after CTS fails the CTS stage, naming the entry. On a top without rows, where CTS does not run, the pins stay where they are.
 
@@ -406,8 +407,8 @@ Abutted blocks that forward a clock to each other agree on the clock's arrival a
       - {name: fwd_regs, sinks: "u_core.r_*/CLK"}
 ```
 
-- `sinks` takes `input-capture` (the registers that capture an input port through combinational logic), `output-launch` (those that launch an output port), and `<instance>/<pin>` names or globs, as `cts-root-taps` takes them. A pin off the clock network, such as a data pin, counts in `sinks` but not `timed_sinks`.
-- The final reports print each group's min, max and mean late arrival of the clock's rising edge at each corner, on the final parasitics (`RB-CLOCK-LATENCY:` lines). For a clock whose rising edge is at 0, that is its source latency plus the insertion delay.
+- `sinks` takes `input-capture` (the registers whose data pin captures an input port through combinational logic; an asynchronous set or reset, or a clock gate's enable, does not count), `output-launch` (those that launch an output port), and `<instance>/<pin>` names or globs, as `cts-root-taps` takes them. A pin off the clock network, such as a data pin, counts in `sinks` but not `timed_sinks`.
+- The final reports print each group's min, max and mean late arrival of the clock's rising edge at each corner, on the final parasitics (`RB-CLOCK-LATENCY:` lines). For a clock whose rising edge is at 0, that is its source latency plus the insertion delay. With [a mode per corner](#sign-off-at-several-corners), each corner is measured in its own SDC mode, so a sink that only one corner's case analysis clocks is timed at that corner.
 - The result's `clock_latency.<group>` has `min_ps`, `max_ps` and `mean_ps` at the platform's primary corner, `corners` with each corner's, `sinks`, `timed_sinks`, `target_ps` and `tolerance_ps`. With a tolerance, `within_tolerance` says whether every sink is within it of the target at the primary corner, and a group outside it warns `pnr.clock_latency_off_target`. A group with no sink, or a sink no clock reaches, warns `pnr.clock_latency_unclocked`.
 - Only a run that reaches its final reports measures the groups; a probe or `--stop-after` run does not. Nothing fails on a group off target.
 
@@ -448,6 +449,7 @@ On a library with several threshold-voltage flavours, such as ASAP7 RVT and LVT 
 
 - Each macro data pin over its limit less the margin gets a buffer fixed on the nearest free row site; an input also gets a pre-driver. Buffers are sized from `buffers` weakest first and marked `dont_touch`, so later repair leaves them alone.
 - When no pair meets the limit less the margin, the closest pair stays (for an input, the lowest slew), which is not always the strongest, and the pin counts in `macro_pin_unmet_count`.
+- A pin of a [`dont-touch`](#keep-instances-unchanged) macro is left unbuffered, since OpenROAD cannot move it to a new net, and counts in `macro_pin_unmet_count`.
 - `pnr.log` has one `>>>` line per pin.
 
 The step judges on placement parasitics, so check `electrical.rpt`:
@@ -489,9 +491,9 @@ The log shows each call's engine on its `legalizer` line, under `Detailed Placem
 
 - Name each instance as the netlist spells it, as for `floorplan.macros`: brackets are literal, and `*` and `?` the only wildcards. An entry that matches nothing fails the floorplan, naming it.
 - The flow marks them at the start of the floorplan, so the floorplan's setup repair and every later step see the mark. It is stored in the database, so checkpoints, later sessions and `--resume` keep it.
-- OpenROAD's global connections skip a dont-touch instance (`ODB-0383`), and nothing connects its supplies later. The flow clears the mark just before the tap cells and the power grid, connects the supplies after them and marks the instances again, before the `after-pdn` hooks. An instance left with a supply pin on no net then fails the floorplan, naming the pin.
+- OpenROAD's global connections skip a dont-touch instance (`ODB-0383`), and nothing connects its supplies later. The flow clears the mark just before the tap cells and the power grid, connects the supplies after them and marks the instances again, before the `after-pdn` hooks. When the block has global connection rules, such as the `add_global_connection` calls of a `pdn-config`, an instance left with a supply pin on no net then fails the floorplan, naming the pin. Without rules nothing is connected, so nothing is checked.
 - A hook that marks cells itself with `set_dont_touch` should do it in `after-pdn` or later, for the same reason.
-- OpenROAD does not reconnect a dont-touch instance's pins. `buffer_ports` leaves unbuffered an input port that drives one (`RSZ-0085`), and CTS stops with `ODB-0370` on one whose input is on a clock net it buffers.
+- OpenROAD does not reconnect a dont-touch instance's pins. `buffer_ports` leaves unbuffered an input port that drives one (`RSZ-0085`), `placement.macro-pin-limits` leaves a dont-touch macro's pins unbuffered and counts them unmet, and CTS stops with `ODB-0370` on one whose input is on a clock net it buffers ([Known Issues](../known-issues.md#cts-stops-on-a-dont-touch-instance-whose-input-is-on-a-clock-net)).
 
 ### Optimisation steps
 
