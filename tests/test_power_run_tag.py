@@ -250,6 +250,37 @@ def test_a_rerun_pnr_run_is_copied_anew_and_the_earlier_copy_kept(tmp_path):
     assert f"read_db {second / _ODB}" in script
 
 
+@pytest.mark.parametrize(
+    ("first", "then", "parasitics"),
+    [
+        pytest.param((10, 20), (30, 20), "estimated", id="spef-now-older"),
+        pytest.param((30, 20), (10, 20), "spef", id="spef-now-newer"),
+    ],
+)
+def test_a_reused_copy_judges_the_spef_by_its_sources_times(
+    tmp_path, first, then, parasitics
+):
+    """The same bytes restored with the other time order reuse the copy, whose own times are the first call's."""
+    _project(tmp_path)
+    source = _routed_run(_tagged_pnr_dir(tmp_path), "tagged")
+
+    def _times(script_s, spef_s):
+        os.utime(source / "pnr.tcl", ns=(script_s * 10**9, script_s * 10**9))
+        os.utime(source / _SPEF, ns=(spef_s * 10**9, spef_s * 10**9))
+
+    _times(*first)
+    _backend(tmp_path)._write_script()
+    _times(*then)
+    backend = _backend(tmp_path)
+
+    script = Path(backend._write_script()).read_text()
+
+    [copy] = _copies(tmp_path)
+    assert (copy / "pnr.tcl").stat().st_mtime_ns == first[0] * 10**9
+    assert backend._parasitics == parasitics
+    assert (f"read_spef {copy / _SPEF}" in script) == (parasitics == "spef")
+
+
 def test_one_call_copies_a_pnr_run_once(tmp_path, monkeypatch):
     _project(tmp_path)
     _routed_run(_tagged_pnr_dir(tmp_path), "tagged")

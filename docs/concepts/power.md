@@ -178,6 +178,7 @@ A tagged call writes each power run under `artefacts/.runs/<tag>/<run>/`, with i
 - A `pnr` source reads the P&R run from `artefacts/.runs/<tag>/<run>/` of its `pnr.yaml`, never the untagged one. A tag that has not run it fails the run at `setup`, naming the `rb pnr ... --run-tag <tag>` command that makes it.
 - The routed ODB, routed SDC, SPEF, `pnr.tcl` and `blocks.consumed.json` are copied into `artefacts/.runs/<tag>/.pnr/` of the power suite while holding the P&R tree's lock, so a same-tag `rb pnr` still running is waited for (`artifact_lock.wait`). Each copy is checked against its source, and only the copy is read. A copy whose files changed afterwards fails the run, naming the directory to remove.
 - Copies are keyed by content and never overwritten, so a P&R run re-made under the tag is copied again. They use disk until you remove the tag's tree (`rm -r artefacts/.runs/<tag>`).
+- Whether the SPEF is newer than `pnr.tcl`, which decides whether it is read, is judged on the P&R run's own files at each call, not on the copy's times.
 - `blocks:` resolve to the abstract copies the P&R run recorded in `blocks.consumed.json`, as [`rb pnr-export --run-tag`](pnr.md#export-and-read-tagged-results) does.
 - The P&R run's `session` hooks run in its own tagged directory.
 - A `synth` source reads the untagged synthesis netlist through the run's own copy, as untagged. `phys-run` publishes into the synthesis run's untagged directory, so a run that sets it fails at `setup` under a tag.

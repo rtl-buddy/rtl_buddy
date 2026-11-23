@@ -56,14 +56,17 @@ class RoutedCopy:
     """The copy of a tagged P&R run's routed outputs that a tagged `rb power` reads.
 
     `directory` holds whichever of `<top>.routed.odb`, `<top>.routed.sdc`, `<top>.routed.spef`,
-    `pnr.tcl` and `blocks.consumed.json` the run had, with their modification times. `source` is
-    the P&R run's own directory, where its `session` hooks run. `blocks` are its `blocks:`, resolved
-    to the abstract copies its record names.
+    `pnr.tcl` and `blocks.consumed.json` the run had. `source` is the P&R run's own directory,
+    where its `session` hooks run. `blocks` are its `blocks:`, resolved to the abstract copies its
+    record names. `mtime_ns` maps each copied file's name to the modification time its source
+    had under the P&R tree's lock in this call: a copy is reused for the same bytes, so its own
+    times are those of the first call that copied them.
     """
 
     directory: str
     source: str
     blocks: tuple = ()
+    mtime_ns: dict = field(default_factory=dict)
 
 
 def _short(text: str) -> str:
@@ -464,6 +467,7 @@ class TagInputs:
                     f"--run-tag {self.run_tag}` first"
                 )
             present = {n: _sha256(source / n) for n in names if (source / n).is_file()}
+            mtime_ns = {n: (source / n).stat().st_mtime_ns for n in present}
             digest = hashlib.sha256(
                 json.dumps(sorted(present.items())).encode()
             ).hexdigest()
@@ -477,7 +481,6 @@ class TagInputs:
                 shutil.rmtree(partial, ignore_errors=True)
                 partial.mkdir(parents=True)
                 for name in present:
-                    # copy2 keeps the modification times `routed_spef_rejection` compares.
                     shutil.copy2(source / name, partial / name)
                 changed = _first_mismatch(partial, present)
                 if changed is not None:
@@ -507,7 +510,9 @@ class TagInputs:
                     project_root=project_root,
                 )
                 blocks = tuple(pnr_abstract.resolve_blocks(refs, source=consumed))
-        return RoutedCopy(directory=str(dest), source=str(source), blocks=blocks)
+        return RoutedCopy(
+            directory=str(dest), source=str(source), blocks=blocks, mtime_ns=mtime_ns
+        )
 
     def synth_dir(self, synth_suite_path: str, synth_name: str) -> str | None:
         """Return the copy of a synthesis's netlist and filelist to read, or None when it has no netlist.

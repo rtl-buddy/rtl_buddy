@@ -76,13 +76,17 @@ PARASITICS_ESTIMATED = "estimated"
 _WRITE_SPEF_RE = re.compile(r"^\s*write_spef\s", re.MULTILINE)
 
 
-def routed_spef_rejection(spef: str, script: str) -> str | None:
+def routed_spef_rejection(
+    spef: str, script: str, *, mtime_ns: tuple[int, int] | None = None
+) -> str | None:
     """Return why the routed SPEF beside a P&R result may not be read, or `None`.
 
     `rb pnr` clears `<top>.routed.spef` before every run, but an older rtl_buddy or a copied
     artefact directory can leave a SPEF that does not belong to the ODB. The SPEF is accepted only
     if the P&R run's flow script contains a `write_spef` command and the SPEF is no older than that
     script (mtime, since the script is the run's first write and the SPEF one of its last).
+    `mtime_ns` is the (SPEF, script) times to compare instead of the files' own, for a copy
+    judged by its source's times.
     """
     if not os.path.isfile(spef):
         return "no routed SPEF"
@@ -97,6 +101,8 @@ def routed_spef_rejection(spef: str, script: str) -> str | None:
         spef_mtime = os.stat(spef).st_mtime_ns
     except OSError as e:
         return f"cannot stat it: {e}"
+    if mtime_ns is not None:
+        spef_mtime, script_mtime = mtime_ns
     if spef_mtime < script_mtime:
         return "it is older than the P&R run that wrote the ODB"
     return None
@@ -512,6 +518,11 @@ class OpenRoadPower(BasePower):
                 self._blocks = list(copy.blocks)
                 pnr_artefact = copy.directory
                 tagged = {"pnr_dir": copy.source}
+                # A reused copy keeps its first call's times; the SPEF is judged by its source's.
+                spef_time = copy.mtime_ns.get(f"{top}{ROUTED_SPEF_SUFFIX}")
+                script_time = copy.mtime_ns.get(PNR_SCRIPT_NAME)
+                if spef_time is not None and script_time is not None:
+                    tagged["spef_mtime_ns"] = (spef_time, script_time)
             else:
                 self._blocks = self._resolve_upstream_blocks(pnr_cfg.get_blocks())
                 pnr_suite_dir = os.path.dirname(pnr_suite_path)
@@ -976,7 +987,9 @@ class OpenRoadPower(BasePower):
         spef = inputs.get("spef")
         script = inputs.get("pnr_script")
         reason = (
-            routed_spef_rejection(spef, script) if spef and script else "no routed SPEF"
+            routed_spef_rejection(spef, script, mtime_ns=inputs.get("spef_mtime_ns"))
+            if spef and script
+            else "no routed SPEF"
         )
         if reason is None:
             self._parasitics = PARASITICS_SPEF
