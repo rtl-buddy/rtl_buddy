@@ -271,6 +271,10 @@ OpenROAD's default legalizer treats a fixed macro turned by 90 degrees (`R90`, `
 
 Once `detailed_placement -use_diamond_legalizer` runs, every later legalization in that OpenROAD session uses diamond search. That includes calls without the option and OpenROAD's own, such as the one after antenna repair inserts diodes. So in a one-session run, the stages after the first one `placement.legalizer` sets to `diamond` use diamond search too, including stages it leaves unset. A one-session run that sets a later stage to `negotiation` fails at setup and names the stages. Run with `stages: true` to give each stage its own session; see [Choose the legalizer per stage](concepts/pnr.md#choose-the-legalizer-per-stage).
 
+## CTS stops on a dont-touch instance whose input is on a clock net
+
+TritonCTS moves every input pin on a clock net it buffers behind a buffer it inserts, and OpenROAD cannot reconnect a pin of a dont-touch instance, so `clock_tree_synthesis` stops with `ODB-0370`. A buffer that forwards a clock to an output port hits this once it is in [`dont-touch`](concepts/pnr.md#keep-instances-unchanged). Leave such an instance out of `dont-touch` and mark it with `set_dont_touch` in an `after-cts` hook instead; the repairs before CTS may then resize it, and CTS puts its input behind a clock buffer.
+
 ## `repair_design` does not repair the slew at an output port
 
 OpenROAD's `repair_design` checks a net that ends at an output port only at its driver, so a long net to an output pin keeps its slew even when the SDC sets `set_max_transition` on the port. A port has no limit unless the SDC sets one, so without it the electrical counts do not list the pin either. Set the limit in the SDC and buffer the outputs with `buffer-ports: {outputs: true, hold-outputs-at-pins: true}`; see [Check and repair slew at output ports](concepts/pnr.md#check-and-repair-slew-at-output-ports).
