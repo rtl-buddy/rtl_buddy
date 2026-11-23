@@ -3152,7 +3152,7 @@ class HookErrorLines:
 def _scan_error_lines(text: str) -> tuple[list[str], list[HookErrorLines]]:
     """The `[ERROR` lines of a log that fail the run (`_error_lines`), and those it leaves out because a hook that returned printed them, per hook file.
 
-    A post-route repair session the stage set aside, from its `_SESSION_BEGIN_MARKER` line to the `_SESSION_SET_ASIDE_MARKER` line after it, has neither. A hook's lines are those between its `_HOOK_BEGIN_MARKER` line and its `_HOOK_END_MARKER` line; they count when that line says `error`, or when there is none, as after a crash in the hook.
+    A post-route repair session the stage set aside, from its `_SESSION_BEGIN_MARKER` line to the `_SESSION_SET_ASIDE_MARKER` line after it, has neither. A hook's lines are those between its `_HOOK_BEGIN_MARKER` line and its `_HOOK_END_MARKER` line, less those of a hook it ran, which go by that hook's end line; they count when that line says `error`, or when there is none, as after a crash in the hook.
     """
     counted: list[str] = []
     excused: list[HookErrorLines] = []
@@ -3183,7 +3183,7 @@ def _scan_error_lines(text: str) -> tuple[list[str], list[HookErrorLines]]:
         elif line.startswith(_HOOK_END_MARKER) and running:
             point, path, lines = running.pop()
             if line.rpartition(" ")[2] != "ok":
-                (running[-1][2] if running else pending).extend(lines)
+                pending.extend(lines)
             elif lines:
                 pending_excused.append(HookErrorLines(point, path, tuple(lines)))
         elif line.startswith("[ERROR "):

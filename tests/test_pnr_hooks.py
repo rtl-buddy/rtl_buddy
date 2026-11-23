@@ -1152,6 +1152,16 @@ def _hook_log(point, status, *lines, path="/p/h.tcl"):
         ),
         (
             [
+                *_hook_log("session", None, path="/p/s.tcl"),
+                *_hook_log("after-cts", "error", _CAUGHT),
+                _ERR,
+                ">>> rb: hook end session ok",
+            ],
+            [_CAUGHT],
+            [HookErrorLines("session", "/p/s.tcl", (_ERR,))],
+        ),
+        (
+            [
                 *_hook_log("after-cts", None, _CAUGHT),
                 ">>> rb: begin post_route_repair round 1 repair",
                 *_hook_log("after-cts", "ok", _ERR),
@@ -1177,12 +1187,13 @@ def _hook_log(point, status, *lines, path="/p/h.tcl"):
         "no end line",
         "path with a space",
         "nested",
+        "nested failure caught",
         "crash before a session",
         "set aside",
     ],
 )
 def test_error_lines_leave_out_those_of_a_hook_that_returned(log, counted, excused):
-    """An `[ERROR` line between a hook's begin line and its `ok` end line does not fail the run but is reported with the hook; one in a hook that ended with an error, or never ended, or outside every hook, does."""
+    """An `[ERROR` line between a hook's begin line and its `ok` end line does not fail the run but is reported with the hook; one in a hook that ended with an error, or never ended, or outside every hook, does. A hook another hook ran is judged by its own end line."""
     text = "\n".join(log) + "\n"
     assert _scan_error_lines(text) == (counted, excused)
     assert _error_lines(text) == counted
