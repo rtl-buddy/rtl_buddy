@@ -6,8 +6,8 @@ With no standard cell to place the run skips the steps that need rows, still end
 import logging
 
 import pytest
-from test_pnr import _capture_pnr_events, _one_event
-from test_pnr_checkpoints import _HARNESS, _backend, _events, _runs
+from pnr_events import _capture_pnr_events, _one_event
+from pnr_stub_openroad import _HARNESS, _backend, _events, _runs
 
 from rtl_buddy.logging_utils import _human_message
 from rtl_buddy.runner.pnr_results import PnrFailResults, PnrPassResults

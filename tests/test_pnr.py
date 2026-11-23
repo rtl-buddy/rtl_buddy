@@ -10,6 +10,7 @@ from textwrap import dedent
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pnr_events import _capture_pnr_events, _one_event
 
 from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr import PnrConfig, PnrSuiteConfig
@@ -75,32 +76,6 @@ def _make_stream_pdk(tmp_path, **overrides):
 
 
 _GDS_BYTES = b"\x00\x06\x00\x02\x00\x07"
-
-
-def _capture_pnr_events(monkeypatch):
-    """Record every `log_event` the P&R backend emits, with its level.
-
-    `caplog` cannot be used past the first console write: `task_status` initialises
-    rtl_buddy's logging, which clears pytest's root handlers.
-    """
-    from rtl_buddy.tools import pnr_openroad
-
-    events: list[tuple[int, str, dict]] = []
-    real = pnr_openroad.log_event
-
-    def _record(logger, level, event, /, **fields):
-        events.append((level, event, fields))
-        return real(logger, level, event, **fields)
-
-    monkeypatch.setattr(pnr_openroad, "log_event", _record)
-    return events
-
-
-def _one_event(events, name):
-    """The single recorded event called `name`, as `(level, fields)`."""
-    matches = [(level, fields) for level, event, fields in events if event == name]
-    assert len(matches) == 1, f"{name}: {[e[1] for e in events]}"
-    return matches[0]
 
 
 def _fake_klayout(
