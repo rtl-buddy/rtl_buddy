@@ -75,7 +75,7 @@ The verdict says whether the flow finished; the fields say whether the design is
 | Verdict | When |
 | --- | --- |
 | `PASS` | OpenROAD ran the flow to its end and wrote its outputs. A `mode: probe` or `--stop-after` run passes at the stage it stops after, with `routed: false` and no routed outputs. |
-| `FAIL` | OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in a post-route repair session rb sets aside) or stops before the end of its flow, or a check fails. |
+| `FAIL` | OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in a post-route repair session rb sets aside or a [hook](#run-tcl-hooks) that returns) or stops before the end of its flow, or a check fails. |
 | `SKIP` | `-l` filters the run out, or `tool:` is not `openroad`. |
 
 Check `routed` before treating a `PASS` as routed. A `PASS` does not mean the design meets timing or routes clean unless [signoff gates](#gate-signoff) are set. Judge the design on these fields:
@@ -801,6 +801,7 @@ How hooks run:
 
 - At Tcl global scope in `artefacts/<run>/`, with `$OUT_DIR` and `$DESIGN` set.
 - A Tcl error, `exit` or stray `return` fails the run, naming the point and file, and for `stage-end` the stage. In a post-route round, where other failures only set the round aside, a `stage-end` or `after-timing-repair` error still fails the run.
+- An `[ERROR` line OpenROAD prints while a hook runs, such as from a command the hook wraps in `catch`, fails the run only when the hook ends with a Tcl error. When the hook returns, rb warns `pnr.hook_error_lines` with the count and the first line. `pnr.log` brackets each hook's output with `>>> rb: hook begin` and `>>> rb: hook end` lines.
 - Results come from the final reports; a report a hook prints does not change them.
 - On a multi-corner platform an SDC command in a hook constrains only the [primary corner's mode](#sign-off-at-several-corners).
 - Every later `read_spef` reads what `after-extraction` hooks left: the next round's, the final reports' and `rb power`'s. A multi-corner platform reads one SPEF per corner, so one edit covers all.

@@ -2031,6 +2031,10 @@ _ROUND_DONE_MARKER = ">>> End of post-route repair round "
 _SESSION_BEGIN_MARKER = ">>> rb: begin "
 #: Follows a post-route repair session the stage set aside, followed by its label and why; its `[ERROR` lines do not fail the run.
 _SESSION_SET_ASIDE_MARKER = ">>> rb: set aside "
+#: Precedes each hook file's part of the log (`rb::hook::run` in `hooks.tcl`), followed by its point and path.
+_HOOK_BEGIN_MARKER = ">>> rb: hook begin "
+#: Follows each hook file's part of the log, followed by its point and `ok` when the hook returned, else `error`.
+_HOOK_END_MARKER = ">>> rb: hook end "
 #: What to change when an `eco` post-route repair round's repair failed RSZ-0074.
 _ECO_HINT = (
     "the eco round's repair could not use the routes rebuilt from the "
@@ -3136,19 +3140,61 @@ def _session_threads(script: str, log_text: str) -> int | None:
     return reported if reported is not None else int(match.group(1))
 
 
-def _error_lines(text: str) -> list[str]:
-    """The `[ERROR` lines of a log, leaving out those of each post-route repair session the stage set aside: from its `_SESSION_BEGIN_MARKER` line to the `_SESSION_SET_ASIDE_MARKER` line after it."""
+@dataclass(frozen=True)
+class HookErrorLines:
+    """The `[ERROR` lines OpenROAD printed while one hook file ran, in a hook that returned."""
+
+    point: str
+    path: str
+    lines: tuple[str, ...]
+
+
+def _scan_error_lines(text: str) -> tuple[list[str], list[HookErrorLines]]:
+    """The `[ERROR` lines of a log that fail the run (`_error_lines`), and those it leaves out because a hook that returned printed them, per hook file.
+
+    A post-route repair session the stage set aside, from its `_SESSION_BEGIN_MARKER` line to the `_SESSION_SET_ASIDE_MARKER` line after it, has neither. A hook's lines are those between its `_HOOK_BEGIN_MARKER` line and its `_HOOK_END_MARKER` line; they count when that line says `error`, or when there is none, as after a crash in the hook.
+    """
     counted: list[str] = []
+    excused: list[HookErrorLines] = []
     pending: list[str] = []
+    pending_excused: list[HookErrorLines] = []
+    # The hooks running at a line, innermost last: point, path and `[ERROR` lines.
+    running: list[tuple[str, str, list[str]]] = []
+
+    def _unended() -> None:
+        for _point, _path, lines in running:
+            pending.extend(lines)
+        running.clear()
+
     for line in text.splitlines():
         if line.startswith(_SESSION_BEGIN_MARKER):
+            _unended()
             counted += pending
+            excused += pending_excused
             pending = []
+            pending_excused = []
         elif line.startswith(_SESSION_SET_ASIDE_MARKER):
+            running.clear()
             pending = []
+            pending_excused = []
+        elif line.startswith(_HOOK_BEGIN_MARKER):
+            point, _, path = line.removeprefix(_HOOK_BEGIN_MARKER).partition(" ")
+            running.append((point, path, []))
+        elif line.startswith(_HOOK_END_MARKER) and running:
+            point, path, lines = running.pop()
+            if line.rpartition(" ")[2] != "ok":
+                (running[-1][2] if running else pending).extend(lines)
+            elif lines:
+                pending_excused.append(HookErrorLines(point, path, tuple(lines)))
         elif line.startswith("[ERROR "):
-            pending.append(line)
-    return counted + pending
+            (running[-1][2] if running else pending).append(line)
+    _unended()
+    return counted + pending, excused + pending_excused
+
+
+def _error_lines(text: str) -> list[str]:
+    """The `[ERROR` lines of a log that fail the run: all but those of each post-route repair session the stage set aside and those a hook that returned printed (`_scan_error_lines`)."""
+    return _scan_error_lines(text)[0]
 
 
 def _last_session(text: str) -> tuple[str, str]:
@@ -6911,7 +6957,7 @@ class OpenRoadPnr:
                     self._ckpt_run_dir, "the end of the stage", marker, log_text
                 ),
             )
-        if any(line.startswith("[ERROR ") for line in lines):
+        if _error_lines(log_text):
             self._failed_stage = name
             return 0, "", None
         return self._run_chain(env)
@@ -7968,7 +8014,19 @@ class OpenRoadPnr:
                 else self._chain_fail_stage,
             )
 
-        error_lines = _error_lines(log_text)
+        error_lines, excused = _scan_error_lines(log_text)
+        for hook in excused:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.hook_error_lines",
+                pnr=self.pnr_cfg.get_name(),
+                point=hook.point,
+                path=hook.path,
+                count=len(hook.lines),
+                first=hook.lines[0],
+                log=log_path,
+            )
         if error_lines:
             desc = f"{stage_prefix}{len(error_lines)} ERROR(s) in OpenROAD log"
             if self._dispatch_reason:
