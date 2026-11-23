@@ -297,6 +297,25 @@ def test_compile_env_pins_cxx_when_configured(tmp_path):
     assert env["CXX"] == "/usr/local/bin/g++-15"
 
 
+def test_the_compile_process_gets_the_systemc_paths_and_a_ccache_namespace(
+    tmp_path, monkeypatch
+):
+    """The SystemC exports and the Verilator build's ccache namespace reach the builder together."""
+    monkeypatch.delenv("CCACHE_NAMESPACE", raising=False)
+    sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
+    sim = _make_sim(tmp_path, sc, systemc_cfg=SystemCConfig(home="/opt/sc", cxx=None))
+    plan = vlog_sim_module._CompilePlan(
+        compile_work_dir=str(tmp_path / "artefacts" / "t"),
+        filelist_path=str(tmp_path / "artefacts" / "t" / "run.f"),
+        build_dir="obj_dir_t",
+        is_verilator=True,
+    )
+    env = sim._compile_process_env(plan)
+    assert env["SYSTEMC_HOME"] == "/opt/sc"
+    assert env["CCACHE_NAMESPACE"] == str(tmp_path / "artefacts" / "t" / "obj_dir_t")
+    assert "CCACHE_NAMESPACE" not in sim._get_extra_compile_env()
+
+
 def test_sim_env_adds_libdir_to_dynamic_loader_path(tmp_path, monkeypatch):
     sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
     sim = _make_sim(tmp_path, sc, systemc_cfg=SystemCConfig(home="/opt/sc", cxx=None))

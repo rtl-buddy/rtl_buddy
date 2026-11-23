@@ -2337,6 +2337,26 @@ class VlogSim:
         """
         return {}
 
+    def _compile_process_env(self, plan) -> dict | None:
+        """The environment of a compile subprocess for ``plan``, or None to inherit rb's.
+
+        :meth:`_get_extra_compile_env` over rb's own. A Verilator build also gets
+        ``CCACHE_NAMESPACE`` set to its absolute ``--Mdir`` unless either already sets
+        it: ccache can otherwise hand one build directory the Clang precompiled header
+        another compiled, which names the other's headers (Known Issues). It stays out
+        of :meth:`_get_extra_compile_env`, which the compile fingerprint hashes, so a
+        shared build's key never names a directory.
+        """
+        env = self._get_extra_compile_env()
+        if (
+            plan.is_verilator
+            and "CCACHE_NAMESPACE" not in env
+            and "CCACHE_NAMESPACE" not in os.environ
+        ):
+            mdir = os.path.join(plan.compile_work_dir, plan.build_dir)
+            env = {**env, "CCACHE_NAMESPACE": os.path.abspath(mdir)}
+        return {**os.environ, **env} if env else None
+
     def _get_extra_sim_env(self, run_id=None) -> dict:
         return {}
 
@@ -4662,7 +4682,7 @@ class VlogSim:
             command=run_str,
             builder=self.rtl_builder_cfg.get_name(),
         )
-        extra_compile_env = self._get_extra_compile_env()
+        compile_env = self._compile_process_env(vplan)
         s_time = time.time()
         with task_status(f"Verilating {self.test_name}", spinner="dots12"):
             try:
@@ -4671,9 +4691,7 @@ class VlogSim:
                     capture_output=True,
                     text=True,
                     cwd=plan.compile_work_dir,
-                    env={**os.environ, **extra_compile_env}
-                    if extra_compile_env
-                    else None,
+                    env=compile_env,
                 )
             except FileNotFoundError:
                 log_event(
@@ -5710,8 +5728,7 @@ class VlogSim:
             builder=rtl_builder_cfg.get_name(),
         )
         s_time = time.time()
-        extra_compile_env = self._get_extra_compile_env()
-        compile_env = {**os.environ, **extra_compile_env} if extra_compile_env else None
+        compile_env = self._compile_process_env(plan)
         with task_status(f"Compiling {self.test_name}", spinner="dots12"):
             try:
                 result = run_managed_process(
