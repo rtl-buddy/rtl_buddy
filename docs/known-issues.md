@@ -332,6 +332,17 @@ A post-route round's `repair_design`, the electrical round's included, finds max
 
 When the electrical round is kept, its extraction lists each violator still on its SPEF that the estimate judges within the limit less `electrical-repair`'s margin, each at the scene where its extracted violation is worst; rb warns `pnr.electrical_round_unseen` and records them in `post_route_repair.electrical_round.unseen`. The list leaves out the violators `repair_design` does not repair on any parasitics: ports, and pins on constant-driven, clock, dont_touch, special or abutment nets. Raise `post-route-repair.repair-design.wire-rc` toward the RC the extraction shows, or keep such nets short from the start with `placement.repair-design.max-wire-length`. See [Repair electrical violators after routing](concepts/pnr.md#repair-electrical-violators-after-routing).
 
+## A setup margin repair reports RSZ-0062 on a design with borrowing latches
+
+OpenROAD's `repair_timing -setup -setup_margin` judges each endpoint by its slack. A latch whose data arrives while it is open has a setup slack of exactly 0, so with any margin above 0 every borrowing latch counts as violating, whatever time it has left. The resizer works on each such latch, finds no move that raises its slack, and ends with `[WARNING RSZ-0062] Unable to repair all setup violations`. A real violator is still in the list and still repaired, so nothing is lost but run time; on a design with many borrowing latches the warning is permanent and says nothing. This applies to `post-cts-repair`, `global-route-repair` and `post-route-repair` with a `setup-margin`.
+
+To tell it from a real violator:
+
+- The run's `wns_setup_ps` is not below 0: a real violator leaves a negative worst slack.
+- `latch_borrow_margin_ps` is the latches' real margin, and `latch_borrow.rpt` has each latch's; see [Read setup slack on a design with latches](concepts/pnr.md#read-setup-slack-on-a-design-with-latches).
+
+To avoid the warning, leave `setup-margin` unset or 0 on a design whose latches borrow. The fix, a resizer that measures a latch's margin to its closing edge or leaves borrowing latches out of the margin, belongs in OpenROAD.
+
 ## Corners share one SDC mode on an OpenROAD without modes
 
 `rb pnr` gives each corner its own SDC mode only on an OpenROAD that can switch back to an earlier mode, 26Q4 or newer. On an older one, such as 26Q2, every corner is timed in one mode and rb warns `pnr.corner_modes_unsupported`:

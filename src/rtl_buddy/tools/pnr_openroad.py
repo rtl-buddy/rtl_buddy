@@ -69,6 +69,7 @@ from . import (
     pnr_checkpoints,
     pnr_dispatch,
     pnr_forwarded_clocks,
+    pnr_latch_borrow,
     pnr_path_report,
     pnr_placement_check,
     pnr_stages,
@@ -138,6 +139,8 @@ _FLOW_OUTPUT_NAMES = (
     # Written by rb from the final reports; see `pnr_path_report`.
     pnr_path_report.WORST_PATHS_REPORT,
     pnr_path_report.FANOUT_REPORT,
+    # Written by the final reports on a design with latches; see `pnr_latch_borrow`.
+    pnr_latch_borrow.REPORT,
     "grt_antennas.rpt",
     "drt_antennas.rpt",
     "{design}.def",
@@ -4019,6 +4022,9 @@ class OpenRoadPnr:
                 platform.get_sta_corner(),
                 modes,
             ),
+            "latch_borrow_reports": pnr_latch_borrow.report_tcl(
+                list(corner_libs), modes
+            ),
             "tie_cells_block": tie_cells_block,
             "tie_fanout_block": tie_fanout_block,
             "cts_buffer_options": cts_buffer_options,
@@ -5009,6 +5015,72 @@ class OpenRoadPnr:
                     )
             out[group.name] = record
         return {"clock_latency": out} if out else {}
+
+    def _latch_borrow_fields(self, platform, final: str) -> dict:
+        """Return `latch_borrow_margin_ps` and `latch_borrow` from the latch borrow report, or `{}` for a design without latches.
+
+        `latch_borrow_margin_ps` is the smallest margin over every latch data pin and corner, in ps: how much later the data could arrive before the latch's setup check fails, which a borrowing latch's slack of 0 does not show. `latch_borrow` has that `margin_ps`, its `endpoint` and `corner`, that corner's `pins` (latch data pins), `endpoints` (the pins whose setup checks were read; fewer when a pin is unconstrained) and `borrowing` (those with a check that borrows), `complete`, false when a corner was not reported, and `corners` with each corner's. Warns `pnr.latch_borrow_unavailable` when the design has latches and the report cannot be read.
+        """
+        primary = platform.get_sta_corner()
+        reported = {
+            primary if corner == pnr_latch_borrow.SINGLE_CORNER else corner: pins
+            for corner, pins in pnr_latch_borrow.reported_corners(final).items()
+        }
+        failed = pnr_latch_borrow.unavailable(final)
+        if not reported and not failed:
+            return {}
+        path = os.path.join(self.artefact_dir, pnr_latch_borrow.REPORT)
+        checks: dict = {}
+        if reported:
+            try:
+                with open(path) as f:
+                    checks = {
+                        primary
+                        if corner == pnr_latch_borrow.SINGLE_CORNER
+                        else corner: c
+                        for corner, c in pnr_latch_borrow.parse(f.read()).items()
+                    }
+            except OSError as exc:
+                # Without the file no corner's count is known.
+                reported = {}
+                failed = [str(exc), *failed]
+        corners = {
+            corner: {
+                "pins": pins,
+                **pnr_latch_borrow.summarize(checks.get(corner, []), self._ps_per_unit),
+            }
+            for corner, pins in reported.items()
+        }
+        if failed or not corners:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.latch_borrow_unavailable",
+                pnr=self.pnr_cfg.get_name(),
+                reason=failed[0] if failed else "no corner was reported",
+                report=path,
+            )
+        if not corners:
+            return {}
+        timed = [c for c, s in corners.items() if s["margin_ps"] is not None]
+        worst = (
+            min(timed, key=lambda c: corners[c]["margin_ps"])
+            if timed
+            else (primary if primary in corners else next(iter(corners)))
+        )
+        expected = (
+            platform.get_sta_corners() if platform.is_multi_corner() else [primary]
+        )
+        record = {
+            **corners[worst],
+            "corner": worst,
+            "complete": all(c in corners for c in expected),
+            "corners": corners,
+        }
+        fields = {"latch_borrow": record}
+        if record["margin_ps"] is not None:
+            fields["latch_borrow_margin_ps"] = record["margin_ps"]
+        return fields
 
     def _describe_electrical(self, fields: dict) -> str:
         """Return `"N max-slew, M max-capacitance violator(s)"` for the nonzero counts, or `""` when there are none."""
@@ -8413,6 +8485,7 @@ class OpenRoadPnr:
             **self._parse_electrical(final),
             **self._path_fanout_fields(final),
             **self._clock_latency_fields(platform, final),
+            **self._latch_borrow_fields(platform, final),
             **self._allow_congestion_fields(platform, log_text),
             **self._macro_pin_limits_fields(log_text),
             **self._cts_root_taps_fields(log_text),
