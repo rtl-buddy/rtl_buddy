@@ -5,12 +5,14 @@
 | Tier | Contents |
 | --- | --- |
 | `design` | Modules, instances, ports, parameters, interfaces, and modports from `rtl-buddy-view`. |
-| `config` | Suites, tests, testbenches, flow runs, models, specs, coverage items, docs, and golden models. |
+| `config` | Suites, tests, testbenches, flow runs, models, specs, coverage items, docs, spec links, and golden models. |
 | `binding` | Python modules, imports, cocotb-to-DUT and signal bindings, golden-model checks, and DPI implementations. |
 
-Node ids you pass to `path` and `explain`: `module:<name>`, `inst:<top>/<dot.path>`, `port:<module>.<port>`, `test:<suite dir>#<name>`, `tb:<suite dir>#<name>`, `model:<models.yaml>#<name>`, `spec:<block>`, `covitem:<block>#<id>`, `py:<path>`. Use `explain` on a node to see its edges.
+Node ids you pass to `path` and `explain`: `module:<name>`, `inst:<top>/<dot.path>`, `port:<module>.<port>`, `test:<suite dir>#<name>`, `tb:<suite dir>#<name>`, `model:<models.yaml>#<name>`, `spec:<block>`, `covitem:<block>#<id>`, `doc:<path>`, `link:<url>`, `py:<path>`. Use `explain` on a node to see its edges.
 
-Edges relate a suite to its tests, a test to its testbench and coverage items, a testbench or run to its model and top module, a spec block to its coverage items, and a Python module to the DUT signals it drives or checks. `drives` and `implemented_by` can be `INFERRED`; an unresolved match has `resolved: false`.
+Edges relate a suite to its tests, a test to its testbench and coverage items, a testbench or run to its model and top module, a spec block to its coverage items and documentation, and a Python module to the DUT signals it drives or checks. `drives` and `implemented_by` can be `INFERRED`; an unresolved match has `resolved: false`.
+
+A spec block's documentation is reached through `documented_by`. The target is a `spec_doc` node for a `docs:` file, with `file` and `exists`, or a `spec_link` node for a `links:` URL, with `url`, `kind` and `title`. The graph never fetches a URL; follow it to continue past the graph. Blocks that link one URL share its node, which takes its title and kind from the first block read. See [Spec traceability](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/spec-traceability/#link-specification-pages-on-the-web).
 
 Results, seeds and timestamps live only in the overlay. `graph.json` is plain JSON; NetworkX is optional:
 

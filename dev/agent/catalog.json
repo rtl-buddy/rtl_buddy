@@ -1649,6 +1649,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/spec-traceability/define-coverage-items.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/spec-traceability/#link-specification-pages-on-the-web",
+          "slug": "link-specification-pages-on-the-web",
+          "title": "Link specification pages on the web",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/spec-traceability/link-specification-pages-on-the-web.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/spec-traceability/#link-the-design-model",
           "slug": "link-the-design-model",
           "title": "Link the design model",
@@ -3684,6 +3690,12 @@
           "slug": "spec-check-coverage",
           "title": "spec check-coverage",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/reference/cli/spec-check-coverage.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/reference/cli/#spec-links",
+          "slug": "spec-links",
+          "title": "spec links",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/reference/cli/spec-links.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/reference/cli/#xplr",

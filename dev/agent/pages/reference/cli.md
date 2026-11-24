@@ -2615,6 +2615,7 @@ Usage: rtl-buddy spec [OPTIONS] COMMAND [ARGS]...
 │ list            list all spec blocks discovered in the project                       │
 │ check-design    show which spec blocks have design models referencing them           │
 │ check-coverage  show which spec coverage items are addressed by tests                │
+│ links           list the external pages (URLs) that spec blocks link to              │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2658,6 +2659,20 @@ Usage: rtl-buddy spec check-coverage [OPTIONS]
 │ --verif-dir        TEXT  Directory to search for tests.yaml files                    │
 │ --block            TEXT  Only include spec blocks with this name; may be repeated    │
 │ --help                   Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## spec links
+
+```text
+Usage: rtl-buddy spec links [OPTIONS]
+
+ list the external pages (URLs) that spec blocks link to
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --spec-dir        TEXT  Directory to search for specs.yaml files                     │
+│ --block           TEXT  Only include spec blocks with this name; may be repeated     │
+│ --help                  Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
