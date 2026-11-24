@@ -1481,3 +1481,201 @@ def test_owned_ledger_retires_a_claim_once_the_leftover_is_cleared(tmp_path):
         own_flow="fpga-openxc7",
     )
     assert theirs.read_text() == "written by rb graph"
+
+
+def _compile_env(tmp_path, monkeypatch, sim):
+    """The environment `sim.compile()` gives its builder, as the builder sees it."""
+    captured = {}
+
+    def _fake_run(cmd, capture_output, text, cwd, env=None):
+        captured["env"] = os.environ if env is None else env
+        captured["cmd"] = list(cmd)
+        return ManagedProcessResult(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
+    )
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
+    assert sim.compile() == 0
+    return captured
+
+
+@pytest.mark.parametrize(
+    "exe, family, user, expected",
+    [
+        ("/usr/bin/verilator", "verilator", None, "build dir"),
+        ("/usr/bin/verilator", "verilator", "/mine", "/mine"),
+        ("/usr/bin/verilator", "verilator", "", ""),
+        ("/opt/bin/vl-wrapper", "verilator", None, "rb build dir"),
+        ("vcs", "vcs", None, None),
+    ],
+    ids=[
+        "verilator",
+        "user's namespace",
+        "user's empty namespace",
+        "renamed verilator",
+        "vcs",
+    ],
+)
+def test_a_verilator_compile_keeps_ccache_entries_to_its_build_dir(
+    tmp_path, monkeypatch, exe, family, user, expected
+):
+    """A Verilator build gets `CCACHE_NAMESPACE` set to its absolute `--Mdir`, so ccache never hands it a precompiled header another directory built, as does a `simulator-family: verilator` builder under another name, which rb gives no `--Mdir`; a value the user set is kept, and the compile fingerprint, which a shared build's key hashes, does not carry it."""
+    if user is None:
+        monkeypatch.delenv("CCACHE_NAMESPACE", raising=False)
+    else:
+        monkeypatch.setenv("CCACHE_NAMESPACE", user)
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        builder_cfg=DummyBuilderCfg(exe=exe, simulator_family=family),
+    )
+
+    captured = _compile_env(tmp_path, monkeypatch, sim)
+
+    build_dir = tmp_path / "artefacts" / "basic" / "obj_dir_basic"
+    if expected == "build dir":
+        assert captured["cmd"][captured["cmd"].index("--Mdir") + 1] == "obj_dir_basic"
+        expected = str(build_dir)
+    elif expected == "rb build dir":
+        assert "--Mdir" not in captured["cmd"]
+        expected = str(build_dir)
+    assert captured["env"].get("CCACHE_NAMESPACE") == expected
+    fingerprint = sim._compile_fingerprint(
+        captured["cmd"], str(tmp_path / "artefacts" / "basic" / "run.f")
+    )
+    assert fingerprint["env"] == {}
+
+
+def test_a_shared_verilator_build_takes_the_shared_dir_as_its_ccache_namespace(
+    tmp_path, monkeypatch
+):
+    """A shared build's `--Mdir` is the shared directory itself, which every test with that key builds in."""
+    monkeypatch.delenv("CCACHE_NAMESPACE", raising=False)
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        builder_cfg=DummyBuilderCfg(exe="verilator", simulator_family="verilator"),
+    )
+    shared = tmp_path / "artefacts" / ".shared-builds" / "k"
+    plan = vlog_sim_module._CompilePlan(
+        compile_work_dir=str(tmp_path / "artefacts" / "basic"),
+        filelist_path=str(tmp_path / "artefacts" / "basic" / "run.f"),
+        build_dir=str(shared),
+        is_verilator=True,
+    )
+    assert sim._compile_process_env(plan)["CCACHE_NAMESPACE"] == str(shared)
+
+
+_PCH_TB = """\
+module leaf (input logic clk, output logic [7:0] q);
+  /* verilator no_inline_module */
+  always_ff @(posedge clk) q <= q + 8'd1;
+endmodule
+`ifdef EXTRA
+module leaf2 (input logic clk, output logic [7:0] q);
+  /* verilator no_inline_module */
+  always_ff @(posedge clk) q <= q - 8'd1;
+endmodule
+`endif
+module tb (input logic clk);
+  logic [7:0] q;
+  leaf u0 (.clk, .q);
+`ifdef EXTRA
+  logic [7:0] q2;
+  leaf2 u1 (.clk, .q(q2));
+`endif
+  initial begin
+`ifdef MSG_B
+    $display("variant B");
+`else
+    $display("variant A");
+`endif
+    $finish;
+  end
+endmodule
+"""
+
+
+#: Seconds any one subprocess of the real Verilator builds may take before the test fails.
+_REAL_BUILD_TIMEOUT_S = 300
+
+
+def _ccache_calls() -> int:
+    """The compiler calls ccache has looked up in `$CCACHE_DIR`, hits and misses."""
+    stats = subprocess.run(
+        ["ccache", "--print-stats"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    ).stdout
+    counters = dict(line.split("\t", 1) for line in stats.splitlines() if "\t" in line)
+    return sum(
+        int(counters.get(key, 0))
+        for key in ("direct_cache_hit", "preprocessed_cache_hit", "cache_miss")
+    )
+
+
+@pytest.mark.skipif(
+    not all(shutil.which(tool) for tool in ("verilator", "ccache", "clang++")),
+    reason="needs verilator, ccache and clang++",
+)
+def test_a_verilator_build_never_compiles_against_another_dirs_precompiled_header(
+    tmp_path, monkeypatch
+):
+    """ccache does not hash the build directory, so without a namespace a later build reuses the precompiled header an earlier one cached, which Clang then checks against the earlier directory's headers: a test in another directory fails to compile once that directory was rebuilt with another design. Skipped where Verilator does not compile through ccache."""
+    tb = tmp_path / "tb.sv"
+    tb.write_text(_PCH_TB)
+    monkeypatch.setenv("CCACHE_DIR", str(tmp_path / "ccache"))
+    monkeypatch.delenv("CCACHE_NAMESPACE", raising=False)
+    monkeypatch.delenv("CCACHE_DISABLE", raising=False)
+    monkeypatch.delenv("OBJCACHE", raising=False)
+    monkeypatch.setattr(
+        vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
+    )
+    run_managed_process = vlog_sim_module.run_managed_process
+
+    def _bounded(cmd, **kwargs):
+        kwargs.setdefault("timeout", _REAL_BUILD_TIMEOUT_S)
+        kwargs.setdefault("timeout_returncode", 124)
+        return run_managed_process(cmd, **kwargs)
+
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _bounded)
+
+    def _build(test_name, *defines):
+        # `--output-split` makes even this design compile several files against a
+        # precompiled header, as a large one does.
+        opts = [
+            "--binary",
+            "--compiler",
+            "clang",
+            "-Wno-fatal",
+            "--output-split",
+            "1",
+            "--output-split-cfuncs",
+            "1",
+            "--top-module",
+            "tb",
+            *defines,
+            str(tb),
+        ]
+        sim = _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=test_name,
+            builder_cfg=DummyBuilderCfg(
+                exe="verilator", simulator_family="verilator", compile_opts=opts
+            ),
+        )
+        return sim.compile(), sim._get_compile_transcript_path()
+
+    for test_name, defines in (
+        ("a", ()),
+        ("a", ("+define+EXTRA",)),
+        ("b", ("+define+MSG_B",)),
+    ):
+        returncode, transcript = _build(test_name, *defines)
+        assert returncode == 0, Path(transcript).read_text()[-2000:]
+        if _ccache_calls() == 0:
+            pytest.skip("this Verilator does not compile through ccache")
