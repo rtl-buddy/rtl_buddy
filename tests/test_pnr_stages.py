@@ -307,7 +307,8 @@ def test_unbroken_render_is_unchanged_but_for_the_checkpoint_block(tmp_path):
     """With `checkpoints:` the flow differs from a plain render only by the
     checkpoint block, the global-route stage end after its repair and the
     timing event before it, the `place` stage end before `repair_clock_inverters`, the detailed-route stage
-    end after antenna repair and the timing events of `place` and `finish`.
+    end after antenna repair, the timing events of `place` and `finish`, and the
+    stage ends where a top without rows skips global placement and CTS.
     """
     (tmp_path / "plain").mkdir()
     (tmp_path / "armed").mkdir()
@@ -328,6 +329,8 @@ def test_unbroken_render_is_unchanged_but_for_the_checkpoint_block(tmp_path):
     without = without.replace(
         "rb::ckpt::timing_event finish stage_end global_route\n", "", 1
     )
+    for anchor in ("global_placement", "clock_tree_synthesis"):
+        without = without.replace(f"  rb::ckpt::checkpoint_for {anchor} enter\n", "", 1)
     assert without.replace(str(tmp_path / "armed"), "X") == plain.replace(
         str(tmp_path / "plain"), "X"
     )

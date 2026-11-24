@@ -2427,6 +2427,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "later stage sessions have in their original form; move it to a "
                 "session hook"
             )
+        case "pnr.no_rows_skip_placement":
+            return (
+                f'P&R "{fields.get("pnr")}": the core has no rows and the top no '
+                "standard cell to place, so placement, CTS, the post-CTS and "
+                "global-route repairs, antenna diode insertion and fill did not run"
+            )
         case "pnr.hook_error_lines":
             return (
                 f'P&R "{fields.get("pnr")}": hook {fields.get("point")} '

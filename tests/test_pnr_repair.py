@@ -455,8 +455,12 @@ def test_a_flow_without_repair_knobs_is_the_template_as_before(
             timing = "rb::ckpt::stage_timing global_route before_repair\n"
             filled = {
                 "setup_repair": "repair_timing -setup\n" if setup_repair else "",
+                # The repair runs only where the core has rows.
                 "global_route_hold_repair": (
-                    (timing if kind != "one session" else "") + _BASE_HOLD_REPAIR
+                    "if {[rb::has_rows]} {\n"
+                    + (timing if kind != "one session" else "")
+                    + _BASE_HOLD_REPAIR
+                    + "}\n"
                     if hold_shorthand
                     else ""
                 ),
@@ -502,7 +506,8 @@ def test_global_route_repair_passes_margins_in_the_liberty_unit(
     )
     text = _render(tmp_path, platform, ps_per_unit=ps_per_unit)
     assert (
-        _GLOBAL_ROUTE_CMD + "rb::ckpt::stage_timing global_route before_repair\n"
+        _GLOBAL_ROUTE_CMD + "if {[rb::has_rows]} {\n"
+        "rb::ckpt::stage_timing global_route before_repair\n"
         'puts ">>> Global-route repair (reroute incremental)"\n'
         "estimate_parasitics -global_routing\n"
         'puts ">>> Global-route repair: repair_design -slew_margin 20 '
@@ -520,6 +525,7 @@ def test_global_route_repair_passes_margins_in_the_liberty_unit(
         f"repair_timing -hold -hold_margin {hold} -setup_margin {setup}\n"
         "global_route -start_incremental\n"
         "detailed_placement\n" + _END_INCREMENTAL_CMD + "check_placement -verbose\n"
+        "}\n"
     ) in text
     # The global-route checkpoint is taken after the repair.
     assert text.index(

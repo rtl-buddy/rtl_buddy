@@ -158,7 +158,8 @@ _OPTIMIZED = (
     'puts ">>> Detail placement optimization"\nimprove_placement\noptimize_mirroring\n'
 )
 _PLACE_END = (
-    'rb::global_connect\ncheck_placement -verbose\n\nputs ">>> Clock tree synthesis"'
+    "}\nrb::global_connect\nif {[rb::has_rows]} { check_placement -verbose }\n\n"
+    'puts ">>> Clock tree synthesis"'
 )
 _CTS = 'puts ">>> Clock tree synthesis"'
 
@@ -191,7 +192,10 @@ def test_the_step_runs_on_the_legalised_post_repair_placement_before_cts(tmp_pat
     text = _render_flow(tmp_path, platform)
     block = _block(tmp_path, platform)
 
-    assert f"repair_design\n\n{_LEGALIZED}{_OPTIMIZED}{block}{_PLACE_END}" in text
+    assert (
+        f"repair_design\n}}\nif {{[rb::has_rows]}} {{\n"
+        f"{_LEGALIZED}{_OPTIMIZED}{block}{_PLACE_END}"
+    ) in text
     assert text.count('puts ">>> Macro pin limits"') == 1
     assert text.index("global_placement -density") < text.index(block)
     assert text.index(block) < text.index("clock_tree_synthesis")

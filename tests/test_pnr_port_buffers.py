@@ -131,7 +131,9 @@ def test_the_unused_forms_leave_global_placement_as_it_was(tmp_path):
     for ports in (None, True, PortBuffers(inputs=False, skip_clock_outputs=True)):
         text = _flow(tmp_path, ports)
         after = text[text.index("\n", text.index(_GLOBAL_PLACEMENT)) :]
-        assert after.startswith('\n\nputs ">>> Repair tie fanout"'), ports
+        assert after.startswith(
+            '\n}\nif {[rb::has_rows]} {\n\nputs ">>> Repair tie fanout"'
+        ), ports
 
 
 @pytest.mark.parametrize(

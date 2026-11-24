@@ -81,20 +81,26 @@ def test_the_steps_run_by_default_in_orfs_order(tmp_path):
         'puts ">>> Detail placement optimization"\n'
         "improve_placement\n"
         "optimize_mirroring\n"
+        "}\n"
         "rb::global_connect\n"
-        "check_placement -verbose\n"
+        "if {[rb::has_rows]} { check_placement -verbose }\n"
     ) in text
-    assert ("\nrepair_clock_inverters\nclock_tree_synthesis") in text
+    assert (
+        "\nif {[rb::has_rows]} { repair_clock_inverters }\nif {![rb::has_rows]} {\n"
+    ) in text
     assert (
         'puts ">>> Global-route antenna repair"\n'
+        "if {[rb::has_rows]} {\n"
         "repair_antennas -iterations 5\n"
         "check_placement -verbose\n"
+        '} else { rb::skip "global-route antenna repair" }\n'
         "check_antennas -report_file $OUT_DIR/grt_antennas.rpt\n"
         "rb::global_connect\n"
     ) in text
     assert (
         "    -verbose 1\n"
         'puts ">>> Detailed-route antenna repair"\n'
+        "if {[rb::has_rows]} {\n"
         "set rb_antenna_rounds 1\n"
         "if {[repair_antennas]} {\n"
         "  detailed_route \\\n"
@@ -108,6 +114,7 @@ def test_the_steps_run_by_default_in_orfs_order(tmp_path):
         "      -verbose 1\n"
         "  incr rb_antenna_rounds\n"
         "}\n"
+        '} else { rb::skip "detailed-route antenna repair" }\n'
         "check_antennas -report_file $OUT_DIR/drt_antennas.rpt\n"
         "rb::global_connect\n"
     ) in text
@@ -173,7 +180,8 @@ def test_with_both_placement_steps_off_the_placement_stage_is_as_before(tmp_path
     assert ">>> Detail placement optimization" not in text
     assert (
         'puts ">>> Detail placement (legalize)"\ndetailed_placement\n'
-        "rb::global_connect\ncheck_placement -verbose\n" in text
+        "}\nrb::global_connect\nif {[rb::has_rows]} { check_placement -verbose }\n"
+        in text
     )
 
 
@@ -269,7 +277,8 @@ def test_the_flow_ends_the_detailed_route_stage_after_the_antenna_repair(
 def test_with_checkpoints_the_place_stage_ends_before_the_clock_inverters(tmp_path):
     text = _scripts(tmp_path, _platform(_pdk(tmp_path)), kind="checkpoints")["pnr.tcl"]
     assert (
-        "rb::ckpt::checkpoint_for clock_tree_synthesis enter\nrepair_clock_inverters\n"
+        "rb::ckpt::checkpoint_for clock_tree_synthesis enter\n"
+        "if {[rb::has_rows]} { repair_clock_inverters }\n"
     ) in text
 
 

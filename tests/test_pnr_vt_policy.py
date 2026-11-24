@@ -1,5 +1,6 @@
 """Threshold-voltage policy keys: `keep-sizing-vt` and the CTS-only `cts-dont-use-cells` (rtl_buddy#918)."""
 
+import re
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -34,6 +35,14 @@ _CTS_DONT_USE = (
     "set_dont_use [list *_L *_SL]\n"
 )
 _CTS = "clock_tree_synthesis \\\n"
+
+
+def _precedes_cts(exclusion: str, text: str) -> bool:
+    """Whether `exclusion` comes right before CTS, which runs only where the core has rows."""
+    rows = r"if \{!\[rb::has_rows\]\} \{\n(?:  [^\n]*\n)+\} else \{\n"
+    return re.search(re.escape(exclusion) + rows + re.escape(_CTS), text) is not None
+
+
 _RESTORE = (
     'puts ">>> Don\'t-use cells after CTS"\n'
     "if {[llength $rb_cts_du_added] > 0} {\n"
@@ -216,10 +225,10 @@ def test_the_cts_list_brackets_cts_and_repair_clock_nets(tmp_path):
     )
 
     assert text.count(_CTS_DONT_USE) == 1
-    assert _CTS_DONT_USE + _CTS in text
+    assert _precedes_cts(_CTS_DONT_USE, text)
     restore = _RESTORE
     assert text.count(restore) == 1
-    assert "repair_clock_nets\n" + restore in text
+    assert "repair_clock_nets\n}\n" + restore in text
     order = [
         text.index(_KEEP_VT),
         text.index(_CTS_DONT_USE),
@@ -272,7 +281,7 @@ def test_the_run_resolved_cts_list_brackets_cts(tmp_path):
     )
     text = _render(tmp_path, platform)
 
-    assert _CTS_DONT_USE.replace("[list *_L *_SL]", "[list *_L]") + _CTS in text
+    assert _precedes_cts(_CTS_DONT_USE.replace("[list *_L *_SL]", "[list *_L]"), text)
     assert text.count(_RESTORE) == 1
     assert text.count("set_dont_use [list AND2_X1 *_X32]\n") == 1
     assert "*_SL" not in text
@@ -289,7 +298,7 @@ def test_the_cts_list_stays_out_of_the_routed_design_check(tmp_path):
 def test_a_probe_brackets_its_cts_too(tmp_path):
     text = _render(tmp_path, _vt_platform(tmp_path), mode=PnrMode.PROBE)
 
-    assert _CTS_DONT_USE + _CTS in text
+    assert _precedes_cts(_CTS_DONT_USE, text)
     assert _RESTORE in text
     assert text.count(_KEEP_VT) == 1
 
@@ -348,8 +357,8 @@ def test_only_the_cts_session_brackets_cts(tmp_path):
     assert holders == [_stage_file("cts")]
     cts = scripts[_stage_file("cts")]
     assert cts.count(_CTS_DONT_USE) == 1
-    assert _CTS_DONT_USE + _CTS in cts
-    assert "repair_clock_nets\n" + _RESTORE in cts
+    assert _precedes_cts(_CTS_DONT_USE, cts)
+    assert "repair_clock_nets\n}\n" + _RESTORE in cts
     # The prelude's own `set_dont_use` precedes the CTS exclusion.
     assert cts.index(_PLATFORM_DONT_USE) < cts.index(_CTS_DONT_USE)
 
@@ -369,7 +378,7 @@ def test_a_run_resumed_at_cts_brackets_cts_in_its_session(tmp_path, monkeypatch)
     assert res.results["result"] == "PASS", res.results
     latest = max(_runs(artefacts), key=lambda p: p.stat().st_mtime)
     cts = (latest / _stage_file("cts")).read_text()
-    assert _CTS_DONT_USE + _CTS in cts
+    assert _precedes_cts(_CTS_DONT_USE, cts)
     assert _RESTORE in cts
     for stage in ("cts", "global_route", "detailed_route", "finish"):
         assert (latest / _stage_file(stage)).read_text().count(_KEEP_VT) == 1, stage

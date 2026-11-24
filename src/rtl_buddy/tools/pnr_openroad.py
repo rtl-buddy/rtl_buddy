@@ -201,6 +201,8 @@ _DONT_USE_VIOLATION_TAG = "RB-DONT-USE-VIOLATION:"
 
 # Printed once by the final reports: the routed design's logical and physical-only instance counts.
 _CELL_COUNT_TAG = "RB-CELL-COUNT:"
+#: Printed at the end of the floorplan of a top left with no rows and no standard cell to place (`rb::check_rows` in the flow template): the steps that need rows are skipped.
+_NO_ROWS_TAG = "RB-NO-ROWS:"
 #: The total row of global routing's usage table (GRT-0096); the last number is the total overflow.
 _GR_TOTAL_RE = re.compile(
     r"^Total\s+\d+\s+\d+\s+[\d.]+%\s+\d+\s*/\s*\d+\s*/\s*(\d+)\s*$", re.MULTILINE
@@ -577,6 +579,21 @@ def _before_cts_block(hooks: dict, *, checkpoints: bool, steps: str = "") -> str
     if block and checkpoints:
         return "\nrb::ckpt::checkpoint_for clock_tree_synthesis enter" + block
     return block
+
+
+def _with_rows(block: str) -> str:
+    """`block` run only where the core has rows (`rb::has_rows` in the flow template), or `""` for an empty one: it places, legalizes or buffers cells."""
+    if not block:
+        return ""
+    return "if {[rb::has_rows]} {\n" + block + "}\n"
+
+
+def _no_rows_skip_tcl(what: str, anchor: str, *, checkpoints: bool) -> str:
+    """Return the line that logs `what` skipped on a top without rows (`rb::skip` in the flow template), then, with `checkpoints` (a one-session run that writes them), the end of the stage that the skipped step's command `anchor` would have ended on entering it (`STAGE_ANCHORS`)."""
+    line = f'  rb::skip "{what}"\n'
+    if checkpoints:
+        line += f"  rb::ckpt::checkpoint_for {anchor} enter\n"
+    return line
 
 
 def _after_extraction_block(spef: str, hooks: dict) -> str:
@@ -1079,7 +1096,8 @@ def _cts_repair_clock_inverters_tcl(platform) -> str:
     """Return `repair_clock_inverters` before CTS, which clones each clock-tree inverter next to its register loads so CTS does not buffer the inverted clocks, or `""` when `cts-repair-clock-inverters` is false. The block carries its own leading newline, as the `before-cts` hook block does."""
     if not platform.get_cts_repair_clock_inverters():
         return ""
-    return "\nrepair_clock_inverters\n"
+    # Its clones need rows (`rb::has_rows` in the flow template).
+    return "\nif {[rb::has_rows]} { repair_clock_inverters }\n"
 
 
 #: Antenna repair rounds after global route (`repair_antennas -iterations`) and the most detailed routes after detailed route, as ORFS's `MAX_REPAIR_ANTENNAS_ITER_GRT` and `_DRT`.
@@ -1095,10 +1113,13 @@ def _global_route_antenna_repair_tcl(
     if mode is PnrMode.PROBE:
         return 'puts ">>> Global-route antenna repair: skipped (mode: probe)"\n'
     congestion = " -allow_congestion" if gr.allow_congestion else ""
+    # Diodes need rows (`rb::has_rows` in the flow template); the report is written either way.
     return (
         'puts ">>> Global-route antenna repair"\n'
+        "if {[rb::has_rows]} {\n"
         f"repair_antennas -iterations {_ANTENNA_REPAIR_ITERATIONS}{congestion}\n"
         "check_placement -verbose\n"
+        '} else { rb::skip "global-route antenna repair" }\n'
         "check_antennas -report_file $OUT_DIR/grt_antennas.rpt\n"
     )
 
@@ -1113,8 +1134,10 @@ def _detailed_route_antenna_repair_tcl(platform, verbose: int) -> str:
         "      -output_maze $OUT_DIR/route.maze.log \\\n"
         f"      -verbose {verbose}\n"
     )
+    # Diodes need rows (`rb::has_rows` in the flow template); the report is written either way.
     return (
         'puts ">>> Detailed-route antenna repair"\n'
+        "if {[rb::has_rows]} {\n"
         "set rb_antenna_rounds 1\n"
         "if {[repair_antennas]} {\n"
         f"  {route}"
@@ -1125,6 +1148,7 @@ def _detailed_route_antenna_repair_tcl(platform, verbose: int) -> str:
         f"  {route}"
         "  incr rb_antenna_rounds\n"
         "}\n"
+        '} else { rb::skip "detailed-route antenna repair" }\n'
         "check_antennas -report_file $OUT_DIR/drt_antennas.rpt\n"
     )
 
@@ -4004,15 +4028,17 @@ class OpenRoadPnr:
             "failed_global_route_write_sdc": (
                 "rb::ckpt::write_sdc" if self._mode_corners else "write_sdc"
             ),
-            "global_route_repair": _global_route_repair_tcl(
-                platform.get_global_route_repair(),
-                self._mode,
-                self._ps_per_unit,
-                dpl_options["global_route"],
-                platform.get_global_route(),
-                timing=self._arms_checkpoints(),
-                platform=platform,
-                after_timing=_after_timing_repair_block(hooks, "global_route"),
+            "global_route_repair": _with_rows(
+                _global_route_repair_tcl(
+                    platform.get_global_route_repair(),
+                    self._mode,
+                    self._ps_per_unit,
+                    dpl_options["global_route"],
+                    platform.get_global_route(),
+                    timing=self._arms_checkpoints(),
+                    platform=platform,
+                    after_timing=_after_timing_repair_block(hooks, "global_route"),
+                )
             ),
             "gp_blockages_create": gp_blocks.create,
             "gp_blockages_destroy": gp_blocks.destroy,
@@ -4025,6 +4051,17 @@ class OpenRoadPnr:
             ),
             "detailed_route_verbose": str(self.pnr_cfg.get_detailed_route_verbose()),
             "cell_count_tag": _CELL_COUNT_TAG,
+            "no_rows_tag": _NO_ROWS_TAG,
+            "skip_global_placement": _no_rows_skip_tcl(
+                "global placement, resize and legalization",
+                "global_placement",
+                checkpoints=self._arms_checkpoints() and not self._staged,
+            ),
+            "skip_cts": _no_rows_skip_tcl(
+                "clock tree synthesis, its repairs and post-CTS timing repair",
+                "clock_tree_synthesis",
+                checkpoints=self._arms_checkpoints() and not self._staged,
+            ),
             "electrical_tag": _ELECTRICAL_TAG,
             "path_fanout_reports": pnr_path_report.report_tcl(
                 list(corner_libs),
@@ -4046,7 +4083,7 @@ class OpenRoadPnr:
             "cts_obstruction_option": _cts_obstruction_option(
                 platform, self._cts_has_no_obstruction_aware
             ),
-            "cts_repair_clock_nets": _cts_repair_clock_nets_tcl(platform),
+            "cts_repair_clock_nets": _with_rows(_cts_repair_clock_nets_tcl(platform)),
             "max_fanout_block": max_fanout_block,
             "routing_layers": _routing_layers_tcl(platform),
             "extra_libs_lefs": extra_libs_lefs,
@@ -5969,6 +6006,23 @@ class OpenRoadPnr:
         return (
             f"pnr.no_wire_rc: pre-route steps saw no wire RC "
             f"({', '.join(causes)}); see {_NO_WIRE_RC_DOCS}"
+        )
+
+    def _no_rows_qualifier(self, log_text: str) -> str:
+        """Warn that the top had no rows and nothing to place, so placement, CTS, the post-CTS and global-route repairs, antenna diode insertion and fill did not run (the floorplan's setup repair and any post-route repair rounds still run), and return the result qualifier, or `""` when it had rows (`_NO_ROWS_TAG`)."""
+        if not re.search(rf"^{re.escape(_NO_ROWS_TAG)}", log_text, re.MULTILINE):
+            return ""
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.no_rows_skip_placement",
+            pnr=self.pnr_cfg.get_name(),
+            log=self._log_path(),
+        )
+        return (
+            "pnr.no_rows_skip_placement: no rows and no standard cell to place; "
+            "placement, CTS, the post-CTS and global-route repairs, antenna diode "
+            "insertion and fill did not run"
         )
 
     def _allow_congestion_qualifier(self, platform, log_text: str) -> str:
@@ -8063,6 +8117,7 @@ class OpenRoadPnr:
         # Logged for every run that got this far; only a pass carries it in the result description.
         no_wire_rc = self._no_wire_rc_qualifier(platform, log_text)
         congested = self._allow_congestion_qualifier(platform, log_text)
+        no_rows = self._no_rows_qualifier(log_text)
 
         final = _final_reports(log_text)
         area = self._parse_area_um2(final)
@@ -8228,6 +8283,7 @@ class OpenRoadPnr:
                 pnr_abstract.stale_qualifier(self._blocks),
                 no_wire_rc,
                 congested,
+                no_rows,
                 f"electrical {electrical}" if electrical else "",
                 self._post_route_note(),
             )
