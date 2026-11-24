@@ -163,6 +163,7 @@ _BUCKET_GRAPH = {
         _node("spec:fifo", "spec_block", "config"),
         _node("covitem:fifo#F-COV-1", "coverage_item", "config"),
         _node("doc:spec/fifo/README.md", "spec_doc", "config"),
+        _node("link:https://wiki.example.com/pages/123", "spec_link", "config"),
         _node("golden:spec/fifo/fifo_model.py", "golden_model", "config"),
         _node("model:design/fifo/models.yaml#fifo", "model", "config"),
         _node("module:fifo", "module", "design"),
@@ -243,6 +244,7 @@ def test_spec_types_and_models_bucket_by_type(bucket_graph: Path):
         "spec:fifo",
         "covitem:fifo#F-COV-1",
         "doc:spec/fifo/README.md",
+        "link:https://wiki.example.com/pages/123",
         "golden:spec/fifo/fifo_model.py",
     ):
         assert columns[node_id] == "spec"

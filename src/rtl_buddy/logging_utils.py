@@ -3004,6 +3004,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('path')}: {fields.get('where')} has unknown key "
                 f"{fields.get('key')!r}, ignored{hint}"
             )
+        case "spec_config.doc_is_url":
+            return (
+                f"{fields.get('path')}: block {fields.get('block')!r} lists URL "
+                f"{fields.get('doc')!r} under docs:, which takes file paths; "
+                "list a URL under links: instead"
+            )
         case "root_config.reg_cfg_unknown_keys":
             return (
                 f"{fields.get('path')}: cfg-rtl-reg has unknown key(s) "

@@ -3,6 +3,8 @@ import logging
 import math
 import os
 import pprint
+import re
+import urllib.parse
 
 from serde import serde, field
 from .unknown_keys import serde_keys
@@ -31,13 +33,37 @@ class SpecCoverageItem:
         return pprint.pformat(self)
 
 
+# `kind` of a link that does not set one.
+DEFAULT_LINK_KIND = "doc"
+
+# A link `kind`: one lowercase token, such as "arch" or "mas".
+_LINK_KIND_RE = re.compile(r"[a-z0-9_-]+")
+
+
+@serde
+class SpecLink:
+    """One external page a block points at, such as a wiki page. `url` is an absolute http(s) URL; `title` defaults to it."""
+
+    url: str
+    title: str | None = None
+    kind: str = DEFAULT_LINK_KIND
+
+    def __post_init__(self) -> None:
+        if not self.title:
+            self.title = self.url
+
+    def __str__(self):
+        return pprint.pformat(self)
+
+
 @serde
 class SpecBlock:
-    """One block entry in `specs.yaml`; `docs` paths are relative to that file."""
+    """One block entry in `specs.yaml`; `docs` paths are relative to that file, `links` are URLs."""
 
     name: str
     desc: str
     docs: list[str] = field(default_factory=list)
+    links: list[SpecLink] = field(default_factory=list)
     coverage_items: list[SpecCoverageItem] = field(
         rename="coverage-items", default_factory=list
     )
@@ -91,6 +117,14 @@ def _warn_unknown_keys(raw: Any, path: str) -> None:
             continue
         block_where = f"block {block.get('name')!r}"
         check(block, SpecBlock, block_where)
+        links = block.get("links")
+        for link in links if isinstance(links, list) else []:
+            check(
+                link,
+                SpecLink,
+                f"link {link.get('url') if isinstance(link, dict) else None!r} in {block_where}",
+                hint="a link takes url, title and kind",
+            )
         items = block.get("coverage-items")
         for item in items if isinstance(items, list) else []:
             check(
@@ -109,6 +143,82 @@ def _drop_null_meta(raw: Any) -> None:
         for item in items if isinstance(items, list) else []:
             if isinstance(item, dict) and item.get("meta", 0) is None:
                 del item["meta"]
+
+
+def _is_web_url(value: Any) -> bool:
+    """Whether ``value`` is an absolute ``http://`` or ``https://`` URL with a host and no whitespace."""
+    if not isinstance(value, str) or any(c.isspace() for c in value):
+        return False
+    try:
+        parts = urllib.parse.urlsplit(value)
+        host = parts.hostname
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(host)
+
+
+def _check_links(raw: Any, path: str) -> None:
+    """Raise ``ValueError`` naming the file, the block and the value for a bad ``links:`` entry.
+
+    An entry must be a mapping whose ``url`` is an absolute http(s) URL, whose ``kind`` is a lowercase token and whose ``title`` is a string. A ``title:`` or ``kind:`` left empty or set to ``~`` means the default and is dropped. A missing ``url`` and a ``links:`` that is not a list are left to the typed load.
+    """
+    blocks = raw.get("blocks") if isinstance(raw, dict) else None
+    for block in blocks if isinstance(blocks, list) else []:
+        links = block.get("links") if isinstance(block, dict) else None
+        if not isinstance(links, list):
+            continue
+        where = f"{path}: block {block.get('name')!r}"
+        for link in links:
+            if not isinstance(link, dict):
+                raise ValueError(
+                    f"{where}: links entry {link!r} is not a mapping; "
+                    "write it as {url: ..., title: ..., kind: ...}"
+                )
+            for key in ("title", "kind"):
+                if key in link and link[key] is None:
+                    del link[key]
+            if "url" not in link:
+                continue
+            url = link["url"]
+            if not _is_web_url(url):
+                raise ValueError(
+                    f"{where}: link url {url!r} is not an absolute http:// or "
+                    "https:// URL"
+                )
+            kind = link.get("kind", DEFAULT_LINK_KIND)
+            if not isinstance(kind, str) or not _LINK_KIND_RE.fullmatch(kind):
+                raise ValueError(
+                    f"{where}: link {url!r} has kind {kind!r}, which is not a "
+                    "lowercase token of letters, digits, '-' and '_'"
+                )
+            title = link.get("title")
+            if title is not None and not isinstance(title, str):
+                raise ValueError(
+                    f"{where}: link {url!r} has title {title!r}, which is not a string"
+                )
+
+
+_WARNED_DOC_URLS: set[tuple[str, str, str]] = set()
+
+
+def _warn_url_docs(blocks: list[SpecBlock], path: str) -> None:
+    """Warn once per process for each ``docs:`` entry that is an http(s) URL; ``docs`` takes file paths and ``links`` takes URLs."""
+    abspath = os.path.abspath(path)
+    for block in blocks:
+        for doc in block.docs:
+            if not doc.lower().startswith(("http://", "https://")):
+                continue
+            if (abspath, block.name, doc) in _WARNED_DOC_URLS:
+                continue
+            _WARNED_DOC_URLS.add((abspath, block.name, doc))
+            log_event(
+                logger,
+                logging.WARNING,
+                "spec_config.doc_is_url",
+                path=path,
+                block=block.name,
+                doc=doc,
+            )
 
 
 def _json_safe(value: Any) -> Any:
@@ -135,8 +245,10 @@ class SpecConfig:
             with open(path, "r") as f:
                 raw = load_yaml(f.read(), path)
             _drop_null_meta(raw)
+            _check_links(raw, path)
             data = config_from_data(SpecConfigFile, raw)
             _warn_unknown_keys(raw, path)
+            _warn_url_docs(data.blocks, path)
         except Exception as e:
             log_event(
                 logger, logging.ERROR, "spec_config.load_failed", path=path, error=e

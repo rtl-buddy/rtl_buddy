@@ -171,6 +171,10 @@ def spec_doc_id(doc_rel: str) -> str:
     return f"doc:{doc_rel}"
 
 
+def spec_link_id(url: str) -> str:
+    return f"link:{url}"
+
+
 def golden_model_id(path_rel: str) -> str:
     return f"golden:{path_rel}"
 
@@ -451,11 +455,12 @@ def _add_spec_nodes(
     spec_configs: list[SpecConfig],
     verif_sources: list[tuple[str, str]],
 ) -> dict[str, list[str]]:
-    """Emit spec blocks, their docs, coverage items and golden models.
+    """Emit spec blocks, their docs, links, coverage items and golden models.
 
     Returns a map of coverage-item id -> owning block names. An id declared by several
     blocks gets one `covers` edge per block, as `rb spec check-coverage` matches
-    `covers:` on the bare id.
+    `covers:` on the bare id. A URL linked from several blocks is one node; the first
+    block read gives its title and kind.
     """
     cov_owners: dict[str, list[str]] = {}
 
@@ -485,6 +490,19 @@ def _add_spec_nodes(
                     exists=os.path.isfile(doc_abs),
                 )
                 gb.add_link(block_node, doc_node, "documented_by")
+
+            # An external page documents the block as a local doc does, so it reuses
+            # `documented_by`; the target's type tells a URL from a file.
+            for link in block.links:
+                link_node = gb.add_node(
+                    spec_link_id(link.url),
+                    "spec_link",
+                    link.title,
+                    url=link.url,
+                    kind=link.kind,
+                    title=link.title,
+                )
+                gb.add_link(block_node, link_node, "documented_by")
 
             for item in block.coverage_items:
                 item_node = gb.add_node(

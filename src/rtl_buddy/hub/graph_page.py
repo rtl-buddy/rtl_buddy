@@ -84,7 +84,9 @@ FLOW_COLUMNS = {
 }
 
 #: Config-tier node types that describe *intent* rather than a flow.
-SPEC_TYPES = frozenset({"spec_block", "coverage_item", "spec_doc", "golden_model"})
+SPEC_TYPES = frozenset(
+    {"spec_block", "coverage_item", "spec_doc", "spec_link", "golden_model"}
+)
 
 #: Config-tier node types the ``flow`` stamp applies to.
 FLOW_TYPES = frozenset({"suite", "test", "testbench"})
