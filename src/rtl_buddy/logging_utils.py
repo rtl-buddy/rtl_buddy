@@ -3546,6 +3546,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"at {fields.get('corner')}, outside {fields.get('target_ps'):g} ± "
                 f"{fields.get('tolerance_ps'):g} ps"
             )
+        case "pnr.latch_borrow_unavailable":
+            return (
+                f"pnr {fields.get('pnr')}: the latch borrow margin is unavailable "
+                f"({fields.get('reason')}); a latch's setup slack of 0 does not "
+                f"show its margin, see {fields.get('report')}"
+            )
         case "pnr.macro_pin_limits_unmet":
             return (
                 f"pnr {fields.get('pnr')}: {fields.get('unmet')} macro pin(s) stayed "

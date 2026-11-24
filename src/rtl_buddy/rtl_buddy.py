@@ -5,6 +5,7 @@
 #
 import hashlib
 import logging
+import math
 import os
 import re
 import shutil
@@ -335,6 +336,29 @@ def _graph_where(node: dict) -> str:
         return "-"
     line = node.get("line")
     return f"{file_path}:{line}" if line is not None else str(file_path)
+
+
+def _pnr_wns_setup_cell(res: dict) -> str:
+    """The summary's WNS Setup cell: the worst setup slack in ns, `-` when unread.
+
+    A slack of exactly 0 on a design with a borrowing latch is that latch's, whose slack OpenSTA sets to 0 whatever margin it has left, so the cell adds the latch borrow margin instead of reading as a design with none.
+    """
+    wns = res.get("wns_setup_ps")
+    if wns is None:
+        return "-"
+    cell = f"{'+' if wns >= 0 else ''}{wns / 1000:.3f} ns"
+    latch = res.get("latch_borrow") or {}
+    margin = res.get("latch_borrow_margin_ps")
+    if (
+        wns == 0
+        and math.copysign(1.0, wns) > 0
+        and margin is not None
+        and any(c.get("borrowing") for c in (latch.get("corners") or {}).values())
+    ):
+        cell += (
+            f" (latch borrow, {'+' if margin >= 0 else ''}{margin / 1000:.3f} ns left)"
+        )
+    return cell
 
 
 def _pnr_worst_corner_cell(res: dict) -> str:
@@ -11923,6 +11947,8 @@ class RtlBuddy:
             "macro_pin_unmet_count",
             "cts_root_taps",
             "clock_latency",
+            "latch_borrow_margin_ps",
+            "latch_borrow",
             "worst_setup_corner",
             "worst_hold_corner",
             "corners",
@@ -12941,12 +12967,7 @@ class RtlBuddy:
                 area = res.get("area_um2")
                 row["area"] = f"{area:.2f} µm²" if area is not None else "-"
             if has_setup:
-                wns = res.get("wns_setup_ps")
-                row["wns_setup"] = (
-                    f"{'+' if wns >= 0 else ''}{wns / 1000:.3f} ns"
-                    if wns is not None
-                    else "-"
-                )
+                row["wns_setup"] = _pnr_wns_setup_cell(res)
             if has_hold:
                 wns = res.get("wns_hold_ps")
                 row["wns_hold"] = (
