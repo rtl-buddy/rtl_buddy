@@ -100,6 +100,30 @@ rb power demo_power_saif -c power/demo/power.yaml -l 1000
 
 The converter accepts FST or VCD. If the trace starts at the testbench, set `activity.scope` to the design top.
 
+Names are written in the form OpenROAD's `read_saif` reads, so one name cannot fail the whole read. An escaped Verilog name loses its leading backslash: the trace's `\u_a.n1` is written `u_a.n1`, and a bracket in a name is written `\[`. A net or instance whose name has no readable form is left out, an instance with everything beneath it, and `rb saif` warns with the count (`saif.names_skipped`). See [Known Issues](../known-issues.md#rb-saif-leaves-out-names-read_saif-cannot-read).
+
+## Map renamed instances
+
+A netlist prepared for a simulator often renames instances, for example `u_a.u0` to `u_a__u0`, so the trace's instance names differ from the database's and their pins read no activity. Give `rb power` the pairs in a file and point `activity.instance-map` at it:
+
+```text
+# trace name    database name
+u_a__u0         u_a.u0
+u_a__mem_3_     u_a.mem[3]
+```
+
+```yaml
+    activity:
+      saif: ../../verif/demo/artefacts/gate_smoke/dump.saif
+      scope: tb_top/u_dut
+      instance-map: sim_names.map
+```
+
+- One pair per line; blank lines and lines starting with `#` are skipped. A backslash escapes the next character, so `\u_a.u0`, `u_a\.u0` and `u_a.u0` are one name.
+- Each pair renames every SAIF `INSTANCE` of that name, at any depth. `activity.scope` names the instances as the file has them after the rename.
+- The map applies to `activity.saif` only. `rb power` writes the renamed copy to [`activity.mapped.saif`](#inspect-artefacts) and reads that; the recorded trace and its hash stay the SAIF's, and the map's hash joins the options digest.
+- A malformed line, a trace name given two database names, or a database name `read_saif` cannot read fails setup. A map that renames nothing warns (`power.instance_map_applied`).
+
 ## Give hard macros a library
 
 The `platform` corner characterises standard cells only. A hard macro such as an SRAM, PLL or hardened partition needs its own Liberty. Without one, the macro stays in `power_instances.rpt` but contributes exactly zero:
@@ -224,6 +248,7 @@ Outputs land under `<power-dir>/artefacts/<run>/`, or `<power-dir>/artefacts/.ru
 | `power.rpt` | Raw `report_power` report (worst corner on a multi-corner platform) |
 | `power.<corner>.rpt` | Each corner's report, multi-corner platforms only |
 | `power_netlist.v` | This run's copy of the upstream netlist, the file OpenROAD reads |
+| `activity.mapped.saif` | The SAIF with [`activity.instance-map`](#map-renamed-instances) applied, the file OpenROAD reads; only with a map |
 | `power_instances.rpt` | Raw `report_power -instances`, one line per leaf instance |
 | `phys-model.json`, `phys-manifest.json` | Physical model and its manifest; query with `rb phys` ([Physical Metrics](phys.md)) |
 

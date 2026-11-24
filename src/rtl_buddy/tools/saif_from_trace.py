@@ -2,6 +2,11 @@
 
 Emits per-bit T0/T1/TX/TZ/TC in the trace's own timescale. Glitch power, X-propagation and per-pin
 activity are not modelled.
+
+Each net and instance name is written as :func:`~rtl_buddy.tools.saif_names.saif_name` spells it,
+so OpenSTA's `read_saif` reads it. A record whose name has no such spelling is left out, with
+everything beneath it for an instance, and the count is reported: one such name would otherwise
+fail the whole read.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ import pywellen
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from .pywellen_compat import require_random_access_api
+from .saif_names import saif_name
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +100,26 @@ def _bit_stats(changes: list, bit: int, end_t: int) -> dict:
     return {"T0": t0, "T1": t1, "TX": tx, "TZ": tz, "TC": tc}
 
 
+class _Skipped:
+    """Records left out because `read_saif` cannot read their names."""
+
+    # Original names reported in the warning; the counts cover the rest.
+    EXAMPLES = 5
+
+    def __init__(self):
+        self.nets = 0
+        self.instances = 0
+        self.examples: list[str] = []
+
+    def add(self, name: str, *, instance: bool, records: int = 1) -> None:
+        if instance:
+            self.instances += 1
+        else:
+            self.nets += records
+        if len(self.examples) < self.EXAMPLES:
+            self.examples.append(name)
+
+
 def _emit_net(out, indent: int, name: str, stats: dict) -> None:
     pad = "  " * indent
     out.write(f"{pad}({name}\n")
@@ -106,30 +132,50 @@ def _emit_net(out, indent: int, name: str, stats: dict) -> None:
     out.write(f"{pad})\n")
 
 
-def _emit_scope(out, scope, indent: int, end_t: int) -> None:
+def _emit_scope(out, scope, indent: int, end_t: int, skipped: _Skipped) -> None:
+    if not scope.name.strip():
+        # pywellen's unnamed scope holding a VCD array's elements, which `_iter_vars` skips.
+        return
+    name = saif_name(scope.name, net=False)
+    if name is None:
+        # The nets and scopes beneath it go too: the reader could not place them.
+        skipped.add(scope.name, instance=True)
+        return
     pad = "  " * indent
-    out.write(f"{pad}(INSTANCE {scope.name}\n")
+    out.write(f"{pad}(INSTANCE {name}\n")
 
-    vars_here = list(_iter_vars(scope))
-    if vars_here:
+    nets = []
+    for v in _iter_vars(scope):
+        width = v.bitwidth or 1
+        if width == 1:
+            written = saif_name(v.name, net=True)
+            if written is None:
+                skipped.add(v.name, instance=False)
+                continue
+            nets.append((v, [(written, 0)]))
+            continue
+        bits = []
+        for b in range(width):
+            written = saif_name(f"{v.name}[{b}]", net=True)
+            if written is None:
+                break
+            bits.append((written, b))
+        else:
+            nets.append((v, bits))
+            continue
+        # One unwritable bit means the base name is unwritable, so every bit is.
+        skipped.add(v.name, instance=False, records=width)
+
+    if nets:
         out.write(f"{pad}  (NET\n")
-        for v in vars_here:
+        for v, bits in nets:
             changes = v.signal[:]
-            width = v.bitwidth or 1
-            if width == 1:
-                _emit_net(out, indent + 2, v.name, _bit_stats(changes, 0, end_t))
-            else:
-                for b in range(width):
-                    _emit_net(
-                        out,
-                        indent + 2,
-                        f"{v.name}\\[{b}\\]",
-                        _bit_stats(changes, b, end_t),
-                    )
+            for written, b in bits:
+                _emit_net(out, indent + 2, written, _bit_stats(changes, b, end_t))
         out.write(f"{pad}  )\n")
 
     for s in scope.scopes():
-        _emit_scope(out, s, indent + 1, end_t)
+        _emit_scope(out, s, indent + 1, end_t, skipped)
 
     out.write(f"{pad})\n")
 
@@ -181,6 +227,7 @@ def convert(trace_path: Path, saif_path: Path) -> None:
         ) from e
 
     saif_path.parent.mkdir(parents=True, exist_ok=True)
+    skipped = _Skipped()
     with saif_path.open("w") as out:
         out.write("(SAIFILE\n")
         out.write('  (SAIFVERSION "2.0")\n')
@@ -194,8 +241,19 @@ def convert(trace_path: Path, saif_path: Path) -> None:
         out.write(f"  (TIMESCALE {ts_value} {ts_unit})\n")
         out.write(f"  (DURATION {end_t})\n")
         for s in w.scopes():
-            _emit_scope(out, s, 1, end_t)
+            _emit_scope(out, s, 1, end_t, skipped)
         out.write(")\n")
+
+    if skipped.nets or skipped.instances:
+        log_event(
+            logger,
+            logging.WARNING,
+            "saif.names_skipped",
+            output=str(saif_path),
+            nets=skipped.nets,
+            instances=skipped.instances,
+            examples=skipped.examples,
+        )
 
     log_event(
         logger,
@@ -205,4 +263,6 @@ def convert(trace_path: Path, saif_path: Path) -> None:
         output=str(saif_path),
         duration=end_t,
         timescale=f"{ts_value}{ts_unit}",
+        skipped_nets=skipped.nets,
+        skipped_instances=skipped.instances,
     )

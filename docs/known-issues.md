@@ -347,6 +347,12 @@ Upgrade OpenROAD, or run each corner on a single-corner platform. See [Sign off 
 
 On a multi-corner platform `rb power` reads one SDC, by default the P&R run's `<top>.routed.sdc` (the primary corner's), and the routed SPEF once for all corners. Every corner then uses the primary corner's generated-clock latencies, and the corners after the first reuse the first corner's reduced parasitics. For one corner's own figures, run `rb power` on a single-corner platform of that corner with `constraints:` set to `<top>.<corner>.routed.sdc`.
 
+## rb saif leaves out names read_saif cannot read
+
+OpenROAD's `read_saif` reads a name only if it starts with a letter or `_` and holds nothing but letters, digits and `_ $ . [ ]`; any other name fails the whole file. `rb saif` therefore leaves out a net or instance whose name, after dropping an escaped name's leading backslash, breaks that rule (`\a-b`, `\1x`), an instance with everything beneath it, and warns with the count. In a flattened netlist such a net is usually an internal wire, whose cell pins are annotated from their own instance's records, so little or nothing is lost. To keep such a record, give the signal a plain name in the netlist the simulator reads and map it back with [`activity.instance-map`](concepts/power.md#map-renamed-instances) if it is an instance. An instance named like a SAIF keyword (`NET`, `T0`) is left out too; a net gets a backslash the reader removes.
+
+`read_saif` looks an instance name up as written, without removing backslashes, so `rb saif` writes `.` in an instance name unescaped: `u_a\.u0` would read but match no instance.
+
 ## An unconfirmed dispatched P&R run blocks later runs
 
 While an earlier [dispatched](concepts/pnr.md#dispatch-the-stages-to-slurm) run's stage jobs may still be queued, a new `rb pnr` of the same configuration refuses to start. It also refuses when it cannot confirm the jobs have left: while `squeue` does not answer, on a host without `squeue` while that run's `dispatch/` record changed within the total `time` its jobs asked for, and for up to 11 minutes while an `sbatch` submission has no answer. Run `rb pnr` where `squeue` answers, or, once the jobs have ended, remove the `checkpoints/<run id>/dispatch/` directory the refusal names.

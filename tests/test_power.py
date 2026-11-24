@@ -3919,3 +3919,182 @@ def test_a_pnr_power_run_resolves_its_pnr_run_s_session_hooks_and_inputs(tmp_pat
 
     assert inputs["session_hooks"] == ["/p/a.tcl", "/p/b.tcl"]
     assert inputs["hook_inputs"] == ["/p/window.tcl"]
+
+
+# `activity.instance-map`: a SAIF of a netlist renamed for a simulator, read with the
+# database's instance names.
+
+_MAPPED_SAIF = (
+    "(SAIFILE\n"
+    "  (INSTANCE tb\n"
+    "    (INSTANCE u_dut\n"
+    "      (INSTANCE u_a__u0\n"
+    "        (NET\n"
+    "          (A (T0 1) (T1 1) (TC 1))\n"
+    "        )\n"
+    "      )\n"
+    "    )\n"
+    "  )\n"
+    ")\n"
+)
+
+
+def _power_yaml_with_activity(activity: str) -> str:
+    return dedent("""\
+        rtl-buddy-filetype: power_config
+        runs:
+          - name: "demo"
+            desc: "demo"
+            tool: "openroad"
+            mode: "dynamic"
+            synth: "demo_synth"
+            synth-path: "../synth/synth.yaml"
+            constraints: "../synth/constraints.sdc"
+            platform: "nangate45_typ"
+            activity:
+        """) + "".join(f"      {line}\n" for line in activity.splitlines())
+
+
+def test_power_suite_loads_the_instance_map_relative_to_power_yaml(tmp_path):
+    p = tmp_path / "power.yaml"
+    p.write_text(
+        _power_yaml_with_activity(
+            'saif: "../sim/dump.saif"\ninstance-map: "maps/sim_names.map"'
+        )
+    )
+    activity = PowerSuiteConfig(str(p)).get_runs("demo")[0].get_activity()
+    assert activity.instance_map == str(tmp_path / "maps" / "sim_names.map")
+    assert PowerActivityFile().instance_map is None
+
+
+@pytest.mark.parametrize(
+    "activity",
+    ['instance-map: "x.map"', 'vcd: "x.vcd"\ninstance-map: "x.map"'],
+    ids=["no-trace", "vcd"],
+)
+def test_power_suite_instance_map_needs_a_saif(tmp_path, activity):
+    p = tmp_path / "power.yaml"
+    p.write_text(_power_yaml_with_activity(activity))
+    with pytest.raises(FatalRtlBuddyError, match="no activity.saif was provided"):
+        PowerSuiteConfig(str(p))
+
+
+def _mapped_saif_backend(tmp_path, map_text="u_a__u0 \\u_a.u0\n"):
+    """A dynamic SAIF backend with an instance map beside the trace."""
+    backend, trace = _saif_backend(tmp_path)
+    trace.write_text(_MAPPED_SAIF)
+    imap = tmp_path / "sim_names.map"
+    imap.write_text(map_text)
+    backend.power_cfg.activity.instance_map = str(imap)
+    return backend, trace, imap
+
+
+def test_a_mapped_saif_run_reads_the_renamed_copy(tmp_path, monkeypatch):
+    """OpenROAD reads the copy with the database's names; the recorded trace and its hash
+    stay the SAIF's own, and the map's hash joins the options digest.
+    """
+    import rtl_buddy.tools.power_openroad as power_openroad
+    from rtl_buddy.phys.model import load_model
+    from rtl_buddy.phys.publish import sha256_of
+
+    backend, trace, imap = _mapped_saif_backend(tmp_path)
+    seen = []
+    publish = power_openroad.publish_power
+
+    def _spy(**kwargs):
+        seen.append(kwargs["options"])
+        return publish(**kwargs)
+
+    monkeypatch.setattr(power_openroad, "publish_power", _spy)
+    result = _run_prepared_power(
+        backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+
+    mapped = Path(backend.artefact_dir) / "activity.mapped.saif"
+    assert mapped.read_text() == _MAPPED_SAIF.replace("u_a__u0", "u_a.u0")
+    script = Path(backend._script_path()).read_text()
+    assert f"read_saif -scope tb/u_dut {mapped}\n" in script
+    assert f" {trace}" not in script
+    activity = load_model(result.results["phys_model"])["provenance"]["power"][
+        "activity"
+    ]
+    assert activity["trace"] == str(trace)
+    assert activity["trace_sha256"] == sha256_of(trace)
+    assert seen[-1]["instance_map_sha256"] == sha256_of(imap)
+
+
+def test_a_saif_run_without_a_map_reads_the_saif_and_adds_no_digest_key(
+    tmp_path, monkeypatch
+):
+    import rtl_buddy.tools.power_openroad as power_openroad
+
+    backend, trace = _saif_backend(tmp_path)
+    trace.write_text(_MAPPED_SAIF)
+    seen = []
+    publish = power_openroad.publish_power
+
+    def _spy(**kwargs):
+        seen.append(kwargs["options"])
+        return publish(**kwargs)
+
+    monkeypatch.setattr(power_openroad, "publish_power", _spy)
+    _run_prepared_power(
+        backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+
+    assert (
+        f"read_saif -scope tb/u_dut {trace}\n"
+        in Path(backend._script_path()).read_text()
+    )
+    assert not (Path(backend.artefact_dir) / "activity.mapped.saif").exists()
+    assert "instance_map_sha256" not in seen[-1]
+
+
+def test_a_map_that_renames_nothing_warns(tmp_path, monkeypatch, caplog):
+    backend, _, _ = _mapped_saif_backend(tmp_path, map_text="u_other u_a.u0\n")
+    with caplog.at_level("WARNING"):
+        _run_prepared_power(
+            backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+        )
+    [record] = [r for r in caplog.records if "activity.instance-map" in r.getMessage()]
+    assert record.levelname == "WARNING"
+    assert "renamed 0 INSTANCE record(s)" in record.getMessage()
+    assert "1 of its 1 pair(s) matched none" in record.getMessage()
+
+
+def test_a_bad_instance_map_fails_setup_before_openroad(tmp_path, monkeypatch):
+    from rtl_buddy.tools import power_openroad
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    backend, _, _ = _mapped_saif_backend(tmp_path, map_text="u_a__u0\n")
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: None)
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert res.results["fail_stage"] == "setup"
+    assert "script generation error" in res.results["desc"]
+    assert "sim_names.map line 1: expected" in res.results["desc"]
+
+
+def test_a_saif_that_cannot_be_mapped_fails_setup(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+    from rtl_buddy.tools import power_openroad
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    backend, trace, _ = _mapped_saif_backend(tmp_path)
+    trace.unlink()
+    launched = []
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(
+        power_openroad.subprocess,
+        "run",
+        lambda *a, **k: launched.append(a) or MagicMock(returncode=0),
+    )
+
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert res.results["fail_stage"] == "setup"
+    assert "could not apply activity.instance-map" in res.results["desc"]
+    assert launched == []

@@ -50,6 +50,8 @@ class PowerActivityFile:
     saif: str | None = None
     vcd: str | None = None
     scope: str | None = None
+    # File of `<trace name> <database name>` instance pairs applied to `saif` before OpenROAD reads it.
+    instance_map: str | None = field(rename="instance-map", default=None)
     default_toggle_rate: float = field(rename="default-toggle-rate", default=0.1)
     default_static_prob: float = field(rename="default-static-prob", default=0.5)
 
@@ -61,6 +63,8 @@ class PowerActivity:
     scope: str | None
     default_toggle_rate: float
     default_static_prob: float
+    # Resolved `activity.instance-map`; only with `saif`.
+    instance_map: str | None = None
 
     def has_trace(self) -> bool:
         return bool(self.saif) or bool(self.vcd)
@@ -167,6 +171,11 @@ class PowerConfigFile:
                 "activity.saif or activity.vcd was provided; scope only "
                 "applies when reading a trace file"
             )
+        if self.activity.instance_map and not self.activity.saif:
+            raise FatalRtlBuddyError(
+                f"power run '{self.name}': activity.instance-map renames the "
+                "instances of a SAIF, and no activity.saif was provided"
+            )
 
         def _resolve(p: str | None) -> str | None:
             return os.path.normpath(os.path.join(config_dir, p)) if p else None
@@ -178,6 +187,7 @@ class PowerConfigFile:
             scope=self.activity.scope,
             default_toggle_rate=self.activity.default_toggle_rate,
             default_static_prob=self.activity.default_static_prob,
+            instance_map=_resolve(self.activity.instance_map),
         )
 
         return PowerConfig(
