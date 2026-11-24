@@ -241,3 +241,77 @@ def test_directives_enter_the_config_digest_only_when_set(tmp_path):
         {"instance": "u_c*", "halo": [2.0, 2.0]},
     ]
     assert pnr_abstract.config_digest(directed) != pnr_abstract.config_digest(default)
+
+
+#: A block holding macros as OpenROAD stores the names of a Yosys netlist: a generate-loop instance `g_bank[0].u_ram` with its brackets backslash-escaped, and macros and a standard cell without brackets.
+_ESCAPED_BLOCK = r"""
+set names {{g_bank\[0\].u_ram} {g_bank\[1\].u_ram} u_ram0 u_ram1 u_buf}
+proc inst {name args} {
+    switch -- [lindex $args 0] {
+        getName { return $name }
+        getMaster { return [expr {$name eq "u_buf" ? "cell" : "macro"}] }
+    }
+}
+proc macro {args} { expr {[lindex $args 0] eq "isBlock" ? 1 : "RAM"} }
+proc cell {args} { expr {[lindex $args 0] eq "isBlock" ? 0 : "BUFx2"} }
+set handles {}
+foreach name $names {
+    interp alias {} rb_inst[dict size $handles] {} inst $name
+    dict set handles $name rb_inst[dict size $handles]
+}
+proc block {cmd args} {
+    switch -- $cmd {
+        findInst {
+            set name [lindex $args 0]
+            if {[dict exists $::handles $name]} { return [dict get $::handles $name] }
+            return NULL
+        }
+        getInsts { return [dict values $::handles] }
+    }
+}
+"""
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected"),
+    [
+        ("g_bank[0].u_ram", r"{g_bank\[0\].u_ram}"),
+        (r"g_bank\[0\].u_ram", r"{g_bank\[0\].u_ram}"),
+        ("g_bank[*].u_ram", r"{g_bank\[0\].u_ram} {g_bank\[1\].u_ram}"),
+        ("g_bank[?].u_ram", r"{g_bank\[0\].u_ram} {g_bank\[1\].u_ram}"),
+        ("g_bank*.u_ram", r"{g_bank\[0\].u_ram} {g_bank\[1\].u_ram}"),
+        (r"g_bank\\\[*\\\].u_ram", r"{g_bank\[0\].u_ram} {g_bank\[1\].u_ram}"),
+        ("u_ram[01]", "u_ram0 u_ram1"),
+        ("u_ram0", "u_ram0"),
+        ("g_bank[2].u_ram", "no instance matches 'g_bank[2].u_ram' (floorplan.macros)"),
+        (
+            "u_b*",
+            "'u_b*' matches standard cell u_buf (BUFx2); floorplan.macros applies to hard "
+            "macros only",
+        ),
+    ],
+    ids=[
+        "netlist name",
+        "escaped name",
+        "literal brackets, star",
+        "literal brackets, question mark",
+        "glob without brackets",
+        "earlier glob over the escapes",
+        "earlier character class",
+        "plain name",
+        "no instance",
+        "standard cell",
+    ],
+)
+def test_a_macro_is_named_as_the_netlist_spells_it(pattern, expected):
+    """`floorplan.macros` takes the netlist's instance name, whose brackets OpenROAD stores escaped: brackets are literal, `*` and `?` the wildcards, and the escaped spelling and a glob earlier releases took still match."""
+    result = _tcl(
+        _ESCAPED_BLOCK
+        + "if {[catch {rb::macros::match block {floorplan.macros[0]} "
+        + f"{{{pattern}}}}} insts]}} {{\n"
+        + "    set result [string range $insts [string length {floorplan.macros[0]: }] end]\n"
+        + "} else {\n"
+        + "    set result [lmap inst $insts {$inst getName}]\n"
+        + "}\n"
+    )
+    assert result == expected

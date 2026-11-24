@@ -216,7 +216,7 @@ Read the row's description and `fail_stage`, then `pnr.log`, and find the stage 
 | `RB-DONT-USE-VIOLATION` | The routed design uses an excluded cell, usually from the netlist. Change the RTL, synthesis or pattern. |
 | `STA-0122 cell '<pattern>' not found` | A `dont-use-cells` or `cts-dont-use-cells` pattern matches nothing. |
 | `openroad.threads_capped` | `threads:` exceeds the allocation. Raise the reservation or use `threads: auto`. |
-| `floorplan.pins[i]: no port matches`, `floorplan.macros[i]: no instance matches` | Fix the name or glob. |
+| `floorplan.pins[i]: no port matches`, `floorplan.macros[i]: no instance matches` | Fix the name or glob. A macro name is the netlist's, brackets included; see [Place macros](#place-macros). |
 | `floorplan.macros: the netlist has no hard macros` | Check that synthesis kept the macro instances. |
 | Missing or stale block abstract, platform or corner mismatch | Run the `rb pnr` command the message names, or `rb pnr` with no run name. |
 | `block power: ...` | A block's top-layer supply pins miss the parent's straps. See [Harden a block](#harden-a-block). |
@@ -707,8 +707,12 @@ Hard macros (SRAMs, hardened blocks) are placed before the power grid by OpenROA
           halo: [3, 3]                     # replaces macro-cell-halo for this macro
         - instance: "*/u_rf*"
           halo: [2, 2]                     # every macro the glob matches
+        - instance: "g_bank[*].u_ram"      # generate loop: brackets are literal
+          halo: [2, 2]
 ```
 
+- `instance` is the hierarchical instance name as the netlist spells it, such as `g_bank[0].u_ram` for a macro in a generate loop. Brackets are literal, and `*` and `?` are the only wildcards. OpenROAD stores that name as `g_bank\[0\].u_ram`, and that spelling also works.
+- A pattern that matches nothing this way is tried as a Tcl glob on the stored name, where `[01]` is a character class, so plans written for earlier releases keep working.
 - A `location` is snapped to the site and row grid, and must be inside the core, clear of other fixed macros, and match one macro. RTL-MP places the rest around it, and does not run when every macro is located.
 - An `orientation` needs a `location`, since RTL-MP orients the macros it places, unless a `macro-placement` hook places them.
 - A pattern that matches nothing fails the run.

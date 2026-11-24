@@ -39,15 +39,39 @@ proc rb::macros::um {dbu dbu_per_micron} {
     return [format %.3f [expr {double($dbu) / $dbu_per_micron}]]
 }
 
-# The macro instances `pattern` names: the instance of that exact name, else
-# every instance whose name matches it as a glob. An error names `where` when
-# nothing matches or a standard cell does.
+# `name` with the backslashes OpenROAD puts before brackets removed: a
+# netlist's `g_bank[0].u_ram` is `g_bank\[0\].u_ram` in the database.
+proc rb::macros::unescaped {name} {
+    return [string map {"\\[" "[" "\\]" "]"} $name]
+}
+
+# The macro instances `pattern` names, as the RTL and netlist spell instance
+# names (`g_bank[0].u_ram`): the instance of that name, else every instance
+# whose name matches it with `*` and `?` the only wildcards and brackets
+# literal. The database's escaped spelling (`g_bank\[0\].u_ram`) names the same
+# instances. A pattern that matches nothing that way is tried as the Tcl glob
+# earlier releases took, on the database's name, so a plan written for them
+# still works. An error names `where` when nothing matches or a standard cell
+# does.
 proc rb::macros::match {block where pattern} {
-    set inst [$block findInst $pattern]
-    if {$inst ne "NULL" && $inst ne ""} {
-        set insts [list $inst]
-    } else {
-        set insts {}
+    set plain [unescaped $pattern]
+    set insts {}
+    foreach name [list $pattern [string map {"[" "\\[" "]" "\\]"} $plain]] {
+        set inst [$block findInst $name]
+        if {$inst ne "NULL" && $inst ne ""} {
+            set insts [list $inst]
+            break
+        }
+    }
+    if {[llength $insts] == 0} {
+        set glob [string map {"\\" "\\\\" "[" "\\[" "]" "\\]"} $plain]
+        foreach inst [$block getInsts] {
+            if {[string match $glob [unescaped [$inst getName]]]} {
+                lappend insts $inst
+            }
+        }
+    }
+    if {[llength $insts] == 0} {
         foreach inst [$block getInsts] {
             if {[string match $pattern [$inst getName]]} {
                 lappend insts $inst
