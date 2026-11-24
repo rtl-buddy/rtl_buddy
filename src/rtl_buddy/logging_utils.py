@@ -1888,6 +1888,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"could not read waveform from {fields.get('path')}: "
                 f"{fields.get('error')}"
             )
+        case "saif.names_skipped":
+            examples = ", ".join(str(n) for n in fields.get("examples") or [])
+            return (
+                f"{fields.get('output')}: left out {fields.get('nets')} net "
+                f"record(s) and {fields.get('instances')} instance(s), with "
+                "everything beneath them, whose names OpenSTA's read_saif cannot "
+                f"read ({examples}); the rest of the file reads as usual"
+            )
         case "wcp.resolve_failed":
             return f'WCP: could not find source for "{fields.get("variable")}" (searched {fields.get("searched")} files)'
         case "wcp.fatal_error":
@@ -2791,6 +2799,21 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f"{fields.get('where')}: threads: {fields.get('value')} is not "
                 "a positive integer or 'auto'"
+            )
+        case "power.instance_map_invalid":
+            return f'power run "{fields.get("power")}": {fields.get("error")}'
+        case "power.instance_map_applied":
+            return (
+                f'power run "{fields.get("power")}": activity.instance-map '
+                f"{fields.get('instance_map')} renamed {fields.get('renamed')} "
+                f"INSTANCE record(s) of {fields.get('saif')}; "
+                f"{fields.get('unmatched')} of its {fields.get('pairs')} pair(s) "
+                "matched none"
+                + (
+                    "; its first column names each instance as the trace does"
+                    if not fields.get("renamed")
+                    else ""
+                )
             )
         case "power.unpowered_instances":
             cells = fields.get("cells") or []

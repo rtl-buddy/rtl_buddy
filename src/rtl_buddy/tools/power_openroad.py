@@ -50,6 +50,12 @@ from .pnr_openroad import (
     tcl_source,
 )
 from .power_base import BasePower
+from .saif_names import (
+    InstanceMap,
+    InstanceMapError,
+    apply_instance_map,
+    read_instance_map,
+)
 from .synth_yosys import library_fingerprint
 
 
@@ -245,6 +251,8 @@ class OpenRoadPower(BasePower):
         self._thread_plan: ThreadPlan | None = None
         # Corners `_write_script` analysed, primary first, under a multi-corner platform; empty for one corner.
         self._script_corners: list[str] = []
+        # `activity.instance-map` as `_write_script` read it, for a SAIF run that sets one; None otherwise.
+        self._instance_map: InstanceMap | None = None
 
     def _script_path(self) -> str:
         return os.path.join(self.artefact_dir, "power.tcl")
@@ -304,6 +312,46 @@ class OpenRoadPower(BasePower):
         are one file that no concurrent `rb synth` can rewrite. The stale-clear removes it.
         """
         return os.path.join(self.artefact_dir, "power_netlist.v")
+
+    def _mapped_saif_path(self) -> str:
+        """The copy of `activity.saif` with `activity.instance-map` applied, which OpenROAD reads instead."""
+        return os.path.join(self.artefact_dir, "activity.mapped.saif")
+
+    def _is_mapped_saif(self, path: str | None) -> bool:
+        """Whether ``path`` is `_mapped_saif_path`, which the stale-clear and the map overwrite."""
+        return bool(path) and os.path.realpath(path) == os.path.realpath(
+            self._mapped_saif_path()
+        )
+
+    def _apply_instance_map(self) -> str | None:
+        """Write `_mapped_saif_path` from the SAIF, and take the trace hash from the bytes it read.
+
+        Replaces `_hash_trace` for a run with `activity.instance-map`, at the same point just
+        before OpenROAD starts: the hash is of the bytes the copy was made from, and
+        `_confirm_trace_unchanged` checks the SAIF against it on return.
+
+        :returns: ``None``, or why the copy could not be written.
+        """
+        imap = self._instance_map
+        assert imap is not None
+        saif = self._trace_path()
+        try:
+            result = apply_instance_map(saif, self._mapped_saif_path(), imap)
+        except OSError as e:
+            return f"could not apply activity.instance-map to {saif}: {e}"
+        self._trace_sha256 = result.source_sha256
+        log_event(
+            logger,
+            logging.WARNING if result.renamed == 0 else logging.INFO,
+            "power.instance_map_applied",
+            power=self.power_cfg.get_name(),
+            instance_map=imap.path,
+            saif=saif,
+            pairs=len(imap.pairs),
+            renamed=result.renamed,
+            unmatched=result.unmatched,
+        )
+        return None
 
     def _bind_phys_dir(self) -> None:
         """Point `phys_dir` at the run `phys-run:` names, or leave it at this run's directory.
@@ -671,7 +719,8 @@ class OpenRoadPower(BasePower):
         activity = self.power_cfg.get_activity()
         if source == "saif":
             scope_arg = f" -scope {activity.scope}" if activity.scope else ""
-            return [f"read_saif{scope_arg} {activity.saif}"]
+            saif = self._mapped_saif_path() if self._instance_map else activity.saif
+            return [f"read_saif{scope_arg} {saif}"]
         if source == "vcd":
             scope_arg = f" -scope {activity.scope}" if activity.scope else ""
             return [f"read_power_activities{scope_arg} -vcd {activity.vcd}"]
@@ -744,6 +793,27 @@ class OpenRoadPower(BasePower):
             platform.get_sta_corner_lib_paths() if platform.is_multi_corner() else {}
         )
         self._script_corners = list(corner_libs)
+        # Read here so a bad map fails setup, before the "openroad not found" return.
+        self._instance_map = None
+        instance_map = self.power_cfg.get_activity().instance_map
+        if instance_map and self.power_cfg.get_activity_source() == "saif":
+            try:
+                if self._is_mapped_saif(self.power_cfg.get_activity().saif):
+                    raise InstanceMapError(
+                        "activity.saif names this run's own "
+                        f"{self._mapped_saif_path()}, which the instance map "
+                        "would overwrite; point it at the trace"
+                    )
+                self._instance_map = read_instance_map(instance_map)
+            except InstanceMapError as e:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "power.instance_map_invalid",
+                    power=self.power_cfg.get_name(),
+                    error=str(e),
+                )
+                raise
         tech_lef = pdk.get_tech_lef()
         cell_lefs = pdk.get_macro_lef_paths()
         inputs = self._resolve_inputs()
@@ -1059,7 +1129,7 @@ class OpenRoadPower(BasePower):
             return None
 
     def _clear_stale_report(self) -> str | None:
-        """Remove the previous run's `power.rpt`, per-instance reports and netlist snapshot.
+        """Remove the previous run's `power.rpt`, per-instance reports, netlist snapshot and mapped SAIF.
 
         An OpenROAD that exits 0 without reaching the `catch` block must not leave the last run's
         watts to be published as this one's. Call before `_snapshot_netlist`, never after. This
@@ -1079,6 +1149,12 @@ class OpenRoadPower(BasePower):
                 self._staging_path(self._instances_report_path()),
                 self._staging_path(self._instances_cells_path()),
                 self._netlist_snapshot_path(),
+                # Not when `activity.saif` itself names it: that is this run's input.
+                *(
+                    []
+                    if self._is_mapped_saif(self.power_cfg.get_activity().saif)
+                    else [self._mapped_saif_path()]
+                ),
                 # Every per-corner report, by pattern rather than configured corners: the platform may have lost a corner.
                 *self._corner_report_paths_on_disk(),
             ],
@@ -1324,7 +1400,16 @@ class OpenRoadPower(BasePower):
         )
 
         # Last step before the subprocess, to narrow the window between the hashes and OpenROAD's reads.
-        self._hash_trace()
+        if self._instance_map is not None:
+            map_error = self._apply_instance_map()
+            if map_error is not None:
+                return PowerFailResults(
+                    name=self.name + "/results",
+                    desc=map_error,
+                    fail_stage="setup",
+                )
+        else:
+            self._hash_trace()
         self._hash_constraints()
 
         with task_status(f"power {self.power_cfg.get_name()} [openroad]"):
@@ -1550,6 +1635,12 @@ class OpenRoadPower(BasePower):
                 "activity_source": source,
                 # Synthetic activity also drives the primary inputs (#714); earlier runs left them idle.
                 **({"input_activity": True} if source == "synthetic" else {}),
+                # The instance names the SAIF was read with; only a run with `activity.instance-map` adds the key.
+                **(
+                    {"instance_map_sha256": self._instance_map.sha256}
+                    if self._instance_map is not None
+                    else {}
+                ),
                 # Under a multi-corner platform the watts and rows are the worst corner's; say which. Absent for one corner.
                 **({"corner": worst_corner} if worst_corner else {}),
                 "reglvl": self.power_cfg.get_reglvl(self.power_cfg.get_tool_name()),

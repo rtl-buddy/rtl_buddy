@@ -15,6 +15,8 @@ from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools import pywellen_compat
 from rtl_buddy.tools.saif_from_trace import _bit_stats, convert
+from rtl_buddy.tools.saif_names import saif_name
+from saif_support import OPENROAD, read_saif
 
 
 def test_bit_stats_single_clock_cycle():
@@ -208,13 +210,15 @@ def test_convert_skips_parameters_and_memory_elements(tmp_path):
     """Parameters and memory-array elements are not emitted as nets."""
     saif = tmp_path / "out.saif"
     convert(_write_vcd(tmp_path), saif)
-    _, nets, _ = _parse_saif(saif.read_text())
+    _, nets, instances = _parse_saif(saif.read_text())
 
     assert "top/WIDTH" not in nets
     assert not [n for n in nets if "[0]" in n]
-    # pywellen models a VCD array element as an unnamed child scope of `mem`, emitted as
-    # an empty INSTANCE.
+    # pywellen models a VCD array element as an unnamed child scope of `mem`. It is left
+    # out: an INSTANCE with no name fails `read_saif`.
     assert not [n for n in nets if n.startswith("top/mem")]
+    assert "top/mem" in instances
+    assert not [i for i in instances if i.startswith("top/mem/")]
 
 
 def test_saif_cli_writes_the_same_file(minimal_project, tmp_path):
@@ -239,6 +243,164 @@ def test_saif_cli_reports_a_missing_trace(minimal_project):
     assert result.exit_code != 0
     assert isinstance(result.exception, FatalRtlBuddyError), result.output
     assert "trace file not found" in str(result.exception)
+
+
+@pytest.mark.parametrize(
+    "name,net,written",
+    [
+        ("clk", True, "clk"),
+        # A Verilog escaped identifier, as a simulator writes it to the trace.
+        ("\\u_a.n1", True, "u_a.n1"),
+        ("\\u_a.u0 ", False, "u_a.u0"),
+        # Brackets in a name keep the netlist's own escape; `$` lexes as is.
+        ("\\u_a.mem[3]", False, "u_a.mem\\[3\\]"),
+        ("data[3]", True, "data\\[3\\]"),
+        ("a$b", True, "a$b"),
+        # An already-escaped spelling is read as the name it escapes.
+        ("u_a\\.u0\\[3\\]", False, "u_a.u0\\[3\\]"),
+        # A keyword name: a net takes a backslash the reader removes; an instance cannot.
+        ("T0", True, "T\\0"),
+        ("NET", False, None),
+        # No spelling reads: a first character outside [A-Za-z_], a character outside the
+        # lexer's name class.
+        ("\\1abc", True, None),
+        ("$x", True, None),
+        ("\\a-b", True, None),
+        ("\\u_a/n1", False, None),
+        ("", False, None),
+    ],
+    ids=[
+        "plain",
+        "escaped-net",
+        "escaped-instance",
+        "bracket-instance",
+        "bracket-net",
+        "dollar",
+        "pre-escaped",
+        "keyword-net",
+        "keyword-instance",
+        "leading-digit",
+        "leading-dollar",
+        "dash",
+        "slash",
+        "empty",
+    ],
+)
+def test_saif_name_spells_what_read_saif_reads(name, net, written):
+    assert saif_name(name, net=net) == written
+
+
+# A gate-level trace: an escaped net and an escaped cell instance (as a flattened netlist
+# names them), a net and a scope `read_saif` cannot read, and a bus under an unreadable
+# name.
+_GATE_VCD = """\
+$timescale 1ps $end
+$scope module top $end
+$var wire 1 ! clk $end
+$var wire 1 " \\u_a.n1 $end
+$var wire 1 # y $end
+$var wire 1 $ \\a-b $end
+$var wire 2 % \\c-d $end
+$scope module \\u_a.u0 $end
+$var wire 1 ! A $end
+$var wire 1 " Y $end
+$upscope $end
+$scope module \\9bad $end
+$var wire 1 ! A $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+0"
+0#
+0$
+b00 %
+#500
+1!
+1"
+1#
+#1000
+0!
+#1500
+1!
+0"
+0#
+#2000
+"""
+
+
+def _write_gate_saif(tmp_path):
+    vcd = tmp_path / "gate.vcd"
+    vcd.write_text(_GATE_VCD)
+    saif = tmp_path / "gate.saif"
+    convert(vcd, saif)
+    return saif
+
+
+def test_convert_writes_escaped_names_and_leaves_out_unreadable_ones(tmp_path, caplog):
+    with caplog.at_level("WARNING"):
+        saif = _write_gate_saif(tmp_path)
+    text = saif.read_text()
+    _, nets, instances = _parse_saif(text)
+
+    # The escaped net and instance, without the leading backslash; the instance keeps
+    # its `.` so OpenSTA finds it in the netlist.
+    assert nets["top/u_a.n1"] == {
+        "T0": 500,
+        "T1": 1000,
+        "TX": 0,
+        "TZ": 0,
+        "TC": 2,
+        "IG": 0,
+    }
+    assert set(nets) == {
+        "top/clk",
+        "top/u_a.n1",
+        "top/y",
+        "top/u_a.u0/A",
+        "top/u_a.u0/Y",
+    }
+    assert instances == ["top", "top/u_a.u0"]
+    assert "\\u_a" not in text and "9bad" not in text and "a-b" not in text
+
+    # One net, a two-bit bus and one instance with what is under it, counted.
+    [record] = [r for r in caplog.records if r.getMessage().find("left out") >= 0]
+    message = record.getMessage()
+    assert "left out 3 net record(s) and 1 instance(s)" in message
+    assert "a-b" in message and "9bad" in message
+
+
+needs_openroad = pytest.mark.skipif(OPENROAD is None, reason="openroad not installed")
+
+
+@needs_openroad
+def test_openroad_read_saif_accepts_the_converted_file(tmp_path):
+    """The converted file reads in full, and the escaped instance's pins are annotated."""
+    saif = _write_gate_saif(tmp_path)
+
+    out = read_saif(tmp_path, saif)
+
+    assert "STA-0169" not in out, out
+    assert "Annotated 4 pin activities." in out, out
+    for pin in ("clk", "y", "u_a.u0/A", "u_a.u0/Y"):
+        assert f" saif {pin}\n" in out, out
+
+
+@needs_openroad
+def test_openroad_read_saif_rejects_the_unconverted_escaped_name(tmp_path):
+    """The trace's own spelling of the escaped net fails the whole read: what the
+    conversion fixes.
+    """
+    saif = _write_gate_saif(tmp_path)
+    raw = tmp_path / "raw.saif"
+    raw.write_text(saif.read_text().replace("(u_a.n1\n", "(\\u_a.n1\n"))
+    assert raw.read_text() != saif.read_text()
+
+    out = read_saif(tmp_path, raw)
+
+    assert "STA-0169" in out, out
+    assert "result: STA-0169" in out, out
 
 
 # FST is not covered end-to-end: no FST writer is available in CI.
