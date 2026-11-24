@@ -3345,25 +3345,41 @@ def test_repair_steps_set_the_wire_rc_around_all_their_repairs():
     ]
 
 
-#: OpenROAD's signal and clock wire RC per scene, horizontal and vertical apart, as `est` keeps them: two scenes whose session RC differs, a layer `M5` with RC set for scene `ss` only.
+#: OpenROAD's signal and clock wire RC per scene, horizontal and vertical apart, as `est` keeps them: two scenes whose session RC differs, a layer `M5` with RC set for scene `ss` only. The signal RC setters check their arguments as SWIG does, the count and then each value, before they set anything, and take `::est_arity` of them: 4 (a technology, NULL here, then scene, res, cap) by default, 3 (no technology) for an OpenROAD built before July 2026 such as 26Q2. A scene is an object unless `::scene_objects` is 0, as on 26Q2, where it is its name: `sta::get_name` gives an object's name (`slow` for `ss`, `fast` for `ff`, so a describe that skips it names the handle) and raises on a name.
 _EST_STUBS = r"""
 namespace eval sta {}
 namespace eval est {}
 namespace eval ord {}
+if {![info exists ::est_arity]} { set ::est_arity 4 }
+if {![info exists ::scene_objects]} { set ::scene_objects 1 }
+set ::est_rejected 0
 proc sta::scenes {} { return {ss ff} }
-proc sta::get_name {scene} { return $scene }
+proc sta::is_object {object} { return $::scene_objects }
+proc sta::get_name {scene} {
+    if {!$::scene_objects} { error "get_property $scene is not an object." }
+    return [dict get {ss slow ff fast} $scene]
+}
+proc est_set_signal {dir args} {
+    if {[llength $args] != $::est_arity} {
+        incr ::est_rejected
+        error "Wrong # args.:est::set_${dir}_wire_signal_rc_cmd"
+    }
+    lassign [lrange $args end-2 end] scene res cap
+    if {![string is double -strict $res] || ![string is double -strict $cap]
+        || ($::est_arity == 4 && [lindex $args 0] ne "NULL")} {
+        incr ::est_rejected
+        error "TypeError in method 'set_${dir}_wire_signal_rc_cmd'"
+    }
+    set ::rc($scene,signal,$dir) [list $res $cap]
+}
 array set ::rc {
     ss,signal,h {2e6 1e-10} ss,signal,v {4e6 3e-10}
     ff,signal,h {1e6 1e-10} ff,signal,v {1e6 1e-10}
     ss,clock,h {5e6 5e-10} ss,clock,v {5e6 5e-10}
     ff,clock,h {5e6 5e-10} ff,clock,v {5e6 5e-10}
 }
-proc est::set_h_wire_signal_rc_cmd {tech scene res cap} {
-    set ::rc($scene,signal,h) [list $res $cap]
-}
-proc est::set_v_wire_signal_rc_cmd {tech scene res cap} {
-    set ::rc($scene,signal,v) [list $res $cap]
-}
+proc est::set_h_wire_signal_rc_cmd {args} { est_set_signal h {*}$args }
+proc est::set_v_wire_signal_rc_cmd {args} { est_set_signal v {*}$args }
 proc rc_mean {scene index} {
     expr {([lindex $::rc($scene,signal,h) $index]
            + [lindex $::rc($scene,signal,v) $index]) / 2.0}
@@ -3393,9 +3409,14 @@ proc repair_timing {args} { lappend ::seen "repair_timing: [state]" }
 """
 
 
-def _wire_rc_tcl(script: str) -> str:
+#: The `est::` signal RC setters and scenes of OpenROAD 26Q2, and of a build from July 2026 on.
+_BUILDS = {"26Q2": "set ::est_arity 3\nset ::scene_objects 0\n", "later": ""}
+
+
+def _wire_rc_tcl(script: str, build: str = "later") -> str:
     return _tcl_eval(
-        _EST_STUBS
+        _BUILDS[build]
+        + _EST_STUBS
         + files("rtl_buddy.pnr").joinpath("wire_rc.tcl").read_text()
         + "set before [state]\n"
         + script
@@ -3430,13 +3451,14 @@ def _rc_state(**signal) -> str:
     ],
     ids=["rc", "layer"],
 )
-def test_every_repair_of_the_steps_runs_at_the_wire_rc(wire_rc, signal):
+@pytest.mark.parametrize("build", list(_BUILDS))
+def test_every_repair_of_the_steps_runs_at_the_wire_rc(wire_rc, signal, build):
     """Each `repair_design` and `repair_timing` sees the `wire-rc` signal RC in every scene (a layer's RC for the scene, else its LEF RC); the session after gets back the RC it had, horizontal and vertical apart. Clock RC never changes."""
     steps = pnr_openroad._repair_steps_tcl(
         "T", RepairDesign(wire_rc=wire_rc, after_timing=True), 0.0, 0.0, 1.0, None
     )
     result = _wire_rc_tcl(
-        steps + "set result [join [concat $::seen [list [state]]] \\n]\n"
+        steps + "set result [join [concat $::seen [list [state]]] \\n]\n", build
     )
     *_printed, design, setup, hold, again, after = result.split("\n")
     assert design == again == f"repair_design: {_rc_state(**signal)}"
@@ -3444,7 +3466,8 @@ def test_every_repair_of_the_steps_runs_at_the_wire_rc(wire_rc, signal):
     assert after == _rc_state()
 
 
-def test_the_log_names_the_signal_wire_rc_of_each_repair_step():
+@pytest.mark.parametrize("build", list(_BUILDS))
+def test_the_log_names_the_signal_wire_rc_of_each_repair_step(build):
     steps = pnr_openroad._repair_steps_tcl(
         "T",
         RepairDesign(wire_rc=WireRc(resistance=0.06, capacitance=0.17)),
@@ -3453,7 +3476,7 @@ def test_the_log_names_the_signal_wire_rc_of_each_repair_step():
         1.0,
         None,
     )
-    printed = _wire_rc_tcl(steps + "set result {}\n").strip().splitlines()
+    printed = _wire_rc_tcl(steps + "set result {}\n", build).strip().splitlines()
     assert printed == [
         ">>> T: repair_design (wire-rc: signal wire RC 0.06 kohm/um, 0.17 fF/um)",
         ">>> T: repair_timing -setup (setup margin 0 ns, signal wire RC "
@@ -3514,15 +3537,16 @@ def test_an_ideal_hold_repair_clears_failing_endpoints_before_it_adds_the_margin
     ],
     ids=["session rc", "wire-rc"],
 )
+@pytest.mark.parametrize("build", list(_BUILDS))
 def test_the_ideal_hold_repair_sees_no_signal_wire_rc_and_the_next_gets_it_back(
-    design, around
+    design, around, build
 ):
     """Inside `rb::rc::ideal` every scene's signal RC is zero and the clock RC is untouched; the hold call with the margin sees the RC the steps had (the session's, or `wire-rc`), horizontal and vertical apart, and the session after them its own."""
     steps = pnr_openroad._repair_steps_tcl(
         "T", design, None, 0.05, 1.0, None, ideal_hold=True
     )
     result = _wire_rc_tcl(
-        steps + "set result [join [concat $::seen [list [state]]] \\n]\n"
+        steps + "set result [join [concat $::seen [list [state]]] \\n]\n", build
     )
     *_printed, first, second, after = result.split("\n")
     if design is not None:
@@ -3530,6 +3554,29 @@ def test_the_ideal_hold_repair_sees_no_signal_wire_rc_and_the_next_gets_it_back(
     assert first == f"repair_timing: {_rc_state(ss='0 0', ff='0 0')}"
     assert second == f"repair_timing: {around}"
     assert after == _rc_state()
+
+
+@pytest.mark.parametrize("build", list(_BUILDS))
+def test_the_signal_rc_setters_are_probed_once_and_the_probe_sets_nothing(build):
+    """`rb::rc::set_signal` finds the setters' form with one call they reject before setting anything, then calls every setter in that form."""
+    result = _wire_rc_tcl(
+        "rb::rc::save\n"
+        "rb::rc::apply {resistance 0.06 capacitance 0.17}\n"
+        "rb::rc::ideal { repair_timing -hold }\n"
+        "rb::rc::restore\n"
+        "set result [list $::est_rejected [array names ::rc NULL,*]"
+        " [expr {[state] eq $before}] $rb::rc::lead]\n",
+        build,
+    )
+    assert result == ("1 {} 1 {}" if build == "26Q2" else "1 {} 1 NULL")
+
+
+@pytest.mark.parametrize("build", list(_BUILDS))
+def test_the_signal_wire_rc_is_described_per_scene_by_name(build):
+    """Scenes whose RC differs are named, by `sta::get_name` from the scene object or, on 26Q2, by the name `sta::scenes` gives."""
+    result = _wire_rc_tcl("set result [rb::rc::describe]\n", build)
+    slow, fast = ("ss", "ff") if build == "26Q2" else ("slow", "fast")
+    assert result == f"{slow} 0.003 kohm/um, 0.2 fF/um; {fast} 0.001 kohm/um, 0.1 fF/um"
 
 
 def test_a_failed_ideal_hold_repair_puts_the_signal_wire_rc_back():

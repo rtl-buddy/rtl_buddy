@@ -9,6 +9,25 @@
 # zero.
 namespace eval rb::rc {
     variable saved {}
+    # The arguments `set_signal` passes before the scene, once it has probed.
+    variable lead
+}
+
+# Set `scene`'s signal wire RC in direction `dir` (h or v). OpenROAD built
+# before July 2026, 26Q2 among them, takes `scene res cap`; later builds take a
+# technology first, NULL for the design's own. The first call probes which: the
+# newer form with values that are not numbers fails on the argument count in an
+# older build and on the values in a newer one, so the probe changes nothing.
+proc rb::rc::set_signal {dir scene res cap} {
+    variable lead
+    if {![info exists lead]} {
+        set lead {NULL}
+        if {[catch {est::set_v_wire_signal_rc_cmd NULL NULL {} {}} message]
+            && [string match -nocase "wrong # args*" $message]} {
+            set lead {}
+        }
+    }
+    est::set_${dir}_wire_signal_rc_cmd {*}$lead $scene $res $cap
 }
 
 proc rb::rc::current {} {
@@ -16,12 +35,12 @@ proc rb::rc::current {} {
     foreach scene [sta::scenes] {
         set res [est::wire_signal_resistance $scene]
         set cap [est::wire_signal_capacitance $scene]
-        est::set_v_wire_signal_rc_cmd NULL $scene 0 0
+        set_signal v $scene 0 0
         set h_res [expr {2 * [est::wire_signal_resistance $scene]}]
         set h_cap [expr {2 * [est::wire_signal_capacitance $scene]}]
         set v_res [expr {2 * $res - $h_res}]
         set v_cap [expr {2 * $cap - $h_cap}]
-        est::set_v_wire_signal_rc_cmd NULL $scene $v_res $v_cap
+        set_signal v $scene $v_res $v_cap
         lappend each [list $scene $h_res $h_cap $v_res $v_cap]
     }
     return $each
@@ -30,8 +49,8 @@ proc rb::rc::current {} {
 proc rb::rc::put {each} {
     foreach entry $each {
         lassign $entry scene h_res h_cap v_res v_cap
-        est::set_h_wire_signal_rc_cmd NULL $scene $h_res $h_cap
-        est::set_v_wire_signal_rc_cmd NULL $scene $v_res $v_cap
+        set_signal h $scene $h_res $h_cap
+        set_signal v $scene $v_res $v_cap
     }
 }
 
@@ -103,8 +122,8 @@ proc rb::rc::apply {spec {key repair-design.wire-rc}} {
                 lassign [est::dblayer_wire_rc $layer] res cap
             }
         }
-        est::set_h_wire_signal_rc_cmd NULL $scene $res $cap
-        est::set_v_wire_signal_rc_cmd NULL $scene $res $cap
+        set_signal h $scene $res $cap
+        set_signal v $scene $res $cap
         if {abs([est::wire_signal_resistance $scene] - $res) > 1e-6 * $res
             || abs([est::wire_signal_capacitance $scene] - $cap) > 1e-6 * $cap} {
             error "post-route-repair.$key did not take effect:\
@@ -118,7 +137,13 @@ proc rb::rc::apply {spec {key repair-design.wire-rc}} {
 proc rb::rc::describe {} {
     set each {}
     foreach scene [sta::scenes] {
-        lappend each [sta::get_name $scene] [format "%.4g kohm/um, %.4g fF/um" \
+        # OpenSTA in OpenROAD 26Q2 gives a scene as its name; newer builds give
+        # an object.
+        set name $scene
+        if {[sta::is_object $scene]} {
+            set name [sta::get_name $scene]
+        }
+        lappend each $name [format "%.4g kohm/um, %.4g fF/um" \
             [expr {[est::wire_signal_resistance $scene] * 1e-9}] \
             [expr {[est::wire_signal_capacitance $scene] * 1e9}]]
     }
