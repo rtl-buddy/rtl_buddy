@@ -17,6 +17,7 @@ Check `routed` before treating a `PASS` as routed. A `PASS` does not mean the de
 | `max_slew_violation_count`, `max_capacitance_violation_count`, `max_fanout_violation_count` | Pins over a Liberty or SDC limit at any corner, listed in `electrical.rpt`. |
 | `worst_path_startpoint`, `worst_path_endpoint`, `worst_path_levels`, `worst_path_resolved` | The worst setup path over all path groups at the setup-critical corner: its ends as RTL names, its combinational cells, and whether both ends resolved. See [below](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#find-the-critical-path-and-loaded-nets-in-the-rtl). |
 | `max_net_fanout` | Sink pins of the highest-fanout signal net, excluding clock, reset-tree and supply nets. |
+| `latch_borrow_margin_ps`, `latch_borrow` | On a design with latches: the smallest margin of a latch data pin to its setup check, over every corner, which its setup slack of 0 does not show. See [below](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#read-setup-slack-on-a-design-with-latches). |
 | `clock_latency` | With [`clock-latency`](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#report-clock-arrival-at-chosen-sinks): each group's late clock arrival at its sinks, per corner, against its target. |
 | `cts_root_taps` | With [`cts-root-taps`](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#forward-a-clock-with-a-root-tap): each pin CTS left on the root net, with that net. |
 | `macro_pin_buffered_count`, `macro_pin_unmet_count` | With `placement.macro-pin-limits`: pins it buffered, and pins still over their limit less the margin on placement parasitics. |
@@ -48,6 +49,18 @@ A passing run's description can carry these qualifiers:
 | `GDS incomplete: ...` | Cells without layout, in `preview` mode. |
 | `stale block abstract(s) accepted: ...` | `--accept-stale` was used. |
 | `global-route.allow-congestion (diagnosis only): global route overflow N` | Global route kept its [overflow](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#tune-global-routing). |
+
+### Read setup slack on a design with latches
+
+A latch whose data arrives while it is open borrows time from the paths that start at it, and the timer reports its setup slack as exactly 0, however close the data is to the latch's closing edge. `wns_setup_ps` then reads 0 for the whole design. The final reports therefore give each latch data pin's margin: how much later its data could arrive before its setup check fails.
+
+- The margin is `slack + max time borrow - actual time borrow`, from the "Time Borrowing Information" of the latch's check. For a borrowing latch that is the time it may still borrow; for one whose data arrives before it opens, its slack plus the whole window; for one whose data arrives after it closes, its negative slack. Rising and falling data are checked apart, since each has its own setup time, and a pin's margin is the smaller.
+- `latch_borrow_margin_ps` is the smallest margin over every latch data pin and corner. `latch_borrow` has that `margin_ps`, its `endpoint` and `corner`, that corner's `pins` (latch data pins), `endpoints` (the pins whose setup checks were read; fewer when a pin is unconstrained) and `borrowing` (those with a check that borrows), `complete`, false when a corner's report failed, and `corners` with each corner's.
+- `latch_borrow.rpt` holds each latch data pin's full checks, rising and falling, per corner.
+- When the worst setup slack is exactly 0 and a latch borrows, the summary's WNS Setup reads `+0.000 ns (latch borrow, +0.299 ns left)`, the margin, instead of a bare `+0.000 ns`.
+- A design without latches has neither field nor file. If the report cannot be read, `pnr.latch_borrow_unavailable` warns and the fields are left out; the verdict does not change.
+
+A setup margin repair counts every borrowing latch as violating and logs `RSZ-0062`; see [Known issues](https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#a-setup-margin-repair-reports-rsz-0062-on-a-design-with-borrowing-latches).
 
 ### Find the critical path and loaded nets in the RTL
 

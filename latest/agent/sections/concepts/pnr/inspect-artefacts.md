@@ -10,6 +10,7 @@
 | `<top>.routed.spef` | Extracted parasitics, with `rcx-rules`. |
 | `timing.rpt`, `electrical.rpt` | Worst paths and electrical violators, all corners. |
 | `worst_paths.rpt`, `fanout.rpt` | [Worst path per group and highest-fanout nets](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#find-the-critical-path-and-loaded-nets-in-the-rtl), with RTL names. |
+| `latch_borrow.rpt` | On a design with latches, each latch data pin's setup check per corner, with its time borrowing. |
 | `route.drc.rpt`, `route.maze.log` | Detailed-route DRCs and router log. |
 | `grt_antennas.rpt`, `drt_antennas.rpt` | Antenna violations left after the antenna repairs after global and detailed route; with `post-route-repair`, the kept round's. |
 | `congestion.rpt`, `congestion-<i>.rpt` | Overflowing global-route tiles, only when global routing overflows; loads in the OpenROAD GUI's DRC viewer. The `-<i>` files are iteration `i`, every `global-route.congestion-report-iter-step` iterations. |

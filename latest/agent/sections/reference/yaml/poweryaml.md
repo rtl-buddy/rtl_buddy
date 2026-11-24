@@ -34,6 +34,7 @@ runs:
 | `threads` | OpenROAD's | OpenROAD worker threads, as in `pnr.yaml`. See [OpenROAD threads](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#openroad-threads) |
 | `activity.saif` / `.vcd` | Mutually exclusive | Activity trace path |
 | `activity.scope` | Only with a trace | OpenROAD trace scope; invalid without SAIF or VCD |
+| `activity.instance-map` | Only with `activity.saif` | File of `<trace name> <database name>` instance pairs, relative to `power.yaml`, applied to the SAIF before OpenROAD reads it. See [Map renamed instances](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/power/#map-renamed-instances) |
 | `activity.default-toggle-rate` | Default 0.1 | Synthetic toggle rate for dynamic mode without a trace |
 | `activity.default-static-prob` | Default 0.5 | Synthetic static probability |
 | `reglvl` | Optional | Regression level |

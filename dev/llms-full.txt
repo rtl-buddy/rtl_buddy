@@ -2955,6 +2955,7 @@ Check `routed` before treating a `PASS` as routed. A `PASS` does not mean the de
 | `max_slew_violation_count`, `max_capacitance_violation_count`, `max_fanout_violation_count` | Pins over a Liberty or SDC limit at any corner, listed in `electrical.rpt`. |
 | `worst_path_startpoint`, `worst_path_endpoint`, `worst_path_levels`, `worst_path_resolved` | The worst setup path over all path groups at the setup-critical corner: its ends as RTL names, its combinational cells, and whether both ends resolved. See [below](#find-the-critical-path-and-loaded-nets-in-the-rtl). |
 | `max_net_fanout` | Sink pins of the highest-fanout signal net, excluding clock, reset-tree and supply nets. |
+| `latch_borrow_margin_ps`, `latch_borrow` | On a design with latches: the smallest margin of a latch data pin to its setup check, over every corner, which its setup slack of 0 does not show. See [below](#read-setup-slack-on-a-design-with-latches). |
 | `clock_latency` | With [`clock-latency`](#report-clock-arrival-at-chosen-sinks): each group's late clock arrival at its sinks, per corner, against its target. |
 | `cts_root_taps` | With [`cts-root-taps`](#forward-a-clock-with-a-root-tap): each pin CTS left on the root net, with that net. |
 | `macro_pin_buffered_count`, `macro_pin_unmet_count` | With `placement.macro-pin-limits`: pins it buffered, and pins still over their limit less the margin on placement parasitics. |
@@ -2986,6 +2987,18 @@ A passing run's description can carry these qualifiers:
 | `GDS incomplete: ...` | Cells without layout, in `preview` mode. |
 | `stale block abstract(s) accepted: ...` | `--accept-stale` was used. |
 | `global-route.allow-congestion (diagnosis only): global route overflow N` | Global route kept its [overflow](#tune-global-routing). |
+
+### Read setup slack on a design with latches
+
+A latch whose data arrives while it is open borrows time from the paths that start at it, and the timer reports its setup slack as exactly 0, however close the data is to the latch's closing edge. `wns_setup_ps` then reads 0 for the whole design. The final reports therefore give each latch data pin's margin: how much later its data could arrive before its setup check fails.
+
+- The margin is `slack + max time borrow - actual time borrow`, from the "Time Borrowing Information" of the latch's check. For a borrowing latch that is the time it may still borrow; for one whose data arrives before it opens, its slack plus the whole window; for one whose data arrives after it closes, its negative slack. Rising and falling data are checked apart, since each has its own setup time, and a pin's margin is the smaller.
+- `latch_borrow_margin_ps` is the smallest margin over every latch data pin and corner. `latch_borrow` has that `margin_ps`, its `endpoint` and `corner`, that corner's `pins` (latch data pins), `endpoints` (the pins whose setup checks were read; fewer when a pin is unconstrained) and `borrowing` (those with a check that borrows), `complete`, false when a corner's report failed, and `corners` with each corner's.
+- `latch_borrow.rpt` holds each latch data pin's full checks, rising and falling, per corner.
+- When the worst setup slack is exactly 0 and a latch borrows, the summary's WNS Setup reads `+0.000 ns (latch borrow, +0.299 ns left)`, the margin, instead of a bare `+0.000 ns`.
+- A design without latches has neither field nor file. If the report cannot be read, `pnr.latch_borrow_unavailable` warns and the fields are left out; the verdict does not change.
+
+A setup margin repair counts every borrowing latch as violating and logs `RSZ-0062`; see [Known issues](../known-issues.md#a-setup-margin-repair-reports-rsz-0062-on-a-design-with-borrowing-latches).
 
 ### Find the critical path and loaded nets in the RTL
 
@@ -3032,6 +3045,7 @@ The reports add about 0.4 s to the final reports on a routed design of 373,000 i
 | `<top>.routed.spef` | Extracted parasitics, with `rcx-rules`. |
 | `timing.rpt`, `electrical.rpt` | Worst paths and electrical violators, all corners. |
 | `worst_paths.rpt`, `fanout.rpt` | [Worst path per group and highest-fanout nets](#find-the-critical-path-and-loaded-nets-in-the-rtl), with RTL names. |
+| `latch_borrow.rpt` | On a design with latches, each latch data pin's setup check per corner, with its time borrowing. |
 | `route.drc.rpt`, `route.maze.log` | Detailed-route DRCs and router log. |
 | `grt_antennas.rpt`, `drt_antennas.rpt` | Antenna violations left after the antenna repairs after global and detailed route; with `post-route-repair`, the kept round's. |
 | `congestion.rpt`, `congestion-<i>.rpt` | Overflowing global-route tiles, only when global routing overflows; loads in the OpenROAD GUI's DRC viewer. The `-<i>` files are iteration `i`, every `global-route.congestion-report-iter-step` iterations. |
@@ -4193,6 +4207,31 @@ rb power demo_power_saif -c power/demo/power.yaml -l 1000
 
 The converter accepts FST or VCD. If the trace starts at the testbench, set `activity.scope` to the design top.
 
+Names are written in the form OpenROAD's `read_saif` reads, so one name cannot fail the whole read. An escaped Verilog name loses its leading backslash: the trace's `\u_a.n1` is written `u_a.n1`, and a bracket in a name is written `\[`. A net or instance whose name has no readable form is left out, an instance with everything beneath it, and `rb saif` warns with the count (`saif.names_skipped`). See [Known Issues](../known-issues.md#rb-saif-leaves-out-names-read_saif-cannot-read).
+
+## Map renamed instances
+
+A netlist prepared for a simulator often renames instances, for example `u_a.u0` to `u_a__u0`, so the trace's instance names differ from the database's and their pins read no activity. Give `rb power` the pairs in a file and point `activity.instance-map` at it:
+
+```text
+# trace name    database name
+u_a__u0         u_a.u0
+u_a__mem_3_     u_a.mem[3]
+```
+
+```yaml
+    activity:
+      saif: ../../verif/demo/artefacts/gate_smoke/dump.saif
+      scope: tb_top/u_dut
+      instance-map: sim_names.map
+```
+
+- One pair per line; blank lines and lines starting with `#` are skipped. A backslash escapes the next character, so `\u_a.u0`, `u_a\.u0` and `u_a.u0` are one name.
+- Each pair renames every SAIF `INSTANCE` of that name, at any depth, where the keyword and the name share a line, as SAIF writers put them. `activity.scope` names the instances as the file has them after the rename.
+- A gzip-compressed SAIF works too; the renamed copy is plain text.
+- The map applies to `activity.saif` only. `rb power` writes the renamed copy to [`activity.mapped.saif`](#inspect-artefacts) and reads that; the recorded trace and its hash stay the SAIF's, and the map's hash joins the options digest.
+- A malformed line, a trace name given two database names, or a database name `read_saif` cannot read fails setup. A map that renames nothing warns (`power.instance_map_applied`).
+
 ## Give hard macros a library
 
 The `platform` corner characterises standard cells only. A hard macro such as an SRAM, PLL or hardened partition needs its own Liberty. Without one, the macro stays in `power_instances.rpt` but contributes exactly zero:
@@ -4317,6 +4356,7 @@ Outputs land under `<power-dir>/artefacts/<run>/`, or `<power-dir>/artefacts/.ru
 | `power.rpt` | Raw `report_power` report (worst corner on a multi-corner platform) |
 | `power.<corner>.rpt` | Each corner's report, multi-corner platforms only |
 | `power_netlist.v` | This run's copy of the upstream netlist, the file OpenROAD reads |
+| `activity.mapped.saif` | The SAIF with [`activity.instance-map`](#map-renamed-instances) applied, the file OpenROAD reads; only with a map |
 | `power_instances.rpt` | Raw `report_power -instances`, one line per leaf instance |
 | `phys-model.json`, `phys-manifest.json` | Physical model and its manifest; query with `rb phys` ([Physical Metrics](phys.md)) |
 
@@ -7248,6 +7288,17 @@ A post-route round's `repair_design`, the electrical round's included, finds max
 
 When the electrical round is kept, its extraction lists each violator still on its SPEF that the estimate judges within the limit less `electrical-repair`'s margin, each at the scene where its extracted violation is worst; rb warns `pnr.electrical_round_unseen` and records them in `post_route_repair.electrical_round.unseen`. The list leaves out the violators `repair_design` does not repair on any parasitics: ports, and pins on constant-driven, clock, dont_touch, special or abutment nets. Raise `post-route-repair.repair-design.wire-rc` toward the RC the extraction shows, or keep such nets short from the start with `placement.repair-design.max-wire-length`. See [Repair electrical violators after routing](concepts/pnr.md#repair-electrical-violators-after-routing).
 
+## A setup margin repair reports RSZ-0062 on a design with borrowing latches
+
+OpenROAD's `repair_timing -setup -setup_margin` judges each endpoint by its slack. A latch whose data arrives while it is open has a setup slack of exactly 0, so with any margin above 0 every borrowing latch counts as violating, whatever time it has left. The resizer works on each such latch, finds no move that raises its slack, and ends with `[WARNING RSZ-0062] Unable to repair all setup violations`. A real violator is still in the list and still repaired, so nothing is lost but run time; on a design with many borrowing latches the warning is permanent and says nothing. This applies to `post-cts-repair`, `global-route-repair` and `post-route-repair` with a `setup-margin`.
+
+To tell it from a real violator:
+
+- The run's `wns_setup_ps` is not below 0: a real violator leaves a negative worst slack.
+- `latch_borrow_margin_ps` is the latches' real margin, and `latch_borrow.rpt` has each latch's; see [Read setup slack on a design with latches](concepts/pnr.md#read-setup-slack-on-a-design-with-latches).
+
+To avoid the warning, leave `setup-margin` unset or 0 on a design whose latches borrow. The fix, a resizer that measures a latch's margin to its closing edge or leaves borrowing latches out of the margin, belongs in OpenROAD.
+
 ## Corners share one SDC mode on an OpenROAD without modes
 
 `rb pnr` gives each corner its own SDC mode only on an OpenROAD that can switch back to an earlier mode, 26Q4 or newer. On an older one, such as 26Q2, every corner is timed in one mode and rb warns `pnr.corner_modes_unsupported`:
@@ -7262,6 +7313,12 @@ Upgrade OpenROAD, or run each corner on a single-corner platform. See [Sign off 
 ## rb power times every corner in one SDC mode
 
 On a multi-corner platform `rb power` reads one SDC, by default the P&R run's `<top>.routed.sdc` (the primary corner's), and the routed SPEF once for all corners. Every corner then uses the primary corner's generated-clock latencies, and the corners after the first reuse the first corner's reduced parasitics. For one corner's own figures, run `rb power` on a single-corner platform of that corner with `constraints:` set to `<top>.<corner>.routed.sdc`.
+
+## rb saif leaves out names read_saif cannot read
+
+OpenROAD's `read_saif` reads a name only if it starts with a letter or `_` and holds nothing but letters, digits and `_ $ . [ ]`; any other name fails the whole file. `rb saif` therefore leaves out a net or instance whose name, after dropping an escaped name's leading backslash, breaks that rule (`\a-b`, `\1x`), an instance with everything beneath it, and warns with the count. In a flattened netlist such a net is usually an internal wire, whose cell pins are annotated from their own instance's records, so little or nothing is lost. To keep such a record, give the signal a plain name in the netlist the simulator reads and map it back with [`activity.instance-map`](concepts/power.md#map-renamed-instances) if it is an instance. An instance named like a SAIF keyword (`NET`, `T0`) is left out too; a net gets a backslash the reader removes.
+
+`read_saif` looks an instance name up as written, without removing backslashes, so `rb saif` writes `.` in an instance name unescaped: `u_a\.u0` would read but match no instance.
 
 ## An unconfirmed dispatched P&R run blocks later runs
 
@@ -11671,6 +11728,7 @@ runs:
 | `threads` | OpenROAD's | OpenROAD worker threads, as in `pnr.yaml`. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `activity.saif` / `.vcd` | Mutually exclusive | Activity trace path |
 | `activity.scope` | Only with a trace | OpenROAD trace scope; invalid without SAIF or VCD |
+| `activity.instance-map` | Only with `activity.saif` | File of `<trace name> <database name>` instance pairs, relative to `power.yaml`, applied to the SAIF before OpenROAD reads it. See [Map renamed instances](../concepts/power.md#map-renamed-instances) |
 | `activity.default-toggle-rate` | Default 0.1 | Synthetic toggle rate for dynamic mode without a trace |
 | `activity.default-static-prob` | Default 0.5 | Synthetic static probability |
 | `reglvl` | Optional | Regression level |

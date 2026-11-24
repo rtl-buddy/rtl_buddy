@@ -1394,6 +1394,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/capture-saif-activity.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#map-renamed-instances",
+          "slug": "map-renamed-instances",
+          "title": "Map renamed instances",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/map-renamed-instances.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#give-hard-macros-a-library",
           "slug": "give-hard-macros-a-library",
           "title": "Give hard macros a library",
@@ -2819,6 +2825,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/post-route-repairdesign-sizes-its-buffering-on-the-placement-estimate.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#a-setup-margin-repair-reports-rsz-0062-on-a-design-with-borrowing-latches",
+          "slug": "a-setup-margin-repair-reports-rsz-0062-on-a-design-with-borrowing-latches",
+          "title": "A setup margin repair reports RSZ-0062 on a design with borrowing latches",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/a-setup-margin-repair-reports-rsz-0062-on-a-design-with-borrowing-latches.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#corners-share-one-sdc-mode-on-an-openroad-without-modes",
           "slug": "corners-share-one-sdc-mode-on-an-openroad-without-modes",
           "title": "Corners share one SDC mode on an OpenROAD without modes",
@@ -2829,6 +2841,12 @@
           "slug": "rb-power-times-every-corner-in-one-sdc-mode",
           "title": "rb power times every corner in one SDC mode",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/rb-power-times-every-corner-in-one-sdc-mode.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#rb-saif-leaves-out-names-readsaif-cannot-read",
+          "slug": "rb-saif-leaves-out-names-readsaif-cannot-read",
+          "title": "rb saif leaves out names read_saif cannot read",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/rb-saif-leaves-out-names-readsaif-cannot-read.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#an-unconfirmed-dispatched-pr-run-blocks-later-runs",

@@ -332,6 +332,17 @@ A post-route round's `repair_design`, the electrical round's included, finds max
 
 When the electrical round is kept, its extraction lists each violator still on its SPEF that the estimate judges within the limit less `electrical-repair`'s margin, each at the scene where its extracted violation is worst; rb warns `pnr.electrical_round_unseen` and records them in `post_route_repair.electrical_round.unseen`. The list leaves out the violators `repair_design` does not repair on any parasitics: ports, and pins on constant-driven, clock, dont_touch, special or abutment nets. Raise `post-route-repair.repair-design.wire-rc` toward the RC the extraction shows, or keep such nets short from the start with `placement.repair-design.max-wire-length`. See [Repair electrical violators after routing](concepts/pnr.md#repair-electrical-violators-after-routing).
 
+## A setup margin repair reports RSZ-0062 on a design with borrowing latches
+
+OpenROAD's `repair_timing -setup -setup_margin` judges each endpoint by its slack. A latch whose data arrives while it is open has a setup slack of exactly 0, so with any margin above 0 every borrowing latch counts as violating, whatever time it has left. The resizer works on each such latch, finds no move that raises its slack, and ends with `[WARNING RSZ-0062] Unable to repair all setup violations`. A real violator is still in the list and still repaired, so nothing is lost but run time; on a design with many borrowing latches the warning is permanent and says nothing. This applies to `post-cts-repair`, `global-route-repair` and `post-route-repair` with a `setup-margin`.
+
+To tell it from a real violator:
+
+- The run's `wns_setup_ps` is not below 0: a real violator leaves a negative worst slack.
+- `latch_borrow_margin_ps` is the latches' real margin, and `latch_borrow.rpt` has each latch's; see [Read setup slack on a design with latches](concepts/pnr.md#read-setup-slack-on-a-design-with-latches).
+
+To avoid the warning, leave `setup-margin` unset or 0 on a design whose latches borrow. The fix, a resizer that measures a latch's margin to its closing edge or leaves borrowing latches out of the margin, belongs in OpenROAD.
+
 ## Corners share one SDC mode on an OpenROAD without modes
 
 `rb pnr` gives each corner its own SDC mode only on an OpenROAD that can switch back to an earlier mode, 26Q4 or newer. On an older one, such as 26Q2, every corner is timed in one mode and rb warns `pnr.corner_modes_unsupported`:
@@ -346,6 +357,12 @@ Upgrade OpenROAD, or run each corner on a single-corner platform. See [Sign off 
 ## rb power times every corner in one SDC mode
 
 On a multi-corner platform `rb power` reads one SDC, by default the P&R run's `<top>.routed.sdc` (the primary corner's), and the routed SPEF once for all corners. Every corner then uses the primary corner's generated-clock latencies, and the corners after the first reuse the first corner's reduced parasitics. For one corner's own figures, run `rb power` on a single-corner platform of that corner with `constraints:` set to `<top>.<corner>.routed.sdc`.
+
+## rb saif leaves out names read_saif cannot read
+
+OpenROAD's `read_saif` reads a name only if it starts with a letter or `_` and holds nothing but letters, digits and `_ $ . [ ]`; any other name fails the whole file. `rb saif` therefore leaves out a net or instance whose name, after dropping an escaped name's leading backslash, breaks that rule (`\a-b`, `\1x`), an instance with everything beneath it, and warns with the count. In a flattened netlist such a net is usually an internal wire, whose cell pins are annotated from their own instance's records, so little or nothing is lost. To keep such a record, give the signal a plain name in the netlist the simulator reads and map it back with [`activity.instance-map`](concepts/power.md#map-renamed-instances) if it is an instance. An instance named like a SAIF keyword (`NET`, `T0`) is left out too; a net gets a backslash the reader removes.
+
+`read_saif` looks an instance name up as written, without removing backslashes, so `rb saif` writes `.` in an instance name unescaped: `u_a\.u0` would read but match no instance.
 
 ## An unconfirmed dispatched P&R run blocks later runs
 

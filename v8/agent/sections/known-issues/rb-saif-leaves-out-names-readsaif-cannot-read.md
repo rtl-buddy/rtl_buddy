@@ -1,0 +1,5 @@
+## rb saif leaves out names read_saif cannot read
+
+OpenROAD's `read_saif` reads a name only if it starts with a letter or `_` and holds nothing but letters, digits and `_ $ . [ ]`; any other name fails the whole file. `rb saif` therefore leaves out a net or instance whose name, after dropping an escaped name's leading backslash, breaks that rule (`\a-b`, `\1x`), an instance with everything beneath it, and warns with the count. In a flattened netlist such a net is usually an internal wire, whose cell pins are annotated from their own instance's records, so little or nothing is lost. To keep such a record, give the signal a plain name in the netlist the simulator reads and map it back with [`activity.instance-map`](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/power/#map-renamed-instances) if it is an instance. An instance named like a SAIF keyword (`NET`, `T0`) is left out too; a net gets a backslash the reader removes.
+
+`read_saif` looks an instance name up as written, without removing backslashes, so `rb saif` writes `.` in an instance name unescaped: `u_a\.u0` would read but match no instance.

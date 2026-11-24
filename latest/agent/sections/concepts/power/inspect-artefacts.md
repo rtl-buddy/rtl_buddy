@@ -8,6 +8,7 @@ Outputs land under `<power-dir>/artefacts/<run>/`, or `<power-dir>/artefacts/.ru
 | `power.rpt` | Raw `report_power` report (worst corner on a multi-corner platform) |
 | `power.<corner>.rpt` | Each corner's report, multi-corner platforms only |
 | `power_netlist.v` | This run's copy of the upstream netlist, the file OpenROAD reads |
+| `activity.mapped.saif` | The SAIF with [`activity.instance-map`](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/power/#map-renamed-instances) applied, the file OpenROAD reads; only with a map |
 | `power_instances.rpt` | Raw `report_power -instances`, one line per leaf instance |
 | `phys-model.json`, `phys-manifest.json` | Physical model and its manifest; query with `rb phys` ([Physical Metrics](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/phys/)) |
 
