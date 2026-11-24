@@ -358,6 +358,7 @@ Process-dependent settings live on the PDK and can be overridden on the platform
 | A block must leave the top layers to its parent | `routing-layers` on the run. |
 | A block needs other tap spacing or endcaps | `tapcell-tcl` on the platform or run. |
 | Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm), or a `tapcell-tcl` that cuts rows around macros. |
+| A cell that every repair must leave as it is, such as a clock-forwarding buffer | `dont-touch`, [below](#keep-instances-unchanged). |
 | Tie cells too close to their loads | `placement.tie-separation` (µm). |
 | Macro pins over a tight Liberty limit, such as OpenRAM SKY130 SRAM inputs (0.04 ns) | `placement.macro-pin-limits`, below. |
 | Legalization after routing repair is slow, or fails with `DPL-0701` then `DPL-0033` | `placement.legalizer`, below. |
@@ -413,6 +414,7 @@ On a library with several threshold-voltage flavours, such as ASAP7 RVT and LVT 
 
 - Each macro data pin over its limit less the margin gets a buffer fixed on the nearest free row site; an input also gets a pre-driver. Buffers are sized from `buffers` weakest first and marked `dont_touch`, so later repair leaves them alone.
 - When no pair meets the limit less the margin, the closest pair stays (for an input, the lowest slew), which is not always the strongest, and the pin counts in `macro_pin_unmet_count`.
+- A pin of a [`dont-touch`](#keep-instances-unchanged) macro is left unbuffered, since OpenROAD cannot move it to a new net, and counts in `macro_pin_unmet_count`.
 - `pnr.log` has one `>>>` line per pin.
 
 The step judges on placement parasitics, so check `electrical.rpt`:
@@ -443,6 +445,20 @@ OpenROAD 26Q4 legalizes with one of two engines:
 - An OpenROAD whose `detailed_placement` has no `-use_diamond_legalizer` fails the run at setup.
 
 The log shows each call's engine on its `legalizer` line, under `Detailed Placement Analysis`.
+
+### Keep instances unchanged
+
+`dont-touch` marks instances dont-touch in OpenROAD's sense, so repair neither resizes nor removes them, such as a buffer that forwards a clock to an output port:
+
+```yaml
+    dont-touch: [u_blk.u_clk_buf, "g_lane[*].u_fwd_buf"]
+```
+
+- Name each instance as the netlist spells it, as for `floorplan.macros`: brackets are literal, and `*` and `?` the only wildcards. An entry that matches nothing fails the floorplan, naming it.
+- The flow marks them at the start of the floorplan, so the floorplan's setup repair and every later step see the mark. It is stored in the database, so checkpoints, later sessions and `--resume` keep it.
+- OpenROAD's global connections skip a dont-touch instance (`ODB-0383`), and nothing connects its supplies later. The flow clears the mark just before the tap cells and the power grid, connects the supplies after them and marks the instances again, before the `after-pdn` hooks. When the block has global connection rules, such as the `add_global_connection` calls of a `pdn-config`, an instance left with a supply pin on no net then fails the floorplan, naming the pin. Without rules nothing is connected, so nothing is checked.
+- A hook that marks cells itself with `set_dont_touch` should do it in `after-pdn` or later, for the same reason.
+- OpenROAD does not reconnect a dont-touch instance's pins. `buffer_ports` leaves unbuffered an input port that drives one (`RSZ-0085`), `placement.macro-pin-limits` leaves a dont-touch macro's pins unbuffered and counts them unmet, and CTS stops with `ODB-0370` on one whose input is on a clock net it buffers ([Known Issues](../known-issues.md#cts-stops-on-a-dont-touch-instance-whose-input-is-on-a-clock-net)).
 
 ### Optimisation steps
 
@@ -1126,8 +1142,8 @@ A mismatch stops the run naming the instance and both values. Re-harden a block 
 For maintainers and hook authors. The generated `pnr.tcl` runs:
 
 1. `platform-tcl`, Liberty, LEF, a mode and scene per corner on a multi-corner platform, netlist, SDC, `max-fanout`, `layer-rc-tcl`, don't-use cells, `session` hooks. The SDC and `max-fanout` go into every mode.
-2. Floorplan, tracks, blockages and cut-outs, tie cells, floorplan setup repair.
-3. Macro placement, tap cells, power grid, pin placement, port buffering.
+2. `dont-touch` instances marked, floorplan, tracks, blockages and cut-outs, tie cells, floorplan setup repair.
+3. Macro placement, tap cells, power grid, the `dont-touch` instances' supplies connected, pin placement, port buffering.
 4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and `hold-outputs-at-pins` buffers fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, `improve_placement`, `optimize_mirroring`, `placement.macro-pin-limits`, the place stage's `stage-end` hooks, `check_placement`. An illegal placement, including one a hook left, fails the stage, so no checkpoint is written and CTS does not start.
 5. `repair_clock_inverters`, CTS, post-CTS setup repair, hold repair, legalization.
 6. Global route, global-route repair, antenna repair, detailed route, antenna repair with detailed routes, the optional post-route repair stage, whose rounds each repair antennas after their detailed route.

@@ -119,6 +119,10 @@ _WIRE_RC_FILE = "wire_rc.tcl"
 _ELECTRICAL_UNSEEN_FILE = "electrical_unseen.tcl"
 # `buffer_ports -outputs` with `skip-clock-outputs` or `hold-outputs-at-pins`; see `_buffer_ports_tcl`.
 _PORT_BUFFERS_FILE = "port_buffers.tcl"
+# Finds the instances a run key names, as `floorplan.macros` names them; sourced before the procedures that use it.
+_INSTS_FILE = "insts.tcl"
+# Marks the `dont-touch:` instances and keeps their supplies connected; see `_dont_touch_blocks`.
+_DONT_TOUCH_FILE = "dont_touch.tcl"
 
 # Non-log files the flow writes under `$OUT_DIR`; `test_pnr.py` checks this covers every one.
 _FLOW_OUTPUT_NAMES = (
@@ -729,6 +733,33 @@ foreach rb_bterm [[ord::get_db_block] getBTerms] {
 }
 puts ">>>   $rb_freed output port buffer(s) freed"
 """
+
+
+def _dont_touch_blocks(patterns: tuple[str, ...]) -> dict[str, str]:
+    """Return the `dont-touch:` substitutions, each `""` without the key.
+
+    `dont_touch_block` opens the floorplan stage: the procedures, then the instances marked dont-touch. `dont_touch_lift_block` and `dont_touch_restore_block` go around the tap cells and the power grid, whose global connections skip a dont-touch instance (ODB-0383): the mark is cleared before them, and after them the supplies are connected and the mark set again.
+    """
+    if not patterns:
+        return {
+            "dont_touch_block": "",
+            "dont_touch_lift_block": "",
+            "dont_touch_restore_block": "",
+        }
+    entries = " ".join(
+        f"[list {{dont-touch[{i}]}} {{{pattern}}}]"
+        for i, pattern in enumerate(patterns)
+    )
+    return {
+        "dont_touch_block": (
+            'puts ">>> Dont-touch instances (dont-touch)"\n'
+            + files(_TEMPLATE_PACKAGE).joinpath(_INSTS_FILE).read_text()
+            + files(_TEMPLATE_PACKAGE).joinpath(_DONT_TOUCH_FILE).read_text()
+            + f"rb::dont_touch::apply [list {entries}]\n"
+        ),
+        "dont_touch_lift_block": "rb::dont_touch::lift\n",
+        "dont_touch_restore_block": "rb::dont_touch::restore\n",
+    }
 
 
 def _free_port_buffers_tcl(ports: PortBuffers | None) -> str:
@@ -4074,6 +4105,7 @@ class OpenRoadPnr:
             "free_port_buffers_block": _free_port_buffers_tcl(
                 self.pnr_cfg.get_port_buffers()
             ),
+            **_dont_touch_blocks(self.pnr_cfg.get_dont_touch()),
             "cts_clustering_option": _cts_clustering_option(platform),
             "cts_ndr_option": _cts_apply_ndr_option(platform),
             "cts_clock_nets_option": _cts_clock_nets_option(platform),

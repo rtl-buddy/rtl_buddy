@@ -343,8 +343,12 @@ proc rb::macro_pins::repair {buffers margin cap_margin pad_sites tag dpl_args} {
     }
 
     # Every check is read on the legal placement, before the netlist changes.
+    # A dont-touch macro's pins cannot be moved to a new net (insert_buffer
+    # fails with RSZ-3017 on an input, RSZ-3003 on an output), so a pin over
+    # its limit there is left unbuffered and counted unmet.
     estimate_parasitics -placement
     set todo {}
+    set unmet 0
     foreach inst $macros {
         foreach iterm [$inst getITerms] {
             set mterm [$iterm getMTerm]
@@ -365,14 +369,20 @@ proc rb::macro_pins::repair {buffers margin cap_margin pad_sites tag dpl_args} {
                 lappend kinds capacitance
             }
             set before [measure $pin]
-            if {![fits $before $kinds $margins]} {
-                lappend todo [list $pin $iterm $io $kinds $before]
+            if {[fits $before $kinds $margins]} {
+                continue
             }
+            if {[$inst isDoNotTouch]} {
+                puts ">>>   [get_full_name $pin] ([string tolower $io]): [describe $before $kinds];\
+                    the macro is dont-touch; left unbuffered"
+                incr unmet
+                continue
+            }
+            lappend todo [list $pin $iterm $io $kinds $before]
         }
     }
 
     set buffered {}
-    set unmet 0
     foreach item $todo {
         lassign $item pin iterm io kinds before
         set name [get_full_name $pin]
