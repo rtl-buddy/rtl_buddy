@@ -151,7 +151,12 @@ RUN_SIZED = {
     "hooks": {"session": "hook.tcl"},
     "inputs": ["helper.tcl"],
     "harden": True,
-    "abstract": {"bloat": "occupied", "feedthrough-layers": ["m4"], "gds": True},
+    "abstract": {
+        "bloat": "occupied",
+        "feedthrough-layers": ["m4"],
+        "gds": True,
+        "forwarded-clocks": "arc",
+    },
     "buffer-ports": {
         "inputs": True,
         "outputs": True,
@@ -436,7 +441,7 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
         (
             "pnr run 'a': abstract",
             ("abstract",),
-            "bloat, feedthrough-layers, gds",
+            "bloat, feedthrough-layers, gds, forwarded-clocks",
         ),
         (
             "pnr run 'a': buffer-ports",
@@ -638,11 +643,11 @@ def test_an_unknown_key_is_logged_at_error_with_its_fields(tmp_path, caplog):
         "block": "pnr run 'a': abstract",
         "key": "feedthrough_layers",
         "suggestion": "feedthrough-layers",
-        "known": ["bloat", "feedthrough-layers", "gds"],
+        "known": ["bloat", "feedthrough-layers", "gds", "forwarded-clocks"],
     }
     assert _human_message("config.unknown_key_rejected", event) == (
         f"{path}: pnr run 'a': abstract: unknown key 'feedthrough_layers', "
-        "did you mean 'feedthrough-layers'? (valid keys: bloat, feedthrough-layers, gds)"
+        "did you mean 'feedthrough-layers'? (valid keys: bloat, feedthrough-layers, gds, forwarded-clocks)"
     )
 
 

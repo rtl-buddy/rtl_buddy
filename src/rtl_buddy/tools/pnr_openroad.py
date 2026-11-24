@@ -23,6 +23,7 @@ from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_t
 from ..config.pdk import MacroPinLimitsFile
 from ..config.pdk import LEGALIZER_STAGES, Legalizer, RotatedMacroFootprint
 from ..config.pnr import (
+    FORWARDED_CLOCKS_ARC,
     CHECKPOINT_STAGES,
     PNR_STAGES,
     POST_ROUTE_REPAIR_STAGE,
@@ -67,6 +68,7 @@ from . import (
     pnr_abstract,
     pnr_checkpoints,
     pnr_dispatch,
+    pnr_forwarded_clocks,
     pnr_path_report,
     pnr_placement_check,
     pnr_stages,
@@ -6860,6 +6862,10 @@ class OpenRoadPnr:
             )
         if problem is None:
             self._record_block_parameters(staging, design)
+            forwarded = self._forward_clocks(staging, design)
+            if isinstance(forwarded, str):
+                problem = forwarded
+        if problem is None:
             try:
                 if feedthrough:
                     unused = pnr_abstract.splice_feedthrough_obs(
@@ -6899,6 +6905,7 @@ class OpenRoadPnr:
                     gds=with_gds,
                     blocks=self._blocks,
                     accepted_changes=self._accepted_changes(),
+                    forwarded_clocks=forwarded,
                 )
                 published = pnr_abstract.publish(self.artefact_dir)
             except OSError as e:
@@ -6924,6 +6931,68 @@ class OpenRoadPnr:
             manifest=manifest,
         )
         return {"abstract_dir": published, "abstract_manifest": manifest}
+
+    def _forward_clocks(self, staging: str, design: str) -> list[dict] | str | None:
+        """With `abstract.forwarded-clocks: arc`, give each clock the block forwards from an input port to an output port one combinational arc in the staged `<top>.lib` (see `pnr_forwarded_clocks`); return the arcs written for the manifest, the failure description, or None without the key.
+
+        The second timing model the harden step wrote is removed either way, so it is never published. A generated clock on an output port that does not qualify warns `pnr.abstract_forwarded_clock_skipped`, and an abstract with no forwarded clock warns `pnr.abstract_no_forwarded_clocks`.
+        """
+        second = pnr_abstract.view_path(
+            staging, design, pnr_forwarded_clocks.FORWARDED_VIEW
+        )
+        try:
+            if self.pnr_cfg.get_abstract().forwarded_clocks != FORWARDED_CLOCKS_ARC:
+                return None
+            lib = pnr_abstract.view_path(staging, design, "lib")
+            if not os.path.isfile(second):
+                return (
+                    "abstract view(s) not produced: "
+                    f"{design}.{pnr_forwarded_clocks.FORWARDED_VIEW}"
+                )
+            sdc = Path(self.artefact_dir, f"{design}{ROUTED_SDC_SUFFIX}").read_text(
+                encoding="utf-8"
+            )
+            inputs, outputs = pnr_forwarded_clocks.port_names(lib)
+            clocks, skipped = pnr_forwarded_clocks.forwarded_clocks(
+                sdc, inputs, outputs
+            )
+            for name, reason in skipped:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "pnr.abstract_forwarded_clock_skipped",
+                    pnr=self.pnr_cfg.get_name(),
+                    clock=name,
+                    reason=reason,
+                )
+            if not clocks:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "pnr.abstract_no_forwarded_clocks",
+                    pnr=self.pnr_cfg.get_name(),
+                )
+                return []
+            pnr_forwarded_clocks.rewrite(lib, second, clocks)
+            for clock in clocks:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "pnr.abstract_forwarded_clock",
+                    pnr=self.pnr_cfg.get_name(),
+                    clock=clock.name,
+                    source=clock.source,
+                    target=clock.target,
+                    sense=clock.sense(),
+                )
+            return [clock.record() for clock in clocks]
+        except pnr_forwarded_clocks.ForwardedClockError as e:
+            return f"abstract forwarded clock: {e}"
+        except (OSError, UnicodeDecodeError, ValueError) as e:
+            return f"abstract forwarded clock: {e}"
+        finally:
+            if os.path.lexists(second):
+                os.unlink(second)
 
     def _order_supply_ports(self) -> str | None:
         """Put the supply ports last in `<top>.routed.pwr.v` and a hardened block's staged `<top>.lib` (see `pnr_supply_order`); return the failure description, or None.
