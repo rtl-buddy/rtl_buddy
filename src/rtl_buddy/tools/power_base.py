@@ -19,12 +19,18 @@ class BasePower(ABC):
         suite_dir: str,
         root_cfg,
         executable: str,
+        run_tag: str | None = None,
+        tag_inputs=None,
     ):
         self.name = name
         self.power_cfg = power_cfg
         self.suite_dir = suite_dir
         self.root_cfg = root_cfg
         self.executable = executable
+        # `--run-tag`: the run writes under `artefacts/.runs/<tag>/` and reads a P&R run from that
+        # tag's copies (`pnr_tag_inputs.TagInputs`). None for an untagged run.
+        self.run_tag = run_tag
+        self.tag_inputs = tag_inputs
 
     @abstractmethod
     def run(self) -> PowerResults:  # pragma: no cover

@@ -319,7 +319,7 @@ def test_the_hold_shorthand_carries_the_origin(tmp_path):
     assert "global_route -start_incremental -grid_origin {3 3}\n" in text
     assert (
         "global_route -end_incremental -grid_origin {3 3} -congestion_report_file "
-        "$CONGESTION_RPT -verbose\ncheck_placement -verbose\nrb::global_connect\n"
+        "$CONGESTION_RPT -verbose\ncheck_placement -verbose\n}\nrb::global_connect\n"
     ) in text
     assert _GUIDES in text
 

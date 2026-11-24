@@ -10,6 +10,7 @@ from textwrap import dedent
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pnr_events import _capture_pnr_events, _one_event
 
 from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile, PdkPinLayersFile
 from rtl_buddy.config.pnr import PnrConfig, PnrSuiteConfig
@@ -75,32 +76,6 @@ def _make_stream_pdk(tmp_path, **overrides):
 
 
 _GDS_BYTES = b"\x00\x06\x00\x02\x00\x07"
-
-
-def _capture_pnr_events(monkeypatch):
-    """Record every `log_event` the P&R backend emits, with its level.
-
-    `caplog` cannot be used past the first console write: `task_status` initialises
-    rtl_buddy's logging, which clears pytest's root handlers.
-    """
-    from rtl_buddy.tools import pnr_openroad
-
-    events: list[tuple[int, str, dict]] = []
-    real = pnr_openroad.log_event
-
-    def _record(logger, level, event, /, **fields):
-        events.append((level, event, fields))
-        return real(logger, level, event, **fields)
-
-    monkeypatch.setattr(pnr_openroad, "log_event", _record)
-    return events
-
-
-def _one_event(events, name):
-    """The single recorded event called `name`, as `(level, fields)`."""
-    matches = [(level, fields) for level, event, fields in events if event == name]
-    assert len(matches) == 1, f"{name}: {[e[1] for e in events]}"
-    return matches[0]
 
 
 def _fake_klayout(
@@ -1080,8 +1055,16 @@ def test_parse_version_token_handles_yyqn_and_semver():
     assert _parse_version_token("25Q1") == (25, 1)
     # Comparison: 26Q2 ranks above 25Q1
     assert _parse_version_token("26Q2") > _parse_version_token("25Q1")
-    # Unparseable falls back to a string tuple
-    assert _parse_version_token("nightly-build") == ("nightly-build",)
+    assert _parse_version_token("nightly-build") is None
+
+
+def test_version_below_min_skips_unparseable_version():
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    runner = object.__new__(OpenRoadPnr)
+    assert not runner._version_below_min("HEAD-HASH-NOTFOUND")
+    assert not runner._version_below_min("26Q2-911-g731f")
+    assert runner._version_below_min("24Q3")
 
 
 def test_resolve_klayout_exe_uses_path_first(monkeypatch):
@@ -3757,7 +3740,7 @@ def test_pnr_flow_without_rcx_rules_keeps_the_estimated_final_reports(tmp_path):
     )
 
     assert (
-        'filler_placement $FILL_CELLS\nrb::global_connect\n\nputs ">>> Supply ports"\n'
+        'filler_placement $FILL_CELLS\n}\nrb::global_connect\n\nputs ">>> Supply ports"\n'
     ) in text
     assert (
         "rb::supply_ports::reassert\n"
@@ -4952,6 +4935,7 @@ def test_pnr_flow_repairs_hold_again_on_global_route_parasitics(tmp_path):
     assert (
         "global_route -congestion_iterations 30 "
         "-congestion_report_file $CONGESTION_RPT -verbose\n"
+        "if {[rb::has_rows]} {\n"
         'puts ">>> Post-global-route hold repair"\n'
         "estimate_parasitics -global_routing\n"
         "repair_timing -hold\n"
@@ -4960,6 +4944,7 @@ def test_pnr_flow_repairs_hold_again_on_global_route_parasitics(tmp_path):
         "global_route -end_incremental -congestion_report_file $CONGESTION_RPT "
         "-verbose\n"
         "check_placement -verbose\n"
+        "}\n"
     ) in text
     assert text.index("global_route -end_incremental") < text.index(">>> Detail route")
     # The post-CTS repair still runs, on placement parasitics.
@@ -5008,7 +4993,8 @@ def test_pnr_flow_passes_the_cts_apply_ndr(tmp_path, clustering):
     options = "-sink_clustering_enable" if clustering else ""
     assert (
         "    -buf_list $CTS_BUF \\\n"
-        f"    {options} -apply_ndr none\n\n"
+        f"    {options} -apply_ndr none\n}}\n"
+        "if {[rb::has_rows]} {\n"
         'puts ">>> Detail placement (post-CTS)"'
     ) in text
     assert text.count("-apply_ndr") == 1

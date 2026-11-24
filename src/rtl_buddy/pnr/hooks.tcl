@@ -4,7 +4,10 @@
 # `rb::hook::run` sources one hook file at Tcl global scope, so the flow's
 # variables ($OUT_DIR, $DESIGN, $block, $macros) are visible to it. When stage
 # checkpoints are armed it brackets the file with `hook_begin` and `hook_end`
-# progress events.
+# progress events. It always brackets the file's part of the log with
+# `>>> rb: hook begin <point> <path>` and `>>> rb: hook end <point> ok|error`:
+# an `[ERROR` line OpenROAD printed in a hook that returned does not fail the
+# run (`_error_lines`).
 
 namespace eval rb::hook {}
 
@@ -22,6 +25,7 @@ proc rb::hook::emit {event point path {extra {}}} {
 proc rb::hook::run {point path} {
     set begin [clock milliseconds]
     emit hook_begin $point $path
+    puts ">>> rb: hook begin $point $path"
     # Stage checkpoints mark the flow's own commands; a command a hook runs
     # does not move a stage boundary.
     set anchors {}
@@ -48,9 +52,11 @@ proc rb::hook::run {point path} {
     }
     set elapsed [format %.3f [expr {([clock milliseconds] - $begin) / 1000.0}]]
     if {$code == 0} {
+        puts ">>> rb: hook end $point ok"
         emit hook_end $point $path [list status ok elapsed_s $elapsed]
         return
     }
+    puts ">>> rb: hook end $point error"
     # Any other completion would end the flow early, so it fails the run.
     if {$code != 1} {
         switch -- $code {

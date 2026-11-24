@@ -23,6 +23,7 @@ from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_t
 from ..config.pdk import MacroPinLimitsFile
 from ..config.pdk import LEGALIZER_STAGES, Legalizer, RotatedMacroFootprint
 from ..config.pnr import (
+    FORWARDED_CLOCKS_ARC,
     CHECKPOINT_STAGES,
     PNR_STAGES,
     POST_ROUTE_REPAIR_STAGE,
@@ -67,6 +68,7 @@ from . import (
     pnr_abstract,
     pnr_checkpoints,
     pnr_dispatch,
+    pnr_forwarded_clocks,
     pnr_path_report,
     pnr_placement_check,
     pnr_stages,
@@ -119,6 +121,14 @@ _WIRE_RC_FILE = "wire_rc.tcl"
 _ELECTRICAL_UNSEEN_FILE = "electrical_unseen.tcl"
 # `buffer_ports -outputs` with `skip-clock-outputs` or `hold-outputs-at-pins`; see `_buffer_ports_tcl`.
 _PORT_BUFFERS_FILE = "port_buffers.tcl"
+# Finds the instances a run key names, as `floorplan.macros` names them; sourced before the procedures that use it.
+_INSTS_FILE = "insts.tcl"
+# Marks the `dont-touch:` instances and keeps their supplies connected; see `_dont_touch_blocks`.
+_DONT_TOUCH_FILE = "dont_touch.tcl"
+# Takes the `cts-root-taps:` pins off their nets around CTS; see `_cts_root_taps_tcl`.
+_CTS_ROOT_TAPS_FILE = "cts_root_taps.tcl"
+# Measures the `clock-latency:` groups' clock arrival in the final reports; see `_clock_latency_tcl`.
+_CLOCK_LATENCY_FILE = "clock_latency.tcl"
 
 # Non-log files the flow writes under `$OUT_DIR`; `test_pnr.py` checks this covers every one.
 _FLOW_OUTPUT_NAMES = (
@@ -201,6 +211,8 @@ _DONT_USE_VIOLATION_TAG = "RB-DONT-USE-VIOLATION:"
 
 # Printed once by the final reports: the routed design's logical and physical-only instance counts.
 _CELL_COUNT_TAG = "RB-CELL-COUNT:"
+#: Printed at the end of the floorplan of a top left with no rows and no standard cell to place (`rb::check_rows` in the flow template): the steps that need rows are skipped.
+_NO_ROWS_TAG = "RB-NO-ROWS:"
 #: The total row of global routing's usage table (GRT-0096); the last number is the total overflow.
 _GR_TOTAL_RE = re.compile(
     r"^Total\s+\d+\s+\d+\s+[\d.]+%\s+\d+\s*/\s*\d+\s*/\s*(\d+)\s*$", re.MULTILINE
@@ -247,6 +259,21 @@ def _parse_unseen(text: str) -> list[dict]:
 
 #: Where the docs explain the violators `_unseen_tcl` lists.
 _UNSEEN_DOCS = "rb docs show known-issues#post-route-repair_design-sizes-its-buffering-on-the-placement-estimate"
+
+
+# Printed by `cts-root-taps` for each tap put back on its net after CTS: the pin, then the net.
+_CTS_ROOT_TAP_TAG = "RB-CTS-ROOT-TAP:"
+_CTS_ROOT_TAP_RE = re.compile(
+    rf"^{re.escape(_CTS_ROOT_TAP_TAG)} (\S+) (\S+)\s*$", re.MULTILINE
+)
+
+
+# Printed by the final reports for each `clock-latency` group at each corner: the group, the corner, its sinks, those a clock reaches, then the late clock arrival's min, max and mean in the timer's unit (`-` without timed sinks).
+_CLOCK_LATENCY_TAG = "RB-CLOCK-LATENCY:"
+_CLOCK_LATENCY_RE = re.compile(
+    rf"^{re.escape(_CLOCK_LATENCY_TAG)} (\S+) (\S+) (\d+) (\d+) (\S+) (\S+) (\S+)\s*$",
+    re.MULTILINE,
+)
 
 
 # Printed once by the macro pin-limit step: the macro pins it buffered and those still over their limit less the margin.
@@ -579,6 +606,21 @@ def _before_cts_block(hooks: dict, *, checkpoints: bool, steps: str = "") -> str
     return block
 
 
+def _with_rows(block: str) -> str:
+    """`block` run only where the core has rows (`rb::has_rows` in the flow template), or `""` for an empty one: it places, legalizes or buffers cells."""
+    if not block:
+        return ""
+    return "if {[rb::has_rows]} {\n" + block + "}\n"
+
+
+def _no_rows_skip_tcl(what: str, anchor: str, *, checkpoints: bool) -> str:
+    """Return the line that logs `what` skipped on a top without rows (`rb::skip` in the flow template), then, with `checkpoints` (a one-session run that writes them), the end of the stage that the skipped step's command `anchor` would have ended on entering it (`STAGE_ANCHORS`)."""
+    line = f'  rb::skip "{what}"\n'
+    if checkpoints:
+        line += f"  rb::ckpt::checkpoint_for {anchor} enter\n"
+    return line
+
+
 def _after_extraction_block(spef: str, hooks: dict) -> str:
     """Return the `after-extraction` hook lines for the SPEF the Tcl word `spef` names, with that path in `$rb_spef`, or `""` when the run has none."""
     paths = hooks.get("after-extraction")
@@ -712,6 +754,83 @@ foreach rb_bterm [[ord::get_db_block] getBTerms] {
 }
 puts ">>>   $rb_freed output port buffer(s) freed"
 """
+
+
+def _dont_touch_blocks(patterns: tuple[str, ...]) -> dict[str, str]:
+    """Return the `dont-touch:` substitutions, each `""` without the key.
+
+    `dont_touch_block` opens the floorplan stage: the procedures, then the instances marked dont-touch. `dont_touch_lift_block` and `dont_touch_restore_block` go around the tap cells and the power grid, whose global connections skip a dont-touch instance (ODB-0383): the mark is cleared before them, and after them the supplies are connected and the mark set again.
+    """
+    if not patterns:
+        return {
+            "dont_touch_block": "",
+            "dont_touch_lift_block": "",
+            "dont_touch_restore_block": "",
+        }
+    entries = " ".join(
+        f"[list {{dont-touch[{i}]}} {{{pattern}}}]"
+        for i, pattern in enumerate(patterns)
+    )
+    return {
+        "dont_touch_block": (
+            'puts ">>> Dont-touch instances (dont-touch)"\n'
+            + files(_TEMPLATE_PACKAGE).joinpath(_INSTS_FILE).read_text()
+            + files(_TEMPLATE_PACKAGE).joinpath(_DONT_TOUCH_FILE).read_text()
+            + f"rb::dont_touch::apply [list {entries}]\n"
+        ),
+        "dont_touch_lift_block": "rb::dont_touch::lift\n",
+        "dont_touch_restore_block": "rb::dont_touch::restore\n",
+    }
+
+
+def _cts_root_taps_tcl(pins: tuple[str, ...]) -> tuple[str, str]:
+    """Return the `cts-root-taps:` steps: the one that takes the pins off their nets just before CTS, after the `before-cts` hooks and `repair_clock_inverters`, and the one that puts them back after `repair_clock_nets`, before the `after-cts` hooks; both `""` without the key.
+
+    The first carries its own leading newline, as the `before-cts` block does. Neither runs on a top without rows, where CTS does not.
+    """
+    if not pins:
+        return "", ""
+    entries = " ".join(
+        f"[list {{cts-root-taps[{i}]}} {{{pin}}}]" for i, pin in enumerate(pins)
+    )
+    return (
+        '\nputs ">>> CTS root taps (cts-root-taps)"\n'
+        + files(_TEMPLATE_PACKAGE).joinpath(_INSTS_FILE).read_text()
+        + files(_TEMPLATE_PACKAGE).joinpath(_CTS_ROOT_TAPS_FILE).read_text()
+        + f"if {{[rb::has_rows]}} {{ rb::cts_root_taps::detach [list {entries}] }}\n",
+        f"rb::cts_root_taps::reattach {_CTS_ROOT_TAP_TAG}\n",
+    )
+
+
+def _clock_latency_tcl(
+    groups, corners: list[str], primary: str, modes: bool = False
+) -> str:
+    """Return the final reports' `clock-latency` step, or `""` without groups: each group's late clock arrival per corner, on `_CLOCK_LATENCY_TAG` lines.
+
+    `corners` are a multi-corner platform's corners, each measured in its own scene; a single-corner platform's one corner is `primary`, measured in the default one. With `modes`, each corner's scene times its own SDC mode, named after the corner, and the step makes that mode current while it measures the corner, since which clocks reach a pin is read in the current mode. The step carries its own leading newline and no trailing one, as `corner_reports` does.
+    """
+    if not groups:
+        return ""
+    group_list = " ".join(
+        f"[list {g.name} [list {' '.join('{' + s + '}' for s in g.sinks)}]]"
+        for g in groups
+    )
+    corner_list = (
+        " ".join(
+            f"[list {c} [rb::clock_latency::corner_args {c}]"
+            + (f" {c}]" if modes else "]")
+            for c in corners
+        )
+        if corners
+        else f"[list {primary} {{}}]"
+    )
+    return (
+        '\nputs ">>> Clock latency (clock-latency)"\n'
+        + files(_TEMPLATE_PACKAGE).joinpath(_INSTS_FILE).read_text()
+        + files(_TEMPLATE_PACKAGE).joinpath(_CLOCK_LATENCY_FILE).read_text()
+        + f"rb::clock_latency::report {_CLOCK_LATENCY_TAG} [list {group_list}] "
+        f"[list {corner_list}]"
+    )
 
 
 def _free_port_buffers_tcl(ports: PortBuffers | None) -> str:
@@ -1079,7 +1198,8 @@ def _cts_repair_clock_inverters_tcl(platform) -> str:
     """Return `repair_clock_inverters` before CTS, which clones each clock-tree inverter next to its register loads so CTS does not buffer the inverted clocks, or `""` when `cts-repair-clock-inverters` is false. The block carries its own leading newline, as the `before-cts` hook block does."""
     if not platform.get_cts_repair_clock_inverters():
         return ""
-    return "\nrepair_clock_inverters\n"
+    # Its clones need rows (`rb::has_rows` in the flow template).
+    return "\nif {[rb::has_rows]} { repair_clock_inverters }\n"
 
 
 #: Antenna repair rounds after global route (`repair_antennas -iterations`) and the most detailed routes after detailed route, as ORFS's `MAX_REPAIR_ANTENNAS_ITER_GRT` and `_DRT`.
@@ -1095,10 +1215,13 @@ def _global_route_antenna_repair_tcl(
     if mode is PnrMode.PROBE:
         return 'puts ">>> Global-route antenna repair: skipped (mode: probe)"\n'
     congestion = " -allow_congestion" if gr.allow_congestion else ""
+    # Diodes need rows (`rb::has_rows` in the flow template); the report is written either way.
     return (
         'puts ">>> Global-route antenna repair"\n'
+        "if {[rb::has_rows]} {\n"
         f"repair_antennas -iterations {_ANTENNA_REPAIR_ITERATIONS}{congestion}\n"
         "check_placement -verbose\n"
+        '} else { rb::skip "global-route antenna repair" }\n'
         "check_antennas -report_file $OUT_DIR/grt_antennas.rpt\n"
     )
 
@@ -1113,8 +1236,10 @@ def _detailed_route_antenna_repair_tcl(platform, verbose: int) -> str:
         "      -output_maze $OUT_DIR/route.maze.log \\\n"
         f"      -verbose {verbose}\n"
     )
+    # Diodes need rows (`rb::has_rows` in the flow template); the report is written either way.
     return (
         'puts ">>> Detailed-route antenna repair"\n'
+        "if {[rb::has_rows]} {\n"
         "set rb_antenna_rounds 1\n"
         "if {[repair_antennas]} {\n"
         f"  {route}"
@@ -1125,6 +1250,7 @@ def _detailed_route_antenna_repair_tcl(platform, verbose: int) -> str:
         f"  {route}"
         "  incr rb_antenna_rounds\n"
         "}\n"
+        '} else { rb::skip "detailed-route antenna repair" }\n'
         "check_antennas -report_file $OUT_DIR/drt_antennas.rpt\n"
     )
 
@@ -1546,11 +1672,11 @@ def _dedup_paths(paths) -> list[str]:
 MIN_OPENROAD_VERSION = "25Q1"
 
 
-def _parse_version_token(version: str) -> tuple:
-    """Return a comparable tuple from an OpenROAD version such as `26Q2-911-g...` or `v2.0`; unknown formats fall back to the raw string."""
+def _parse_version_token(version: str) -> tuple[int, int] | None:
+    """Return a comparable tuple from an OpenROAD version such as `26Q2-911-g...` or `v2.0`, or None for unknown formats such as `HEAD-HASH-NOTFOUND`."""
     m = re.match(r"^v?(\d+)(?:[.Qq](\d+))?", version.strip())
     if not m:
-        return (version,)
+        return None
     major = int(m.group(1))
     minor = int(m.group(2)) if m.group(2) else 0
     return (major, minor)
@@ -2031,6 +2157,12 @@ _ROUND_DONE_MARKER = ">>> End of post-route repair round "
 _SESSION_BEGIN_MARKER = ">>> rb: begin "
 #: Follows a post-route repair session the stage set aside, followed by its label and why; its `[ERROR` lines do not fail the run.
 _SESSION_SET_ASIDE_MARKER = ">>> rb: set aside "
+#: Precedes each hook file's part of the log (`rb::hook::run` in `hooks.tcl`), followed by its point and path.
+_HOOK_BEGIN_MARKER = ">>> rb: hook begin "
+#: Follows each hook file's part of the log, followed by its point and `ok` when the hook returned, else `error`.
+_HOOK_END_MARKER = ">>> rb: hook end "
+#: What `_HOOK_BEGIN_MARKER` and `_HOOK_END_MARKER` start with.
+_HOOK_MARKER = ">>> rb: hook "
 #: What to change when an `eco` post-route repair round's repair failed RSZ-0074.
 _ECO_HINT = (
     "the eco round's repair could not use the routes rebuilt from the "
@@ -3136,19 +3268,70 @@ def _session_threads(script: str, log_text: str) -> int | None:
     return reported if reported is not None else int(match.group(1))
 
 
-def _error_lines(text: str) -> list[str]:
-    """The `[ERROR` lines of a log, leaving out those of each post-route repair session the stage set aside: from its `_SESSION_BEGIN_MARKER` line to the `_SESSION_SET_ASIDE_MARKER` line after it."""
-    counted: list[str] = []
-    pending: list[str] = []
+@dataclass(frozen=True)
+class HookErrorLines:
+    """The `[ERROR` lines OpenROAD printed while one hook file ran, in a hook that returned."""
+
+    point: str
+    path: str
+    lines: tuple[str, ...]
+
+
+def _hook_marker_lines(text: str):
+    """The lines of a log, each hook marker (`_HOOK_MARKER`) split from the output before it on its line."""
     for line in text.splitlines():
+        while (at := line.find(_HOOK_MARKER, 1)) > 0:
+            yield line[:at]
+            line = line[at:]
+        yield line
+
+
+def _scan_error_lines(text: str) -> tuple[list[str], list[HookErrorLines]]:
+    """The `[ERROR` lines of a log that fail the run (`_error_lines`), and those it leaves out because a hook that returned printed them, per hook file.
+
+    A post-route repair session the stage set aside, from its `_SESSION_BEGIN_MARKER` line to the `_SESSION_SET_ASIDE_MARKER` line after it, has neither. A hook's lines are those between its `_HOOK_BEGIN_MARKER` line and its `_HOOK_END_MARKER` line, less those of a hook it ran, which go by that hook's end line; they count when that line says `error`, or when there is none, as after a crash in the hook. A hook marker starts a line of its own even where a hook's output before it did not end its line (`puts -nonewline`).
+    """
+    counted: list[str] = []
+    excused: list[HookErrorLines] = []
+    pending: list[str] = []
+    pending_excused: list[HookErrorLines] = []
+    # The hooks running at a line, innermost last: point, path and `[ERROR` lines.
+    running: list[tuple[str, str, list[str]]] = []
+
+    def _unended() -> None:
+        for _point, _path, lines in running:
+            pending.extend(lines)
+        running.clear()
+
+    for line in _hook_marker_lines(text):
         if line.startswith(_SESSION_BEGIN_MARKER):
+            _unended()
             counted += pending
+            excused += pending_excused
             pending = []
+            pending_excused = []
         elif line.startswith(_SESSION_SET_ASIDE_MARKER):
+            running.clear()
             pending = []
+            pending_excused = []
+        elif line.startswith(_HOOK_BEGIN_MARKER):
+            point, _, path = line.removeprefix(_HOOK_BEGIN_MARKER).partition(" ")
+            running.append((point, path, []))
+        elif line.startswith(_HOOK_END_MARKER) and running:
+            point, path, lines = running.pop()
+            if line.rpartition(" ")[2] != "ok":
+                pending.extend(lines)
+            elif lines:
+                pending_excused.append(HookErrorLines(point, path, tuple(lines)))
         elif line.startswith("[ERROR "):
-            pending.append(line)
-    return counted + pending
+            (running[-1][2] if running else pending).append(line)
+    _unended()
+    return counted + pending, excused + pending_excused
+
+
+def _error_lines(text: str) -> list[str]:
+    """The `[ERROR` lines of a log that fail the run: all but those of each post-route repair session the stage set aside and those a hook that returned printed (`_scan_error_lines`)."""
+    return _scan_error_lines(text)[0]
 
 
 def _last_session(text: str) -> tuple[str, str]:
@@ -3816,6 +3999,9 @@ class OpenRoadPnr:
         if modes:
             routed_corner_sdcs += f"set_mode {corners[0]}\n"
         hooks = self.pnr_cfg.get_hooks()
+        root_taps_detach, root_taps_reattach = _cts_root_taps_tcl(
+            self.pnr_cfg.get_cts_root_taps()
+        )
         substitutions = {
             "pin_constraints_tcl": pin_constraints_tcl,
             "floorplan_pins_block": _floorplan_pins_block(fp),
@@ -3827,6 +4013,12 @@ class OpenRoadPnr:
             "propagated_clocks": propagated_clocks,
             "routed_corner_sdcs": routed_corner_sdcs,
             "corner_reports": corner_reports,
+            "clock_latency_reports": _clock_latency_tcl(
+                self.pnr_cfg.get_clock_latency(),
+                list(corner_libs),
+                platform.get_sta_corner(),
+                modes,
+            ),
             "tie_cells_block": tie_cells_block,
             "tie_fanout_block": tie_fanout_block,
             "cts_buffer_options": cts_buffer_options,
@@ -3882,8 +4074,9 @@ class OpenRoadPnr:
             "hook_before_cts_block": _before_cts_block(
                 hooks,
                 checkpoints=self._arms_checkpoints() and not self._staged,
-                steps=_cts_repair_clock_inverters_tcl(platform),
+                steps=_cts_repair_clock_inverters_tcl(platform) + root_taps_detach,
             ),
+            "cts_root_taps_reattach_block": root_taps_reattach,
             "hook_before_repair_clock_nets_block": _run_hook_block(
                 "before-repair-clock-nets", hooks
             ),
@@ -3947,15 +4140,17 @@ class OpenRoadPnr:
             "failed_global_route_write_sdc": (
                 "rb::ckpt::write_sdc" if self._mode_corners else "write_sdc"
             ),
-            "global_route_repair": _global_route_repair_tcl(
-                platform.get_global_route_repair(),
-                self._mode,
-                self._ps_per_unit,
-                dpl_options["global_route"],
-                platform.get_global_route(),
-                timing=self._arms_checkpoints(),
-                platform=platform,
-                after_timing=_after_timing_repair_block(hooks, "global_route"),
+            "global_route_repair": _with_rows(
+                _global_route_repair_tcl(
+                    platform.get_global_route_repair(),
+                    self._mode,
+                    self._ps_per_unit,
+                    dpl_options["global_route"],
+                    platform.get_global_route(),
+                    timing=self._arms_checkpoints(),
+                    platform=platform,
+                    after_timing=_after_timing_repair_block(hooks, "global_route"),
+                )
             ),
             "gp_blockages_create": gp_blocks.create,
             "gp_blockages_destroy": gp_blocks.destroy,
@@ -3968,6 +4163,17 @@ class OpenRoadPnr:
             ),
             "detailed_route_verbose": str(self.pnr_cfg.get_detailed_route_verbose()),
             "cell_count_tag": _CELL_COUNT_TAG,
+            "no_rows_tag": _NO_ROWS_TAG,
+            "skip_global_placement": _no_rows_skip_tcl(
+                "global placement, resize and legalization",
+                "global_placement",
+                checkpoints=self._arms_checkpoints() and not self._staged,
+            ),
+            "skip_cts": _no_rows_skip_tcl(
+                "clock tree synthesis, its repairs and post-CTS timing repair",
+                "clock_tree_synthesis",
+                checkpoints=self._arms_checkpoints() and not self._staged,
+            ),
             "electrical_tag": _ELECTRICAL_TAG,
             "path_fanout_reports": pnr_path_report.report_tcl(
                 list(corner_libs),
@@ -3980,6 +4186,7 @@ class OpenRoadPnr:
             "free_port_buffers_block": _free_port_buffers_tcl(
                 self.pnr_cfg.get_port_buffers()
             ),
+            **_dont_touch_blocks(self.pnr_cfg.get_dont_touch()),
             "cts_clustering_option": _cts_clustering_option(platform),
             "cts_ndr_option": _cts_apply_ndr_option(platform),
             "cts_clock_nets_option": _cts_clock_nets_option(platform),
@@ -3989,7 +4196,7 @@ class OpenRoadPnr:
             "cts_obstruction_option": _cts_obstruction_option(
                 platform, self._cts_has_no_obstruction_aware
             ),
-            "cts_repair_clock_nets": _cts_repair_clock_nets_tcl(platform),
+            "cts_repair_clock_nets": _with_rows(_cts_repair_clock_nets_tcl(platform)),
             "max_fanout_block": max_fanout_block,
             "routing_layers": _routing_layers_tcl(platform),
             "extra_libs_lefs": extra_libs_lefs,
@@ -4716,6 +4923,93 @@ class OpenRoadPnr:
             )
         return {"macro_pin_buffered_count": buffered, "macro_pin_unmet_count": unmet}
 
+    def _cts_root_taps_fields(self, log_text: str) -> dict:
+        """Return `cts_root_taps`, each tap the run put back on its root net after CTS with that net, or `{}` when none was. A staged run's `pnr.log` holds the `cts` stage's log, inherited or not."""
+        taps = {pin: net for pin, net in _CTS_ROOT_TAP_RE.findall(log_text)}
+        if not taps:
+            return {}
+        return {"cts_root_taps": [{"pin": p, "net": n} for p, n in taps.items()]}
+
+    def _clock_latency_fields(self, platform, final: str) -> dict:
+        """Return `clock_latency`, each group's late clock arrival at its sinks from the final reports, or `{}` without groups.
+
+        A group's `min_ps`, `max_ps` and `mean_ps` are those at the platform's primary corner, and `corners` has each corner's. With `tolerance-ps`, `within_tolerance` says whether every sink is within it of `target-ps` at the primary corner. Warns `pnr.clock_latency_unclocked` for a group with a sink no clock reaches, or no sink, and `pnr.clock_latency_off_target` for one outside its tolerance.
+        """
+        groups = self.pnr_cfg.get_clock_latency()
+        if not groups:
+            return {}
+        ps = self._ps_per_unit
+
+        def _ps(value: str) -> float | None:
+            try:
+                return float(value) * ps
+            except ValueError:
+                return None
+
+        rows: dict[str, dict[str, tuple]] = {}
+        for name, corner, sinks, timed, low, high, mean in _CLOCK_LATENCY_RE.findall(
+            final
+        ):
+            rows.setdefault(name, {})[corner] = (
+                int(sinks),
+                int(timed),
+                _ps(low),
+                _ps(high),
+                _ps(mean),
+            )
+        primary = platform.get_sta_corner()
+        out = {}
+        for group in groups:
+            measured = rows.get(group.name)
+            if not measured:
+                continue
+            first = measured.get(primary) or next(iter(measured.values()))
+            sinks, timed, low, high, mean = first
+            record = {
+                "sinks": sinks,
+                "timed_sinks": timed,
+                "min_ps": low,
+                "max_ps": high,
+                "mean_ps": mean,
+                "target_ps": group.target_ps,
+                "tolerance_ps": group.tolerance_ps,
+                "corners": {
+                    corner: {"min_ps": c_low, "max_ps": c_high, "mean_ps": c_mean}
+                    for corner, (_s, _t, c_low, c_high, c_mean) in measured.items()
+                },
+            }
+            if timed < sinks or not sinks:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "pnr.clock_latency_unclocked",
+                    pnr=self.pnr_cfg.get_name(),
+                    group=group.name,
+                    sinks=sinks,
+                    timed=timed,
+                )
+            if group.tolerance_ps is not None and low is not None:
+                within = (
+                    abs(low - group.target_ps) <= group.tolerance_ps
+                    and abs(high - group.target_ps) <= group.tolerance_ps
+                )
+                record["within_tolerance"] = within
+                if not within:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "pnr.clock_latency_off_target",
+                        pnr=self.pnr_cfg.get_name(),
+                        group=group.name,
+                        corner=primary,
+                        min_ps=low,
+                        max_ps=high,
+                        target_ps=group.target_ps,
+                        tolerance_ps=group.tolerance_ps,
+                    )
+            out[group.name] = record
+        return {"clock_latency": out} if out else {}
+
     def _describe_electrical(self, fields: dict) -> str:
         """Return `"N max-slew, M max-capacitance violator(s)"` for the nonzero counts, or `""` when there are none."""
         return _electrical_desc(fields)
@@ -4966,9 +5260,11 @@ class OpenRoadPnr:
         return out.splitlines()[0] if out else None
 
     def _version_below_min(self, version: str) -> bool:
-        return _parse_version_token(version) < _parse_version_token(
-            MIN_OPENROAD_VERSION
-        )
+        actual = _parse_version_token(version)
+        minimum = _parse_version_token(MIN_OPENROAD_VERSION)
+        if actual is None or minimum is None:
+            return False
+        return actual < minimum
 
     def _has_tcl_command(self, command: str) -> bool:
         """Return whether the OpenROAD build has a Tcl command, such as `write_gds`; False if it cannot be determined."""
@@ -5912,6 +6208,23 @@ class OpenRoadPnr:
             f"({', '.join(causes)}); see {_NO_WIRE_RC_DOCS}"
         )
 
+    def _no_rows_qualifier(self, log_text: str) -> str:
+        """Warn that the top had no rows and nothing to place, so placement, CTS, the post-CTS and global-route repairs, antenna diode insertion and fill did not run (the floorplan's setup repair and any post-route repair rounds still run), and return the result qualifier, or `""` when it had rows (`_NO_ROWS_TAG`)."""
+        if not re.search(rf"^{re.escape(_NO_ROWS_TAG)}", log_text, re.MULTILINE):
+            return ""
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.no_rows_skip_placement",
+            pnr=self.pnr_cfg.get_name(),
+            log=self._log_path(),
+        )
+        return (
+            "pnr.no_rows_skip_placement: no rows and no standard cell to place; "
+            "placement, CTS, the post-CTS and global-route repairs, antenna diode "
+            "insertion and fill did not run"
+        )
+
     def _allow_congestion_qualifier(self, platform, log_text: str) -> str:
         """Warn that `global-route.allow-congestion` let global route keep its overflow, and return the result qualifier, or `""` when it is off.
 
@@ -6549,6 +6862,10 @@ class OpenRoadPnr:
             )
         if problem is None:
             self._record_block_parameters(staging, design)
+            forwarded = self._forward_clocks(staging, design)
+            if isinstance(forwarded, str):
+                problem = forwarded
+        if problem is None:
             try:
                 if feedthrough:
                     unused = pnr_abstract.splice_feedthrough_obs(
@@ -6588,6 +6905,7 @@ class OpenRoadPnr:
                     gds=with_gds,
                     blocks=self._blocks,
                     accepted_changes=self._accepted_changes(),
+                    forwarded_clocks=forwarded,
                 )
                 published = pnr_abstract.publish(self.artefact_dir)
             except OSError as e:
@@ -6613,6 +6931,68 @@ class OpenRoadPnr:
             manifest=manifest,
         )
         return {"abstract_dir": published, "abstract_manifest": manifest}
+
+    def _forward_clocks(self, staging: str, design: str) -> list[dict] | str | None:
+        """With `abstract.forwarded-clocks: arc`, give each clock the block forwards from an input port to an output port one combinational arc in the staged `<top>.lib` (see `pnr_forwarded_clocks`); return the arcs written for the manifest, the failure description, or None without the key.
+
+        The second timing model the harden step wrote is removed either way, so it is never published. A generated clock on an output port that does not qualify warns `pnr.abstract_forwarded_clock_skipped`, and an abstract with no forwarded clock warns `pnr.abstract_no_forwarded_clocks`.
+        """
+        second = pnr_abstract.view_path(
+            staging, design, pnr_forwarded_clocks.FORWARDED_VIEW
+        )
+        try:
+            if self.pnr_cfg.get_abstract().forwarded_clocks != FORWARDED_CLOCKS_ARC:
+                return None
+            lib = pnr_abstract.view_path(staging, design, "lib")
+            if not os.path.isfile(second):
+                return (
+                    "abstract view(s) not produced: "
+                    f"{design}.{pnr_forwarded_clocks.FORWARDED_VIEW}"
+                )
+            sdc = Path(self.artefact_dir, f"{design}{ROUTED_SDC_SUFFIX}").read_text(
+                encoding="utf-8"
+            )
+            inputs, outputs = pnr_forwarded_clocks.port_names(lib)
+            clocks, skipped = pnr_forwarded_clocks.forwarded_clocks(
+                sdc, inputs, outputs
+            )
+            for name, reason in skipped:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "pnr.abstract_forwarded_clock_skipped",
+                    pnr=self.pnr_cfg.get_name(),
+                    clock=name,
+                    reason=reason,
+                )
+            if not clocks:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "pnr.abstract_no_forwarded_clocks",
+                    pnr=self.pnr_cfg.get_name(),
+                )
+                return []
+            pnr_forwarded_clocks.rewrite(lib, second, clocks)
+            for clock in clocks:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "pnr.abstract_forwarded_clock",
+                    pnr=self.pnr_cfg.get_name(),
+                    clock=clock.name,
+                    source=clock.source,
+                    target=clock.target,
+                    sense=clock.sense(),
+                )
+            return [clock.record() for clock in clocks]
+        except pnr_forwarded_clocks.ForwardedClockError as e:
+            return f"abstract forwarded clock: {e}"
+        except (OSError, UnicodeDecodeError, ValueError) as e:
+            return f"abstract forwarded clock: {e}"
+        finally:
+            if os.path.lexists(second):
+                os.unlink(second)
 
     def _order_supply_ports(self) -> str | None:
         """Put the supply ports last in `<top>.routed.pwr.v` and a hardened block's staged `<top>.lib` (see `pnr_supply_order`); return the failure description, or None.
@@ -6684,6 +7064,11 @@ class OpenRoadPnr:
             return (
                 f"no checkpoint run {self.resume!r}: name a run directory, a run id "
                 f"under {pnr_checkpoints.checkpoints_root(self.artefact_dir)}, or latest"
+            )
+        if version is not None and _parse_version_token(version) is None:
+            return (
+                f"OpenROAD reports {version!r}, which does not identify a build; "
+                "resume needs a release version such as 26Q2-911-g731f"
             )
         inherited = self._stages[: self._stages.index(self.resume_from)]
         inputs = self._checkpoint_inputs(platform, None)
@@ -6904,7 +7289,7 @@ class OpenRoadPnr:
                     self._ckpt_run_dir, "the end of the stage", marker, log_text
                 ),
             )
-        if any(line.startswith("[ERROR ") for line in lines):
+        if _error_lines(log_text):
             self._failed_stage = name
             return 0, "", None
         return self._run_chain(env)
@@ -7094,6 +7479,7 @@ class OpenRoadPnr:
             "tns_ps": _ps(self._parse_tns(report)),
             "tns_hold_ps": _ps(self._parse_tns(report, "min")),
             **self._macro_pin_limits_fields(log_text),
+            **self._cts_root_taps_fields(log_text),
         }
         if stage in pnr_checkpoints.GLOBAL_ROUTED:
             metrics["global_route_overflow"] = self._parse_gr_overflow(
@@ -7961,7 +8347,19 @@ class OpenRoadPnr:
                 else self._chain_fail_stage,
             )
 
-        error_lines = _error_lines(log_text)
+        error_lines, excused = _scan_error_lines(log_text)
+        for hook in excused:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.hook_error_lines",
+                pnr=self.pnr_cfg.get_name(),
+                point=hook.point,
+                path=hook.path,
+                count=len(hook.lines),
+                first=hook.lines[0],
+                log=log_path,
+            )
         if error_lines:
             desc = f"{stage_prefix}{len(error_lines)} ERROR(s) in OpenROAD log"
             if self._dispatch_reason:
@@ -7987,6 +8385,7 @@ class OpenRoadPnr:
         # Logged for every run that got this far; only a pass carries it in the result description.
         no_wire_rc = self._no_wire_rc_qualifier(platform, log_text)
         congested = self._allow_congestion_qualifier(platform, log_text)
+        no_rows = self._no_rows_qualifier(log_text)
 
         final = _final_reports(log_text)
         area = self._parse_area_um2(final)
@@ -8013,8 +8412,10 @@ class OpenRoadPnr:
             "drc_count": drcs,
             **self._parse_electrical(final),
             **self._path_fanout_fields(final),
+            **self._clock_latency_fields(platform, final),
             **self._allow_congestion_fields(platform, log_text),
             **self._macro_pin_limits_fields(log_text),
+            **self._cts_root_taps_fields(log_text),
         }
         corner_fields = self._corner_fields(platform, final)
         signoff_fields, signoff_failures = self._signoff_fields(
@@ -8152,6 +8553,7 @@ class OpenRoadPnr:
                 pnr_abstract.stale_qualifier(self._blocks),
                 no_wire_rc,
                 congested,
+                no_rows,
                 f"electrical {electrical}" if electrical else "",
                 self._post_route_note(),
             )

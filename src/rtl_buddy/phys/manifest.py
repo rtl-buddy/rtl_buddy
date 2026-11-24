@@ -71,6 +71,7 @@ MANIFEST_SCHEMA_VERSION = 1
 # Defined in `tools.artifact_paths`; re-exported for consumers.
 from ..tools.artifact_paths import (  # noqa: E402
     PHYS_MANIFEST_NAME as MANIFEST_FILENAME,
+    RUNS_DIRNAME,
     joins_back,
     project_relative,
     project_root_or_none,
@@ -320,7 +321,10 @@ def discover_manifests(project_root) -> list[str]:
 
     Ties break on path. The walk matches on the filename alone, since a
     run can be named into any ``artefacts/<run>/``, and skips VCS, build
-    and ``obj_dir*`` directories.
+    and ``obj_dir*`` directories. It also skips the reserved ``.runs``
+    directory, so a ``--run-tag`` run is read only through ``--phys-dir``
+    and never becomes the default, as other readers read only the
+    untagged layout.
 
     Symlinked directories are followed only inside the artefact layout,
     so a linked ``artefacts/`` is walked and a linked ``vendor/`` or
@@ -336,7 +340,9 @@ def discover_manifests(project_root) -> list[str]:
         root, may_follow=artefact_layout_boundary(root)
     ):
         dirnames[:] = [
-            d for d in dirnames if d not in skip and not d.startswith("obj_dir")
+            d
+            for d in dirnames
+            if d not in skip and d != RUNS_DIRNAME and not d.startswith("obj_dir")
         ]
         if MANIFEST_FILENAME not in filenames:
             continue

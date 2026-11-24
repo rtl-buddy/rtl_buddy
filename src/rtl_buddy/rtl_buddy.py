@@ -257,7 +257,7 @@ from .tools.hier_rtl_buddy_view import (
     RtlBuddyViewQuery,
     probe_view_version,
 )
-from .tools import pnr_dispatch, pnr_stages, pnr_tag_inputs
+from .tools import pnr_abstract, pnr_dispatch, pnr_stages, pnr_tag_inputs
 from .tools.pnr_openroad import DEFAULT_PNG_HEIGHT, DEFAULT_PNG_WIDTH
 from .tools.spec_trace import (
     all_spec_blocks,
@@ -11845,6 +11845,8 @@ class RtlBuddy:
             "max_net_fanout",
             "macro_pin_buffered_count",
             "macro_pin_unmet_count",
+            "cts_root_taps",
+            "clock_latency",
             "worst_setup_corner",
             "worst_hold_corner",
             "corners",
@@ -13183,11 +13185,34 @@ class RtlBuddy:
                 help="run only entries with reglvl at or below this value",
             ),
         ] = 0,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="namespace this invocation's power output under "
+                "artefacts/.runs/<tag>/ with its own tree lock and log; a "
+                "netlist-source: pnr run reads the P&R run `rb pnr --run-tag "
+                "<tag>` wrote, from a copy taken into that tree",
+            ),
+        ] = None,
     ):
         """run power analysis"""
+        # Validated before the execution context is entered, which derives the artefact root from it.
+        self._run_tag = validate_run_tag(run_tag)
+        tag_inputs = None
+        if self._run_tag is not None and not list_runs:
+            with held_log_records() as held:
+                tag_inputs = self._power_tagged_inputs(
+                    power_config,
+                    self._run_tag,
+                    power_name=power_name,
+                    reg_level=reg_level,
+                )
         ctx = self._enter_command_context(
             primary_config=power_config, list_only=list_runs
         )
+        if tag_inputs is not None:
+            write_held_records(held)
         suite_cfg = PowerSuiteConfig(path=str(ctx.primary_config))
         log_event(
             logger,
@@ -13211,6 +13236,8 @@ class RtlBuddy:
             suite_cfg,
             power_name=power_name,
             reg_level=reg_level,
+            run_tag=self._run_tag,
+            tag_inputs=tag_inputs,
         )
         exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
         if self.machine:
@@ -13223,12 +13250,68 @@ class RtlBuddy:
             self._render_power_summary("Power Results Summary", results)
         raise typer.Exit(exit_code)
 
+    def _power_tagged_inputs(
+        self, power_config, run_tag: str, *, power_name, reg_level
+    ):
+        """Lock a tagged `rb power`'s own tree and copy into it the tagged P&R runs its runs read.
+
+        Runs before the call opens its log, as `_pnr_tagged_inputs` does: the own tree is taken first, so a busy one refuses the call before anything is waited for, then each P&R suite's tree for the tag is waited for while its runs are copied, and let go. A run that cannot be copied keeps its error, which fails that run at setup. Returns the `TagInputs` holding the copies.
+        """
+        ctx = ExecutionContext.for_command(
+            invocation_cwd=self.invocation_cwd,
+            primary_config=power_config,
+            run_tag=run_tag,
+        )
+        suite_cfg = PowerSuiteConfig(path=str(ctx.primary_config))
+        reads = []
+        for run in suite_cfg.get_runs(power_name):
+            if run.get_netlist_source() != "pnr":
+                continue
+            # As the run's backend reads it: one canonical P&R suite for the lock and the copy.
+            run = run.with_real_pnr_path()
+            if (
+                reg_level is not None
+                and run.get_reglvl(run.get_tool_name()) > reg_level
+            ):
+                continue
+            try:
+                pnr_cfg = run.resolve_pnr_cfg()
+                top = pnr_cfg.resolve_synth_cfg().get_top()
+            except FatalRtlBuddyError:
+                # The run fails on its configuration where it reads it.
+                continue
+            reads.append((pnr_cfg, run.get_pnr_suite_path(), top))
+        tag_inputs = pnr_tag_inputs.TagInputs.for_suite(ctx.command_root, run_tag)
+        sources = acquire_in_order(
+            self._artifact_locks,
+            ctx.artifact_root,
+            [
+                run_artifact_root(os.path.dirname(path), run_tag)
+                for _cfg, path, _top in reads
+            ],
+            command="power",
+        )
+        try:
+            for pnr_cfg, path, top in reads:
+                try:
+                    tag_inputs.routed_run(pnr_cfg, path, top)
+                except (
+                    pnr_tag_inputs.RoutedRunUnavailable,
+                    pnr_abstract.BlockResolutionError,
+                ):
+                    pass
+        finally:
+            sources.release_all()
+        return tag_inputs
+
     def _do_power_suite(
         self,
         suite_cfg,
         *,
         power_name=None,
         reg_level=0,
+        run_tag=None,
+        tag_inputs=None,
     ):
         root_cfg = self.root_cfg
         runs = suite_cfg.get_runs(power_name)
@@ -13262,6 +13345,8 @@ class RtlBuddy:
                 power_cfg=run,
                 suite_dir=suite_dir,
                 reglvl_filter=reg_level if reg_level else None,
+                run_tag=run_tag,
+                tag_inputs=tag_inputs,
             )
             res = runner.run()
             if run.is_xfail():

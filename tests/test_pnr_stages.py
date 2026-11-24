@@ -307,7 +307,8 @@ def test_unbroken_render_is_unchanged_but_for_the_checkpoint_block(tmp_path):
     """With `checkpoints:` the flow differs from a plain render only by the
     checkpoint block, the global-route stage end after its repair and the
     timing event before it, the `place` stage end before `repair_clock_inverters`, the detailed-route stage
-    end after antenna repair and the timing events of `place` and `finish`.
+    end after antenna repair, the timing events of `place` and `finish`, and the
+    stage ends where a top without rows skips global placement and CTS.
     """
     (tmp_path / "plain").mkdir()
     (tmp_path / "armed").mkdir()
@@ -328,6 +329,8 @@ def test_unbroken_render_is_unchanged_but_for_the_checkpoint_block(tmp_path):
     without = without.replace(
         "rb::ckpt::timing_event finish stage_end global_route\n", "", 1
     )
+    for anchor in ("global_placement", "clock_tree_synthesis"):
+        without = without.replace(f"  rb::ckpt::checkpoint_for {anchor} enter\n", "", 1)
     assert without.replace(str(tmp_path / "armed"), "X") == plain.replace(
         str(tmp_path / "plain"), "X"
     )
@@ -1267,6 +1270,23 @@ def test_resume_refuses_another_openroad_version(tmp_path, monkeypatch):
     assert res.results["fail_stage"] == "resume"
     assert "OpenROAD is 26Q4-other" in res.results["desc"]
     assert "26Q2-stub" in res.results["desc"]
+
+
+def test_resume_refuses_an_openroad_version_that_names_no_build(tmp_path, monkeypatch):
+    first = _stopped_at_global_route(tmp_path, monkeypatch)
+    backend, artefacts = _backend(
+        tmp_path, monkeypatch, resume=first.name, resume_from="detailed_route"
+    )
+    monkeypatch.setattr(
+        backend, "_probe_openroad_version", lambda: "HEAD-HASH-NOTFOUND"
+    )
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "resume"
+    assert (
+        "'HEAD-HASH-NOTFOUND', which does not identify a build" in (res.results["desc"])
+    )
 
 
 def test_resume_refuses_a_changed_checkpoint(tmp_path, monkeypatch):

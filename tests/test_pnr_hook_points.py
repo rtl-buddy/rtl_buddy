@@ -134,7 +134,7 @@ _NEW_BLOCK_RE = re.compile(
     r"(?:\n|(?<=\n)(?:set rb_setup_margin \S+\nset rb_hold_margin \S+\n)?"
     r"set rb_repair \w+\n(?:set rb_repair_round \d+\n)?)"
     r"(?:rb::ckpt::checkpoint_for clock_tree_synthesis enter\n"
-    r"(?![^\n]*\n[^\n]*\n\nrepair_clock_inverters\n))?"
+    r"(?![^\n]*\n[^\n]*\n\nif \{\[rb::has_rows\]\} \{ repair_clock_inverters \}\n))?"
     r"(?:set rb_spef [^\n]*\n)?"
     r'puts ">>> Hook (?:' + "|".join(map(re.escape, _NEW_POINTS)) + r")[^\n]*\n"
     r"rb::hook::(?:run|stage_end) [^\n]*\n"

@@ -368,6 +368,7 @@ proc stub_block {cmd args} {
     switch $cmd {
         getBTerms { return [lmap n [dict keys $::rb_sig] { string cat bterm: $n }] }
         getDbUnitsPerMicron { return 1000 }
+        getRows { return stub_row }
         default { return "" }
     }
 }

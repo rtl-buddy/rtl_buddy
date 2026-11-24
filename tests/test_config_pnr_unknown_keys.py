@@ -151,7 +151,12 @@ RUN_SIZED = {
     "hooks": {"session": "hook.tcl"},
     "inputs": ["helper.tcl"],
     "harden": True,
-    "abstract": {"bloat": "occupied", "feedthrough-layers": ["m4"], "gds": True},
+    "abstract": {
+        "bloat": "occupied",
+        "feedthrough-layers": ["m4"],
+        "gds": True,
+        "forwarded-clocks": "arc",
+    },
     "buffer-ports": {
         "inputs": True,
         "outputs": True,
@@ -189,6 +194,15 @@ RUN_SIZED = {
     "cts-dont-use-cells": ["*_L"],
     "keep-sizing-vt": True,
     "cts-clock-nets": ["clk", "clk_div[0]"],
+    "cts-root-taps": ["u_blk.u_clk_buf/A"],
+    "clock-latency": [
+        {
+            "name": "boundary",
+            "sinks": ["input-capture", "u_blk.r*/CLK"],
+            "target-ps": 90,
+            "tolerance-ps": 5,
+        }
+    ],
     "global-route": GLOBAL_ROUTE_ALL,
     "mode": "closure",
     "signoff": {
@@ -215,6 +229,7 @@ RUN_SIZED = {
     },
     "detailed-route-verbose": 1,
     "report-fanout-nets": 5,
+    "dont-touch": ["u_blk.u_clk_buf", "g_fwd[*].u_buf"],
     "xfail": True,
     "xfail_strict": False,
     "xfail_match": "boom",
@@ -385,9 +400,9 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "cts-repair-clock-inverters, global-route-antenna-repair, "
             "detailed-route-antenna-repair, global-route-hold-repair, "
             "port-buffer, tapcell-tcl, cts-dont-use-cells, keep-sizing-vt, "
-            "cts-clock-nets, global-route, mode, signoff, reglvl, tool_overrides, "
-            "threads, resources, detailed-route-verbose, report-fanout-nets, xfail, "
-            "xfail_strict, "
+            "cts-clock-nets, cts-root-taps, clock-latency, global-route, mode, signoff, reglvl, tool_overrides, "
+            "threads, resources, detailed-route-verbose, report-fanout-nets, "
+            "dont-touch, xfail, xfail_strict, "
             "xfail_match",
         ),
         (
@@ -426,7 +441,7 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
         (
             "pnr run 'a': abstract",
             ("abstract",),
-            "bloat, feedthrough-layers, gds",
+            "bloat, feedthrough-layers, gds, forwarded-clocks",
         ),
         (
             "pnr run 'a': buffer-ports",
@@ -453,6 +468,11 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "slew-margin, cap-margin, max-wire-length",
         ),
         ("pnr run 'a': blocks[1]", ("blocks", 1), "name, pnr, pnr-path"),
+        (
+            "pnr run 'a': clock-latency[0]",
+            ("clock-latency", 0),
+            "name, sinks, target-ps, tolerance-ps",
+        ),
         ("pnr run 'a': routing-layers", ("routing-layers",), "signal, clock"),
         (
             "pnr run 'a': cts-sink-clustering",
@@ -623,11 +643,11 @@ def test_an_unknown_key_is_logged_at_error_with_its_fields(tmp_path, caplog):
         "block": "pnr run 'a': abstract",
         "key": "feedthrough_layers",
         "suggestion": "feedthrough-layers",
-        "known": ["bloat", "feedthrough-layers", "gds"],
+        "known": ["bloat", "feedthrough-layers", "gds", "forwarded-clocks"],
     }
     assert _human_message("config.unknown_key_rejected", event) == (
         f"{path}: pnr run 'a': abstract: unknown key 'feedthrough_layers', "
-        "did you mean 'feedthrough-layers'? (valid keys: bloat, feedthrough-layers, gds)"
+        "did you mean 'feedthrough-layers'? (valid keys: bloat, feedthrough-layers, gds, forwarded-clocks)"
     )
 
 

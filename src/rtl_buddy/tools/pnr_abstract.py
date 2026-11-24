@@ -24,12 +24,14 @@ from ..config.pnr_cts import CtsSinkClustering
 from ..config.pnr_repair import GlobalRouteRepair
 from ..config.pnr_signoff import effective_gates
 from ..config.pnr import (
+    FORWARDED_CLOCKS_ARC,
+    FORWARDED_CLOCKS_NONE,
     ABSTRACT_BLOAT_OCCUPIED,
     BlockageLifetime,
     PnrAbstract,
     PortBuffers,
 )
-from . import pnr_checkpoints
+from . import pnr_checkpoints, pnr_forwarded_clocks
 from .artifact_paths import project_relative, project_root_or_none, run_artifact_root
 
 ABSTRACT_DIR_NAME = "abstract"
@@ -103,7 +105,34 @@ def harden_tcl(abstract: PnrAbstract | None = None) -> str:
         f"write_abstract_lef {_bloat_flag(abstract.bloat)} {staging}/${{DESIGN}}.lef\n"
         f"{feedthrough}"
         f"write_timing_model {staging}/${{DESIGN}}.lib\n"
+        + (
+            _FORWARDED_MODEL_TCL.format(
+                path=f"{staging}/${{DESIGN}}.{pnr_forwarded_clocks.FORWARDED_VIEW}"
+            )
+            if abstract.forwarded_clocks == FORWARDED_CLOCKS_ARC
+            else ""
+        )
     )
+
+
+#: With `abstract.forwarded-clocks: arc`: the timing model again, without the generated clocks defined on output ports only, for `pnr_forwarded_clocks.rewrite`. It is the session's last step, so deleting them changes nothing else.
+_FORWARDED_MODEL_TCL = """\
+puts ">>> Timing model without the output ports' generated clocks (forwarded-clocks)"
+set rb_output_clocks {{}}
+foreach rb_clock [all_clocks] {{
+  if {{![get_property $rb_clock is_generated]}} {{ continue }}
+  set rb_on_outputs 1
+  foreach rb_source [get_property $rb_clock sources] {{
+    if {{![get_property $rb_source is_port]
+        || [get_property $rb_source direction] ne "output"}} {{
+      set rb_on_outputs 0
+    }}
+  }}
+  if {{$rb_on_outputs}} {{ lappend rb_output_clocks $rb_clock }}
+}}
+if {{[llength $rb_output_clocks] > 0}} {{ delete_generated_clock $rb_output_clocks }}
+write_timing_model {path}
+"""
 
 
 def _obs_groups(
@@ -592,6 +621,11 @@ def abstract_config(pnr_cfg, platform) -> dict:
             else {}
         ),
         **(
+            {"cts_root_taps": list(pnr_cfg.get_cts_root_taps())}
+            if pnr_cfg.get_cts_root_taps()
+            else {}
+        ),
+        **(
             {"cts_latency_balancing": False}
             if platform.get_cts_latency_balancing() is False
             else {}
@@ -646,6 +680,12 @@ def abstract_config(pnr_cfg, platform) -> dict:
             if pnr_cfg.get_inputs()
             else {}
         ),
+        # Emitted only when set so existing digests do not change.
+        **(
+            {"dont_touch": list(pnr_cfg.get_dont_touch())}
+            if pnr_cfg.get_dont_touch()
+            else {}
+        ),
         # Emitted only when non-default so existing digests do not change; a change regenerates.
         **(
             {
@@ -655,6 +695,12 @@ def abstract_config(pnr_cfg, platform) -> dict:
                         pnr_cfg.get_abstract().feedthrough_layers
                     ),
                     **({"gds": False} if not pnr_cfg.get_abstract().gds else {}),
+                    **(
+                        {"forwarded_clocks": pnr_cfg.get_abstract().forwarded_clocks}
+                        if pnr_cfg.get_abstract().forwarded_clocks
+                        != FORWARDED_CLOCKS_NONE
+                        else {}
+                    ),
                 }
             }
             if not pnr_cfg.get_abstract().is_default()
@@ -684,10 +730,11 @@ def write_manifest(
     gds: bool = True,
     blocks: list | None = None,
     accepted_changes: list[dict] | None = None,
+    forwarded_clocks: list[dict] | None = None,
 ) -> str:
     """Write `abstract.manifest.json` into the staging directory and return its path.
 
-    `inputs` maps a role to an absolute path, a list of paths, or None. `technology` names the technology LEF and corner Liberty a parent must share; it is fingerprinted the same way. Output paths are recorded at their published location, not the staging one. Without `gds` the GDS output is recorded as null. `blocks` are the `ResolvedBlock`s the run consumed; each is recorded with the tag its abstract came from and the abstract manifest's digest. `accepted_changes` are the differences from a fresh run that the resumed run accepted (see `pnr_stages.check_resume`); they are provenance only, and no staleness check reads them.
+    `inputs` maps a role to an absolute path, a list of paths, or None. `technology` names the technology LEF and corner Liberty a parent must share; it is fingerprinted the same way. Output paths are recorded at their published location, not the staging one. Without `gds` the GDS output is recorded as null. `blocks` are the `ResolvedBlock`s the run consumed; each is recorded with the tag its abstract came from and the abstract manifest's digest. `accepted_changes` are the differences from a fresh run that the resumed run accepted (see `pnr_stages.check_resume`); they are provenance only, and no staleness check reads them. `forwarded_clocks` are the clocks the timing model forwards through a combinational arc (`abstract.forwarded-clocks: arc`), each `{from, to, sense}`, recorded when it is not None.
     """
     root = project_root_or_none(artefact_dir)
     published = abstract_dir(artefact_dir)
@@ -736,6 +783,11 @@ def write_manifest(
         **(
             {"accepted_changes": pnr_checkpoints.relativise(accepted_changes, root)}
             if accepted_changes
+            else {}
+        ),
+        **(
+            {"forwarded_clocks": forwarded_clocks}
+            if forwarded_clocks is not None
             else {}
         ),
     }

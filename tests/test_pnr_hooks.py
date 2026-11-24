@@ -16,6 +16,7 @@ stubbed (see `test_pnr_checkpoints`).
 """
 
 import json
+import logging
 from importlib.resources import files
 from pathlib import Path
 from textwrap import dedent
@@ -54,10 +55,17 @@ from rtl_buddy.config.pnr import (
     PnrSuiteConfig,
 )
 from rtl_buddy.errors import FatalRtlBuddyError
+from rtl_buddy.logging_utils import _human_message
 from rtl_buddy.runner.pnr_results import PnrFailResults, PnrPassResults
 from rtl_buddy.tools import pnr_abstract
 from rtl_buddy.tools.pnr_abstract import resolve_block
-from rtl_buddy.tools.pnr_openroad import OpenRoadPnr, _run_hook_lines
+from rtl_buddy.tools.pnr_openroad import (
+    HookErrorLines,
+    OpenRoadPnr,
+    _error_lines,
+    _run_hook_lines,
+    _scan_error_lines,
+)
 
 
 def _cfg_file(**kw):
@@ -539,7 +547,7 @@ def test_the_hook_runs_between_global_placement_and_tie_fanout_repair(tmp_path):
     hook = text.index("rb::hook::run after-global-placement")
     tie = text.index(">>> Repair tie fanout")
     assert gp < hook < tie
-    assert text[gp:hook].count("\n") <= 4
+    assert text[gp:hook].count("\n") <= 5
 
 
 def test_pin_constraints_stay_where_they_are(tmp_path):
@@ -580,6 +588,15 @@ def _tcl_run(tmp_path, script, name="snippet"):
 _HOOKS_TCL = files("rtl_buddy.pnr").joinpath("hooks.tcl").read_text()
 
 
+def _output(done) -> list[str]:
+    """The lines a Tcl snippet printed, without the `>>> rb: hook` lines that bracket each hook."""
+    return [
+        line
+        for line in done.stdout.splitlines()
+        if not line.startswith(">>> rb: hook ")
+    ]
+
+
 def test_a_hook_is_sourced_at_global_scope(tmp_path):
     hook = _write(
         tmp_path / "scope.tcl",
@@ -592,7 +609,12 @@ def test_a_hook_is_sourced_at_global_scope(tmp_path):
         + 'in_a_proc\nputs "AFTER $rb_from_hook"\n',
     )
     assert done.returncode == 0, done.stderr
-    assert done.stdout.splitlines() == ["SEES demo_top level 0", "AFTER 7"]
+    assert done.stdout.splitlines() == [
+        f">>> rb: hook begin after-cts {hook}",
+        "SEES demo_top level 0",
+        ">>> rb: hook end after-cts ok",
+        "AFTER 7",
+    ]
 
 
 def test_a_path_with_tcl_metacharacters_is_inert(tmp_path):
@@ -600,7 +622,7 @@ def test_a_path_with_tcl_metacharacters_is_inert(tmp_path):
     lines = _run_hook_lines("after-cts", (str(hook),))
     done = _tcl_run(tmp_path, _HOOKS_TCL + lines)
     assert done.returncode == 0, done.stderr
-    assert done.stdout.splitlines() == [f">>> Hook after-cts: {hook}", "RAN"]
+    assert _output(done) == [f">>> Hook after-cts: {hook}", "RAN"]
 
 
 def test_a_path_with_braces_is_inert_inside_the_macro_branch(tmp_path):
@@ -608,7 +630,7 @@ def test_a_path_with_braces_is_inert_inside_the_macro_branch(tmp_path):
     lines = _run_hook_lines("macro-placement", (str(hook),), "  ")
     done = _tcl_run(tmp_path, _HOOKS_TCL + f"if {{1}} {{\n{lines}}}\n")
     assert done.returncode == 0, done.stderr
-    assert done.stdout.splitlines() == [f">>> Hook macro-placement: {hook}", "RAN"]
+    assert _output(done) == [f">>> Hook macro-placement: {hook}", "RAN"]
 
 
 @pytest.mark.parametrize(
@@ -630,7 +652,7 @@ def test_a_completion_that_would_end_the_flow_is_a_named_error(
         'puts "CODE $code"\nputs "MSG $msg"\n',
     )
     assert done.returncode == 0, done.stderr
-    assert done.stdout.splitlines() == [
+    assert _output(done) == [
         "CODE 1",
         f"MSG Hook after-cts ({hook}): {message}",
     ]
@@ -650,9 +672,15 @@ def test_exit_in_a_hook_is_an_error_and_exit_is_restored(tmp_path):
     )
     assert done.returncode == 3, done.stderr
     assert done.stdout.splitlines() == [
+        f">>> rb: hook begin after-cts {hook}",
+        ">>> rb: hook end after-cts error",
         "CODE 1",
         f"MSG Hook after-cts ({hook}): exit 0: a hook must return, not exit, "
         "so the flow can go on",
+        f">>> rb: hook begin session {nested}",
+        f">>> rb: hook begin after-cts {hook}",
+        ">>> rb: hook end after-cts error",
+        ">>> rb: hook end session error",
         "NESTED 1",
         "RESTORED 0",
     ]
@@ -666,7 +694,9 @@ def test_custom_error_info_still_leads_with_the_prefix(tmp_path):
         'puts "INFO [dict get $opts -errorinfo]"\n',
     )
     assert done.returncode == 0, done.stderr
-    assert done.stdout.startswith(f"INFO Hook after-cts ({hook}): boom\ndetail line")
+    assert "\n".join(_output(done)).startswith(
+        f"INFO Hook after-cts ({hook}): boom\ndetail line"
+    )
 
 
 def test_a_run_killed_in_a_hook_command_names_the_hook():
@@ -689,7 +719,7 @@ def test_an_empty_error_still_leads_errorinfo_with_the_prefix(tmp_path):
         'puts "INFO [dict get $opts -errorinfo]"\n',
     )
     assert done.returncode == 0, done.stderr
-    assert done.stdout.startswith(f"INFO Hook after-cts ({hook}): \n")
+    assert "\n".join(_output(done)).startswith(f"INFO Hook after-cts ({hook}): \n")
 
 
 def test_an_error_names_the_point_and_path_and_keeps_errorinfo(tmp_path):
@@ -719,7 +749,7 @@ def test_a_multi_line_error_keeps_every_line_under_the_prefix(tmp_path):
         'puts "INFO [dict get $opts -errorinfo]"\n',
     )
     assert done.returncode == 0, done.stderr
-    assert done.stdout.startswith(
+    assert "\n".join(_output(done)).startswith(
         f"INFO Hook after-pins ({hook}): first line\nsecond line\n    while executing"
     )
 
@@ -728,7 +758,7 @@ def test_hook_events_need_no_checkpoints(tmp_path):
     hook = _write(tmp_path / "plain.tcl", 'puts "PLAIN"\n')
     done = _tcl_run(tmp_path, _HOOKS_TCL + f"rb::hook::run session {_q(hook)}\n")
     assert done.returncode == 0, done.stderr
-    assert done.stdout.strip() == "PLAIN"
+    assert _output(done) == ["PLAIN"]
 
 
 # Full flow under the stub OpenROAD
@@ -738,6 +768,7 @@ proc ord::get_db_block {} { return rb_blk }
 proc rb_blk {cmd args} {
     switch $cmd {
         getInsts { return {rb_macro} }
+        getRows { return {rb_row} }
         default { return "" }
     }
 }
@@ -840,11 +871,15 @@ def test_every_hook_runs_in_flow_order_in_the_real_script(tmp_path, monkeypatch)
         else f"MARK {p}"
         for p, s in _RUN_ORDER
     ]
-    # Each marker follows its announcement and nothing of another hook is between them.
+    # Each marker follows its announcement, between the lines that bracket the hook, and nothing of another hook is between them.
     at = 0
     for (point, stage), mark in zip(_RUN_ORDER, marks):
         at = log.index(f"{_announced(point, stage)} {paths[point]}", at)
-        assert log[at + 1] == mark
+        assert log[at + 1 : at + 4] == [
+            f">>> rb: hook begin {point} {paths[point]}",
+            mark,
+            f">>> rb: hook end {point} ok",
+        ]
     # The flow's own stage lines surround them in the documented order.
     stages = [line for line in log if line.startswith(">>> ")]
     order = [
@@ -1072,6 +1107,197 @@ def test_a_report_a_hook_prints_after_the_final_reports_does_not_become_the_resu
     assert res.results["wns_setup_ps"] > 0 and res.results["wns_hold_ps"] > 0
     assert res.results["tns_ps"] == 0.0 and res.results["tns_hold_ps"] == 0.0
     assert "Design area 7 um^2 50% utilization." in _log_lines(artefacts)
+
+
+# `[ERROR` lines a hook prints
+
+_CAUGHT = "[ERROR ORD-9999] example failure inside catch"
+_ERR = "[ERROR GRT-0001] outside any hook"
+
+
+def _hook_log(point, status, *lines, path="/p/h.tcl"):
+    """A hook's part of `pnr.log` as `rb::hook::run` brackets it; `status` None leaves it without its end line."""
+    end = [] if status is None else [f">>> rb: hook end {point} {status}"]
+    return [
+        f">>> Hook {point}: {path}",
+        f">>> rb: hook begin {point} {path}",
+        *lines,
+        *end,
+    ]
+
+
+@pytest.mark.parametrize(
+    "log, counted, excused",
+    [
+        (
+            _hook_log("after-reports", "ok", "report line", _CAUGHT),
+            [],
+            [HookErrorLines("after-reports", "/p/h.tcl", (_CAUGHT,))],
+        ),
+        (_hook_log("after-reports", "error", _CAUGHT), [_CAUGHT], []),
+        ([_ERR, *_hook_log("after-cts", "ok")], [_ERR], []),
+        (_hook_log("after-cts", None, _CAUGHT), [_CAUGHT], []),
+        (
+            _hook_log("stage-end", "ok", _CAUGHT, path="/p/a b.tcl") + [_ERR],
+            [_ERR],
+            [HookErrorLines("stage-end", "/p/a b.tcl", (_CAUGHT,))],
+        ),
+        (
+            [
+                *_hook_log("session", None, _CAUGHT, path="/p/s.tcl"),
+                *_hook_log("after-cts", "ok", _ERR),
+                ">>> rb: hook end session error",
+            ],
+            [_CAUGHT],
+            [HookErrorLines("after-cts", "/p/h.tcl", (_ERR,))],
+        ),
+        (
+            [
+                *_hook_log("session", None, path="/p/s.tcl"),
+                *_hook_log("after-cts", "error", _CAUGHT),
+                _ERR,
+                ">>> rb: hook end session ok",
+            ],
+            [_CAUGHT],
+            [HookErrorLines("session", "/p/s.tcl", (_ERR,))],
+        ),
+        (
+            [
+                *_hook_log("after-cts", None, _CAUGHT),
+                ">>> rb: begin post_route_repair round 1 repair",
+                *_hook_log("after-cts", "ok", _ERR),
+            ],
+            [_CAUGHT],
+            [HookErrorLines("after-cts", "/p/h.tcl", (_ERR,))],
+        ),
+        (
+            [
+                ">>> rb: begin post_route_repair round 1 repair",
+                *_hook_log("stage-end", "ok", _CAUGHT),
+                _ERR,
+                ">>> rb: set aside post_route_repair round 1 repair: failed",
+            ],
+            [],
+            [],
+        ),
+        (
+            _hook_log("after-reports", None, _CAUGHT)
+            + ["report complete>>> rb: hook end after-reports ok"],
+            [],
+            [HookErrorLines("after-reports", "/p/h.tcl", (_CAUGHT,))],
+        ),
+        (
+            [
+                *_hook_log("session", None, path="/p/s.tcl"),
+                *_hook_log("after-cts", None, _CAUGHT),
+                "gave up>>> rb: hook end after-cts error",
+                _ERR,
+                ">>> rb: hook end session ok",
+            ],
+            [_CAUGHT],
+            [HookErrorLines("session", "/p/s.tcl", (_ERR,))],
+        ),
+        (
+            [
+                *_hook_log("session", None, path="/p/s.tcl"),
+                "partial>>> rb: hook begin after-cts /p/h.tcl",
+                _ERR,
+                ">>> rb: hook end after-cts ok",
+                ">>> rb: hook end session ok",
+            ],
+            [],
+            [HookErrorLines("after-cts", "/p/h.tcl", (_ERR,))],
+        ),
+    ],
+    ids=[
+        "returned",
+        "tcl error",
+        "outside a hook",
+        "no end line",
+        "path with a space",
+        "nested",
+        "nested failure caught",
+        "crash before a session",
+        "set aside",
+        "partial line before ok end",
+        "partial line before error end",
+        "partial line before begin",
+    ],
+)
+def test_error_lines_leave_out_those_of_a_hook_that_returned(log, counted, excused):
+    """An `[ERROR` line between a hook's begin line and its `ok` end line does not fail the run but is reported with the hook; one in a hook that ended with an error, or never ended, or outside every hook, does. A hook another hook ran is judged by its own end line."""
+    text = "\n".join(log) + "\n"
+    assert _scan_error_lines(text) == (counted, excused)
+    assert _error_lines(text) == counted
+
+
+#: A hook that catches a failing command, as a report hook reading a value can: OpenROAD's logger has printed the `[ERROR` lines before the Tcl error is raised.
+_CATCHING_HOOK = (
+    "catch {\n"
+    '    puts "\\[ERROR ORD-9999\\] example failure inside catch"\n'
+    '    error "ORD-9999"\n'
+    "}\n"
+    "catch {\n"
+    '    puts "\\[ERROR ORD-0003\\] /nonexistent.def does not exist."\n'
+    '    error "ORD-0003"\n'
+    "}\n"
+)
+
+
+@pytest.mark.parametrize("point", ["after-reports", "stage-end"])
+@pytest.mark.parametrize("ending", ["returns", "fails"])
+@pytest.mark.parametrize("stages", [False, True], ids=["one session", "staged"])
+@pytest.mark.parametrize("partial", [False, True], ids=["line ended", "partial line"])
+def test_an_error_line_a_hook_prints_fails_the_run_only_with_the_hook(
+    tmp_path, monkeypatch, point, ending, stages, partial
+):
+    """A hook that returns after OpenROAD printed `[ERROR` lines lets the run pass with its routed database and a `pnr.hook_error_lines` warning; one that then ends with a Tcl error fails it and loses the database. Either holds when the hook's last output does not end its line, which puts its end line on that line."""
+    tail = 'puts -nonewline "report complete"\n' if partial else ""
+    hook = _write(
+        tmp_path / "catching.tcl",
+        _CATCHING_HOOK + tail + ('error "gave up"\n' if ending == "fails" else ""),
+    )
+    backend, artefacts = _hooked_backend(
+        tmp_path, monkeypatch, {point: (str(hook),)}, stages=stages
+    )
+    events = _capture_pnr_events(monkeypatch)
+
+    res = backend.run()
+
+    log = (artefacts / "pnr.log").read_text()
+    assert "[ERROR ORD-9999] example failure inside catch" in log.splitlines()
+    status = "error" if ending == "fails" else "ok"
+    assert partial == (f"report complete>>> rb: hook end {point} {status}" in log)
+    warned = [
+        fields for _level, name, fields in events if name == "pnr.hook_error_lines"
+    ]
+    if ending == "fails":
+        assert isinstance(res, PnrFailResults)
+        assert not (artefacts / "demo_top.routed.odb").exists()
+        assert warned == []
+        return
+    assert isinstance(res, PnrPassResults), res.results
+    assert (artefacts / "demo_top.routed.odb").exists()
+    assert warned
+    # A `stage-end` hook runs at the end of each stage, so it warns once per stage.
+    assert len(warned) == (
+        1 if point == "after-reports" else log.count(f">>> rb: hook end {point} ok")
+    )
+    assert all(
+        (f["point"], f["path"], f["count"], f["first"])
+        == (point, str(hook), 2, "[ERROR ORD-9999] example failure inside catch")
+        for f in warned
+    )
+    assert all(
+        level == logging.WARNING
+        for level, name, _fields in events
+        if name == "pnr.hook_error_lines"
+    )
+    assert _human_message("pnr.hook_error_lines", warned[0]) == (
+        f'P&R "demo_pnr": hook {point} ({hook}) returned after OpenROAD printed 2 '
+        "[ERROR line(s), which do not fail the run; the first: "
+        "[ERROR ORD-9999] example failure inside catch"
+    )
 
 
 def test_hooks_run_without_checkpoints(tmp_path, monkeypatch):

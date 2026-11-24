@@ -31,10 +31,10 @@ rb --machine pnr-export <run> -c <pnr.yaml> --png [--run-tag <tag>]  # GDS/PNG o
 
 - Explore a floorplan with `mode: probe` (no timing repair, stops after global route) before closure runs.
 - For long runs set `checkpoints: true`, or `stages: true` to make the run resumable. `--resume` refuses (`fail_stage: resume`) if earlier stages' scripts, inputs or OpenROAD version changed; `--accept-change` accepts a listed change.
-- Without `threads:` OpenROAD picks the thread count (26Q4: all host threads); set a count or `auto` (the allocation's CPUs). `openroad_threads.effective` is null when unset.
+- Without `threads:` OpenROAD picks the thread count; set a count or `auto` (the allocation's CPUs). `openroad_threads.effective` is null when unset.
 - `--dispatch slurm` sizes each stage from the run's `resources:` (`stages.<stage>` overrides). `rb pnr` waits for the chain; Ctrl-C cancels its jobs.
 - `pnr.log` is live. Before calling a route hung, check `DRT-0195` iterations and `DRT-0199` violation counts, and `checkpoints/latest/progress.jsonl` for the current step.
-- To compare iterations stage by stage, read the `stage_timing` events of `checkpoints/latest/progress.jsonl` (or `timing` in `manifest.json`): per corner setup and hold WNS and TNS in ps, and the `parasitics` used. Null means no constrained path. Compare only events with the same `parasitics`.
+- To compare iterations stage by stage, read the `stage_timing` events of `checkpoints/latest/progress.jsonl`: per corner setup and hold WNS and TNS in ps, and the `parasitics` used. Null means no constrained path. Compare only events with the same `parasitics`.
 
 ## Read results
 
@@ -62,7 +62,7 @@ Frequent cases:
 - `PDN-0179`, or `GRT-0116` between macros: set `placement.macro-channel` (ORFS: sky130hd `[80, 80]`). `PDN-0008`: macro grid or turned macro; cut rows in `tapcell-tcl`.
 - Global-route overflow or high `drc_count`: lower density or utilization, `placement.routability-driven`, `routing-layer-adjustment`, `global-route:` options. A failed global route's database is the checkpoint `failed_global_route` names; inspect it with `rb pnr-export --checkpoint <that value>`.
 - Macro pins in `electrical.rpt`, such as SRAM inputs with a tight `max_transition`: `placement.macro-pin-limits`; `macro_pin_unmet_count` counts the pins it could not fix.
-- Clock tree: a run sets `cts-sink-clustering` (`false`, or `{size, max-diameter}` in µm), `cts-root-buffer`, `cts-obstruction-aware` and `cts-repair-clock-nets` (`{max-wire-length}` in µm) without a platform of its own. `CTS-0080`: `cts-sink-clustering: false`, or `cts-obstruction-aware: false` on a block with macros; that one fails setup on an OpenROAD without `-no_obstruction_aware`.
+- Clock tree: a run sets `cts-sink-clustering`, `cts-root-buffer`, `cts-obstruction-aware` and `cts-repair-clock-nets` without a platform of its own. `CTS-0080`: `cts-sink-clustering: false`, or `cts-obstruction-aware: false` on a block with macros; that one fails setup on an OpenROAD without `-no_obstruction_aware`.
 - Post-route setup fails on paths post-CTS hold buffers padded: `post-cts-repair.setup-margin`.
 - Slow output pins with 0 max-slew violators: ports have no limit unless the SDC sets `set_max_transition`, and `repair_design` never repairs a port's slew. Set it and `buffer-ports: {outputs: true, hold-outputs-at-pins: true}` (`concepts/pnr#check-and-repair-slew-at-output-ports`).
 - `RB-DONT-USE-VIOLATION`: the netlist uses an excluded cell; fix synthesis, not P&R.
@@ -76,3 +76,4 @@ Frequent cases:
 - A stale abstract fails naming what changed. Re-harden the block instead of passing `--accept-stale`.
 - A block's supply pins must line up with the parent's top-layer straps (`block power: ...` errors). Parameter overrides on a block instance must match its hardened `params:`.
 - A parent's `rb power` counts each block as 0 W; run `rb power` on the block.
+- Blocks that forward a clock in a chain: `concepts/pnr#forward-a-clock-through-a-hardened-block`.

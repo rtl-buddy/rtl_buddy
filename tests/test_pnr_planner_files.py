@@ -444,7 +444,7 @@ def test_unset_keys_add_nothing_around_global_placement(tmp_path):
         assert "RB_GP_BLOCKAGES" not in text
         assert "rb::rotated" not in text
         assert "RB_DPL_OPTIONS" not in text
-        assert "global_placement -density 0.7 -pad_left 0 -pad_right 0\n\n" in text
+        assert "global_placement -density 0.7 -pad_left 0 -pad_right 0\n}\n" in text
         assert text.count("detailed_placement\n") == text.count("detailed_placement")
 
 

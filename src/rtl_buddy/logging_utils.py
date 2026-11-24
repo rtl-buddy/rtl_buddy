@@ -2427,6 +2427,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "later stage sessions have in their original form; move it to a "
                 "session hook"
             )
+        case "pnr.no_rows_skip_placement":
+            return (
+                f'P&R "{fields.get("pnr")}": the core has no rows and the top no '
+                "standard cell to place, so placement, CTS, the post-CTS and "
+                "global-route repairs, antenna diode insertion and fill did not run"
+            )
+        case "pnr.hook_error_lines":
+            return (
+                f'P&R "{fields.get("pnr")}": hook {fields.get("point")} '
+                f"({fields.get('path')}) returned after OpenROAD printed "
+                f"{fields.get('count')} [ERROR line(s), which do not fail the "
+                f"run; the first: {fields.get('first')}"
+            )
         case "pnr.hook_commands_added":
             return (
                 f'P&R "{fields.get("pnr")}": hook {fields.get("point")} '
@@ -3470,6 +3483,39 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f"pnr {fields.get('pnr')}: worst_paths.rpt and fanout.rpt could not be "
                 f"written ({fields.get('error')}); their result fields are left out"
+            )
+        case "pnr.abstract_forwarded_clock_skipped":
+            return (
+                f"pnr {fields.get('pnr')}: generated clock {fields.get('clock')!r} on an "
+                f"output port keeps OpenSTA's clock-to-output arcs in the abstract: "
+                f"{fields.get('reason')}; abstract.forwarded-clocks takes a ratio-1 "
+                "generated clock from one input port to one output port"
+            )
+        case "pnr.abstract_no_forwarded_clocks":
+            return (
+                f"pnr {fields.get('pnr')}: abstract.forwarded-clocks is arc, but the "
+                "block's SDC declares no generated clock of ratio 1 from an input port "
+                "to an output port, so the timing model forwards no clock"
+            )
+        case "pnr.clock_latency_unclocked":
+            if not fields.get("sinks"):
+                return (
+                    f"pnr {fields.get('pnr')}: clock-latency group "
+                    f"{fields.get('group')!r} names no sink in the routed design; "
+                    "check its sinks against the netlist's instance and pin names"
+                )
+            return (
+                f"pnr {fields.get('pnr')}: clock-latency group {fields.get('group')!r}: "
+                f"no clock reaches {fields.get('sinks', 0) - fields.get('timed', 0)} "
+                f"of its {fields.get('sinks')} sink(s), which are left out of its "
+                "figures; name clock pins, or check the SDC"
+            )
+        case "pnr.clock_latency_off_target":
+            return (
+                f"pnr {fields.get('pnr')}: clock-latency group {fields.get('group')!r} "
+                f"arrives at {fields.get('min_ps'):.1f} to {fields.get('max_ps'):.1f} ps "
+                f"at {fields.get('corner')}, outside {fields.get('target_ps'):g} ± "
+                f"{fields.get('tolerance_ps'):g} ps"
             )
         case "pnr.macro_pin_limits_unmet":
             return (
