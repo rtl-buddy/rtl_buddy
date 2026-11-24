@@ -111,11 +111,12 @@ Use the `rtl-buddy-graph` skill to choose between direct reads and graph queries
 
 ## Spec traceability and design-space exploration
 
-`spec` finds requirements with no design link or verification coverage. `xplr` is an agent-facing ledger for repeatable implementation experiments, comparisons, and Pareto-frontier tracking. It records experiments and does not choose the next one.
+`spec` finds requirements with no design link or verification coverage, and lists the web pages blocks link to. `xplr` is an agent-facing ledger for repeatable implementation experiments, comparisons, and Pareto-frontier tracking. It records experiments and does not choose the next one.
 
 ```bash
 rb --machine spec check-design
 rb --machine spec check-coverage
+rb --machine spec links
 rb --machine xplr list
 rb --machine xplr frontier
 ```

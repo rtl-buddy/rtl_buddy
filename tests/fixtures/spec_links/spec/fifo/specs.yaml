@@ -1,0 +1,15 @@
+# Fixture for tests/test_spec_links.py — do not add unrelated entries.
+rtl-buddy-filetype: spec_config
+
+blocks:
+  - name: "fifo"
+    desc: "FIFO — a local doc, the shared arch page and its own MAS page"
+    docs:
+      - "README.md"
+    links:
+      - kind: "arch"
+        title: "Arch: flow control"
+        url: "https://wiki.example.com/pages/123"
+      - kind: "mas"
+        title: "MAS: fifo"
+        url: "https://wiki.example.com/pages/456"

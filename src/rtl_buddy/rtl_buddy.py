@@ -949,6 +949,10 @@ class RtlBuddy:
             "check-coverage",
             help="show which spec coverage items are addressed by tests",
         )(self.do_spec_check_coverage)
+        self.spec_app.command(
+            "links",
+            help="list the external pages (URLs) that spec blocks link to",
+        )(self.do_spec_links)
         self.app.add_typer(
             self.spec_app, name="spec", help="spec traceability commands"
         )
@@ -11798,6 +11802,78 @@ class RtlBuddy:
                 f"Uncovered items: {', '.join(uncovered)}", style="yellow"
             )
         raise typer.Exit(1 if suite_load_failures else 0)
+
+    def do_spec_links(
+        self,
+        spec_dir: Annotated[
+            str,
+            typer.Option("--spec-dir", help="Directory to search for specs.yaml files"),
+        ] = None,
+        block: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--block",
+                help="Only include spec blocks with this name; may be repeated",
+            ),
+        ] = None,
+    ):
+        """
+        list the external pages (URLs) that spec blocks link to
+        """
+        setup_logging(debug=False, verbose=False, color=True, machine=self.machine)
+        root = self._spec_root()
+        search_dir = spec_dir if spec_dir is not None else os.path.join(root, "spec")
+
+        if not os.path.isdir(search_dir):
+            emit_console_text(f"Spec directory not found: {search_dir}", style="yellow")
+            if self.machine:
+                self._emit_machine_result(
+                    "spec links", 1, error="Spec directory not found"
+                )
+            raise typer.Exit(1)
+
+        blocks = all_spec_blocks(discover_spec_configs(search_dir))
+        if block:
+            requested = set(block)
+            missing = requested - {b.name for _, b in blocks}
+            if missing:
+                raise FatalRtlBuddyError(
+                    f"Unknown spec block(s): {', '.join(sorted(missing))}"
+                )
+            blocks = [(cfg, b) for cfg, b in blocks if b.name in requested]
+
+        links = [
+            {
+                "block": b.name,
+                "kind": link.kind,
+                "title": link.title,
+                "url": link.url,
+                "path": cfg.get_path(),
+            }
+            for cfg, b in blocks
+            for link in b.links
+        ]
+
+        if self.machine:
+            self._emit_machine_result("spec links", 0, links=links)
+            raise typer.Exit(0)
+
+        if not links:
+            emit_console_text("No spec links found.", style="yellow")
+            raise typer.Exit(0)
+
+        render_summary(
+            title="Spec Links",
+            columns=[
+                ("block", "Block"),
+                ("kind", "Kind"),
+                ("title", "Title"),
+                ("url", "URL"),
+            ],
+            rows=links,
+            logger=logger,
+        )
+        raise typer.Exit(0)
 
     def _synth_result_row(self, r, *, suite: str | None = None) -> dict:
         res = r["results"].results

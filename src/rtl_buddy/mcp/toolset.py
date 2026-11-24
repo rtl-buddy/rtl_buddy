@@ -940,7 +940,8 @@ def build_toolset(
                         "description": (
                             "Restrict to one node type (module, instance, port, "
                             "test, testbench, model, spec_block, coverage_item, "
-                            "suite, spec_doc, golden_model, python_module)."
+                            "suite, spec_doc, spec_link, golden_model, "
+                            "python_module)."
                         ),
                     },
                     "tier": {

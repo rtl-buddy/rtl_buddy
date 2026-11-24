@@ -1,0 +1,11 @@
+# Fixture for tests/test_spec_links.py — do not add unrelated entries.
+rtl-buddy-filetype: spec_config
+
+blocks:
+  - name: "arb"
+    desc: "Arbiter — shares the arch page with fifo; one link with no kind or title"
+    links:
+      - kind: "arch"
+        title: "Arch: flow control"
+        url: "https://wiki.example.com/pages/123"
+      - url: "https://wiki.example.com/pages/789"
