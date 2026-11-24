@@ -592,6 +592,11 @@ def abstract_config(pnr_cfg, platform) -> dict:
             else {}
         ),
         **(
+            {"cts_root_taps": list(pnr_cfg.get_cts_root_taps())}
+            if pnr_cfg.get_cts_root_taps()
+            else {}
+        ),
+        **(
             {"cts_latency_balancing": False}
             if platform.get_cts_latency_balancing() is False
             else {}

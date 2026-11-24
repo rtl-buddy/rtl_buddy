@@ -189,6 +189,7 @@ RUN_SIZED = {
     "cts-dont-use-cells": ["*_L"],
     "keep-sizing-vt": True,
     "cts-clock-nets": ["clk", "clk_div[0]"],
+    "cts-root-taps": ["u_blk.u_clk_buf/A"],
     "global-route": GLOBAL_ROUTE_ALL,
     "mode": "closure",
     "signoff": {
@@ -386,7 +387,7 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "cts-repair-clock-inverters, global-route-antenna-repair, "
             "detailed-route-antenna-repair, global-route-hold-repair, "
             "port-buffer, tapcell-tcl, cts-dont-use-cells, keep-sizing-vt, "
-            "cts-clock-nets, global-route, mode, signoff, reglvl, tool_overrides, "
+            "cts-clock-nets, cts-root-taps, global-route, mode, signoff, reglvl, tool_overrides, "
             "threads, resources, detailed-route-verbose, report-fanout-nets, "
             "dont-touch, xfail, xfail_strict, "
             "xfail_match",

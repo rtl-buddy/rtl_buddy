@@ -123,6 +123,8 @@ _PORT_BUFFERS_FILE = "port_buffers.tcl"
 _INSTS_FILE = "insts.tcl"
 # Marks the `dont-touch:` instances and keeps their supplies connected; see `_dont_touch_blocks`.
 _DONT_TOUCH_FILE = "dont_touch.tcl"
+# Takes the `cts-root-taps:` pins off their nets around CTS; see `_cts_root_taps_tcl`.
+_CTS_ROOT_TAPS_FILE = "cts_root_taps.tcl"
 
 # Non-log files the flow writes under `$OUT_DIR`; `test_pnr.py` checks this covers every one.
 _FLOW_OUTPUT_NAMES = (
@@ -253,6 +255,13 @@ def _parse_unseen(text: str) -> list[dict]:
 
 #: Where the docs explain the violators `_unseen_tcl` lists.
 _UNSEEN_DOCS = "rb docs show known-issues#post-route-repair_design-sizes-its-buffering-on-the-placement-estimate"
+
+
+# Printed by `cts-root-taps` for each tap put back on its net after CTS: the pin, then the net.
+_CTS_ROOT_TAP_TAG = "RB-CTS-ROOT-TAP:"
+_CTS_ROOT_TAP_RE = re.compile(
+    rf"^{re.escape(_CTS_ROOT_TAP_TAG)} (\S+) (\S+)\s*$", re.MULTILINE
+)
 
 
 # Printed once by the macro pin-limit step: the macro pins it buffered and those still over their limit less the margin.
@@ -760,6 +769,25 @@ def _dont_touch_blocks(patterns: tuple[str, ...]) -> dict[str, str]:
         "dont_touch_lift_block": "rb::dont_touch::lift\n",
         "dont_touch_restore_block": "rb::dont_touch::restore\n",
     }
+
+
+def _cts_root_taps_tcl(pins: tuple[str, ...]) -> tuple[str, str]:
+    """Return the `cts-root-taps:` steps: the one that takes the pins off their nets just before CTS, after the `before-cts` hooks and `repair_clock_inverters`, and the one that puts them back after `repair_clock_nets`, before the `after-cts` hooks; both `""` without the key.
+
+    The first carries its own leading newline, as the `before-cts` block does. Neither runs on a top without rows, where CTS does not.
+    """
+    if not pins:
+        return "", ""
+    entries = " ".join(
+        f"[list {{cts-root-taps[{i}]}} {{{pin}}}]" for i, pin in enumerate(pins)
+    )
+    return (
+        '\nputs ">>> CTS root taps (cts-root-taps)"\n'
+        + files(_TEMPLATE_PACKAGE).joinpath(_INSTS_FILE).read_text()
+        + files(_TEMPLATE_PACKAGE).joinpath(_CTS_ROOT_TAPS_FILE).read_text()
+        + f"if {{[rb::has_rows]}} {{ rb::cts_root_taps::detach [list {entries}] }}\n",
+        f"rb::cts_root_taps::reattach {_CTS_ROOT_TAP_TAG}\n",
+    )
 
 
 def _free_port_buffers_tcl(ports: PortBuffers | None) -> str:
@@ -3928,6 +3956,9 @@ class OpenRoadPnr:
         if modes:
             routed_corner_sdcs += f"set_mode {corners[0]}\n"
         hooks = self.pnr_cfg.get_hooks()
+        root_taps_detach, root_taps_reattach = _cts_root_taps_tcl(
+            self.pnr_cfg.get_cts_root_taps()
+        )
         substitutions = {
             "pin_constraints_tcl": pin_constraints_tcl,
             "floorplan_pins_block": _floorplan_pins_block(fp),
@@ -3994,8 +4025,9 @@ class OpenRoadPnr:
             "hook_before_cts_block": _before_cts_block(
                 hooks,
                 checkpoints=self._arms_checkpoints() and not self._staged,
-                steps=_cts_repair_clock_inverters_tcl(platform),
+                steps=_cts_repair_clock_inverters_tcl(platform) + root_taps_detach,
             ),
+            "cts_root_taps_reattach_block": root_taps_reattach,
             "hook_before_repair_clock_nets_block": _run_hook_block(
                 "before-repair-clock-nets", hooks
             ),
@@ -4841,6 +4873,13 @@ class OpenRoadPnr:
                 log=self._log_path(),
             )
         return {"macro_pin_buffered_count": buffered, "macro_pin_unmet_count": unmet}
+
+    def _cts_root_taps_fields(self, log_text: str) -> dict:
+        """Return `cts_root_taps`, each tap the run put back on its root net after CTS with that net, or `{}` when none was. A staged run's `pnr.log` holds the `cts` stage's log, inherited or not."""
+        taps = {pin: net for pin, net in _CTS_ROOT_TAP_RE.findall(log_text)}
+        if not taps:
+            return {}
+        return {"cts_root_taps": [{"pin": p, "net": n} for p, n in taps.items()]}
 
     def _describe_electrical(self, fields: dict) -> str:
         """Return `"N max-slew, M max-capacitance violator(s)"` for the nonzero counts, or `""` when there are none."""
@@ -7244,6 +7283,7 @@ class OpenRoadPnr:
             "tns_ps": _ps(self._parse_tns(report)),
             "tns_hold_ps": _ps(self._parse_tns(report, "min")),
             **self._macro_pin_limits_fields(log_text),
+            **self._cts_root_taps_fields(log_text),
         }
         if stage in pnr_checkpoints.GLOBAL_ROUTED:
             metrics["global_route_overflow"] = self._parse_gr_overflow(
@@ -8178,6 +8218,7 @@ class OpenRoadPnr:
             **self._path_fanout_fields(final),
             **self._allow_congestion_fields(platform, log_text),
             **self._macro_pin_limits_fields(log_text),
+            **self._cts_root_taps_fields(log_text),
         }
         corner_fields = self._corner_fields(platform, final)
         signoff_fields, signoff_failures = self._signoff_fields(

@@ -918,6 +918,31 @@ def _load_dont_touch(run: str, value) -> tuple[str, ...]:
     return tuple(names)
 
 
+def _load_cts_root_taps(run: str, value) -> tuple[str, ...]:
+    """Validate a run's `cts-root-taps:`: one `<instance>/<pin>` or a list of them, each part a name or glob; unset is empty."""
+    if value is None:
+        return ()
+    where = f"pnr run '{run}': cts-root-taps"
+    pins = [value] if isinstance(value, str) else value
+    if not isinstance(pins, list) or not pins:
+        raise FatalRtlBuddyError(
+            f"{where} must be an <instance>/<pin> name or a list of them, got {value!r}"
+        )
+    for index, pin in enumerate(pins):
+        instance, slash, name = (
+            pin.rpartition("/") if isinstance(pin, str) else ("", "", "")
+        )
+        if not instance or not slash or not name or _TCL_UNSAFE.search(pin):
+            raise FatalRtlBuddyError(
+                f"{where}[{index}] must be <instance>/<pin>, each part a name or glob "
+                "without whitespace, braces, quotes, '$', ';' or a trailing "
+                f"backslash, got {pin!r}"
+            )
+    if len(set(pins)) != len(pins):
+        raise FatalRtlBuddyError(f"{where} repeats an entry")
+    return tuple(pins)
+
+
 @serde
 class PnrPdnRingFile:
     # [horizontal, vertical] routing layers.
@@ -1397,6 +1422,8 @@ class PnrConfigFile:
     keep_sizing_vt: bool | None = field(rename="keep-sizing-vt", default=None)
     # `clock_tree_synthesis -clk_nets`: the clock nets CTS builds trees for; run only.
     cts_clock_nets: str | list | None = field(rename="cts-clock-nets", default=None)
+    # Clock-net input pins CTS leaves on the root net; run only. Typed loosely so `initialise` names a bad value.
+    cts_root_taps: Any = field(rename="cts-root-taps", default=None)
     # Over the platform's `global-route:` field by field. Read by `pnr_global_route`.
     global_route: PnrGlobalRouteFile | None = field(rename="global-route", default=None)
     # `closure` (default) or `probe`: no timing repair, stop after global route.
@@ -1461,6 +1488,7 @@ class PnrConfigFile:
             self.name, self.report_fanout_nets
         )
         dont_touch = _load_dont_touch(self.name, self.dont_touch)
+        cts_root_taps = _load_cts_root_taps(self.name, self.cts_root_taps)
 
         hooks = _normalise_hooks(self.name, self.hooks, config_dir)
         macro_hook = "macro-placement" in hooks
@@ -1650,6 +1678,7 @@ class PnrConfigFile:
             detailed_route_verbose=detailed_route_verbose,
             report_fanout_nets=report_fanout_nets,
             dont_touch=dont_touch,
+            cts_root_taps=cts_root_taps,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
             xfail_match=self.xfail_match,
@@ -1728,6 +1757,8 @@ class PnrConfig:
     report_fanout_nets: int = DEFAULT_REPORT_FANOUT_NETS
     # `dont-touch:` instance names or globs, in the order written.
     dont_touch: tuple[str, ...] = ()
+    # `cts-root-taps:` `<instance>/<pin>` names or globs, in the order written.
+    cts_root_taps: tuple[str, ...] = ()
     checkpoints: tuple[str, ...] | None = None
     stages: bool = False
     # Absolute paths by flow point, in flow order; only points with a file.
@@ -1876,6 +1907,10 @@ class PnrConfig:
     def get_dont_touch(self) -> tuple[str, ...]:
         """The `dont-touch:` instance names or globs; empty when unset."""
         return self.dont_touch
+
+    def get_cts_root_taps(self) -> tuple[str, ...]:
+        """The `cts-root-taps:` pins, each `<instance>/<pin>`; empty when unset."""
+        return self.cts_root_taps
 
     def get_checkpoints(self) -> tuple[str, ...] | None:
         """The stages to checkpoint, in flow order; ``None`` when off."""
