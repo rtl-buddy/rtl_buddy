@@ -146,12 +146,14 @@ def _drop_null_meta(raw: Any) -> None:
 
 
 def _is_web_url(value: Any) -> bool:
-    """Whether ``value`` is an absolute ``http://`` or ``https://`` URL with a host and no whitespace."""
+    """Whether ``value`` is an absolute ``http://`` or ``https://`` URL with a host, a valid port if it has one, and no whitespace."""
     if not isinstance(value, str) or any(c.isspace() for c in value):
         return False
     try:
         parts = urllib.parse.urlsplit(value)
         host = parts.hostname
+        # urlsplit checks the port only when it is read.
+        parts.port
     except ValueError:
         return False
     return parts.scheme in ("http", "https") and bool(host)
