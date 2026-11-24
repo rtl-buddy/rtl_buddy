@@ -1,0 +1,3 @@
+## CTS stops on a dont-touch instance whose input is on a clock net
+
+TritonCTS moves every input pin on a clock net it buffers behind a buffer it inserts, and OpenROAD cannot reconnect a pin of a dont-touch instance, so `clock_tree_synthesis` stops with `ODB-0370`. A buffer that forwards a clock to an output port hits this once it is in [`dont-touch`](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#keep-instances-unchanged). Name its input pin in [`cts-root-taps`](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#forward-a-clock-with-a-root-tap), which takes the pin off its net around CTS and clears the mark for those steps only.

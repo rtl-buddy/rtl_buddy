@@ -62,6 +62,7 @@ post-route-repair:
 - `{layer: M5}` takes that layer's RC per corner from `set_layer_rc`, else the LEF. Clock wire RC is unchanged, and each repair line in `pnr.log` names the signal wire RC it used.
 - The session's signal wire RC, including one a `session` hook set, returns after the round's last repair. Changed nets keep the `wire-rc` estimate until OpenROAD estimates them again, such as after legalization moves their cells.
 - `timing-wire-rc` gives `repair_timing` and the `after-timing-repair` hooks an RC of their own, in either form `wire-rc` takes; `repair_design` keeps `wire-rc`, or the session's RC without one. Set it when `wire-rc` is above the routed mean so that `repair_design` buffers the nets that route worst: at that RC the timing repair over-estimates the nets it changes. It needs a margin.
+- `wire-rc` and `timing-wire-rc` fail setup with `pnr.wire_rc_unsupported` on an OpenROAD older than the one the [YAML reference](https://rtl-buddy.github.io/rtl_buddy/v8/reference/yaml/#synthesis-and-physical-design-tools) names for them.
 - `after-timing: true` runs `repair_design` again after setup and hold repair, before legalizing, since `repair_timing` checks slew at the session's RC and can leave nets a few picoseconds over. It needs a margin.
 
 ### Which round is kept

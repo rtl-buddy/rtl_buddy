@@ -36,8 +36,9 @@ Read the row's description and `fail_stage`, then `pnr.log`, and find the stage 
 | `RB-DONT-USE-VIOLATION` | The routed design uses an excluded cell, usually from the netlist. Change the RTL, synthesis or pattern. |
 | `STA-0122 cell '<pattern>' not found` | A `dont-use-cells` or `cts-dont-use-cells` pattern matches nothing. |
 | `openroad.threads_capped` | `threads:` exceeds the allocation. Raise the reservation or use `threads: auto`. |
-| `floorplan.pins[i]: no port matches`, `floorplan.macros[i]: no instance matches` | Fix the name or glob. |
+| `floorplan.pins[i]: no port matches`, `floorplan.macros[i]: no instance matches` | Fix the name or glob. A macro name is the netlist's, brackets included; see [Place macros](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#place-macros). |
 | `floorplan.macros: the netlist has no hard macros` | Check that synthesis kept the macro instances. |
+| `floorplan: no rows left for N standard cell(s)` | The blocks cover the core. Leave a strip of core without blocks, or remove the cells, such as port buffers with `buffer-ports: false`. See [Assemble hardened blocks](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#assemble-hardened-blocks). |
 | Missing or stale block abstract, platform or corner mismatch | Run the `rb pnr` command the message names, or `rb pnr` with no run name. |
 | `block power: ...` | A block's top-layer supply pins miss the parent's straps. See [Harden a block](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#harden-a-block). |
 | `port 'd' is connected to N bit(s)`, `instance ... sets <P>=...` | The parent's ports or parameters differ from the hardened block's. See [Instance a parameterised block](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#instance-a-parameterised-block). |

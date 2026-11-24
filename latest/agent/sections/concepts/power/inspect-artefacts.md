@@ -1,6 +1,6 @@
 ## Inspect artefacts
 
-Outputs land under `<power-dir>/artefacts/<run>/`:
+Outputs land under `<power-dir>/artefacts/<run>/`, or `<power-dir>/artefacts/.runs/<tag>/<run>/` under [`--run-tag`](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/power/#read-a-tagged-pr-run):
 
 | File | Purpose |
 | --- | --- |

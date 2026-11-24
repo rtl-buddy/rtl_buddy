@@ -48,6 +48,18 @@ Under `--dispatch slurm` a coverage tail job whose head died is recorded in the 
 
 Verilator can behave differently for the same random seed. When reproducibility matters, use VCS with `-xlrm hier_inst_seed` and give instances stable explicit names. If VCS does not write `HierInstanceSeed.txt` in the simulation directory, rtl_buddy warns `sim.hier_seed_missing` and cannot record the seed. The verdict is unchanged.
 
+## ccache entries of a Verilator build stay with its build directory
+
+rb sets `CCACHE_NAMESPACE` to the absolute build directory of each compile of a Verilator builder (an executable named `verilator*`, which rb passes that directory as `--Mdir`, or `simulator-family: verilator`), unless the environment already sets it.
+
+- Verilator's `verilated.mk` compiles through ccache (`OBJCACHE ?= ccache` when Verilator's build found ccache) and, for a design that splits into several C++ files, builds a precompiled header. Clang records the absolute paths of the headers in it, and ccache does not hash the build directory.
+- Without a namespace, a build in another directory (another test, a shared build, another checkout) can take that header from the cache. Once the first directory is rebuilt with another design, the build stops with `fatal error: file '<other dir>/V<top>__Syms.h' has been modified since the precompiled header 'V<top>__pch.h.fast.gch' was built`.
+- The cost: ccache reuses Verilator's runtime objects (`verilated.o` and the like) only within one build directory, not across them.
+- ccache before 4.8 ignores `CCACHE_NAMESPACE` and can still fail this way. There, set `CCACHE_DISABLE=1` for `rb test`.
+- An empty `CCACHE_NAMESPACE=` in the environment shares the cache across directories again, with the failure above.
+
+rb drops the namespace once Verilator or ccache keeps a precompiled header to the directory that built it; rtl_buddy#1083 tracks that.
+
 ## Tool-path fallback can select another installation
 
 A configured tool directory wins only when it contains the requested executable. Otherwise rtl_buddy may use a matching executable on `PATH` and warns once per process. After changing `root_config.yaml`, `.rtl-buddy/.env` or the environment, restart long-running `rb hub` and `rb mcp` processes.
@@ -103,10 +115,11 @@ Give concurrent runs of one suite a [`--run-tag`](concepts/execution-context.md#
 
 ## `--run-tag` covers the test and P&R flows, not every reader
 
-`--run-tag` is accepted by `rb test`, `rb randtest`, `rb regression`, `rb pnr`, `rb pnr-export`, the dispatch job commands and `rb graph results`. Other commands do not see tagged runs:
+`--run-tag` is accepted by `rb test`, `rb randtest`, `rb regression`, `rb pnr`, `rb pnr-export`, `rb power`, the dispatch job commands and `rb graph results`. Other commands do not see tagged runs:
 
-- `rb wave`, `rb cov`, `rb phys` and other flow commands read the flat `artefacts/<test>/`. Open a tagged trace by path: `artefacts/.runs/<tag>/<test>/dump.fst`.
-- `rb power` reads a P&R run's untagged `artefacts/<run>/`, and `rb synth` has no tag, so a tagged `rb pnr` reads the untagged synthesis netlist.
+- `rb wave`, `rb cov`, `rb phys` and other flow commands read the flat `artefacts/<test>/`. Open a tagged trace by path: `artefacts/.runs/<tag>/<test>/dump.fst`. `rb phys` never picks a tagged power run by default; pass `--phys-dir artefacts/.runs/<tag>/<run>`.
+- `rb synth` has no tag, so a tagged `rb pnr`, and a tagged `rb power` with `netlist-source: synth`, read the untagged synthesis netlist.
+- `rb power-regression` has no tag and reads each P&R run's untagged `artefacts/<run>/`. Run `rb power --run-tag <tag>` per suite instead.
 - The hub, the MCP server and `rb graph query` read the untagged `artefacts/graph/results-overlay.json`. Publish a tagged run there with `rb graph results --run-tag <name> -o artefacts/graph`.
 - A relative path in `compile-time` builder opts resolves one directory deeper under a tag. Write `${RTL_BUDDY_PROJECT_ROOT}/...`.
 - Merged coverage is not namespaced: `--coverage-merge*` writes `<command_root>/cov_dir/` whatever the tag, so merge in only one concurrent run.
@@ -258,6 +271,18 @@ OpenROAD's default legalizer treats a fixed macro turned by 90 degrees (`R90`, `
 ## Diamond search stays on for the rest of an OpenROAD session
 
 Once `detailed_placement -use_diamond_legalizer` runs, every later legalization in that OpenROAD session uses diamond search. That includes calls without the option and OpenROAD's own, such as the one after antenna repair inserts diodes. So in a one-session run, the stages after the first one `placement.legalizer` sets to `diamond` use diamond search too, including stages it leaves unset. A one-session run that sets a later stage to `negotiation` fails at setup and names the stages. Run with `stages: true` to give each stage its own session; see [Choose the legalizer per stage](concepts/pnr.md#choose-the-legalizer-per-stage).
+
+## A hardened block's timing model stops a forwarded clock
+
+OpenSTA's `write_timing_model` writes a block's clock output as clock-to-output arcs: `rising_edge` and `falling_edge` related to the output itself when the SDC declares a generated clock on it, related to the clock input when it does not. Static timing does not propagate a clock through either, so a parent that instances such blocks in a chain sees the clock stop at the first block's clock input. Harden the block with [`abstract: {forwarded-clocks: arc}`](concepts/pnr.md#forward-a-clock-through-a-hardened-block), which rewrites the output's arcs as one combinational arc, or restate the clock on each instance's output in the parent's SDC.
+
+## CTS puts a buffer in front of every input pin on a clock net
+
+TritonCTS treats each input pin on a clock net as a sink and moves it behind a buffer it inserts. A buffer that forwards the clock to an output port then sits behind part of the tree, so the forwarded clock's delay depends on the tree, and on a dont-touch buffer CTS stops with `ODB-0370`. OpenROAD has no option to leave one pin on the root net: `set_cts_config -skip_nets` skips whole nets. Name such pins in [`cts-root-taps`](concepts/pnr.md#forward-a-clock-with-a-root-tap), which takes them off their net around CTS.
+
+## CTS stops on a dont-touch instance whose input is on a clock net
+
+TritonCTS moves every input pin on a clock net it buffers behind a buffer it inserts, and OpenROAD cannot reconnect a pin of a dont-touch instance, so `clock_tree_synthesis` stops with `ODB-0370`. A buffer that forwards a clock to an output port hits this once it is in [`dont-touch`](concepts/pnr.md#keep-instances-unchanged). Name its input pin in [`cts-root-taps`](concepts/pnr.md#forward-a-clock-with-a-root-tap), which takes the pin off its net around CTS and clears the mark for those steps only.
 
 ## `repair_design` does not repair the slew at an output port
 

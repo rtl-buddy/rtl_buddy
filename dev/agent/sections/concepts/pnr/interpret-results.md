@@ -5,7 +5,7 @@ The verdict says whether the flow finished; the fields say whether the design is
 | Verdict | When |
 | --- | --- |
 | `PASS` | OpenROAD ran the flow to its end and wrote its outputs. A `mode: probe` or `--stop-after` run passes at the stage it stops after, with `routed: false` and no routed outputs. |
-| `FAIL` | OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in a post-route repair session rb sets aside) or stops before the end of its flow, or a check fails. |
+| `FAIL` | OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in a post-route repair session rb sets aside or a [hook](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-tcl-hooks) that returns) or stops before the end of its flow, or a check fails. |
 | `SKIP` | `-l` filters the run out, or `tool:` is not `openroad`. |
 
 Check `routed` before treating a `PASS` as routed. A `PASS` does not mean the design meets timing or routes clean unless [signoff gates](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#gate-signoff) are set. Judge the design on these fields:
@@ -17,6 +17,8 @@ Check `routed` before treating a `PASS` as routed. A `PASS` does not mean the de
 | `max_slew_violation_count`, `max_capacitance_violation_count`, `max_fanout_violation_count` | Pins over a Liberty or SDC limit at any corner, listed in `electrical.rpt`. |
 | `worst_path_startpoint`, `worst_path_endpoint`, `worst_path_levels`, `worst_path_resolved` | The worst setup path over all path groups at the setup-critical corner: its ends as RTL names, its combinational cells, and whether both ends resolved. See [below](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#find-the-critical-path-and-loaded-nets-in-the-rtl). |
 | `max_net_fanout` | Sink pins of the highest-fanout signal net, excluding clock, reset-tree and supply nets. |
+| `clock_latency` | With [`clock-latency`](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#report-clock-arrival-at-chosen-sinks): each group's late clock arrival at its sinks, per corner, against its target. |
+| `cts_root_taps` | With [`cts-root-taps`](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#forward-a-clock-with-a-root-tap): each pin CTS left on the root net, with that net. |
 | `macro_pin_buffered_count`, `macro_pin_unmet_count` | With `placement.macro-pin-limits`: pins it buffered, and pins still over their limit less the margin on placement parasitics. |
 | `area_um2` | Design area. |
 | `routed_cell_count` | Instances of the finished design, with added tie, buffer and clock cells and without physical-only cells. Compare experiments on this. |
@@ -39,6 +41,7 @@ A passing run's description can carry these qualifiers:
 | Qualifier | Meaning |
 | --- | --- |
 | `pnr.no_wire_rc` | Placement and CTS ran without [wire RC](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#set-wire-rc). |
+| `pnr.no_rows_skip_placement` | The top had no rows and nothing to place, so placement, CTS, the post-CTS and global-route repairs, antenna diode insertion and fill did not run. See [Assemble hardened blocks](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#assemble-hardened-blocks). |
 | `electrical N max-slew, ... violator(s)` | Electrical violators remain. `fail-on-electrical: true` or `electrical` in `signoff.fail-on` fails such runs. |
 | `post-route repair ...` | A repair round was passed over, or its failed session was set aside. |
 | `post-route electrical round N kept`, `not kept`, `failed` | The [electrical round](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#repair-electrical-violators-after-routing) ran. |

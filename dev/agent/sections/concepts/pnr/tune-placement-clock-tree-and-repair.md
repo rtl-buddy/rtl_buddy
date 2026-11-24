@@ -14,11 +14,14 @@ Process-dependent settings live on the PDK and can be overridden on the platform
 | Clock tree | `cts-buffer`, `cts-sink-clustering`, `cts-obstruction-aware`, `cts-apply-ndr`. `cts-clock-nets` builds trees for the named clocks only. |
 | A strong root buffer with small branch buffers | `cts-root-buffer` names the root, and `cts-buffer` lists the branch buffers only. Otherwise CTS picks the root from `cts-buffer`. |
 | Slew violations on clock pins far from the nearest leaf buffer, as when many clock gates sit in a small area | `cts-sink-clustering` with `size` and `max-diameter` (µm). |
+| The clock must reach chosen registers, such as a block's boundary registers, at a set insertion delay | `clock-latency` reports their routed arrival against a target, [below](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#report-clock-arrival-at-chosen-sinks). |
+| A buffer that forwards the clock to an output port must stay on the port's net, not become a leaf of the register tree | `cts-root-taps`, [below](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#forward-a-clock-with-a-root-tap). |
 | Setup misses on flops of a clock branch CTS padded to match the deepest (`CTS-0033`, `CTS-0036`), as when a clock drives a buffer as well as flops | `cts-latency-balancing: false`. |
 | Long clock wires after CTS | `cts-repair-clock-nets: true`, or `{max-wire-length: <µm>}`. |
 | A block must leave the top layers to its parent | `routing-layers` on the run. |
 | A block needs other tap spacing or endcaps | `tapcell-tcl` on the platform or run. |
 | Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm), or a `tapcell-tcl` that cuts rows around macros. |
+| A cell that every repair must leave as it is, such as a clock-forwarding buffer | `dont-touch`, [below](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#keep-instances-unchanged). |
 | Tie cells too close to their loads | `placement.tie-separation` (µm). |
 | Macro pins over a tight Liberty limit, such as OpenRAM SKY130 SRAM inputs (0.04 ns) | `placement.macro-pin-limits`, below. |
 | Legalization after routing repair is slow, or fails with `DPL-0701` then `DPL-0033` | `placement.legalizer`, below. |
@@ -36,6 +39,37 @@ Each CTS setting sits on the platform and the run, and a run's value replaces th
 ```
 
 This calls `clock_tree_synthesis -root_buf sky130_fd_sc_hd__clkbuf_16 -buf_list sky130_fd_sc_hd__clkbuf_4 -sink_clustering_enable -sink_clustering_size 20 -sink_clustering_max_diameter 25 -no_obstruction_aware`, then `repair_clock_nets -max_wire_length 1000`.
+
+### Forward a clock with a root tap
+
+TritonCTS puts a buffer it inserts in front of every input pin on a clock net. A block that forwards its clock to an output port through its own buffer wants that buffer's input on the port's net, so the forwarded clock's delay is the one buffer and its wire. `cts-root-taps` names such input pins, each `<instance>/<pin>`, brackets literal in both parts (`u_ram/CLK[0]`):
+
+```yaml
+    dont-touch: [u_fwd.u_clk_buf]
+    cts-root-taps: [u_fwd.u_clk_buf/A]
+```
+
+- Just before `clock_tree_synthesis`, after the `before-cts` hooks and `repair_clock_inverters`, each pin is taken off its net, and the log names it. After CTS and `repair_clock_nets`, and before the `after-cts` hooks, it goes back on the net of the same name: the root net, beside the tree's root buffer. The result's `cts_root_taps` lists each pin with that net. The `before-repair-clock-nets` hooks run while the pins are off.
+- A dont-touch instance, from [`dont-touch`](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#keep-instances-unchanged) or a hook's `set_dont_touch`, cannot have a pin taken off (`ODB-0370`), so the mark is cleared for the two steps and set again.
+- In a flat run the forwarded clock can clock registers further on, directly or through gates. While the pin is off, that clock would stop at the buffer, so the flow defines a temporary clock on each of the buffer's outputs that carries it to a register or macro clock pin, as the timer's clock network runs, with the tap's clock's period and waveform, and CTS builds that tree too. An output that an SDC clock already starts on, such as a `create_generated_clock` on the buffer's output, keeps that clock instead. A temporary clock is named `rb_cts_root_tap_<n>`, skipping names the SDC uses.
+- The flow fixes, during CTS, each tapped instance that drives clock pins, which CTS would otherwise clone as a clock gate with a copy of the input that is off, and each gate on a temporary clock's net, which CTS would clone where it would not on the original net. All is read from the timer before any pin is taken off, and undone after CTS.
+- With `cts-clock-nets`, CTS builds trees for the named nets only: name the net the buffer drives too, or its registers get no tree.
+- A pattern that matches no pin, a pin that is not an input on a clock net, or a net gone after CTS fails the CTS stage, naming the entry. On a top without rows, where CTS does not run, the pins stay where they are.
+
+### Report clock arrival at chosen sinks
+
+Abutted blocks that forward a clock to each other agree on the clock's arrival at their boundary registers. CTS balances a tree but takes no target, so `clock-latency` reports the arrival at named groups of sinks, to check against one:
+
+```yaml
+    clock-latency:
+      - {name: boundary, sinks: [input-capture, output-launch], target-ps: 90, tolerance-ps: 5}
+      - {name: fwd_regs, sinks: "u_core.r_*/CLK"}
+```
+
+- `sinks` takes `input-capture` (the registers whose data pin captures an input port through combinational logic; an asynchronous set or reset, or a clock gate's enable, does not count), `output-launch` (those that launch an output port), and `<instance>/<pin>` names or globs, as `cts-root-taps` takes them. A pin off the clock network, such as a data pin, counts in `sinks` but not `timed_sinks`.
+- The final reports print each group's min, max and mean late arrival of the clock's rising edge at each corner, on the final parasitics (`RB-CLOCK-LATENCY:` lines). For a clock whose rising edge is at 0, that is its source latency plus the insertion delay. With [a mode per corner](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#sign-off-at-several-corners), each corner is measured in its own SDC mode, so a sink that only one corner's case analysis clocks is timed at that corner.
+- The result's `clock_latency.<group>` has `min_ps`, `max_ps` and `mean_ps` at the platform's primary corner, `corners` with each corner's, `sinks`, `timed_sinks`, `target_ps` and `tolerance_ps`. With a tolerance, `within_tolerance` says whether every sink is within it of the target at the primary corner, and a group outside it warns `pnr.clock_latency_off_target`. A group with no sink, or a sink no clock reaches, warns `pnr.clock_latency_unclocked`.
+- Only a run that reaches its final reports measures the groups; a probe or `--stop-after` run does not. Nothing fails on a group off target.
 
 ### Threshold-voltage flavours and footprints
 
@@ -74,6 +108,7 @@ On a library with several threshold-voltage flavours, such as ASAP7 RVT and LVT 
 
 - Each macro data pin over its limit less the margin gets a buffer fixed on the nearest free row site; an input also gets a pre-driver. Buffers are sized from `buffers` weakest first and marked `dont_touch`, so later repair leaves them alone.
 - When no pair meets the limit less the margin, the closest pair stays (for an input, the lowest slew), which is not always the strongest, and the pin counts in `macro_pin_unmet_count`.
+- A pin of a [`dont-touch`](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#keep-instances-unchanged) macro is left unbuffered, since OpenROAD cannot move it to a new net, and counts in `macro_pin_unmet_count`.
 - `pnr.log` has one `>>>` line per pin.
 
 The step judges on placement parasitics, so check `electrical.rpt`:
@@ -104,6 +139,20 @@ OpenROAD 26Q4 legalizes with one of two engines:
 - An OpenROAD whose `detailed_placement` has no `-use_diamond_legalizer` fails the run at setup.
 
 The log shows each call's engine on its `legalizer` line, under `Detailed Placement Analysis`.
+
+### Keep instances unchanged
+
+`dont-touch` marks instances dont-touch in OpenROAD's sense, so repair neither resizes nor removes them, such as a buffer that forwards a clock to an output port:
+
+```yaml
+    dont-touch: [u_blk.u_clk_buf, "g_lane[*].u_fwd_buf"]
+```
+
+- Name each instance as the netlist spells it, as for `floorplan.macros`: brackets are literal, and `*` and `?` the only wildcards. An entry that matches nothing fails the floorplan, naming it.
+- The flow marks them at the start of the floorplan, so the floorplan's setup repair and every later step see the mark. It is stored in the database, so checkpoints, later sessions and `--resume` keep it.
+- OpenROAD's global connections skip a dont-touch instance (`ODB-0383`), and nothing connects its supplies later. The flow clears the mark just before the tap cells and the power grid, connects the supplies after them and marks the instances again, before the `after-pdn` hooks. When the block has global connection rules, such as the `add_global_connection` calls of a `pdn-config`, an instance left with a supply pin on no net then fails the floorplan, naming the pin. Without rules nothing is connected, so nothing is checked.
+- A hook that marks cells itself with `set_dont_touch` should do it in `after-pdn` or later, for the same reason.
+- OpenROAD does not reconnect a dont-touch instance's pins. `buffer_ports` leaves unbuffered an input port that drives one (`RSZ-0085`), `placement.macro-pin-limits` leaves a dont-touch macro's pins unbuffered and counts them unmet, and CTS stops with `ODB-0370` on one whose input is on a clock net it buffers ([Known Issues](https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#cts-stops-on-a-dont-touch-instance-whose-input-is-on-a-clock-net)).
 
 ### Optimisation steps
 

@@ -29,7 +29,7 @@ Use explicit contexts, never ambient `os.getcwd()`:
 
 Config-driven commands use their primary config's directory as `command_root`. Managed outputs go below it, external tools run from their artifact directory, and explicit CLI paths resolve from `invocation_cwd`.
 
-`--run-tag <name>` namespaces one invocation's artefact root to `<command_root>/artefacts/.runs/<name>/`. `test`, `randtest`, `regression`, the dispatch job commands, and `graph results` accept it.
+`--run-tag <name>` namespaces one invocation's artefact root to `<command_root>/artefacts/.runs/<name>/`. `test`, `randtest`, `regression`, `pnr`, `pnr-export`, `power`, the dispatch job commands, and `graph results` accept it.
 
 - Every per-run path in the table below, and the command's `rtl_buddy.log`, moves below the tagged root.
 - Shared builds (`artefacts/.shared-builds/`, keyed on the compile fingerprint) and `graph.json` are shared and never namespaced.

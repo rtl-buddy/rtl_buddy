@@ -8,7 +8,7 @@ description: Query saved synthesis and power artefacts by module and instance wi
 
 ## Read the model a run produced
 
-Every synthesis and power run writes `phys-model.json` and `phys-manifest.json` into an artefact directory: its own, or the one a power run's `phys-run:` names. Without an override, `rb phys` reads the newest `phys-manifest.json` under the project root.
+Every synthesis and power run writes `phys-model.json` and `phys-manifest.json` into an artefact directory: its own, or the one a power run's `phys-run:` names. Without an override, `rb phys` reads the newest `phys-manifest.json` under the project root. Discovery and `rb phys runs` skip `artefacts/.runs/`, so read a [`rb power --run-tag`](power.md#read-a-tagged-pr-run) run with `--phys-dir <power-dir>/artefacts/.runs/<tag>/<run>`.
 
 ```bash
 rb phys summary

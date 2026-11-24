@@ -1,0 +1,3 @@
+## A hardened block's timing model stops a forwarded clock
+
+OpenSTA's `write_timing_model` writes a block's clock output as clock-to-output arcs: `rising_edge` and `falling_edge` related to the output itself when the SDC declares a generated clock on it, related to the clock input when it does not. Static timing does not propagate a clock through either, so a parent that instances such blocks in a chain sees the clock stop at the first block's clock input. Harden the block with [`abstract: {forwarded-clocks: arc}`](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/pnr/#forward-a-clock-through-a-hardened-block), which rewrites the output's arcs as one combinational arc, or restate the clock on each instance's output in the parent's SDC.

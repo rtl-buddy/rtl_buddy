@@ -75,7 +75,7 @@ The verdict says whether the flow finished; the fields say whether the design is
 | Verdict | When |
 | --- | --- |
 | `PASS` | OpenROAD ran the flow to its end and wrote its outputs. A `mode: probe` or `--stop-after` run passes at the stage it stops after, with `routed: false` and no routed outputs. |
-| `FAIL` | OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in a post-route repair session rb sets aside) or stops before the end of its flow, or a check fails. |
+| `FAIL` | OpenROAD exits non-zero, logs an `[ERROR ...]` line (except in a post-route repair session rb sets aside or a [hook](#run-tcl-hooks) that returns) or stops before the end of its flow, or a check fails. |
 | `SKIP` | `-l` filters the run out, or `tool:` is not `openroad`. |
 
 Check `routed` before treating a `PASS` as routed. A `PASS` does not mean the design meets timing or routes clean unless [signoff gates](#gate-signoff) are set. Judge the design on these fields:
@@ -87,6 +87,8 @@ Check `routed` before treating a `PASS` as routed. A `PASS` does not mean the de
 | `max_slew_violation_count`, `max_capacitance_violation_count`, `max_fanout_violation_count` | Pins over a Liberty or SDC limit at any corner, listed in `electrical.rpt`. |
 | `worst_path_startpoint`, `worst_path_endpoint`, `worst_path_levels`, `worst_path_resolved` | The worst setup path over all path groups at the setup-critical corner: its ends as RTL names, its combinational cells, and whether both ends resolved. See [below](#find-the-critical-path-and-loaded-nets-in-the-rtl). |
 | `max_net_fanout` | Sink pins of the highest-fanout signal net, excluding clock, reset-tree and supply nets. |
+| `clock_latency` | With [`clock-latency`](#report-clock-arrival-at-chosen-sinks): each group's late clock arrival at its sinks, per corner, against its target. |
+| `cts_root_taps` | With [`cts-root-taps`](#forward-a-clock-with-a-root-tap): each pin CTS left on the root net, with that net. |
 | `macro_pin_buffered_count`, `macro_pin_unmet_count` | With `placement.macro-pin-limits`: pins it buffered, and pins still over their limit less the margin on placement parasitics. |
 | `area_um2` | Design area. |
 | `routed_cell_count` | Instances of the finished design, with added tie, buffer and clock cells and without physical-only cells. Compare experiments on this. |
@@ -109,6 +111,7 @@ A passing run's description can carry these qualifiers:
 | Qualifier | Meaning |
 | --- | --- |
 | `pnr.no_wire_rc` | Placement and CTS ran without [wire RC](#set-wire-rc). |
+| `pnr.no_rows_skip_placement` | The top had no rows and nothing to place, so placement, CTS, the post-CTS and global-route repairs, antenna diode insertion and fill did not run. See [Assemble hardened blocks](#assemble-hardened-blocks). |
 | `electrical N max-slew, ... violator(s)` | Electrical violators remain. `fail-on-electrical: true` or `electrical` in `signoff.fail-on` fails such runs. |
 | `post-route repair ...` | A repair round was passed over, or its failed session was set aside. |
 | `post-route electrical round N kept`, `not kept`, `failed` | The [electrical round](#repair-electrical-violators-after-routing) ran. |
@@ -216,8 +219,9 @@ Read the row's description and `fail_stage`, then `pnr.log`, and find the stage 
 | `RB-DONT-USE-VIOLATION` | The routed design uses an excluded cell, usually from the netlist. Change the RTL, synthesis or pattern. |
 | `STA-0122 cell '<pattern>' not found` | A `dont-use-cells` or `cts-dont-use-cells` pattern matches nothing. |
 | `openroad.threads_capped` | `threads:` exceeds the allocation. Raise the reservation or use `threads: auto`. |
-| `floorplan.pins[i]: no port matches`, `floorplan.macros[i]: no instance matches` | Fix the name or glob. |
+| `floorplan.pins[i]: no port matches`, `floorplan.macros[i]: no instance matches` | Fix the name or glob. A macro name is the netlist's, brackets included; see [Place macros](#place-macros). |
 | `floorplan.macros: the netlist has no hard macros` | Check that synthesis kept the macro instances. |
+| `floorplan: no rows left for N standard cell(s)` | The blocks cover the core. Leave a strip of core without blocks, or remove the cells, such as port buffers with `buffer-ports: false`. See [Assemble hardened blocks](#assemble-hardened-blocks). |
 | Missing or stale block abstract, platform or corner mismatch | Run the `rb pnr` command the message names, or `rb pnr` with no run name. |
 | `block power: ...` | A block's top-layer supply pins miss the parent's straps. See [Harden a block](#harden-a-block). |
 | `port 'd' is connected to N bit(s)`, `instance ... sets <P>=...` | The parent's ports or parameters differ from the hardened block's. See [Instance a parameterised block](#instance-a-parameterised-block). |
@@ -351,11 +355,14 @@ Process-dependent settings live on the PDK and can be overridden on the platform
 | Clock tree | `cts-buffer`, `cts-sink-clustering`, `cts-obstruction-aware`, `cts-apply-ndr`. `cts-clock-nets` builds trees for the named clocks only. |
 | A strong root buffer with small branch buffers | `cts-root-buffer` names the root, and `cts-buffer` lists the branch buffers only. Otherwise CTS picks the root from `cts-buffer`. |
 | Slew violations on clock pins far from the nearest leaf buffer, as when many clock gates sit in a small area | `cts-sink-clustering` with `size` and `max-diameter` (µm). |
+| The clock must reach chosen registers, such as a block's boundary registers, at a set insertion delay | `clock-latency` reports their routed arrival against a target, [below](#report-clock-arrival-at-chosen-sinks). |
+| A buffer that forwards the clock to an output port must stay on the port's net, not become a leaf of the register tree | `cts-root-taps`, [below](#forward-a-clock-with-a-root-tap). |
 | Setup misses on flops of a clock branch CTS padded to match the deepest (`CTS-0033`, `CTS-0036`), as when a clock drives a buffer as well as flops | `cts-latency-balancing: false`. |
 | Long clock wires after CTS | `cts-repair-clock-nets: true`, or `{max-wire-length: <µm>}`. |
 | A block must leave the top layers to its parent | `routing-layers` on the run. |
 | A block needs other tap spacing or endcaps | `tapcell-tcl` on the platform or run. |
 | Cells crowd macro edges, or Metal Spacing DRCs at a block edge | `placement.macro-cell-halo` (µm), or a `tapcell-tcl` that cuts rows around macros. |
+| A cell that every repair must leave as it is, such as a clock-forwarding buffer | `dont-touch`, [below](#keep-instances-unchanged). |
 | Tie cells too close to their loads | `placement.tie-separation` (µm). |
 | Macro pins over a tight Liberty limit, such as OpenRAM SKY130 SRAM inputs (0.04 ns) | `placement.macro-pin-limits`, below. |
 | Legalization after routing repair is slow, or fails with `DPL-0701` then `DPL-0033` | `placement.legalizer`, below. |
@@ -373,6 +380,37 @@ Each CTS setting sits on the platform and the run, and a run's value replaces th
 ```
 
 This calls `clock_tree_synthesis -root_buf sky130_fd_sc_hd__clkbuf_16 -buf_list sky130_fd_sc_hd__clkbuf_4 -sink_clustering_enable -sink_clustering_size 20 -sink_clustering_max_diameter 25 -no_obstruction_aware`, then `repair_clock_nets -max_wire_length 1000`.
+
+### Forward a clock with a root tap
+
+TritonCTS puts a buffer it inserts in front of every input pin on a clock net. A block that forwards its clock to an output port through its own buffer wants that buffer's input on the port's net, so the forwarded clock's delay is the one buffer and its wire. `cts-root-taps` names such input pins, each `<instance>/<pin>`, brackets literal in both parts (`u_ram/CLK[0]`):
+
+```yaml
+    dont-touch: [u_fwd.u_clk_buf]
+    cts-root-taps: [u_fwd.u_clk_buf/A]
+```
+
+- Just before `clock_tree_synthesis`, after the `before-cts` hooks and `repair_clock_inverters`, each pin is taken off its net, and the log names it. After CTS and `repair_clock_nets`, and before the `after-cts` hooks, it goes back on the net of the same name: the root net, beside the tree's root buffer. The result's `cts_root_taps` lists each pin with that net. The `before-repair-clock-nets` hooks run while the pins are off.
+- A dont-touch instance, from [`dont-touch`](#keep-instances-unchanged) or a hook's `set_dont_touch`, cannot have a pin taken off (`ODB-0370`), so the mark is cleared for the two steps and set again.
+- In a flat run the forwarded clock can clock registers further on, directly or through gates. While the pin is off, that clock would stop at the buffer, so the flow defines a temporary clock on each of the buffer's outputs that carries it to a register or macro clock pin, as the timer's clock network runs, with the tap's clock's period and waveform, and CTS builds that tree too. An output that an SDC clock already starts on, such as a `create_generated_clock` on the buffer's output, keeps that clock instead. A temporary clock is named `rb_cts_root_tap_<n>`, skipping names the SDC uses.
+- The flow fixes, during CTS, each tapped instance that drives clock pins, which CTS would otherwise clone as a clock gate with a copy of the input that is off, and each gate on a temporary clock's net, which CTS would clone where it would not on the original net. All is read from the timer before any pin is taken off, and undone after CTS.
+- With `cts-clock-nets`, CTS builds trees for the named nets only: name the net the buffer drives too, or its registers get no tree.
+- A pattern that matches no pin, a pin that is not an input on a clock net, or a net gone after CTS fails the CTS stage, naming the entry. On a top without rows, where CTS does not run, the pins stay where they are.
+
+### Report clock arrival at chosen sinks
+
+Abutted blocks that forward a clock to each other agree on the clock's arrival at their boundary registers. CTS balances a tree but takes no target, so `clock-latency` reports the arrival at named groups of sinks, to check against one:
+
+```yaml
+    clock-latency:
+      - {name: boundary, sinks: [input-capture, output-launch], target-ps: 90, tolerance-ps: 5}
+      - {name: fwd_regs, sinks: "u_core.r_*/CLK"}
+```
+
+- `sinks` takes `input-capture` (the registers whose data pin captures an input port through combinational logic; an asynchronous set or reset, or a clock gate's enable, does not count), `output-launch` (those that launch an output port), and `<instance>/<pin>` names or globs, as `cts-root-taps` takes them. A pin off the clock network, such as a data pin, counts in `sinks` but not `timed_sinks`.
+- The final reports print each group's min, max and mean late arrival of the clock's rising edge at each corner, on the final parasitics (`RB-CLOCK-LATENCY:` lines). For a clock whose rising edge is at 0, that is its source latency plus the insertion delay. With [a mode per corner](#sign-off-at-several-corners), each corner is measured in its own SDC mode, so a sink that only one corner's case analysis clocks is timed at that corner.
+- The result's `clock_latency.<group>` has `min_ps`, `max_ps` and `mean_ps` at the platform's primary corner, `corners` with each corner's, `sinks`, `timed_sinks`, `target_ps` and `tolerance_ps`. With a tolerance, `within_tolerance` says whether every sink is within it of the target at the primary corner, and a group outside it warns `pnr.clock_latency_off_target`. A group with no sink, or a sink no clock reaches, warns `pnr.clock_latency_unclocked`.
+- Only a run that reaches its final reports measures the groups; a probe or `--stop-after` run does not. Nothing fails on a group off target.
 
 ### Threshold-voltage flavours and footprints
 
@@ -411,6 +449,7 @@ On a library with several threshold-voltage flavours, such as ASAP7 RVT and LVT 
 
 - Each macro data pin over its limit less the margin gets a buffer fixed on the nearest free row site; an input also gets a pre-driver. Buffers are sized from `buffers` weakest first and marked `dont_touch`, so later repair leaves them alone.
 - When no pair meets the limit less the margin, the closest pair stays (for an input, the lowest slew), which is not always the strongest, and the pin counts in `macro_pin_unmet_count`.
+- A pin of a [`dont-touch`](#keep-instances-unchanged) macro is left unbuffered, since OpenROAD cannot move it to a new net, and counts in `macro_pin_unmet_count`.
 - `pnr.log` has one `>>>` line per pin.
 
 The step judges on placement parasitics, so check `electrical.rpt`:
@@ -441,6 +480,20 @@ OpenROAD 26Q4 legalizes with one of two engines:
 - An OpenROAD whose `detailed_placement` has no `-use_diamond_legalizer` fails the run at setup.
 
 The log shows each call's engine on its `legalizer` line, under `Detailed Placement Analysis`.
+
+### Keep instances unchanged
+
+`dont-touch` marks instances dont-touch in OpenROAD's sense, so repair neither resizes nor removes them, such as a buffer that forwards a clock to an output port:
+
+```yaml
+    dont-touch: [u_blk.u_clk_buf, "g_lane[*].u_fwd_buf"]
+```
+
+- Name each instance as the netlist spells it, as for `floorplan.macros`: brackets are literal, and `*` and `?` the only wildcards. An entry that matches nothing fails the floorplan, naming it.
+- The flow marks them at the start of the floorplan, so the floorplan's setup repair and every later step see the mark. It is stored in the database, so checkpoints, later sessions and `--resume` keep it.
+- OpenROAD's global connections skip a dont-touch instance (`ODB-0383`), and nothing connects its supplies later. The flow clears the mark just before the tap cells and the power grid, connects the supplies after them and marks the instances again, before the `after-pdn` hooks. When the block has global connection rules, such as the `add_global_connection` calls of a `pdn-config`, an instance left with a supply pin on no net then fails the floorplan, naming the pin. Without rules nothing is connected, so nothing is checked.
+- A hook that marks cells itself with `set_dont_touch` should do it in `after-pdn` or later, for the same reason.
+- OpenROAD does not reconnect a dont-touch instance's pins. `buffer_ports` leaves unbuffered an input port that drives one (`RSZ-0085`), `placement.macro-pin-limits` leaves a dont-touch macro's pins unbuffered and counts them unmet, and CTS stops with `ODB-0370` on one whose input is on a clock net it buffers ([Known Issues](../known-issues.md#cts-stops-on-a-dont-touch-instance-whose-input-is-on-a-clock-net)).
 
 ### Optimisation steps
 
@@ -563,6 +616,7 @@ post-route-repair:
 - `{layer: M5}` takes that layer's RC per corner from `set_layer_rc`, else the LEF. Clock wire RC is unchanged, and each repair line in `pnr.log` names the signal wire RC it used.
 - The session's signal wire RC, including one a `session` hook set, returns after the round's last repair. Changed nets keep the `wire-rc` estimate until OpenROAD estimates them again, such as after legalization moves their cells.
 - `timing-wire-rc` gives `repair_timing` and the `after-timing-repair` hooks an RC of their own, in either form `wire-rc` takes; `repair_design` keeps `wire-rc`, or the session's RC without one. Set it when `wire-rc` is above the routed mean so that `repair_design` buffers the nets that route worst: at that RC the timing repair over-estimates the nets it changes. It needs a margin.
+- `wire-rc` and `timing-wire-rc` fail setup with `pnr.wire_rc_unsupported` on an OpenROAD older than the one the [YAML reference](../reference/yaml.md#synthesis-and-physical-design-tools) names for them.
 - `after-timing: true` runs `repair_design` again after setup and hold repair, before legalizing, since `repair_timing` checks slew at the session's RC and can leave nets a few picoseconds over. It needs a margin.
 
 ### Which round is kept
@@ -706,8 +760,12 @@ Hard macros (SRAMs, hardened blocks) are placed before the power grid by OpenROA
           halo: [3, 3]                     # replaces macro-cell-halo for this macro
         - instance: "*/u_rf*"
           halo: [2, 2]                     # every macro the glob matches
+        - instance: "g_bank[*].u_ram"      # generate loop: brackets are literal
+          halo: [2, 2]
 ```
 
+- `instance` is the hierarchical instance name as the netlist spells it, such as `g_bank[0].u_ram` for a macro in a generate loop. Brackets are literal, and `*` and `?` are the only wildcards. OpenROAD stores that name as `g_bank\[0\].u_ram`, and that spelling also works.
+- A pattern that matches nothing this way is tried as a Tcl glob on the stored name, where `[01]` is a character class, so plans written for earlier releases keep working.
 - A `location` is snapped to the site and row grid, and must be inside the core, clear of other fixed macros, and match one macro. RTL-MP places the rest around it, and does not run when every macro is located.
 - An `orientation` needs a `location`, since RTL-MP orients the macros it places, unless a `macro-placement` hook places them.
 - A pattern that matches nothing fails the run.
@@ -800,6 +858,7 @@ How hooks run:
 
 - At Tcl global scope in `artefacts/<run>/`, with `$OUT_DIR` and `$DESIGN` set.
 - A Tcl error, `exit` or stray `return` fails the run, naming the point and file, and for `stage-end` the stage. In a post-route round, where other failures only set the round aside, a `stage-end` or `after-timing-repair` error still fails the run.
+- An `[ERROR` line OpenROAD prints while a hook runs, such as from a command the hook wraps in `catch`, fails the run only when the hook ends with a Tcl error. When the hook returns, rb warns `pnr.hook_error_lines` with the count and the first line. `pnr.log` brackets each hook's output with `>>> rb: hook begin` and `>>> rb: hook end` lines.
 - Results come from the final reports; a report a hook prints does not change them.
 - On a multi-corner platform an SDC command in a hook constrains only the [primary corner's mode](#sign-off-at-several-corners).
 - Every later `read_spef` reads what `after-extraction` hooks left: the next round's, the final reports' and `rb power`'s. A multi-corner platform reads one SPEF per corner, so one edit covers all.
@@ -1016,7 +1075,7 @@ Synthesis is not namespaced: it writes the untagged `artefacts/<synth>/`. Untagg
 - A record naming a copy outside the project and that tree, as an absolute path does after a move, is refused; re-run under the tag.
 - Each checkpoint run directory keeps the record of the call that wrote it, which `--checkpoint` reads.
 
-`rb power` and other readers read the untagged `artefacts/<run>/` only; see [`--run-tag` readers](../known-issues.md#--run-tag-covers-the-test-and-pr-flows-not-every-reader).
+`rb power --run-tag <tag>` reads the run from the same tag; see [Power Analysis: Read a tagged P&R run](power.md#read-a-tagged-pr-run). Other readers read the untagged `artefacts/<run>/` only; see [`--run-tag` readers](../known-issues.md#--run-tag-covers-the-test-and-pr-flows-not-every-reader).
 
 ## Stream out GDS and PNG
 
@@ -1075,6 +1134,31 @@ A block that must use the top layer, such as one with an OpenRAM sky130 SRAM, ex
 - Define the parent's macro grids with `-cells` or `-instances` instead of `-default`.
 - A pin rb cannot join fails the run with `block power: <inst>/<pin> ...`.
 
+### Forward a clock through a hardened block
+
+A block that passes its clock on to an output port, for blocks abutted in a chain, declares it in its SDC as a generated clock of ratio 1:
+
+```tcl
+create_generated_clock -name clk_fwd -source [get_ports clk_i] -divide_by 1 [get_ports clk_o]
+```
+
+OpenSTA's `write_timing_model` writes `clk_o`'s arcs in `<top>.lib` as clock-to-output arcs, related to `clk_o` itself with that clock and to `clk_i` without it. Timing does not carry a clock through either, so in the parent the clock stops at the first block's `clk_i` and every block after it is unclocked ([Known Issues](../known-issues.md#a-hardened-blocks-timing-model-stops-a-forwarded-clock)).
+
+`abstract: {forwarded-clocks: arc}` makes `clk_o` a clock path:
+
+```yaml
+    harden: true
+    abstract: {forwarded-clocks: arc}
+```
+
+- The harden step writes the timing model a second time without the generated clocks defined on output ports. For each generated clock from one input port to one output port with `-divide_by 1` or `-multiply_by 1`, or `-combinational` with neither, optionally `-invert`, the output's timing groups become one `combinational` arc from the input, `positive_unate` (`negative_unate` with `-invert`): the rise from the second model's `rising_edge` arc, the fall from its `falling_edge` arc, each by output load. It is the forwarding delay from the input pin, the block's wire and buffers.
+- Every other group of `<top>.lib` is kept as written, including the setup, hold and clock-to-output arcs with the block's insertion delay and the input's `min_clock_tree_path` and `max_clock_tree_path`.
+- `abstract.manifest.json` lists the arcs under `forwarded_clocks`, each `{from, to, sense}`. A generated clock on an output port that does not qualify warns `pnr.abstract_forwarded_clock_skipped`, and its output keeps all its arcs as written, so a qualifying clock beside it on that output, such as a bypass beside a divided clock on a clock mux, warns too and is not forwarded. A block with none warns `pnr.abstract_no_forwarded_clocks`. The SDC is read as Tcl words, so an option named inside a `-comment {...}` is not an option. A forwarding arc that falls with the input when the SDC says it does not (a wrong `-invert`) fails the abstract.
+- Inside the block, `dont-touch` and `cts-root-taps` keep the forwarding buffer as placed and on the clock's root net, so the arc is that buffer and its wire ([Forward a clock with a root tap](#forward-a-clock-with-a-root-tap)).
+- The parent needs no SDC for the forwarded clock; a `create_generated_clock` on `u_blk/clk_o` still names it. Sign off with flat timing of the stitched netlist and parasitics: the abstract times the boundary on scalar setup and hold values.
+
+Without the key, restate the forwarded clock on each instance's `clk_o` in the parent's SDC, with the block's forwarding delay as source latency.
+
 ## Assemble hardened blocks
 
 A top run names its blocks under `blocks:`, in `pnr.yaml` and in the `synth.yaml` entry it reads. The top's filelist must leave the module a blackbox (a port-only stub).
@@ -1092,6 +1176,7 @@ A top run names its blocks under `blocks:`, in `pnr.yaml` and in the `synth.yaml
 - A run whose block failed is not attempted (`fail_stage: blocked`, with `blocked_by`).
 - The block must use the top's technology LEF and corner.
 - An abstract is refused, naming what changed, when its inputs changed since hardening or a major rb version with different built-in flow steps or defaults hardened it. Re-harden it, or pass `--accept-stale`.
+- A top whose blocks cover the core has no rows once rows are cut around them. With no standard cell left to place, rb skips global placement, resize, legalization, CTS and its repairs, the post-CTS and global-route timing repairs, antenna diode insertion and fill, routes the top-level nets, and qualifies the pass with `pnr.no_rows_skip_placement`. Clocks stay propagated, and the `after-timing-repair` hooks of a skipped repair do not run. A top with standard cells, such as port buffers (`buffer-ports`, on by default with `harden`), needs a strip of core rows for them; without one the floorplan stops with `no rows left for N standard cell(s)`.
 - A block hardened with `abstract: {gds: false}` has no GDS. A parent's `strict` stream-out (its own `harden` and `rb pnr-export --gds-mode strict` included) fails at setup naming it. A `preview` stream-out, `--png` included, leaves it out of the layout and names it, as in [Stream out GDS and PNG](#stream-out-gds-and-png).
 
 ## Instance a parameterised block
@@ -1117,12 +1202,12 @@ A mismatch stops the run naming the instance and both values. Re-harden a block 
 For maintainers and hook authors. The generated `pnr.tcl` runs:
 
 1. `platform-tcl`, Liberty, LEF, a mode and scene per corner on a multi-corner platform, netlist, SDC, `max-fanout`, `layer-rc-tcl`, don't-use cells, `session` hooks. The SDC and `max-fanout` go into every mode.
-2. Floorplan, tracks, blockages and cut-outs, tie cells, floorplan setup repair.
-3. Macro placement, tap cells, power grid, pin placement, port buffering.
+2. `dont-touch` instances marked, floorplan, tracks, blockages and cut-outs, tie cells, floorplan setup repair.
+3. Macro placement, tap cells, power grid, the `dont-touch` instances' supplies connected, pin placement, port buffering.
 4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and `hold-outputs-at-pins` buffers fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, `improve_placement`, `optimize_mirroring`, `placement.macro-pin-limits`, the place stage's `stage-end` hooks, `check_placement`. An illegal placement, including one a hook left, fails the stage, so no checkpoint is written and CTS does not start.
-5. `repair_clock_inverters`, CTS, post-CTS setup repair, hold repair, legalization.
+5. `repair_clock_inverters`, the `cts-root-taps` pins taken off their nets, CTS, `repair_clock_nets`, the pins put back, post-CTS setup repair, hold repair, legalization.
 6. Global route, global-route repair, antenna repair, detailed route, antenna repair with detailed routes, the optional post-route repair stage, whose rounds each repair antennas after their detailed route.
-7. Fill, global connections, extraction with `rcx-rules`, final reports, outputs.
+7. Fill, global connections, extraction with `rcx-rules`, final reports with the `clock-latency` groups, outputs.
 8. After OpenROAD: the routed-floorplan check, then stream-out and abstract.
 
 - `stage-end` hooks run at the end of each stage, after its last global connection; the checkpoint is written after them.

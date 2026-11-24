@@ -1412,6 +1412,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/run-power-analysis.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#read-a-tagged-pr-run",
+          "slug": "read-a-tagged-pr-run",
+          "title": "Read a tagged P&R run",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/read-a-tagged-pr-run.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#interpret-results",
           "slug": "interpret-results",
           "title": "Interpret results",
@@ -2519,6 +2525,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/verilator-randomized-runs-may-not-reproduce.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#ccache-entries-of-a-verilator-build-stay-with-its-build-directory",
+          "slug": "ccache-entries-of-a-verilator-build-stay-with-its-build-directory",
+          "title": "ccache entries of a Verilator build stay with its build directory",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/ccache-entries-of-a-verilator-build-stay-with-its-build-directory.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#tool-path-fallback-can-select-another-installation",
           "slug": "tool-path-fallback-can-select-another-installation",
           "title": "Tool-path fallback can select another installation",
@@ -2739,6 +2751,24 @@
           "slug": "diamond-search-stays-on-for-the-rest-of-an-openroad-session",
           "title": "Diamond search stays on for the rest of an OpenROAD session",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/diamond-search-stays-on-for-the-rest-of-an-openroad-session.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#a-hardened-blocks-timing-model-stops-a-forwarded-clock",
+          "slug": "a-hardened-blocks-timing-model-stops-a-forwarded-clock",
+          "title": "A hardened block's timing model stops a forwarded clock",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/a-hardened-blocks-timing-model-stops-a-forwarded-clock.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#cts-puts-a-buffer-in-front-of-every-input-pin-on-a-clock-net",
+          "slug": "cts-puts-a-buffer-in-front-of-every-input-pin-on-a-clock-net",
+          "title": "CTS puts a buffer in front of every input pin on a clock net",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/cts-puts-a-buffer-in-front-of-every-input-pin-on-a-clock-net.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#cts-stops-on-a-dont-touch-instance-whose-input-is-on-a-clock-net",
+          "slug": "cts-stops-on-a-dont-touch-instance-whose-input-is-on-a-clock-net",
+          "title": "CTS stops on a dont-touch instance whose input is on a clock net",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/cts-stops-on-a-dont-touch-instance-whose-input-is-on-a-clock-net.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#repairdesign-does-not-repair-the-slew-at-an-output-port",

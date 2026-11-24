@@ -1,0 +1,3 @@
+## CTS puts a buffer in front of every input pin on a clock net
+
+TritonCTS treats each input pin on a clock net as a sink and moves it behind a buffer it inserts. A buffer that forwards the clock to an output port then sits behind part of the tree, so the forwarded clock's delay depends on the tree, and on a dont-touch buffer CTS stops with `ODB-0370`. OpenROAD has no option to leave one pin on the root net: `set_cts_config -skip_nets` skips whole nets. Name such pins in [`cts-root-taps`](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#forward-a-clock-with-a-root-tap), which takes them off their net around CTS.
