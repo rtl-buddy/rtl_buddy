@@ -124,9 +124,9 @@ A passing run's description can carry these qualifiers:
 
 A latch whose data arrives while it is open borrows time from the paths that start at it, and the timer reports its setup slack as exactly 0, however close the data is to the latch's closing edge. `wns_setup_ps` then reads 0 for the whole design. The final reports therefore give each latch data pin's margin: how much later its data could arrive before its setup check fails.
 
-- The margin is `slack + max time borrow - actual time borrow`, from the "Time Borrowing Information" of the latch's check. For a borrowing latch that is the time it may still borrow; for one whose data arrives before it opens, its slack plus the whole window; for one whose data arrives after it closes, its negative slack.
-- `latch_borrow_margin_ps` is the smallest margin over every latch data pin and corner. `latch_borrow` has that `margin_ps`, its `endpoint` and `corner`, that corner's `pins` (latch data pins), `endpoints` (their setup checks read; fewer when a pin is unconstrained) and `borrowing` (those that borrow), and `corners` with each corner's.
-- `latch_borrow.rpt` holds each latch data pin's full check, per corner.
+- The margin is `slack + max time borrow - actual time borrow`, from the "Time Borrowing Information" of the latch's check. For a borrowing latch that is the time it may still borrow; for one whose data arrives before it opens, its slack plus the whole window; for one whose data arrives after it closes, its negative slack. Rising and falling data are checked apart, since each has its own setup time, and a pin's margin is the smaller.
+- `latch_borrow_margin_ps` is the smallest margin over every latch data pin and corner. `latch_borrow` has that `margin_ps`, its `endpoint` and `corner`, that corner's `pins` (latch data pins), `endpoints` (the pins whose setup checks were read; fewer when a pin is unconstrained) and `borrowing` (those with a check that borrows), `complete`, false when a corner's report failed, and `corners` with each corner's.
+- `latch_borrow.rpt` holds each latch data pin's full checks, rising and falling, per corner.
 - When the worst setup slack is exactly 0 and a latch borrows, the summary's WNS Setup reads `+0.000 ns (latch borrow, +0.299 ns left)`, the margin, instead of a bare `+0.000 ns`.
 - A design without latches has neither field nor file. If the report cannot be read, `pnr.latch_borrow_unavailable` warns and the fields are left out; the verdict does not change.
 

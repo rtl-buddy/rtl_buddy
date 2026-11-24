@@ -5,8 +5,12 @@
 # exactly 0 and hands the borrowed time on to the paths that start at the
 # latch; only `report_checks` prints how much of the latch's window is left,
 # under "Time Borrowing Information". For each corner this appends the setup
-# check of every latch data pin, one path each, to the report file rb reads,
-# after a header line naming the corner, then prints `tag corner pins`. A
+# checks of every latch data pin to the report file rb reads, after a header
+# line naming the corner, then prints `tag corner pins`. Rising and falling
+# data are reported apart: each has its own setup time, so its own window, and
+# with one path per pin OpenSTA keeps the one that borrows more, not the one
+# with less time left. Another path to a pin with the same transition shares
+# its window, so the one that borrows more has less left. A
 # design without latches writes and prints nothing. Every step is caught, so a
 # failure loses only that corner's report.
 
@@ -34,9 +38,11 @@ proc rb::latch_borrow::report {tag header file corners leave} {
             set out [open $file a]
             puts $out "$header $corner_name"
             close $out
-            report_checks -path_delay max -to $pins -format full -digits 6 \
-                -group_path_count [llength $pins] -endpoint_path_count 1 \
-                {*}$corner_args >> $file
+            foreach to {-rise_to -fall_to} {
+                report_checks -path_delay max $to $pins -format full -digits 6 \
+                    -group_path_count [llength $pins] -endpoint_path_count 1 \
+                    {*}$corner_args >> $file
+            }
             puts "$tag $corner_name [llength $pins]"
         } err]} {
             puts "rb: latch borrow report at $corner_name unavailable: $err"

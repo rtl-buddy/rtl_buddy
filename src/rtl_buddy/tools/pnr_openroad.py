@@ -4023,7 +4023,7 @@ class OpenRoadPnr:
                 modes,
             ),
             "latch_borrow_reports": pnr_latch_borrow.report_tcl(
-                list(corner_libs), platform.get_sta_corner(), modes
+                list(corner_libs), modes
             ),
             "tie_cells_block": tie_cells_block,
             "tie_fanout_block": tie_fanout_block,
@@ -5019,9 +5019,13 @@ class OpenRoadPnr:
     def _latch_borrow_fields(self, platform, final: str) -> dict:
         """Return `latch_borrow_margin_ps` and `latch_borrow` from the latch borrow report, or `{}` for a design without latches.
 
-        `latch_borrow_margin_ps` is the smallest margin over every latch data pin and corner, in ps: how much later the data could arrive before the latch's setup check fails, which a borrowing latch's slack of 0 does not show. `latch_borrow` has that `margin_ps`, its `endpoint` and `corner`, that corner's `pins` (latch data pins), `endpoints` (their setup checks read; fewer when a pin is unconstrained) and `borrowing` (those that borrow), and `corners` with each corner's. Warns `pnr.latch_borrow_unavailable` when the design has latches and the report cannot be read.
+        `latch_borrow_margin_ps` is the smallest margin over every latch data pin and corner, in ps: how much later the data could arrive before the latch's setup check fails, which a borrowing latch's slack of 0 does not show. `latch_borrow` has that `margin_ps`, its `endpoint` and `corner`, that corner's `pins` (latch data pins), `endpoints` (the pins whose setup checks were read; fewer when a pin is unconstrained) and `borrowing` (those with a check that borrows), `complete`, false when a corner was not reported, and `corners` with each corner's. Warns `pnr.latch_borrow_unavailable` when the design has latches and the report cannot be read.
         """
-        reported = pnr_latch_borrow.reported_corners(final)
+        primary = platform.get_sta_corner()
+        reported = {
+            primary if corner == pnr_latch_borrow.SINGLE_CORNER else corner: pins
+            for corner, pins in pnr_latch_borrow.reported_corners(final).items()
+        }
         failed = pnr_latch_borrow.unavailable(final)
         if not reported and not failed:
             return {}
@@ -5030,7 +5034,12 @@ class OpenRoadPnr:
         if reported:
             try:
                 with open(path) as f:
-                    checks = pnr_latch_borrow.parse(f.read())
+                    checks = {
+                        primary
+                        if corner == pnr_latch_borrow.SINGLE_CORNER
+                        else corner: c
+                        for corner, c in pnr_latch_borrow.parse(f.read()).items()
+                    }
             except OSError as exc:
                 # Without the file no corner's count is known.
                 reported = {}
@@ -5054,13 +5063,20 @@ class OpenRoadPnr:
         if not corners:
             return {}
         timed = [c for c, s in corners.items() if s["margin_ps"] is not None]
-        primary = platform.get_sta_corner()
         worst = (
             min(timed, key=lambda c: corners[c]["margin_ps"])
             if timed
             else (primary if primary in corners else next(iter(corners)))
         )
-        record = {**corners[worst], "corner": worst, "corners": corners}
+        expected = (
+            platform.get_sta_corners() if platform.is_multi_corner() else [primary]
+        )
+        record = {
+            **corners[worst],
+            "corner": worst,
+            "complete": all(c in corners for c in expected),
+            "corners": corners,
+        }
         fields = {"latch_borrow": record}
         if record["margin_ps"] is not None:
             fields["latch_borrow_margin_ps"] = record["margin_ps"]

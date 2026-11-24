@@ -15,6 +15,8 @@ TAG = "RB-LATCH-BORROW:"
 HEADER = "Latch D endpoints at corner"
 #: The report file, next to `timing.rpt`.
 REPORT = "latch_borrow.rpt"
+#: The corner a single-corner platform's report names; rb reads it as the platform's corner.
+SINGLE_CORNER = "-"
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
 _TCL_FILE = "latch_borrow.tcl"
@@ -63,10 +65,10 @@ proc rb::latch_borrow::corner_args {name} {
 """
 
 
-def report_tcl(corners: list[str], primary: str, modes: bool = False) -> str:
-    """Return the final reports' latch borrow step: each latch data pin's setup check, per corner, into `REPORT`, with a `TAG` line per corner.
+def report_tcl(corners: list[str], modes: bool = False) -> str:
+    """Return the final reports' latch borrow step: each latch data pin's setup checks, per corner, into `REPORT`, with a `TAG` line per corner.
 
-    `corners` are a multi-corner platform's corners, each reported in its own scene; a single-corner platform's one corner is `primary`, reported in the default one. With `modes`, each corner's scene times its own SDC mode, named after the corner, which the step makes current while it reports that corner, and the mode current before is restored after. The step carries its own leading newline and no trailing one, as `corner_reports` does.
+    `corners` are a multi-corner platform's corners, each reported in its own scene; a single-corner platform's one corner is reported in the default one as `SINGLE_CORNER`, since its name need not be a Tcl word. With `modes`, each corner's scene times its own SDC mode, named after the corner, which the step makes current while it reports that corner, and the mode current before is restored after. The step carries its own leading newline and no trailing one, as `corner_reports` does.
     """
     step = files(_TEMPLATE_PACKAGE).joinpath(_TCL_FILE).read_text()
     leave = ' ""'
@@ -81,7 +83,7 @@ def report_tcl(corners: list[str], primary: str, modes: bool = False) -> str:
             step += "set rb_latch_borrow_mode [sta::cmd_mode_name]\n"
             leave = " {set_mode $::rb_latch_borrow_mode}"
     else:
-        corner_list = f"[list {primary} {{}}]"
+        corner_list = f"[list {SINGLE_CORNER} {{}}]"
     return (
         '\nputs ">>> Latch borrow"\n'
         + step
@@ -139,11 +141,11 @@ def parse(text: str) -> dict[str, list[LatchEndpoint]]:
 
 
 def summarize(checks: list[LatchEndpoint], ps_per_unit: float) -> dict:
-    """One corner's summary: `margin_ps` and `endpoint`, the smallest margin and its pin (None without checks), `endpoints`, the checks, and `borrowing`, those that borrow."""
+    """One corner's summary: `margin_ps` and `endpoint`, the smallest margin over the checks and its pin (None without checks), `endpoints`, the pins checked, and `borrowing`, the pins with a check that borrows."""
     worst = min(checks, key=lambda c: c.margin, default=None)
     return {
         "margin_ps": worst.margin * ps_per_unit if worst else None,
         "endpoint": worst.pin if worst else None,
-        "endpoints": len(checks),
-        "borrowing": sum(1 for c in checks if c.actual_borrow > 0),
+        "endpoints": len({c.pin for c in checks}),
+        "borrowing": len({c.pin for c in checks if c.actual_borrow > 0}),
     }

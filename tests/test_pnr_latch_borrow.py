@@ -190,6 +190,15 @@ def test_a_corner_summary_takes_the_smallest_margin():
         "endpoints": 3,
         "borrowing": 2,
     }
+    # A pin's rising and falling checks count once; the smaller margin wins.
+    rise = LatchEndpoint("u_a/D", 0.0, 480.0, 300.0)
+    fall = LatchEndpoint("u_a/D", 0.0, 250.0, 200.0)
+    assert pnr_latch_borrow.summarize([rise, fall], 1.0) == {
+        "margin_ps": pytest.approx(50.0),
+        "endpoint": "u_a/D",
+        "endpoints": 1,
+        "borrowing": 1,
+    }
     assert pnr_latch_borrow.summarize([], 1.0) == {
         "margin_ps": None,
         "endpoint": None,
@@ -201,7 +210,9 @@ def test_a_corner_summary_takes_the_smallest_margin():
 # -- the result fields -------------------------------------------------------------
 
 
-def _fields(tmp_path, monkeypatch, log, report=None, *, primary="tt", ps=1.0):
+def _fields(
+    tmp_path, monkeypatch, log, report=None, *, primary="tt", corners=None, ps=1.0
+):
     events = _capture_pnr_events(monkeypatch)
     backend = OpenRoadPnr(
         "demo/openroad", _pnr_cfg(tmp_path, None), str(tmp_path), MagicMock()
@@ -210,18 +221,23 @@ def _fields(tmp_path, monkeypatch, log, report=None, *, primary="tt", ps=1.0):
     if report is not None:
         os.makedirs(backend.artefact_dir, exist_ok=True)
         Path(backend.artefact_dir, pnr_latch_borrow.REPORT).write_text(report)
-    platform = MagicMock(get_sta_corner=lambda: primary)
+    platform = MagicMock(
+        get_sta_corner=lambda: primary,
+        get_sta_corners=lambda: corners or [primary],
+        is_multi_corner=lambda: bool(corners),
+    )
     return backend._latch_borrow_fields(platform, log), events
 
 
 def test_the_result_carries_the_smallest_margin_over_the_corners(tmp_path, monkeypatch):
     log = "RB-LATCH-BORROW: tt 3\nRB-LATCH-BORROW: ss 3\n"
-    fields, events = _fields(tmp_path, monkeypatch, log, _REPORT)
+    fields, events = _fields(tmp_path, monkeypatch, log, _REPORT, corners=["tt", "ss"])
 
     assert fields["latch_borrow_margin_ps"] == pytest.approx(-215.283401)
     record = fields["latch_borrow"]
     assert (record["corner"], record["endpoint"]) == ("tt", "u_c/D")
     assert (record["endpoints"], record["borrowing"]) == (3, 2)
+    assert record["complete"] is True
     assert record["corners"]["ss"] == {
         "pins": 3,
         "margin_ps": pytest.approx(50.0),
@@ -233,13 +249,22 @@ def test_the_result_carries_the_smallest_margin_over_the_corners(tmp_path, monke
 
 
 def test_margins_are_converted_from_the_timer_unit(tmp_path, monkeypatch):
-    report = "Latch D endpoints at corner typ\n" + _ISSUE_BLOCK.replace(
+    # A single-corner report names its corner `-`; the result names the platform's.
+    report = "Latch D endpoints at corner -\n" + _ISSUE_BLOCK.replace(
         "499.18", "0.49918"
     ).replace("200.14\n--", "0.20014\n--")
     fields, _ = _fields(
-        tmp_path, monkeypatch, "RB-LATCH-BORROW: typ 1\n", report, ps=1000.0
+        tmp_path,
+        monkeypatch,
+        "RB-LATCH-BORROW: - 1\n",
+        report,
+        primary="TT [25C]",
+        ps=1000.0,
     )
     assert fields["latch_borrow_margin_ps"] == pytest.approx(299.04)
+    assert fields["latch_borrow"]["corner"] == "TT [25C]"
+    assert list(fields["latch_borrow"]["corners"]) == ["TT [25C]"]
+    assert fields["latch_borrow"]["complete"] is True
 
 
 def test_a_design_without_latches_has_no_field(tmp_path, monkeypatch):
@@ -282,7 +307,7 @@ def test_latches_without_a_timed_check_have_no_margin(tmp_path, monkeypatch):
     ids=["missing file", "no pins", "one corner failed"],
 )
 def test_an_unreadable_report_warns(tmp_path, monkeypatch, log, report, reason):
-    fields, events = _fields(tmp_path, monkeypatch, log, report)
+    fields, events = _fields(tmp_path, monkeypatch, log, report, corners=["tt", "ss"])
     level, warned = _one_event(events, "pnr.latch_borrow_unavailable")
     assert level == logging.WARNING
     assert reason in warned["reason"]
@@ -290,8 +315,9 @@ def test_an_unreadable_report_warns(tmp_path, monkeypatch, log, report, reason):
     if report is None:
         assert fields == {}
     else:
-        # The corner that was reported still counts.
+        # The corner that was reported still counts, and the result says one is missing.
         assert list(fields["latch_borrow"]["corners"]) == ["tt"]
+        assert fields["latch_borrow"]["complete"] is False
     message = _human_message("pnr.latch_borrow_unavailable", warned)
     assert "latch borrow margin is unavailable" in message
 
@@ -363,23 +389,23 @@ def test_a_minus_zero_setup_slack_is_not_a_latch_note():
 
 
 def test_the_step_reports_each_corner_in_its_scene():
-    single = pnr_latch_borrow.report_tcl([], "typ")
+    single = pnr_latch_borrow.report_tcl([])
     assert single.startswith('\nputs ">>> Latch borrow"\n')
     assert single.endswith(
         'rb::latch_borrow::report RB-LATCH-BORROW: "Latch D endpoints at corner" '
-        '$OUT_DIR/latch_borrow.rpt [list [list typ {}]] ""'
+        '$OUT_DIR/latch_borrow.rpt [list [list - {}]] ""'
     )
     # A single-corner step names no corner and no mode.
     for absent in ("set_mode", "-corner", "-scene", "rb::latch_borrow::corner_args"):
         assert absent not in single
-    multi = pnr_latch_borrow.report_tcl(["ss", "ff"], "ss")
+    multi = pnr_latch_borrow.report_tcl(["ss", "ff"])
     assert "proc rb::latch_borrow::corner_args" in multi
     assert "set_mode" not in multi
     assert multi.endswith(
         "[list [list ss [rb::latch_borrow::corner_args ss]] "
         '[list ff [rb::latch_borrow::corner_args ff]]] ""'
     )
-    assert pnr_latch_borrow.report_tcl(["ss", "ff"], "ss", modes=True).endswith(
+    assert pnr_latch_borrow.report_tcl(["ss", "ff"], modes=True).endswith(
         "set rb_latch_borrow_mode [sta::cmd_mode_name]\n"
         'rb::latch_borrow::report RB-LATCH-BORROW: "Latch D endpoints at corner" '
         "$OUT_DIR/latch_borrow.rpt "
@@ -458,7 +484,7 @@ def test_the_tcl_reports_each_corner_in_its_mode(tmp_path):
         _STUB
         + "set ::pins {u_a/D u_b/D}\n"
         + f"set OUT_DIR {tmp_path}\n"
-        + pnr_latch_borrow.report_tcl(["ss", "ff"], "ss", modes=True)
+        + pnr_latch_borrow.report_tcl(["ss", "ff"], modes=True)
         + "\nset result [list [lrange $::lines 1 end] $::modes $::checks]\n"
     )
     header = "{Latch D endpoints at corner"
@@ -470,7 +496,9 @@ def test_the_tcl_reports_each_corner_in_its_mode(tmp_path):
     assert "{ss ff ss}" in result
     assert "-scene ff" in result and "-group_path_count 2" in result
     # The stale file is gone; the header lines went to the stubbed `puts`.
-    assert report.read_text() == "checks\nchecks\n"
+    # Rising and falling data apart, at each corner.
+    assert "-rise_to" in result and "-fall_to" in result
+    assert report.read_text() == "checks\n" * 4
 
 
 def test_the_tcl_writes_nothing_without_latches(tmp_path):
@@ -480,7 +508,7 @@ def test_the_tcl_writes_nothing_without_latches(tmp_path):
         _STUB
         + "set ::pins {}\n"
         + f"set OUT_DIR {tmp_path}\n"
-        + pnr_latch_borrow.report_tcl([], "typ")
+        + pnr_latch_borrow.report_tcl([])
         + "\nset result [list [llength $::lines] [llength $::checks]]\n"
     )
     # Only the step's own `>>> Latch borrow` line.
@@ -534,7 +562,7 @@ _LEF = dedent("""\
     END LIBRARY
     """)
 
-#: A latch transparent while `G` is high, its setup check 0.02 ns before `G` falls.
+#: A latch transparent while `G` is high, its setup check 0.02 ns before `G` falls for rising data and 0.25 ns for falling data.
 _LIB = dedent("""\
     library (rb_latch_test) {
       delay_model : table_lookup ;
@@ -553,7 +581,7 @@ _LIB = dedent("""\
             related_pin : "G" ;
             timing_type : setup_falling ;
             rise_constraint (scalar) { values ("0.02") ; }
-            fall_constraint (scalar) { values ("0.02") ; }
+            fall_constraint (scalar) { values ("0.25") ; }
           }
         }
         pin (G) { direction : input ; capacitance : 0.001 ; clock : true ; }
@@ -622,12 +650,15 @@ def test_the_step_reads_each_latch_margin_in_openroad(tmp_path, monkeypatch):
             read_verilog lat.v
             link_design lat
             create_clock -name clk -period 1 [get_ports clk]
-            # Both arrive while the latches are open, 0.28 ns and 0.08 ns before they close.
-            set_input_delay 0.2 -clock clk [get_ports a]
-            set_input_delay 0.4 -clock clk [get_ports b]
+            # All arrive while the latches are open. Rising `a` borrows more, falling
+            # `a` has less left: 0.18 ns and 0.05 ns before their setup checks; `b` has
+            # 0.38 ns and 0.15 ns.
+            set_input_delay -rise 0.3 -clock clk [get_ports a]
+            set_input_delay -fall 0.2 -clock clk [get_ports a]
+            set_input_delay 0.1 -clock clk [get_ports b]
             report_worst_slack -max -digits 6
             """)
-        + pnr_latch_borrow.report_tcl([], "typ")
+        + pnr_latch_borrow.report_tcl([])
         + "\n",
     )
     assert "worst slack max 0.000000" in out
@@ -635,9 +666,10 @@ def test_the_step_reads_each_latch_margin_in_openroad(tmp_path, monkeypatch):
     fields, events = _fields(tmp_path, monkeypatch, out, report, ps=1000.0)
 
     assert not events
-    assert fields["latch_borrow_margin_ps"] == pytest.approx(80.0, abs=0.01)
+    # One path per pin would keep rising `a`'s check, 180 ps.
+    assert fields["latch_borrow_margin_ps"] == pytest.approx(50.0, abs=0.01)
     record = fields["latch_borrow"]
-    assert (record["endpoint"], record["corner"]) == ("u_b/D", "typ")
+    assert (record["endpoint"], record["corner"]) == ("u_a/D", "tt")
     assert (record["endpoints"], record["borrowing"]) == (2, 2)
 
 
@@ -652,7 +684,7 @@ def test_the_step_is_silent_on_a_design_without_latches(tmp_path, monkeypatch):
         tmp_path,
         "set OUT_DIR [pwd]\nread_lef cells.lef\nread_liberty cells.lib\n"
         "read_verilog comb.v\nlink_design comb\n"
-        + pnr_latch_borrow.report_tcl([], "typ")
+        + pnr_latch_borrow.report_tcl([])
         + "\n",
     )
     assert "RB-LATCH-BORROW" not in out and "rb: latch" not in out
@@ -706,14 +738,15 @@ def test_the_issue_reproducer_reports_the_latch_margin(tmp_path, monkeypatch):
     (tmp_path / "lat.v").write_text(_REPRODUCER)
     out = _run(
         tmp_path,
-        _REPRODUCER_TCL + pnr_latch_borrow.report_tcl([], "tt") + "\n",
+        _REPRODUCER_TCL + pnr_latch_borrow.report_tcl([]) + "\n",
     )
     assert "worst slack max 0.00" in out
     report = (tmp_path / pnr_latch_borrow.REPORT).read_text()
     fields, _ = _fields(tmp_path, monkeypatch, out, report)
 
-    # About 299 ps to the closing edge of the 500 ps window.
-    assert 290.0 < fields["latch_borrow_margin_ps"] < 300.0
+    # The issue's block is the rising check, 299 ps; the falling check, with its
+    # longer setup time, has about 285 ps left.
+    assert 280.0 < fields["latch_borrow_margin_ps"] < 299.0
     record = fields["latch_borrow"]
     assert (record["endpoint"], record["endpoints"], record["borrowing"]) == (
         "u_lat/D",
