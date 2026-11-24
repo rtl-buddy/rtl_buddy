@@ -190,6 +190,14 @@ RUN_SIZED = {
     "keep-sizing-vt": True,
     "cts-clock-nets": ["clk", "clk_div[0]"],
     "cts-root-taps": ["u_blk.u_clk_buf/A"],
+    "clock-latency": [
+        {
+            "name": "boundary",
+            "sinks": ["input-capture", "u_blk.r*/CLK"],
+            "target-ps": 90,
+            "tolerance-ps": 5,
+        }
+    ],
     "global-route": GLOBAL_ROUTE_ALL,
     "mode": "closure",
     "signoff": {
@@ -387,7 +395,7 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "cts-repair-clock-inverters, global-route-antenna-repair, "
             "detailed-route-antenna-repair, global-route-hold-repair, "
             "port-buffer, tapcell-tcl, cts-dont-use-cells, keep-sizing-vt, "
-            "cts-clock-nets, cts-root-taps, global-route, mode, signoff, reglvl, tool_overrides, "
+            "cts-clock-nets, cts-root-taps, clock-latency, global-route, mode, signoff, reglvl, tool_overrides, "
             "threads, resources, detailed-route-verbose, report-fanout-nets, "
             "dont-touch, xfail, xfail_strict, "
             "xfail_match",
@@ -455,6 +463,11 @@ def test_a_run_with_every_valid_key_loads(tmp_path):
             "slew-margin, cap-margin, max-wire-length",
         ),
         ("pnr run 'a': blocks[1]", ("blocks", 1), "name, pnr, pnr-path"),
+        (
+            "pnr run 'a': clock-latency[0]",
+            ("clock-latency", 0),
+            "name, sinks, target-ps, tolerance-ps",
+        ),
         ("pnr run 'a': routing-layers", ("routing-layers",), "signal, clock"),
         (
             "pnr run 'a': cts-sink-clustering",

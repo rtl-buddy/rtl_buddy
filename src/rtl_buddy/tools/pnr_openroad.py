@@ -125,6 +125,8 @@ _INSTS_FILE = "insts.tcl"
 _DONT_TOUCH_FILE = "dont_touch.tcl"
 # Takes the `cts-root-taps:` pins off their nets around CTS; see `_cts_root_taps_tcl`.
 _CTS_ROOT_TAPS_FILE = "cts_root_taps.tcl"
+# Measures the `clock-latency:` groups' clock arrival in the final reports; see `_clock_latency_tcl`.
+_CLOCK_LATENCY_FILE = "clock_latency.tcl"
 
 # Non-log files the flow writes under `$OUT_DIR`; `test_pnr.py` checks this covers every one.
 _FLOW_OUTPUT_NAMES = (
@@ -261,6 +263,14 @@ _UNSEEN_DOCS = "rb docs show known-issues#post-route-repair_design-sizes-its-buf
 _CTS_ROOT_TAP_TAG = "RB-CTS-ROOT-TAP:"
 _CTS_ROOT_TAP_RE = re.compile(
     rf"^{re.escape(_CTS_ROOT_TAP_TAG)} (\S+) (\S+)\s*$", re.MULTILINE
+)
+
+
+# Printed by the final reports for each `clock-latency` group at each corner: the group, the corner, its sinks, those a clock reaches, then the late clock arrival's min, max and mean in the timer's unit (`-` without timed sinks).
+_CLOCK_LATENCY_TAG = "RB-CLOCK-LATENCY:"
+_CLOCK_LATENCY_RE = re.compile(
+    rf"^{re.escape(_CLOCK_LATENCY_TAG)} (\S+) (\S+) (\d+) (\d+) (\S+) (\S+) (\S+)\s*$",
+    re.MULTILINE,
 )
 
 
@@ -787,6 +797,37 @@ def _cts_root_taps_tcl(pins: tuple[str, ...]) -> tuple[str, str]:
         + files(_TEMPLATE_PACKAGE).joinpath(_CTS_ROOT_TAPS_FILE).read_text()
         + f"if {{[rb::has_rows]}} {{ rb::cts_root_taps::detach [list {entries}] }}\n",
         f"rb::cts_root_taps::reattach {_CTS_ROOT_TAP_TAG}\n",
+    )
+
+
+def _clock_latency_tcl(
+    groups, corners: list[str], primary: str, modes: bool = False
+) -> str:
+    """Return the final reports' `clock-latency` step, or `""` without groups: each group's late clock arrival per corner, on `_CLOCK_LATENCY_TAG` lines.
+
+    `corners` are a multi-corner platform's corners, each measured in its own scene; a single-corner platform's one corner is `primary`, measured in the default one. With `modes`, each corner's scene times its own SDC mode, named after the corner, and the step makes that mode current while it measures the corner, since which clocks reach a pin is read in the current mode. The step carries its own leading newline and no trailing one, as `corner_reports` does.
+    """
+    if not groups:
+        return ""
+    group_list = " ".join(
+        f"[list {g.name} [list {' '.join('{' + s + '}' for s in g.sinks)}]]"
+        for g in groups
+    )
+    corner_list = (
+        " ".join(
+            f"[list {c} [rb::clock_latency::corner_args {c}]"
+            + (f" {c}]" if modes else "]")
+            for c in corners
+        )
+        if corners
+        else f"[list {primary} {{}}]"
+    )
+    return (
+        '\nputs ">>> Clock latency (clock-latency)"\n'
+        + files(_TEMPLATE_PACKAGE).joinpath(_INSTS_FILE).read_text()
+        + files(_TEMPLATE_PACKAGE).joinpath(_CLOCK_LATENCY_FILE).read_text()
+        + f"rb::clock_latency::report {_CLOCK_LATENCY_TAG} [list {group_list}] "
+        f"[list {corner_list}]"
     )
 
 
@@ -3970,6 +4011,12 @@ class OpenRoadPnr:
             "propagated_clocks": propagated_clocks,
             "routed_corner_sdcs": routed_corner_sdcs,
             "corner_reports": corner_reports,
+            "clock_latency_reports": _clock_latency_tcl(
+                self.pnr_cfg.get_clock_latency(),
+                list(corner_libs),
+                platform.get_sta_corner(),
+                modes,
+            ),
             "tie_cells_block": tie_cells_block,
             "tie_fanout_block": tie_fanout_block,
             "cts_buffer_options": cts_buffer_options,
@@ -4880,6 +4927,86 @@ class OpenRoadPnr:
         if not taps:
             return {}
         return {"cts_root_taps": [{"pin": p, "net": n} for p, n in taps.items()]}
+
+    def _clock_latency_fields(self, platform, final: str) -> dict:
+        """Return `clock_latency`, each group's late clock arrival at its sinks from the final reports, or `{}` without groups.
+
+        A group's `min_ps`, `max_ps` and `mean_ps` are those at the platform's primary corner, and `corners` has each corner's. With `tolerance-ps`, `within_tolerance` says whether every sink is within it of `target-ps` at the primary corner. Warns `pnr.clock_latency_unclocked` for a group with a sink no clock reaches, or no sink, and `pnr.clock_latency_off_target` for one outside its tolerance.
+        """
+        groups = self.pnr_cfg.get_clock_latency()
+        if not groups:
+            return {}
+        ps = self._ps_per_unit
+
+        def _ps(value: str) -> float | None:
+            try:
+                return float(value) * ps
+            except ValueError:
+                return None
+
+        rows: dict[str, dict[str, tuple]] = {}
+        for name, corner, sinks, timed, low, high, mean in _CLOCK_LATENCY_RE.findall(
+            final
+        ):
+            rows.setdefault(name, {})[corner] = (
+                int(sinks),
+                int(timed),
+                _ps(low),
+                _ps(high),
+                _ps(mean),
+            )
+        primary = platform.get_sta_corner()
+        out = {}
+        for group in groups:
+            measured = rows.get(group.name)
+            if not measured:
+                continue
+            first = measured.get(primary) or next(iter(measured.values()))
+            sinks, timed, low, high, mean = first
+            record = {
+                "sinks": sinks,
+                "timed_sinks": timed,
+                "min_ps": low,
+                "max_ps": high,
+                "mean_ps": mean,
+                "target_ps": group.target_ps,
+                "tolerance_ps": group.tolerance_ps,
+                "corners": {
+                    corner: {"min_ps": c_low, "max_ps": c_high, "mean_ps": c_mean}
+                    for corner, (_s, _t, c_low, c_high, c_mean) in measured.items()
+                },
+            }
+            if timed < sinks or not sinks:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "pnr.clock_latency_unclocked",
+                    pnr=self.pnr_cfg.get_name(),
+                    group=group.name,
+                    sinks=sinks,
+                    timed=timed,
+                )
+            if group.tolerance_ps is not None and low is not None:
+                within = (
+                    abs(low - group.target_ps) <= group.tolerance_ps
+                    and abs(high - group.target_ps) <= group.tolerance_ps
+                )
+                record["within_tolerance"] = within
+                if not within:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "pnr.clock_latency_off_target",
+                        pnr=self.pnr_cfg.get_name(),
+                        group=group.name,
+                        corner=primary,
+                        min_ps=low,
+                        max_ps=high,
+                        target_ps=group.target_ps,
+                        tolerance_ps=group.tolerance_ps,
+                    )
+            out[group.name] = record
+        return {"clock_latency": out} if out else {}
 
     def _describe_electrical(self, fields: dict) -> str:
         """Return `"N max-slew, M max-capacitance violator(s)"` for the nonzero counts, or `""` when there are none."""
@@ -8216,6 +8343,7 @@ class OpenRoadPnr:
             "drc_count": drcs,
             **self._parse_electrical(final),
             **self._path_fanout_fields(final),
+            **self._clock_latency_fields(platform, final),
             **self._allow_congestion_fields(platform, log_text),
             **self._macro_pin_limits_fields(log_text),
             **self._cts_root_taps_fields(log_text),

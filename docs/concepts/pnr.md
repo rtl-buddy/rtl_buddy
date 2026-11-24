@@ -87,6 +87,7 @@ Check `routed` before treating a `PASS` as routed. A `PASS` does not mean the de
 | `max_slew_violation_count`, `max_capacitance_violation_count`, `max_fanout_violation_count` | Pins over a Liberty or SDC limit at any corner, listed in `electrical.rpt`. |
 | `worst_path_startpoint`, `worst_path_endpoint`, `worst_path_levels`, `worst_path_resolved` | The worst setup path over all path groups at the setup-critical corner: its ends as RTL names, its combinational cells, and whether both ends resolved. See [below](#find-the-critical-path-and-loaded-nets-in-the-rtl). |
 | `max_net_fanout` | Sink pins of the highest-fanout signal net, excluding clock, reset-tree and supply nets. |
+| `clock_latency` | With [`clock-latency`](#report-clock-arrival-at-chosen-sinks): each group's late clock arrival at its sinks, per corner, against its target. |
 | `cts_root_taps` | With [`cts-root-taps`](#forward-a-clock-with-a-root-tap): each pin CTS left on the root net, with that net. |
 | `macro_pin_buffered_count`, `macro_pin_unmet_count` | With `placement.macro-pin-limits`: pins it buffered, and pins still over their limit less the margin on placement parasitics. |
 | `area_um2` | Design area. |
@@ -354,6 +355,7 @@ Process-dependent settings live on the PDK and can be overridden on the platform
 | Clock tree | `cts-buffer`, `cts-sink-clustering`, `cts-obstruction-aware`, `cts-apply-ndr`. `cts-clock-nets` builds trees for the named clocks only. |
 | A strong root buffer with small branch buffers | `cts-root-buffer` names the root, and `cts-buffer` lists the branch buffers only. Otherwise CTS picks the root from `cts-buffer`. |
 | Slew violations on clock pins far from the nearest leaf buffer, as when many clock gates sit in a small area | `cts-sink-clustering` with `size` and `max-diameter` (µm). |
+| The clock must reach chosen registers, such as a block's boundary registers, at a set insertion delay | `clock-latency` reports their routed arrival against a target, [below](#report-clock-arrival-at-chosen-sinks). |
 | A buffer that forwards the clock to an output port must stay on the port's net, not become a leaf of the register tree | `cts-root-taps`, [below](#forward-a-clock-with-a-root-tap). |
 | Setup misses on flops of a clock branch CTS padded to match the deepest (`CTS-0033`, `CTS-0036`), as when a clock drives a buffer as well as flops | `cts-latency-balancing: false`. |
 | Long clock wires after CTS | `cts-repair-clock-nets: true`, or `{max-wire-length: <µm>}`. |
@@ -394,6 +396,21 @@ TritonCTS puts a buffer it inserts in front of every input pin on a clock net. A
 - The flow fixes, during CTS, each tapped instance that drives clock pins, which CTS would otherwise clone as a clock gate with a copy of the input that is off, and each gate on a temporary clock's net, which CTS would clone where it would not on the original net. All is read from the timer before any pin is taken off, and undone after CTS.
 - With `cts-clock-nets`, CTS builds trees for the named nets only: name the net the buffer drives too, or its registers get no tree.
 - A pattern that matches no pin, a pin that is not an input on a clock net, or a net gone after CTS fails the CTS stage, naming the entry. On a top without rows, where CTS does not run, the pins stay where they are.
+
+### Report clock arrival at chosen sinks
+
+Abutted blocks that forward a clock to each other agree on the clock's arrival at their boundary registers. CTS balances a tree but takes no target, so `clock-latency` reports the arrival at named groups of sinks, to check against one:
+
+```yaml
+    clock-latency:
+      - {name: boundary, sinks: [input-capture, output-launch], target-ps: 90, tolerance-ps: 5}
+      - {name: fwd_regs, sinks: "u_core.r_*/CLK"}
+```
+
+- `sinks` takes `input-capture` (the registers whose data pin captures an input port through combinational logic; an asynchronous set or reset, or a clock gate's enable, does not count), `output-launch` (those that launch an output port), and `<instance>/<pin>` names or globs, as `cts-root-taps` takes them. A pin off the clock network, such as a data pin, counts in `sinks` but not `timed_sinks`.
+- The final reports print each group's min, max and mean late arrival of the clock's rising edge at each corner, on the final parasitics (`RB-CLOCK-LATENCY:` lines). For a clock whose rising edge is at 0, that is its source latency plus the insertion delay. With [a mode per corner](#sign-off-at-several-corners), each corner is measured in its own SDC mode, so a sink that only one corner's case analysis clocks is timed at that corner.
+- The result's `clock_latency.<group>` has `min_ps`, `max_ps` and `mean_ps` at the platform's primary corner, `corners` with each corner's, `sinks`, `timed_sinks`, `target_ps` and `tolerance_ps`. With a tolerance, `within_tolerance` says whether every sink is within it of the target at the primary corner, and a group outside it warns `pnr.clock_latency_off_target`. A group with no sink, or a sink no clock reaches, warns `pnr.clock_latency_unclocked`.
+- Only a run that reaches its final reports measures the groups; a probe or `--stop-after` run does not. Nothing fails on a group off target.
 
 ### Threshold-voltage flavours and footprints
 
@@ -1165,7 +1182,7 @@ For maintainers and hook authors. The generated `pnr.tcl` runs:
 4. Global placement (with `lifetime: global-placement` and rotated-macro blockages present, and `hold-outputs-at-pins` buffers fixed), freeing those buffers, `repair_tie_fanout`, `repair_design`, legalization, `improve_placement`, `optimize_mirroring`, `placement.macro-pin-limits`, the place stage's `stage-end` hooks, `check_placement`. An illegal placement, including one a hook left, fails the stage, so no checkpoint is written and CTS does not start.
 5. `repair_clock_inverters`, the `cts-root-taps` pins taken off their nets, CTS, `repair_clock_nets`, the pins put back, post-CTS setup repair, hold repair, legalization.
 6. Global route, global-route repair, antenna repair, detailed route, antenna repair with detailed routes, the optional post-route repair stage, whose rounds each repair antennas after their detailed route.
-7. Fill, global connections, extraction with `rcx-rules`, final reports, outputs.
+7. Fill, global connections, extraction with `rcx-rules`, final reports with the `clock-latency` groups, outputs.
 8. After OpenROAD: the routed-floorplan check, then stream-out and abstract.
 
 - `stage-end` hooks run at the end of each stage, after its last global connection; the checkpoint is written after them.

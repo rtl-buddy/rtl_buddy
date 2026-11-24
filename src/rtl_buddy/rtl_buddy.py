@@ -11846,6 +11846,7 @@ class RtlBuddy:
             "macro_pin_buffered_count",
             "macro_pin_unmet_count",
             "cts_root_taps",
+            "clock_latency",
             "worst_setup_corner",
             "worst_hold_corner",
             "corners",
