@@ -593,6 +593,7 @@ def _inheriting_backend(tmp_path, inherited, own):
     power_cfg.get_lib_path_entries.return_value = own
     backend = OpenRoadPower.__new__(OpenRoadPower)
     backend.power_cfg = power_cfg
+    backend.run_tag = None
     return backend
 
 
