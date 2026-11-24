@@ -129,10 +129,10 @@ _DEDUP_STATES = _LIVE_STATES + _TERMINAL_RETAINED_STATES
 _DRAIN_FILTER = ",".join(_LIVE_STATES)
 _DEDUP_FILTER = ",".join(_DEDUP_STATES)
 
-# sbatch refusals that clear as the cluster's queue drains (the controller's
-# `MaxJobCount`). Matched case-insensitively against sbatch's stderr. A timeout is not
-# one: the controller may have accepted the job, and a resubmit would duplicate it.
+# Explicit controller refusals that may clear on a later submission. A timeout
+# is ambiguous because the controller may already have accepted the job.
 _TRANSIENT_SUBMIT_ERRORS = (
+    "batch job submission failed: i/o error writing script/environment to file",
     "maxjobcount",
     "job queue full",
     "temporarily unable to accept job",

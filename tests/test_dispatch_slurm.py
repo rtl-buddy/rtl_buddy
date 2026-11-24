@@ -2126,16 +2126,23 @@ class _FakeClock:
         return getattr(time, name)
 
 
-def test_an_array_refused_at_max_job_count_is_resubmitted(
-    monkeypatch, tmp_path, caplog
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        _MAX_JOB_COUNT,
+        "sbatch: error: Batch job submission failed: I/O error writing script/environment to file",
+    ],
+)
+def test_a_transiently_refused_array_is_resubmitted(
+    monkeypatch, tmp_path, caplog, refusal
 ):
-    """A full queue drains on its own, so the array waits and goes out again."""
+    """A rejected submission waits and retries the same array."""
     import logging
 
     calls = []
     results = [
-        SimpleNamespace(returncode=1, stdout="", stderr=_MAX_JOB_COUNT),
-        SimpleNamespace(returncode=1, stdout="", stderr=_MAX_JOB_COUNT),
+        SimpleNamespace(returncode=1, stdout="", stderr=refusal),
+        SimpleNamespace(returncode=1, stdout="", stderr=refusal),
         SimpleNamespace(returncode=0, stdout="100\n", stderr=""),
     ]
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
@@ -2158,7 +2165,7 @@ def test_an_array_refused_at_max_job_count_is_resubmitted(
     ]
     assert [r.rtl_fields["attempt"] for r in deferred] == [1, 2]
     assert deferred[0].rtl_fields["jobs"] == 3
-    assert "MaxJobCount limit reached" in deferred[0].rtl_fields["error"]
+    assert refusal.splitlines()[-1] in deferred[0].rtl_fields["error"]
 
 
 def test_a_queue_that_stays_full_fails_naming_the_refusal(monkeypatch, tmp_path):
