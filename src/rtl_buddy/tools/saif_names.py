@@ -11,6 +11,7 @@ instance.
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import re
 import string
@@ -150,6 +151,19 @@ _INSTANCE_RE = re.compile(
 )
 
 
+class _HashingReader:
+    """A binary file that hashes every byte read through it."""
+
+    def __init__(self, fh, digest):
+        self._fh = fh
+        self._digest = digest
+
+    def read(self, size=-1):
+        data = self._fh.read(size)
+        self._digest.update(data)
+        return data
+
+
 @dataclass
 class MapResult:
     """What :func:`apply_instance_map` did."""
@@ -166,8 +180,11 @@ def apply_instance_map(source: str, dest: str, imap: InstanceMap) -> MapResult:
     """Copy the SAIF at ``source`` to ``dest``, renaming each INSTANCE record ``imap`` names.
 
     A record matches when its name, read with :func:`plain_name`, is a trace name of the map, at
-    any depth. Everything else is copied byte for byte. The source is hashed as it is read, so the
-    hash is of the bytes the copy was made from. Raises ``OSError`` if either file fails.
+    any depth, and the `INSTANCE` keyword and the name are on one line, as SAIF writers put them.
+    Everything else is copied byte for byte. A gzip-compressed source, which `read_saif` also
+    reads, is decompressed; ``dest`` is plain text either way. The source file is hashed as it is
+    read, so the hash is of the bytes the copy was made from. Raises ``OSError`` if either file
+    fails, including a corrupt gzip stream.
     """
     digest = hashlib.sha256()
     used: set[str] = set()
@@ -183,14 +200,22 @@ def apply_instance_map(source: str, dest: str, imap: InstanceMap) -> MapResult:
         renamed += 1
         return m.group(1) + spelled
 
-    with open(source, "rb") as src, open(dest, "wb") as out:
+    with open(source, "rb") as fh, open(dest, "wb") as out:
+        raw_reader = _HashingReader(fh, digest)
+        compressed = fh.peek(2)[:2] == b"\x1f\x8b"
+        src = gzip.GzipFile(fileobj=raw_reader) if compressed else fh
         for raw in src:
-            digest.update(raw)
+            if not compressed:
+                digest.update(raw)
             # latin-1 round-trips every byte; SAIF keywords and names are ASCII.
             line = raw.decode("latin-1")
             if "INSTANCE" in line:
                 line = _INSTANCE_RE.sub(_rename, line)
             out.write(line.encode("latin-1"))
+        if compressed:
+            # Bytes after the gzip stream are part of the file the hash identifies.
+            while raw_reader.read(1 << 20):
+                pass
     return MapResult(
         source_sha256=digest.hexdigest(),
         renamed=renamed,

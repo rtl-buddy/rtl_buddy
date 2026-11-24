@@ -4098,3 +4098,33 @@ def test_a_saif_that_cannot_be_mapped_fails_setup(tmp_path, monkeypatch):
     assert res.results["fail_stage"] == "setup"
     assert "could not apply activity.instance-map" in res.results["desc"]
     assert launched == []
+
+
+def test_a_saif_named_as_the_mapped_copy_is_kept_and_refused_with_a_map(
+    tmp_path, monkeypatch
+):
+    """`activity.saif` naming `activity.mapped.saif`: without a map the stale-clear keeps
+    it, since it is the run's input; with a map the run refuses before overwriting it.
+    """
+    from rtl_buddy.tools import power_openroad
+    from rtl_buddy.runner.power_results import PowerFailResults
+
+    backend, _ = _saif_backend(tmp_path)
+    own = Path(backend._mapped_saif_path())
+    own.write_text(_MAPPED_SAIF)
+    backend.power_cfg.activity.saif = str(own)
+
+    _run_prepared_power(
+        backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+    assert own.read_text() == _MAPPED_SAIF
+
+    imap = tmp_path / "sim_names.map"
+    imap.write_text("u_a__u0 u_a.u0\n")
+    backend.power_cfg.activity.instance_map = str(imap)
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: None)
+    res = backend.run()
+
+    assert isinstance(res, PowerFailResults)
+    assert "which the instance map would overwrite" in res.results["desc"]
+    assert own.read_text() == _MAPPED_SAIF

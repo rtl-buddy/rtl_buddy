@@ -139,3 +139,21 @@ def test_openroad_reads_the_mapped_instance_into_the_database(tmp_path):
     assert "Annotated 4 pin activities." in after, after
     for pin in ("u_a.u0/A", "u_a.u0/Y", "u1/A"):
         assert f" saif {pin}\n" in after, after
+
+
+def test_apply_instance_map_reads_a_gzip_saif(tmp_path):
+    """`read_saif` reads a gzip-compressed SAIF, so the map does too; the hash is of the
+    compressed file as it is on disk.
+    """
+    import gzip
+
+    saif = tmp_path / "trace.saif.gz"
+    saif.write_bytes(gzip.compress(_RENAMED_SAIF.encode()))
+    imap = read_instance_map(str(_write(tmp_path, "map.txt", "u_a__u0 u_a.u0\n")))
+    dest = tmp_path / "mapped.saif"
+
+    result = apply_instance_map(str(saif), str(dest), imap)
+
+    assert dest.read_text() == _RENAMED_SAIF.replace("u_a__u0", "u_a.u0")
+    assert result.renamed == 1
+    assert result.source_sha256 == hashlib.sha256(saif.read_bytes()).hexdigest()

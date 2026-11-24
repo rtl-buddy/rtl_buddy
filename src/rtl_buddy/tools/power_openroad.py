@@ -317,6 +317,12 @@ class OpenRoadPower(BasePower):
         """The copy of `activity.saif` with `activity.instance-map` applied, which OpenROAD reads instead."""
         return os.path.join(self.artefact_dir, "activity.mapped.saif")
 
+    def _is_mapped_saif(self, path: str | None) -> bool:
+        """Whether ``path`` is `_mapped_saif_path`, which the stale-clear and the map overwrite."""
+        return bool(path) and os.path.realpath(path) == os.path.realpath(
+            self._mapped_saif_path()
+        )
+
     def _apply_instance_map(self) -> str | None:
         """Write `_mapped_saif_path` from the SAIF, and take the trace hash from the bytes it read.
 
@@ -792,6 +798,12 @@ class OpenRoadPower(BasePower):
         instance_map = self.power_cfg.get_activity().instance_map
         if instance_map and self.power_cfg.get_activity_source() == "saif":
             try:
+                if self._is_mapped_saif(self.power_cfg.get_activity().saif):
+                    raise InstanceMapError(
+                        "activity.saif names this run's own "
+                        f"{self._mapped_saif_path()}, which the instance map "
+                        "would overwrite; point it at the trace"
+                    )
                 self._instance_map = read_instance_map(instance_map)
             except InstanceMapError as e:
                 log_event(
@@ -1137,7 +1149,12 @@ class OpenRoadPower(BasePower):
                 self._staging_path(self._instances_report_path()),
                 self._staging_path(self._instances_cells_path()),
                 self._netlist_snapshot_path(),
-                self._mapped_saif_path(),
+                # Not when `activity.saif` itself names it: that is this run's input.
+                *(
+                    []
+                    if self._is_mapped_saif(self.power_cfg.get_activity().saif)
+                    else [self._mapped_saif_path()]
+                ),
                 # Every per-corner report, by pattern rather than configured corners: the platform may have lost a corner.
                 *self._corner_report_paths_on_disk(),
             ],
