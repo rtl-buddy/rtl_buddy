@@ -2427,6 +2427,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "later stage sessions have in their original form; move it to a "
                 "session hook"
             )
+        case "pnr.hook_error_lines":
+            return (
+                f'P&R "{fields.get("pnr")}": hook {fields.get("point")} '
+                f"({fields.get('path')}) returned after OpenROAD printed "
+                f"{fields.get('count')} [ERROR line(s), which do not fail the "
+                f"run; the first: {fields.get('first')}"
+            )
         case "pnr.hook_commands_added":
             return (
                 f'P&R "{fields.get("pnr")}": hook {fields.get("point")} '

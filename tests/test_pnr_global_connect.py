@@ -211,9 +211,11 @@ def test_a_post_route_repair_round_connects_the_cells_it_added_before_its_hooks(
     assert connects[0] < hook < connects[1]
     log = (run_dir / "06_post_route_repair.r1.repair.log").read_text().splitlines()
     marked = log.index("MARK before-detailed-route")
-    assert log[marked - 1].startswith(">>> Hook before-detailed-route: ")
-    assert log[marked - 2] == _CONNECT
-    assert log[marked + 1 : marked + 3] == [
+    assert log[marked - 1].startswith(">>> rb: hook begin before-detailed-route ")
+    assert log[marked - 2].startswith(">>> Hook before-detailed-route: ")
+    assert log[marked - 3] == _CONNECT
+    assert log[marked + 1 : marked + 4] == [
+        ">>> rb: hook end before-detailed-route ok",
         _CONNECT,
         ">>> Post-route repair round 1: detailed route",
     ]
@@ -236,7 +238,11 @@ def test_detailed_route_starts_after_the_connections_of_cells_a_hook_added(
 
     lines = _log(artefacts)
     marked = lines.index("MARK before-detailed-route")
-    assert lines[marked + 1 : marked + 3] == [_CONNECT, ">>> Detail route"]
+    assert lines[marked + 1 : marked + 4] == [
+        ">>> rb: hook end before-detailed-route ok",
+        _CONNECT,
+        ">>> Detail route",
+    ]
 
 
 @pytest.mark.parametrize("stages", [False, True])
