@@ -400,7 +400,7 @@ class Toolset:
         )
 
     def _h_phys_runs(self, args: dict) -> dict:
-        """Every run with physical artefacts under the project.
+        """Every run with physical artefacts under the project, except `--run-tag` runs.
 
         Takes no ``phys_dir``: it lists the runs the other tools take one from.
         """
@@ -1141,7 +1141,8 @@ def build_toolset(
             title="Physical runs in this project",
             command="rb phys runs",
             description=(
-                "Every run that left physical artefacts under this project, newest "
+                "Every run that left physical artefacts under this project, except "
+                "--run-tag runs (pass their directory as 'phys_dir'), newest "
                 "first; the source of the 'phys_dir' the other physical tools take. Each "
                 "entry has the artefact directory to pass back, run name and top, "
                 "producing backends, power mode and switching drive (defaults, a "
