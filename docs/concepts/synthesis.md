@@ -17,16 +17,18 @@ Use `yosys` for technology-independent synthesis or a quick mapped result. Use `
 
 ## Install the tools
 
-rtl_buddy is validated against the [RTL Buddy Yosys fork](https://github.com/rtl-buddy/yosys). Put `yosys` on `PATH`:
+rtl_buddy is validated against the `rtl-buddy-0.71` branch of the [RTL Buddy Yosys fork](https://github.com/rtl-buddy/yosys): Yosys 0.71 plus SystemVerilog frontend fixes that stock Yosys lacks. [rtl-buddy-tools](https://github.com/rtl-buddy/rtl-buddy-tools) builds it together with a matching yosys-slang plugin and the formal solvers, at one pinned set for macOS and Linux. To build Yosys on its own and put `yosys` on `PATH`:
 
 ```bash
-git clone --recursive https://github.com/rtl-buddy/yosys.git
+git clone --recursive -b rtl-buddy-0.71 https://github.com/rtl-buddy/yosys.git
 cd yosys
-make config-clang    # or make config-gcc on Linux
-make -j 8
-make install
-yosys --version
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+cmake --build build -j 8
+cmake --install build
+yosys -V
 ```
+
+The build needs CMake 3.28 or newer, bison 3.6 or newer, flex, and `pkg-config`. Yosys finds Tcl, readline and libffi only through `pkg-config`, and builds without them, silently, when it is missing.
 
 `tool: openroad` also needs `openroad` on `PATH` (`openroad -version`). On macOS, follow `tools/openroad/SETUP_OSX.md` in the project template. `rb tool-check --explain yosys` reports what is missing.
 
