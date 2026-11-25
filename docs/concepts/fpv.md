@@ -8,7 +8,7 @@ description: Configure and run SymbiYosys formal verification, choose a SystemVe
 
 ## Install the formal toolchain
 
-Install `sby` and at least one solver, then run `rb tool-check --required-for fpv`. The [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build/releases) bundles Yosys, SymbiYosys and solvers. Otherwise follow the upstream SymbiYosys instructions and put a solver such as Yices, Z3, Boolector or ABC on `PATH`.
+Install `sby` and at least one solver, then run `rb tool-check --required-for fpv`. The [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build/releases) bundles Yosys, SymbiYosys and solvers. [rtl-buddy-tools](https://github.com/rtl-buddy/rtl-buddy-tools) builds SymbiYosys, Yices, Boolector and Z3 at pinned versions for macOS and Linux. Otherwise follow the upstream SymbiYosys instructions and put a solver such as Yices, Z3, Boolector or ABC on `PATH`.
 
 Only the `sby` backend is supported. If it is not on `PATH`, set its absolute path in `cfg-fpv-tools`.
 
@@ -66,7 +66,7 @@ Use the simplest frontend that elaborates your properties.
 | `verilog` | Immediate assertions and simple concurrent assertions | Built into Yosys. Does not correctly support implications, sequence operators or compilation-unit `bind` |
 | `slang` | `bind`, `\|->`, `\|=>`, sequences, or richer SystemVerilog | Needs the `yosys-slang` plugin, set by `cfg-fpv-tools[].opts.plugin-path` or `RTL_BUDDY_SLANG_PLUGIN` |
 
-- For concurrent SVA under slang, use a build that lowers the constructs you need; the [rtl-buddy yosys-slang branch](https://github.com/rtl-buddy/yosys-slang/tree/rtl-buddy) supports the property flow.
+- For concurrent SVA under slang, use a build that lowers the constructs you need. The [rtl-buddy yosys-slang branch](https://github.com/rtl-buddy/yosys-slang/tree/rtl-buddy-sv-elab) supports the property flow: sequences (`##N`, `##[m:n]`, sequence `and`/`or`), `|->`, `|=>` and `disable iff`. Build it against the [rtl-buddy Yosys](synthesis.md#install-the-tools) you run. Loaded as a plugin, it replaces the slang frontend built into Yosys 0.71, which rejects several of these constructs.
 - With slang, includes and macros inside `synthesis translate_off` regions must still resolve, because slang preprocesses those regions.
 - Accepted constructs vary by build, and one rejected construct aborts the whole read. Probe your build one construct at a time before writing a large property set:
 
