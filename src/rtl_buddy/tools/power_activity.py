@@ -54,7 +54,9 @@ def _tcl_word(path: str) -> str:
     return "{" + path + "}"
 
 
-def annotation_tcl(path: str, staging: str, *, list_pins: bool) -> list[str]:
+def annotation_tcl(
+    path: str, staging: str, *, list_pins: bool, trace_origin: str = "saif"
+) -> list[str]:
     """Tcl that writes `report_activity_annotation` to ``path``, via ``staging``.
 
     Without ``list_pins`` the file holds the counts only. With it, the counts are written first and
@@ -63,6 +65,12 @@ def annotation_tcl(path: str, staging: str, *, list_pins: bool) -> list[str]:
     else ``-report_annotated``. :func:`audit_activity` reads either. Sorting and printing the
     listing costs several microseconds a pin, so the shorter one keeps a well-annotated design's
     audit cheap.
+
+    The unannotated listing is the complement of every annotation, so it is used only when every
+    annotated pin is ``trace_origin``'s. A pin annotated another way, such as by
+    ``set_power_activity -pins`` in the SDC or a session hook, would otherwise be taken for a
+    trace annotation; with one present the annotated listing, which names each pin's source, is
+    written instead.
     """
     out = _tcl_word(staging)
     lines = [
@@ -75,13 +83,15 @@ def annotation_tcl(path: str, staging: str, *, list_pins: bool) -> list[str]:
             "  set rb_text [read $rb_fh]",
             "  close $rb_fh",
             "  set rb_ann 0",
+            "  set rb_trace 0",
             "  set rb_unann -1",
             "  foreach {rb_m rb_k rb_n} [regexp -all -inline -line "
             "{^\\s*([A-Za-z_]+)\\s+([0-9]+)\\s*$} $rb_text] {",
             '    if {$rb_k eq "unannotated"} {set rb_unann $rb_n} '
             "else {incr rb_ann $rb_n}",
+            f'    if {{$rb_k eq "{trace_origin}"}} {{set rb_trace $rb_n}}',
             "  }",
-            "  if {$rb_unann >= 0 && $rb_unann < $rb_ann} {",
+            "  if {$rb_unann >= 0 && $rb_unann < $rb_ann && $rb_trace == $rb_ann} {",
             f"    report_activity_annotation -report_unannotated > {out}",
             "  } else {",
             f"    report_activity_annotation -report_annotated > {out}",
@@ -95,7 +105,9 @@ def annotation_tcl(path: str, staging: str, *, list_pins: bool) -> list[str]:
     return lines
 
 
-def census_tcl(path: str, staging: str, trace_origin: str) -> list[str]:
+def census_tcl(
+    path: str, staging: str, trace_origin: str, *, corner_var: str | None = None
+) -> list[str]:
     """Tcl that writes the census of effective pin activities to ``path``, via ``staging``.
 
     One pass over the pins `report_activity_annotation` counts: every pin of the top instance and
@@ -106,10 +118,30 @@ def census_tcl(path: str, staging: str, trace_origin: str) -> list[str]:
 
     The power/internal filter runs only on ``unknown`` pins, the only origin such a pin can take,
     so a well-annotated design pays nothing for it.
+
+    ``get_property`` reads the command corner's activities, and OpenSTA rebuilds them when the
+    corner changes. ``corner_var`` names the Tcl variable holding the corner `report_power`
+    reported (a multi-corner run's worst corner); the census makes it the command corner first,
+    so it describes the activities behind the reported watts. Needs `rb_find_corner`.
     """
     out = _tcl_word(staging)
+    select = []
+    if corner_var:
+        # In its own `catch`: an OpenSTA without either command still gets a census, of the
+        # command corner, which shares the one SDC mode's activities.
+        select = [
+            f'  catch {{if {{[info exists {corner_var}] && ${corner_var} ne ""}} {{',
+            f"    set rb_scene [rb_find_corner ${corner_var}]",
+            '    if {[info commands ::sta::set_cmd_scene] ne ""} {',
+            "      sta::set_cmd_scene $rb_scene",
+            "    } else {",
+            "      sta::set_cmd_corner $rb_scene",
+            "    }",
+            "  }}",
+        ]
     return [
         "catch {",
+        *select,
         f"  set rb_fh [open {out} w]",
         f'  puts $rb_fh "{CENSUS_HEADER}"',
         "  array unset rb_origin",
@@ -236,7 +268,13 @@ def audit_activity(
     if census is None:
         return fields
     fields["activity_origins"] = dict(sorted(census.origins.items()))
-    annotated_fallback = _annotated_fallback_pins(annotation_path, census, trace_origin)
+    # The unannotated listing's complement is every annotation, not the trace's alone.
+    mixed = any(
+        k not in ("unannotated", trace_origin) and n for k, n in (counts or {}).items()
+    )
+    annotated_fallback = _annotated_fallback_pins(
+        annotation_path, census, trace_origin, complement_ok=not mixed
+    )
     annotated = (counts or {}).get(trace_origin, 0)
     if annotated_fallback is None or not annotated:
         # No listing (an OpenSTA without the flags) or nothing annotated: nothing to join.
@@ -262,13 +300,18 @@ def audit_activity(
 
 
 def _annotated_fallback_pins(
-    annotation_path: str, census: Census, trace_origin: str
+    annotation_path: str,
+    census: Census,
+    trace_origin: str,
+    *,
+    complement_ok: bool = True,
 ) -> dict[str, str] | None:
     """The census pins (effective origin neither the trace nor propagated) the trace annotated.
 
     One streaming pass over the report's listing, which on a large design is one line per pin.
     From an annotated listing: the census pins it names with ``trace_origin``. From an unannotated
-    listing: the census pins it does not name. ``None`` when the report has no listing.
+    listing: the census pins it does not name, and ``None`` if ``complement_ok`` is false
+    because another source annotated pins too. ``None`` when the report has no listing.
     """
     kind = None
     found: dict[str, str] = {}
@@ -278,6 +321,8 @@ def _annotated_fallback_pins(
             if stripped == _ANNOTATED_HEADER:
                 kind = "annotated"
             elif stripped == _UNANNOTATED_HEADER:
+                if not complement_ok:
+                    return None
                 kind = "unannotated"
                 found = dict(census.pins)
             elif kind == "annotated":

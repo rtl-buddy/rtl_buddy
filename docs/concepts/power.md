@@ -119,7 +119,7 @@ power run "demo_power_saif": 4 of the 16 pins the SAIF annotated do not take tha
 
 The usual cause is a cell with a clock-to-output timing arc and no `ff` or `latch` group in its Liberty, such as a RAM macro characterised with a `memory` group. The activity search does not cross a clock-to-output arc and seeds only the outputs of `ff` and `latch` cells, so the macro's outputs and the pins they drive keep activity 0. See [Quirks & Known Issues](../known-issues.md#annotated-activity-on-a-macros-outputs-is-not-used). The verdict does not change.
 
-The fields go in `--machine` output. `activity_annotation.rpt` holds the counts and the shorter of the annotated and unannotated pin listings. `activity_census.rpt` holds the per-origin counts and, for each pin whose activity is from neither the trace nor propagation, its origin, density and duty. The census costs one property lookup per pin, a few seconds per million pins. Set `activity.origin-census: false` to skip it and keep only the counts.
+The fields go in `--machine` output. `activity_annotation.rpt` holds the counts and the shorter of the annotated and unannotated pin listings; when something other than the trace also annotated pins, such as `set_power_activity` in the SDC, it holds the annotated listing, which names each pin's source. `activity_census.rpt` holds the per-origin counts and, for each pin whose activity is from neither the trace nor propagation, its origin, density and duty. On a multi-corner platform the census reads the worst corner, the one the totals report. The census costs one property lookup per pin, a few seconds per million pins. Set `activity.origin-census: false` to skip it and keep only the counts.
 
 ## Map renamed instances
 

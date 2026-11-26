@@ -135,6 +135,32 @@ def test_an_empty_unannotated_listing_means_every_pin_was_annotated(tmp_path):
     assert fields["activity_unused"]["by_origin"] == {"input": 1, "unknown": 5}
 
 
+def test_another_sources_annotations_are_not_taken_from_an_unannotated_listing(
+    tmp_path,
+):
+    """The unannotated listing's complement includes pins the SDC annotated; with another
+    source in the counts, the join is skipped rather than miscounted.
+    """
+    fields = power_activity.audit_activity(
+        _write(
+            tmp_path, "ann.rpt", "saif 15\ninput 1\nunannotated 0\nUnannotated pins:\n"
+        ),
+        _write(tmp_path, "census.rpt", _CENSUS),
+        "saif",
+    )
+    assert set(fields) == {"activity_annotation", "activity_origins"}
+
+
+def test_the_unannotated_listing_needs_every_annotation_to_be_the_traces():
+    tcl = "\n".join(
+        power_activity.annotation_tcl(
+            "a.rpt", "a.tmp", list_pins=True, trace_origin="vcd"
+        )
+    )
+    assert 'if {$rb_k eq "vcd"} {set rb_trace $rb_n}' in tcl
+    assert "$rb_trace == $rb_ann" in tcl
+
+
 def test_examples_are_capped_and_counts_are_not(tmp_path):
     census = power_activity.CENSUS_HEADER + "\n"
     census += "".join(f"pin unknown 0 0 u{i:02d}/Y\n" for i in range(12))
@@ -558,46 +584,114 @@ _SAIF = dedent(f"""\
     """)
 
 
+_SDC = (
+    "create_clock -name clk -period 10 [get_ports clk]\n"
+    "set_input_delay 0 -clock clk [get_ports d]\n"
+    "set_load 1 [all_outputs]\n"
+)
+
+
+def _real_run(tmp_path, *, saif=_SAIF, sdc=_SDC, corners=None):
+    """Run the backend on real OpenROAD over the three-cell library above.
+
+    ``corners`` maps corner -> Liberty text, primary first, for a multi-corner platform.
+    """
+    (tmp_path / "cells.lib").write_text(_LIB)
+    (tmp_path / "cells.lef").write_text(_LEF)
+    backend = _backend(tmp_path)
+    Path(backend.power_cfg.activity.saif).write_text(saif)
+    netlist = tmp_path / "top.v"
+    netlist.write_text(_NETLIST)
+    sdc_path = tmp_path / "top.sdc"
+    sdc_path.write_text(sdc)
+    backend._resolve_inputs = lambda: {
+        "netlist": str(netlist),
+        "odb": None,
+        "sdc": str(sdc_path),
+        "top": "top",
+    }
+    corner_paths = None
+    if corners:
+        corner_paths = {}
+        for name, text in corners.items():
+            path = tmp_path / f"cells_{name}.lib"
+            path.write_text(text)
+            corner_paths[name] = str(path)
+    backend._resolve_platform = lambda: _FakePlatform(
+        liberty=str(tmp_path / "cells.lib"),
+        pdk=_FakePdk(str(tmp_path / "cells.lef")),
+        corners=corner_paths,
+    )
+    return backend, backend.run()
+
+
+_EXPECTED_ORIGINS = {"clock": 3, "saif": 9, "unknown": 4}
+_EXPECTED_UNUSED = {
+    "count": 4,
+    "annotated": 16,
+    "by_origin": {"unknown": 4},
+    "examples": ["m", "um/Q", "uo/A", "uo/Y"],
+}
+_EXPECTED_CLOCK = {"count": 3, "examples": ["clk", "uf/CK", "um/CK"]}
+
+
 @pytest.mark.skipif(OPENROAD is None, reason="openroad not installed")
 def test_real_openroad_reports_the_macro_outputs_the_saif_did_not_drive(tmp_path):
     """The SAIF annotates all 16 pins, and `report_power` uses 9 of them: the three clock
     pins take the SDC clock, the macro output and the three pins downstream keep activity 0.
     """
-    (tmp_path / "cells.lib").write_text(_LIB)
-    (tmp_path / "cells.lef").write_text(_LEF)
-    backend = _backend(tmp_path)
-    Path(backend.power_cfg.activity.saif).write_text(_SAIF)
-    netlist = tmp_path / "top.v"
-    netlist.write_text(_NETLIST)
-    sdc = tmp_path / "top.sdc"
-    sdc.write_text(
-        "create_clock -name clk -period 10 [get_ports clk]\n"
-        "set_input_delay 0 -clock clk [get_ports d]\n"
-        "set_load 1 [all_outputs]\n"
-    )
-    backend._resolve_inputs = lambda: {
-        "netlist": str(netlist),
-        "odb": None,
-        "sdc": str(sdc),
-        "top": "top",
-    }
-    backend._resolve_platform = lambda: _FakePlatform(
-        liberty=str(tmp_path / "cells.lib"),
-        pdk=_FakePdk(str(tmp_path / "cells.lef")),
-    )
-
-    result = backend.run()
+    _backend_, result = _real_run(tmp_path)
 
     assert isinstance(result, PowerPassResults), result.results
     assert result.results["activity_annotation"] == {"saif": 16, "unannotated": 0}
-    assert result.results["activity_origins"] == {"clock": 3, "saif": 9, "unknown": 4}
+    assert result.results["activity_origins"] == _EXPECTED_ORIGINS
+    assert result.results["activity_unused"] == _EXPECTED_UNUSED
+    assert result.results["activity_annotated_clock"] == _EXPECTED_CLOCK
+
+
+@pytest.mark.skipif(OPENROAD is None, reason="openroad not installed")
+def test_real_openroad_does_not_count_an_sdc_annotation_as_the_traces(tmp_path):
+    """The SAIF leaves out the macro output and the SDC sets its activity instead. With
+    nothing unannotated the script would list the (empty) unannotated pins, whose complement
+    includes the SDC's pin; it lists the annotated pins by source instead, so only the
+    SAIF's own unused pins are reported.
+    """
+    saif = _SAIF.replace(" (Q {_R} (TC 6))".format(_R=_R), "")
+    assert saif != _SAIF
+    sdc = _SDC + "set_power_activity -pins [get_pins um/Q] -activity 0.1 -duty 0.5\n"
+    backend, result = _real_run(tmp_path, saif=saif, sdc=sdc)
+
+    assert isinstance(result, PowerPassResults), result.results
+    assert result.results["activity_annotation"] == {
+        "saif": 15,
+        "input": 1,
+        "unannotated": 0,
+    }
+    assert "Annotated pins:" in Path(backend._activity_annotation_path()).read_text()
     assert result.results["activity_unused"] == {
-        "count": 4,
-        "annotated": 16,
-        "by_origin": {"unknown": 4},
-        "examples": ["m", "um/Q", "uo/A", "uo/Y"],
-    }
-    assert result.results["activity_annotated_clock"] == {
         "count": 3,
-        "examples": ["clk", "uf/CK", "um/CK"],
+        "annotated": 15,
+        "by_origin": {"unknown": 3},
+        "examples": ["m", "uo/A", "uo/Y"],
     }
+
+
+@pytest.mark.skipif(OPENROAD is None, reason="openroad not installed")
+def test_real_openroad_audits_the_worst_corner_of_a_multi_corner_run(tmp_path):
+    """The second corner's higher supply makes it the worst; the census selects it as the
+    command corner and finds the same activities, since the corners share one SDC mode.
+    """
+    hot = _LIB.replace("nom_voltage : 1.0", "nom_voltage : 1.5").replace(
+        "voltage : 1 ;", "voltage : 1.5 ;"
+    )
+    assert hot != _LIB
+    backend, result = _real_run(tmp_path, corners={"cool": _LIB, "hot": hot})
+
+    assert isinstance(result, PowerPassResults), result.results
+    assert result.results["worst_corner"] == "hot"
+    script = Path(backend._script_path()).read_text()
+    assert "sta::set_cmd_scene $rb_scene" in script
+    assert script.index("rb_power_corner") < script.index("set_cmd_scene")
+    assert result.results["activity_origins"] == _EXPECTED_ORIGINS
+    assert result.results["activity_unused"] == _EXPECTED_UNUSED
+    assert result.results["activity_annotated_clock"] == _EXPECTED_CLOCK

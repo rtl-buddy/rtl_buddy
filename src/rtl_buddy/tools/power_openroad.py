@@ -819,12 +819,21 @@ class OpenRoadPower(BasePower):
         census = self._census_enabled()
         annotation = self._activity_annotation_path()
         lines = power_activity.annotation_tcl(
-            annotation, self._staging_path(annotation), list_pins=census
+            annotation,
+            self._staging_path(annotation),
+            list_pins=census,
+            trace_origin=origin,
         )
         if census:
             path = self._activity_census_path()
             lines.extend(
-                power_activity.census_tcl(path, self._staging_path(path), origin)
+                power_activity.census_tcl(
+                    path,
+                    self._staging_path(path),
+                    origin,
+                    # Under multi-corner, the worst corner `power_report_tcl` chose.
+                    corner_var="rb_power_corner" if self._script_corners else None,
+                )
             )
         return lines
 
