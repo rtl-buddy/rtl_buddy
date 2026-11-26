@@ -66,6 +66,31 @@ def wf(vcd: Path):
 def test_required_api_surface_is_present():
     """`pywellen_compat.missing_api` reports nothing missing on the installed pywellen."""
     assert pywellen_compat.missing_api(pywellen) == []
+    assert pywellen_compat.missing_api(pywellen, streaming=True) == []
+
+
+def test_only_rb_saif_requires_the_streaming_api(monkeypatch):
+    """A pywellen with the random-access surface but no streaming passes `rb wave`'s guard
+    and fails `rb saif`'s, naming the streaming members.
+    """
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    def _cls(name, attrs):
+        return type(name, (), {a: None for a in attrs})
+
+    fake = type(
+        "module",
+        (),
+        {cls: _cls(cls, attrs) for cls, attrs in pywellen_compat.REQUIRED_API.items()},
+    )
+    monkeypatch.setitem(sys.modules, "pywellen", fake)
+    monkeypatch.setattr(pywellen_compat, "log_event", lambda *a, **k: None)
+
+    pywellen_compat.require_random_access_api("rb wave")
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        pywellen_compat.require_random_access_api("rb saif", streaming=True)
+    assert "Waveform.stream_changes" in str(excinfo.value)
+    assert "Var.signal_ref" in str(excinfo.value)
 
 
 def test_waveform_path_lookup_returns_a_var(wf):
@@ -277,8 +302,8 @@ class TestStreamingContract:
         assert str(clk.signal_ref).startswith("SignalId(")
 
     def test_streamed_changes_are_each_vars_change_list_in_time_order(self, vcd):
-        """Per signal, the stream carries exactly ``var.signal[:]``, values of the same
-        types, and the stream as a whole is in time order.
+        """On a trace without repeated values, per signal, the stream carries exactly
+        ``var.signal[:]``, values of the same types, and the stream as a whole is in time order.
         """
         random_access = pywellen.Waveform(str(vcd))
         expected = {str(v.signal_ref): v.signal[:] for v in random_access.all_vars()}
@@ -296,6 +321,28 @@ class TestStreamingContract:
             type(v) for c in expected.values() for _t, v in c
         ]
         assert times == sorted(times)
+
+    def test_the_stream_repeats_unchanged_values_that_signal_drops(self, tmp_path):
+        """A `$dumpall` repeat reaches the stream but not ``signal[:]``, except for an event,
+        whose repeats are triggers. `rb saif` drops the repeats itself.
+        """
+        path = tmp_path / "snap.vcd"
+        path.write_text(
+            "$timescale 1ns $end\n$scope module top $end\n"
+            '$var wire 1 ! a $end\n$var event 1 " ev $end\n'
+            "$upscope $end\n$enddefinitions $end\n"
+            '#0\n0!\n1"\n#5\n1!\n#8\n1"\n#10\n$dumpall\n1!\n$end\n'
+        )
+        wave = pywellen.Waveform(str(path))
+        a, ev = wave["top.a"], wave["top.ev"]
+        assert a.signal[:] == [(0, 0), (5, 1)]
+        assert [t for t, _v in ev.signal[:]] == [0, 8]
+        streamed: list = []
+        stream = pywellen.Waveform(str(path))
+        stream.stream_changes(
+            lambda t, sid, v: streamed.append((t, v)), [stream["top.a"]]
+        )
+        assert streamed == [(0, 0), (5, 1), (10, 1)]
 
     def test_the_hierarchy_is_readable_after_streaming(self, vcd):
         wave = pywellen.Waveform(str(vcd))

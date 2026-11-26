@@ -98,7 +98,7 @@ rb saif verif/demo/artefacts/csr_smoke/dump.fst \
 rb power demo_power_saif -c power/demo/power.yaml -l 1000
 ```
 
-The converter accepts FST or VCD. If the trace starts at the testbench, set `activity.scope` to the design top. It reads the trace in one pass, so its run time grows with the number of value changes in the trace, not with the number of signals times the file size.
+The converter accepts FST or VCD. If the trace starts at the testbench, set `activity.scope` to the design top. It reads the trace in one pass, so its run time grows with the number of value changes in the trace, not with the number of signals times the file size. Its memory grows with the number of time steps, which the trace reader holds as a table, and not with the number of value changes.
 
 Names are written in the form OpenROAD's `read_saif` reads, so one name cannot fail the whole read. An escaped Verilog name loses its leading backslash: the trace's `\u_a.n1` is written `u_a.n1`, and a bracket in a name is written `\[`. A net or instance whose name has no readable form is left out, an instance with everything beneath it, and `rb saif` warns with the count (`saif.names_skipped`). See [Known Issues](../known-issues.md#rb-saif-leaves-out-names-read_saif-cannot-read).
 

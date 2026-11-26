@@ -6,6 +6,7 @@ read by the real pywellen.
 
 import re
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -381,15 +382,58 @@ def _scan_bit_stats(changes: list, bit: int, end_t: int) -> dict:
     return {"T0": t0, "T1": t1, "TX": tx, "TZ": tz, "TC": tc}
 
 
-@pytest.mark.parametrize("seed", [1, 2, 3])
-def test_the_one_pass_read_matches_a_per_variable_scan(tmp_path, seed):
-    """Every bit of every var, aliases and multi-bit 0/1/x/z values included, and the end
-    time, as the per-variable scan computed them.
+_FIXTURES = Path(__file__).parent / "fixtures" / "saif"
+
+# A trailing `$dumpall` that repeats every value unchanged. `signal[:]` drops the repeats, so
+# the per-variable scan ended the trace at 5; `stream_changes` delivers them at 10.
+_SNAPSHOT_VCD = """\
+$timescale 1ns $end
+$scope module top $end
+$var wire 1 ! clk $end
+$var wire 4 # bus $end
+$var event 1 % ev $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+b0000 #
+#5
+1!
+b0011 #
+#7
+1%
+#9
+1%
+#10
+$dumpall
+1!
+b0011 #
+$end
+"""
+
+
+def _trace(tmp_path, name):
+    """A trace for the equivalence tests: a random VCD seed, the snapshot VCD, or a fixture."""
+    if isinstance(name, int):
+        path = tmp_path / "rand.vcd"
+        path.write_text(random_vcd(name))
+    elif name == "snapshot":
+        path = tmp_path / "snapshot.vcd"
+        path.write_text(_SNAPSHOT_VCD)
+    else:
+        path = _FIXTURES / name
+    return path
+
+
+@pytest.mark.parametrize("name", [1, 2, 3, "snapshot", "multiblock.fst"])
+def test_the_one_pass_read_matches_a_per_variable_scan(tmp_path, name):
+    """Every bit of every var, aliases, multi-bit 0/1/x/z values, repeated snapshot values,
+    event triggers and FST blocks included, and the end time, as the per-variable scan
+    computed them.
     """
     import pywellen
 
-    vcd = tmp_path / "rand.vcd"
-    vcd.write_text(random_vcd(seed))
+    vcd = _trace(tmp_path, name)
     wave = pywellen.Waveform(str(vcd))
     variables = saif_from_trace._all_vars(wave)
     activity, end_t = saif_from_trace._read_activity(wave, variables)
@@ -405,7 +449,27 @@ def test_the_one_pass_read_matches_a_per_variable_scan(tmp_path, seed):
                 changes[v.full_name], bit, end_t
             ), (v.full_name, bit)
             checked += 1
-    assert checked > 100
+    assert checked > (100 if isinstance(name, int) else 5)
+
+
+def test_a_repeated_snapshot_does_not_move_the_end(tmp_path):
+    """The unchanged `$dumpall` at 10 is no change: the trace ends at the event trigger at 9,
+    and `clk` holds 1 for 4 ticks, not 5.
+    """
+    saif = tmp_path / "out.saif"
+    convert(_trace(tmp_path, "snapshot"), saif)
+    header, nets, _ = _parse_saif(saif.read_text())
+    assert header["DURATION"] == "9"
+    assert nets["top/clk"] == {"T0": 5, "T1": 4, "TX": 0, "TZ": 0, "TC": 1, "IG": 0}
+
+
+def test_a_multi_block_fst_converts_to_the_per_variable_scans_bytes(tmp_path):
+    """FST goes through a separate decoder from VCD; the fixture has several blocks and a
+    final unchanged `$dumpall`. The golden is the per-variable scan's output.
+    """
+    saif = tmp_path / "out.saif"
+    convert(_FIXTURES / "multiblock.fst", saif)
+    assert saif.read_text() == (_FIXTURES / "multiblock.saif").read_text()
 
 
 def test_convert_skips_parameters_and_memory_elements(tmp_path):

@@ -9,6 +9,10 @@ each variable with its own ``var.signal[:]`` costs one pass over the file per si
 gate-level FST with hundreds of thousands of variables takes about a day (rtl-buddy/rtl_buddy#269).
 The trace's end time is the last change the same pass sees.
 
+Memory: the converter keeps one accumulator per signal, whatever the trace length. pywellen still
+loads the trace's time table when it opens the file (``stream_only`` does not avoid it), so the
+process grows with the number of time steps: about 110 MB above baseline for a 5 M-step FST, against about 900 MB for the per-variable read.
+
 Each net and instance name is written as :func:`~rtl_buddy.tools.saif_names.saif_name` spells it,
 so OpenSTA's `read_saif` reads it. A record whose name has no such spelling is left out, with
 everything beneath it for an instance, and the count is reported: one such name would otherwise
@@ -94,6 +98,10 @@ def _bit_states(val, width: int) -> list[str]:
     ]
 
 
+#: `_Activity1.value` before the first change; equal to no change value.
+_NO_VALUE = object()
+
+
 class _Activity:
     """Running T0/T1/TX/TZ/TC of each bit of one signal, fed one change at a time.
 
@@ -103,12 +111,18 @@ class _Activity:
     state changes, not at every change of the signal, so a change of a wide bus costs the bits
     that moved; with two binary values those are found by XOR. :class:`_Activity1` is the one-bit
     case, which a gate-level trace is almost entirely made of.
+
+    A change whose value equals the previous one is dropped, as ``var.signal[:]`` drops it: a VCD
+    ``$dumpall`` or ``$dumpvars`` snapshot repeats every value, and counting it would move the
+    trace's end time. An event's repeats are its triggers and are kept, as ``signal[:]`` keeps
+    them. :meth:`change` returns whether the change counted.
     """
 
-    __slots__ = ("width", "value", "since", "states", "time", "toggles")
+    __slots__ = ("width", "event", "value", "since", "states", "time", "toggles")
 
-    def __init__(self, width: int):
+    def __init__(self, width: int, event: bool = False):
         self.width = width
+        self.event = event
         # The last change's value; None before the first change.
         self.value = None
         # Per bit: when it entered its current state, the state, and its time in [0, 1, x, z].
@@ -117,14 +131,16 @@ class _Activity:
         self.time = [[0, 0, 0, 0] for _ in range(width)]
         self.toggles = [0] * width
 
-    def change(self, t: int, val) -> None:
+    def change(self, t: int, val) -> bool:
         prev_val = self.value
+        if prev_val is not None and val == prev_val and not self.event:
+            return False
         self.value = val
         states = self.states
         if prev_val is None:
             self.states = _bit_states(val, self.width)
             self.since = [t] * self.width
-            return
+            return True
         since = self.since
         time = self.time
         if val.__class__ is int and prev_val.__class__ is int:
@@ -138,7 +154,7 @@ class _Activity:
                 since[bit] = t
                 states[bit] = "0" if old == "1" else "1"
                 self.toggles[bit] += 1
-            return
+            return True
         for bit, state in enumerate(_bit_states(val, self.width)):
             old = states[bit]
             if state != old:
@@ -147,6 +163,7 @@ class _Activity:
                 states[bit] = state
                 if old in "01" and state in "01":
                     self.toggles[bit] += 1
+        return True
 
     def stats(self, bit: int, end_t: int) -> dict:
         if self.value is None:
@@ -159,16 +176,22 @@ class _Activity:
 class _Activity1:
     """:class:`_Activity` for a one-bit signal, with the per-change work inlined."""
 
-    __slots__ = ("width", "prev_t", "state", "time", "toggles")
+    __slots__ = ("width", "event", "value", "prev_t", "state", "time", "toggles")
 
-    def __init__(self):
+    def __init__(self, event: bool = False):
         self.width = 1
+        self.event = event
+        # The last counted value; a sentinel before the first change.
+        self.value = _NO_VALUE
         self.prev_t = 0
         self.state: str | None = None
         self.time = [0, 0, 0, 0]
         self.toggles = 0
 
-    def change(self, t: int, val) -> None:
+    def change(self, t: int, val) -> bool:
+        if val == self.value and not self.event:
+            return False
+        self.value = val
         if val.__class__ is int:
             state = "1" if val & 1 else "0"
         else:
@@ -180,6 +203,7 @@ class _Activity1:
                 self.toggles += 1
         self.state = state
         self.prev_t = t
+        return True
 
     def stats(self, bit: int, end_t: int) -> dict:
         return _close(self.time, self.state, self.toggles, end_t - self.prev_t)
@@ -199,14 +223,15 @@ def _close(time: list, state: str | None, toggles: int, tail: int) -> dict:
     return {"T0": t0, "T1": t1, "TX": tx, "TZ": tz, "TC": toggles}
 
 
-def _new_activity(width: int):
-    return _Activity1() if width == 1 else _Activity(width)
+def _new_activity(width: int, event: bool = False):
+    return _Activity1(event) if width == 1 else _Activity(width, event)
 
 
 def _read_activity(w: pywellen.Waveform, variables: list) -> tuple[dict, int]:
     """Stream every change of ``variables`` once; return ``({signal key: accumulator}, end time)``.
 
-    The end time is the last change of any of them, the trace's `DURATION`. Vars that alias one
+    The end time is the last counted change of any of them (repeats of an unchanged value are
+    not counted, see :class:`_Activity`), the trace's `DURATION`. Vars that alias one
     signal share its accumulator. ``stream_changes`` consumes the Waveform's change data, so this
     is its one read; the hierarchy stays usable afterwards.
     """
@@ -216,7 +241,7 @@ def _read_activity(w: pywellen.Waveform, variables: list) -> tuple[dict, int]:
         width = v.bitwidth or 1
         held = activity.get(key)
         if held is None or held.width < width:
-            activity[key] = _new_activity(width)
+            activity[key] = _new_activity(width, event=v.var_type == "Event")
     # Bound methods, looked up once: the callback runs once per change in the trace.
     handlers = {key: acc.change for key, acc in activity.items()}
     get = handlers.get
@@ -225,9 +250,8 @@ def _read_activity(w: pywellen.Waveform, variables: list) -> tuple[dict, int]:
     def on_change(t, signal_id, val):
         nonlocal end_t
         handler = get(str(signal_id))
-        if handler is not None:
-            handler(t, val)
-        if t > end_t:
+        # Only a change that counted moves the end, as only those are in `signal[:]`.
+        if handler is not None and handler(t, val) and t > end_t:
             end_t = t
 
     if variables:
@@ -343,7 +367,7 @@ def convert(trace_path: Path, saif_path: Path) -> None:
         )
         raise FatalRtlBuddyError(f"trace file not found: {trace_path}")
 
-    require_random_access_api("rb saif")
+    require_random_access_api("rb saif", streaming=True)
 
     try:
         w = pywellen.Waveform(str(trace_path))
