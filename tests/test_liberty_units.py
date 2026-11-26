@@ -226,6 +226,69 @@ def test_yosys_run_fails_at_setup_on_mixed_units(tmp_path, monkeypatch, caplog):
     )
 
 
+class _YosysStarted(Exception):
+    """Raised by the fake Yosys process: setup got as far as launching the tool."""
+
+
+def test_a_block_abstract_in_another_time_unit_does_not_stop_yosys(
+    tmp_path, monkeypatch
+):
+    """Yosys reads a `blocks:` abstract only as a cell interface, so its unit is not checked against the cells'."""
+    from types import SimpleNamespace
+
+    cells = _lib(tmp_path / "pdk/tt.lib", "1ns")
+    block_lib = _lib(tmp_path / "blk/abstract/blk.lib", "1ps", cell="blk")
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text("create_clock -period 1.25 [get_ports clk]\n")
+    platform_cfg = SimpleNamespace(
+        get_paths=lambda: [cells],
+        get_lef_paths=lambda: [],
+        get_tech_lef=lambda: "",
+        get_dont_use_cells=lambda: [],
+        get_abc_driving_cell=lambda: "",
+        get_abc_output_load=lambda: None,
+        get_clock_gating_cell=lambda: "",
+        get_layer_rc_tcl=lambda: "",
+    )
+    root_cfg = MagicMock()
+    root_cfg.get_synth_platform_cfg.return_value = platform_cfg
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            platform="p", lib_paths=[block_lib], constraints=str(sdc)
+        ),
+        root_cfg=root_cfg,
+    )
+    # As SynthRunner._resolve_blocks leaves it: the abstract in `lib-paths` and in `blocks`.
+    ys.blocks = [SimpleNamespace(lib=block_lib, ref=SimpleNamespace(name="blk"))]
+    monkeypatch.setattr(
+        synth_yosys, "run_managed_process", MagicMock(side_effect=_YosysStarted)
+    )
+
+    with pytest.raises(_YosysStarted):
+        ys.run()
+
+    assert ys._time_unit_ps() == 1000.0
+    script = Path(ys._script_path()).read_text()
+    assert f"read_liberty -lib {block_lib}" in script
+    assert f"abc -liberty {cells} -D 1250 " in script
+
+
+def test_a_block_abstract_still_counts_for_the_openroad_stage_unit(tmp_path):
+    """The OpenROAD stage times the abstract, so its unit must agree with the cells'."""
+    from types import SimpleNamespace
+
+    cells = _lib(tmp_path / "pdk/tt.lib", "1ns")
+    block_lib = _lib(tmp_path / "blk/abstract/blk.lib", "1ps", cell="blk")
+    or_synth = _make_openroad(
+        tmp_path, synth_cfg=_make_synth_cfg(lib_paths=[cells, block_lib])
+    )
+    or_synth.blocks = [SimpleNamespace(lib=block_lib, ref=SimpleNamespace(name="blk"))]
+    res = or_synth.run()
+    assert isinstance(res, SynthFailResults)
+    assert "disagree on time_unit" in res.results["desc"]
+
+
 # OpenROAD synthesis backend: WNS and TNS
 
 

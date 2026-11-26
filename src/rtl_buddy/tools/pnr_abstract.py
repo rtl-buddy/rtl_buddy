@@ -1012,6 +1012,8 @@ def check_technology(
     `interface_tech_lef` is for a consumer that reads the block's Liberty only as a cell interface, never its timing (Yosys `read_liberty -lib`). When it matches the block's recorded technology LEF by content, a corner Liberty mismatch is the same technology at another corner, which such a consumer cannot see: the mismatch is returned as a message instead of raised. Returns None otherwise.
     """
     recorded = block.manifest.get("technology") or {}
+    # Held until every role is checked, so a supplied `tech_lef` that differs still raises.
+    corner_mismatch = None
     for role, paths, what in (
         ("liberty", liberty, "corner Liberty"),
         ("tech_lef", None if tech_lef is None else [tech_lef], "technology LEF"),
@@ -1034,9 +1036,10 @@ def check_technology(
                 f"this run uses {one_or_many(list(paths))!r}"
             )
             if role == "liberty" and _same_tech_lef(recorded, interface_tech_lef):
-                return message
+                corner_mismatch = message
+                continue
             raise BlockResolutionError(message)
-    return None
+    return corner_mismatch
 
 
 def _same_tech_lef(recorded: dict, tech_lef: str | None) -> bool:

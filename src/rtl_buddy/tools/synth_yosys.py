@@ -1242,10 +1242,17 @@ class YosysSynth:
     def _time_unit_ps(self) -> float:
         """Return the Liberty `time_unit` in picoseconds, the unit of the SDC's periods.
 
+        The `blocks:` abstracts are left out: Yosys reads them only as cell interfaces
+        (``read_liberty -lib``, see ``reads_block_timing``), so their unit, which a block
+        hardened at another corner may not share, never scales anything here.
+
         Raises :class:`LibertyTimeUnitError` when the libraries disagree.
         """
         if self._ps_per_unit is None:
-            self._ps_per_unit = liberty_time_unit_ps(self._resolve_lib_paths())
+            block_libs = {b.lib for b in self.blocks}
+            self._ps_per_unit = liberty_time_unit_ps(
+                [p for p in self._resolve_lib_paths() if p not in block_libs]
+            )
         return self._ps_per_unit
 
     def _parse_clock_period_ps(self, sdc_path: str) -> int | None:

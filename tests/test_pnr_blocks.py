@@ -277,6 +277,21 @@ def test_an_interface_only_consumer_gets_a_corner_mismatch_back(tmp_path):
         pnr_abstract.check_technology(block, liberty=[str(ff)], tech_lef=str(tech))
 
 
+def test_a_corner_mismatch_never_hides_a_strict_tech_lef_mismatch(tmp_path):
+    """With both LEF arguments, a differing `tech_lef` raises even when the corner mismatch alone would be returned."""
+    block = resolve_block(_ref(_block_suite(tmp_path)))
+    ff = _write(tmp_path / "top/pdk/ff.lib", "library (ff) {}\n")
+    tech = _write(tmp_path / "top/pdk/tech.lef", _TECH)
+    other = _write(tmp_path / "top/pdk/other.lef", "OTHER TECH LEF\n")
+    with pytest.raises(BlockResolutionError, match="technology LEF"):
+        pnr_abstract.check_technology(
+            block, liberty=[str(ff)], tech_lef=str(other), interface_tech_lef=str(tech)
+        )
+    assert "corner Liberty" in pnr_abstract.check_technology(
+        block, liberty=[str(ff)], tech_lef=str(tech), interface_tech_lef=str(tech)
+    )
+
+
 @pytest.mark.parametrize(
     "tech_text,drop_record",
     [("OTHER TECH LEF\n", False), (None, False), (_TECH, True)],
