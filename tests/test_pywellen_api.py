@@ -261,3 +261,44 @@ class TestStreamingCanary:
         wave = pywellen.Waveform(str(vcd))
         wave.stream_time_steps(lambda *step: seen.append(step), None)
         assert [step[0] for step in seen] == [0, 10, 20, 30]
+
+
+class TestStreamingContract:
+    """What `rb saif`'s one-pass read relies on in ``stream_changes``."""
+
+    def test_a_signal_id_matches_its_vars_signal_ref_only_by_str(self, vcd):
+        """``SignalId`` compares by object identity, so `rb saif` keys on its ``str``."""
+        wave = pywellen.Waveform(str(vcd))
+        clk = wave["top.clk"]
+        assert clk.signal_ref != clk.signal_ref
+        streamed: list = []
+        wave.stream_changes(lambda _t, sid, _v: streamed.append(str(sid)), [clk])
+        assert set(streamed) == {str(clk.signal_ref)}
+        assert str(clk.signal_ref).startswith("SignalId(")
+
+    def test_streamed_changes_are_each_vars_change_list_in_time_order(self, vcd):
+        """Per signal, the stream carries exactly ``var.signal[:]``, values of the same
+        types, and the stream as a whole is in time order.
+        """
+        random_access = pywellen.Waveform(str(vcd))
+        expected = {str(v.signal_ref): v.signal[:] for v in random_access.all_vars()}
+        wave = pywellen.Waveform(str(vcd))
+        times: list = []
+        got: dict = {}
+
+        def _on(t, sid, val):
+            times.append(t)
+            got.setdefault(str(sid), []).append((t, val))
+
+        wave.stream_changes(_on, list(wave.all_vars()))
+        assert got == expected
+        assert [type(v) for c in got.values() for _t, v in c] == [
+            type(v) for c in expected.values() for _t, v in c
+        ]
+        assert times == sorted(times)
+
+    def test_the_hierarchy_is_readable_after_streaming(self, vcd):
+        wave = pywellen.Waveform(str(vcd))
+        wave.stream_changes(lambda *_c: None, None)
+        assert [s.name for s in wave.scopes()] == ["top"]
+        assert [v.name for v in wave.all_vars()] == ["clk", "bus", "rst"]

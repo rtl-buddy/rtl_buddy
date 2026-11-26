@@ -24,10 +24,11 @@ MIN_VERSION = "0.25.6"
 MAX_VERSION_EXCLUSIVE = "0.26"
 SUPPORTED_SPECIFIER = f">={MIN_VERSION},<{MAX_VERSION_EXCLUSIVE}"
 
-#: The pywellen surface the trace readers call, by class name.
+#: The pywellen surface the trace readers call, by class name. `rb saif` reads changes with
+#: ``Waveform.stream_changes`` and matches them to vars by ``Var.signal_ref``.
 REQUIRED_API: dict[str, tuple[str, ...]] = {
-    "Waveform": ("__getitem__", "scopes", "timescale"),
-    "Var": ("signal", "name", "full_name", "var_type", "bitwidth"),
+    "Waveform": ("__getitem__", "scopes", "timescale", "stream_changes"),
+    "Var": ("signal", "signal_ref", "name", "full_name", "var_type", "bitwidth"),
     "Signal": ("value_at", "__getitem__", "__len__"),
 }
 

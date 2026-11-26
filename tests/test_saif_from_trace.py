@@ -14,9 +14,10 @@ from typer.testing import CliRunner
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools import pywellen_compat
+from rtl_buddy.tools import saif_from_trace
 from rtl_buddy.tools.saif_from_trace import _bit_stats, convert
 from rtl_buddy.tools.saif_names import saif_name
-from saif_support import OPENROAD, read_saif
+from saif_support import OPENROAD, random_vcd, read_saif
 
 
 def test_bit_stats_single_clock_cycle():
@@ -204,6 +205,207 @@ def test_convert_emits_the_golden_saif(tmp_path):
     assert instances[:1] == ["top"]
     assert "top/sub" in instances
     assert "top/mem" in instances
+
+
+# `_VCD` as the per-variable scan wrote it before the one-pass read (rtl-buddy/rtl_buddy#269):
+# the rewrite must not change a byte.
+_GOLDEN_SAIF = """\
+(SAIFILE
+  (SAIFVERSION "2.0")
+  (DIRECTION "backward")
+  (DESIGN)
+  (DATE "rtl_buddy saif")
+  (VENDOR "rtl_buddy")
+  (PROGRAM_NAME "rb saif")
+  (VERSION "1.0")
+  (DIVIDER /)
+  (TIMESCALE 10 ps)
+  (DURATION 30)
+  (INSTANCE top
+    (NET
+      (clk
+        (T0 20) (T1 10) (TX 0) (TZ 0)
+        (TC 3)
+        (IG 0)
+      )
+      (bus\\[0\\]
+        (T0 10) (T1 20) (TX 0) (TZ 0)
+        (TC 1)
+        (IG 0)
+      )
+      (bus\\[1\\]
+        (T0 20) (T1 10) (TX 0) (TZ 0)
+        (TC 2)
+        (IG 0)
+      )
+      (bus\\[2\\]
+        (T0 20) (T1 10) (TX 0) (TZ 0)
+        (TC 1)
+        (IG 0)
+      )
+      (bus\\[3\\]
+        (T0 20) (T1 0) (TX 0) (TZ 10)
+        (TC 0)
+        (IG 0)
+      )
+    )
+    (INSTANCE mem
+    )
+    (INSTANCE sub
+      (NET
+        (rst
+          (T0 10) (T1 10) (TX 10) (TZ 0)
+          (TC 1)
+          (IG 0)
+        )
+      )
+    )
+  )
+)
+"""
+
+
+def test_convert_writes_the_same_bytes_as_the_per_variable_scan(tmp_path):
+    saif = tmp_path / "out.saif"
+    convert(_write_vcd(tmp_path), saif)
+    assert saif.read_text() == _GOLDEN_SAIF
+
+
+class _CountingReader:
+    """A pywellen `Waveform` that counts how the converter reads it.
+
+    `signal_loads` counts `Var.signal` accesses, each one a pass over the trace file in
+    pywellen 0.25; `streams` counts `stream_changes` calls, each one a pass too.
+    """
+
+    def __init__(self, path):
+        import pywellen
+
+        self._wave = pywellen.Waveform(path)
+        self.signal_loads = 0
+        self.streams = 0
+
+    @property
+    def timescale(self):
+        return self._wave.timescale
+
+    def scopes(self):
+        return [_CountingScope(s, self) for s in self._wave.scopes()]
+
+    def stream_changes(self, callback, include):
+        self.streams += 1
+        real = [v._var for v in include] if include is not None else None
+        return self._wave.stream_changes(callback, real)
+
+
+class _CountingScope:
+    def __init__(self, scope, reader):
+        self._scope = scope
+        self._reader = reader
+        self.name = scope.name
+
+    def vars(self):
+        return [_CountingVar(v, self._reader) for v in self._scope.vars()]
+
+    def scopes(self):
+        return [_CountingScope(s, self._reader) for s in self._scope.scopes()]
+
+
+class _CountingVar:
+    def __init__(self, var, reader):
+        self._var = var
+        self._reader = reader
+
+    @property
+    def signal(self):
+        self._reader.signal_loads += 1
+        return self._var.signal
+
+    def __getattr__(self, name):
+        return getattr(self._var, name)
+
+
+def test_convert_reads_the_trace_once_however_many_signals(tmp_path, monkeypatch):
+    """One `stream_changes` pass and no per-variable load: a per-variable read costs one
+    pass over the file per signal, about a day on a gate-level FST (#269).
+    """
+    vcd = tmp_path / "many.vcd"
+    vcd.write_text(random_vcd(7, signals=60))
+    readers: list = []
+
+    def _open(path, *args, **kwargs):
+        readers.append(_CountingReader(path))
+        return readers[-1]
+
+    # Only the converter's own reference: the API guard still inspects the real module.
+    monkeypatch.setattr(saif_from_trace, "pywellen", SimpleNamespace(Waveform=_open))
+    convert(vcd, tmp_path / "out.saif")
+
+    [reader] = readers
+    assert reader.streams == 1
+    assert reader.signal_loads == 0
+    assert (tmp_path / "out.saif").read_text().count("(TC ") > 60
+
+
+def _scan_bit_stats(changes: list, bit: int, end_t: int) -> dict:
+    """The per-bit pass over a whole change list that `rb saif` made before #269, as the oracle."""
+    t0 = t1 = tx = tz = tc = 0
+    prev_t, prev = 0, None
+    for t, val in changes:
+        dur = t - prev_t
+        if prev is not None:
+            t0, t1, tx, tz = (
+                t0 + dur * (prev == "0"),
+                t1 + dur * (prev == "1"),
+                tx + dur * (prev == "x"),
+                tz + dur * (prev == "z"),
+            )
+        if isinstance(val, int):
+            state = "1" if (val >> bit) & 1 else "0"
+        else:
+            s = str(val).lower()
+            idx = len(s) - 1 - bit
+            ch = s[idx] if 0 <= idx < len(s) else "x"
+            state = ch if ch in "01xz" else "x"
+        if prev is not None and state != prev and {prev, state} <= {"0", "1"}:
+            tc += 1
+        prev, prev_t = state, t
+    if prev is not None:
+        dur = end_t - prev_t
+        t0, t1, tx, tz = (
+            t0 + dur * (prev == "0"),
+            t1 + dur * (prev == "1"),
+            tx + dur * (prev == "x"),
+            tz + dur * (prev == "z"),
+        )
+    return {"T0": t0, "T1": t1, "TX": tx, "TZ": tz, "TC": tc}
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_the_one_pass_read_matches_a_per_variable_scan(tmp_path, seed):
+    """Every bit of every var, aliases and multi-bit 0/1/x/z values included, and the end
+    time, as the per-variable scan computed them.
+    """
+    import pywellen
+
+    vcd = tmp_path / "rand.vcd"
+    vcd.write_text(random_vcd(seed))
+    wave = pywellen.Waveform(str(vcd))
+    variables = saif_from_trace._all_vars(wave)
+    activity, end_t = saif_from_trace._read_activity(wave, variables)
+
+    scan = pywellen.Waveform(str(vcd))
+    changes = {v.full_name: v.signal[:] for v in saif_from_trace._all_vars(scan)}
+    assert end_t == max(c[-1][0] for c in changes.values() if c)
+    checked = 0
+    for v in variables:
+        acc = activity[saif_from_trace._signal_key(v.signal_ref)]
+        for bit in range(v.bitwidth or 1):
+            assert acc.stats(bit, end_t) == _scan_bit_stats(
+                changes[v.full_name], bit, end_t
+            ), (v.full_name, bit)
+            checked += 1
+    assert checked > 100
 
 
 def test_convert_skips_parameters_and_memory_elements(tmp_path):

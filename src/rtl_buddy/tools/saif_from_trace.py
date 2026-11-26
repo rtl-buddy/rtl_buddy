@@ -3,6 +3,12 @@
 Emits per-bit T0/T1/TX/TZ/TC in the trace's own timescale. Glitch power, X-propagation and per-pin
 activity are not modelled.
 
+The trace is read in one pass: `Waveform.stream_changes` delivers every change of every signal in
+time order, and a per-bit accumulator (:class:`_Activity`) keeps only the running counts. Reading
+each variable with its own ``var.signal[:]`` costs one pass over the file per signal, which on a
+gate-level FST with hundreds of thousands of variables takes about a day (rtl-buddy/rtl_buddy#269).
+The trace's end time is the last change the same pass sees.
+
 Each net and instance name is written as :func:`~rtl_buddy.tools.saif_names.saif_name` spells it,
 so OpenSTA's `read_saif` reads it. A record whose name has no such spelling is left out, with
 everything beneath it for an instance, and the count is reported: one such name would otherwise
@@ -34,70 +40,210 @@ def _iter_vars(scope):
         yield v
 
 
-def _max_time(w: pywellen.Waveform) -> int:
-    mx = 0
+def _all_vars(w: pywellen.Waveform) -> list:
+    """Every var `_iter_vars` yields, in every scope: the signals whose changes set the end time."""
+    found: list = []
 
     def walk(scope):
-        nonlocal mx
-        for v in _iter_vars(scope):
-            # Index the materialised list: Signal itself rejects negative indices.
-            changes = v.signal[:]
-            if changes and changes[-1][0] > mx:
-                mx = changes[-1][0]
+        found.extend(_iter_vars(scope))
         for s in scope.scopes():
             walk(s)
 
     for s in w.scopes():
         walk(s)
-    return mx
+    return found
+
+
+def _signal_key(signal_id) -> str:
+    """A value key for a pywellen ``SignalId``.
+
+    ``SignalId`` compares and hashes by object identity, and each access returns a new object, so
+    a var's ``signal_ref`` and the id ``stream_changes`` passes never match as objects. Their
+    ``str`` (``SignalId(<n>)``) does.
+    """
+    return str(signal_id)
+
+
+#: Time-in-state slot of each bit state in :class:`_Activity`'s counters.
+_SLOT = {"0": 0, "1": 1, "x": 2, "z": 3}
+
+
+def _bit_state(val, bit: int) -> str:
+    """Return bit ``bit`` of a change value as ``0``, ``1``, ``x`` or ``z``.
+
+    An int is a binary value; a string is 4-state, MSB first, and a bit it does not cover or a
+    character other than 0/1/x/z reads as ``x``.
+    """
+    if isinstance(val, int):
+        return "1" if ((val >> bit) & 1) else "0"
+    s = str(val).lower()
+    idx = len(s) - 1 - bit
+    ch = s[idx] if 0 <= idx < len(s) else "x"
+    return ch if ch in "01xz" else "x"
+
+
+def _bit_states(val, width: int) -> list[str]:
+    """Every bit of a change value, LSB first, each as :func:`_bit_state` reads it."""
+    if isinstance(val, int):
+        return ["1" if (val >> bit) & 1 else "0" for bit in range(width)]
+    text = str(val).lower()
+    n = len(text)
+    return [
+        (text[n - 1 - bit] if text[n - 1 - bit] in "01xz" else "x") if bit < n else "x"
+        for bit in range(width)
+    ]
+
+
+class _Activity:
+    """Running T0/T1/TX/TZ/TC of each bit of one signal, fed one change at a time.
+
+    The same totals as a pass over the signal's whole change list, without holding the list: time
+    before the first change is in no state, only a 0<->1 transition is a toggle, and
+    :meth:`stats` closes each bit's last state at the trace's end. A bit's time is added when its
+    state changes, not at every change of the signal, so a change of a wide bus costs the bits
+    that moved; with two binary values those are found by XOR. :class:`_Activity1` is the one-bit
+    case, which a gate-level trace is almost entirely made of.
+    """
+
+    __slots__ = ("width", "value", "since", "states", "time", "toggles")
+
+    def __init__(self, width: int):
+        self.width = width
+        # The last change's value; None before the first change.
+        self.value = None
+        # Per bit: when it entered its current state, the state, and its time in [0, 1, x, z].
+        self.since = [0] * width
+        self.states: list[str] = ["x"] * width
+        self.time = [[0, 0, 0, 0] for _ in range(width)]
+        self.toggles = [0] * width
+
+    def change(self, t: int, val) -> None:
+        prev_val = self.value
+        self.value = val
+        states = self.states
+        if prev_val is None:
+            self.states = _bit_states(val, self.width)
+            self.since = [t] * self.width
+            return
+        since = self.since
+        time = self.time
+        if val.__class__ is int and prev_val.__class__ is int:
+            moved = (prev_val ^ val) & ((1 << self.width) - 1)
+            while moved:
+                low = moved & -moved
+                moved ^= low
+                bit = low.bit_length() - 1
+                old = states[bit]
+                time[bit][_SLOT[old]] += t - since[bit]
+                since[bit] = t
+                states[bit] = "0" if old == "1" else "1"
+                self.toggles[bit] += 1
+            return
+        for bit, state in enumerate(_bit_states(val, self.width)):
+            old = states[bit]
+            if state != old:
+                time[bit][_SLOT[old]] += t - since[bit]
+                since[bit] = t
+                states[bit] = state
+                if old in "01" and state in "01":
+                    self.toggles[bit] += 1
+
+    def stats(self, bit: int, end_t: int) -> dict:
+        if self.value is None:
+            return _close(self.time[bit], None, self.toggles[bit], 0)
+        return _close(
+            self.time[bit], self.states[bit], self.toggles[bit], end_t - self.since[bit]
+        )
+
+
+class _Activity1:
+    """:class:`_Activity` for a one-bit signal, with the per-change work inlined."""
+
+    __slots__ = ("width", "prev_t", "state", "time", "toggles")
+
+    def __init__(self):
+        self.width = 1
+        self.prev_t = 0
+        self.state: str | None = None
+        self.time = [0, 0, 0, 0]
+        self.toggles = 0
+
+    def change(self, t: int, val) -> None:
+        if val.__class__ is int:
+            state = "1" if val & 1 else "0"
+        else:
+            state = _bit_state(val, 0)
+        prev = self.state
+        if prev is not None:
+            self.time[_SLOT[prev]] += t - self.prev_t
+            if state != prev and prev in "01" and state in "01":
+                self.toggles += 1
+        self.state = state
+        self.prev_t = t
+
+    def stats(self, bit: int, end_t: int) -> dict:
+        return _close(self.time, self.state, self.toggles, end_t - self.prev_t)
+
+
+def _close(time: list, state: str | None, toggles: int, tail: int) -> dict:
+    """One bit's SAIF record: ``time`` in [0, 1, x, z] plus ``tail`` in its last ``state``."""
+    t0, t1, tx, tz = time
+    if state == "0":
+        t0 += tail
+    elif state == "1":
+        t1 += tail
+    elif state == "x":
+        tx += tail
+    elif state == "z":
+        tz += tail
+    return {"T0": t0, "T1": t1, "TX": tx, "TZ": tz, "TC": toggles}
+
+
+def _new_activity(width: int):
+    return _Activity1() if width == 1 else _Activity(width)
+
+
+def _read_activity(w: pywellen.Waveform, variables: list) -> tuple[dict, int]:
+    """Stream every change of ``variables`` once; return ``({signal key: accumulator}, end time)``.
+
+    The end time is the last change of any of them, the trace's `DURATION`. Vars that alias one
+    signal share its accumulator. ``stream_changes`` consumes the Waveform's change data, so this
+    is its one read; the hierarchy stays usable afterwards.
+    """
+    activity: dict = {}
+    for v in variables:
+        key = _signal_key(v.signal_ref)
+        width = v.bitwidth or 1
+        held = activity.get(key)
+        if held is None or held.width < width:
+            activity[key] = _new_activity(width)
+    # Bound methods, looked up once: the callback runs once per change in the trace.
+    handlers = {key: acc.change for key, acc in activity.items()}
+    get = handlers.get
+    end_t = 0
+
+    def on_change(t, signal_id, val):
+        nonlocal end_t
+        handler = get(str(signal_id))
+        if handler is not None:
+            handler(t, val)
+        if t > end_t:
+            end_t = t
+
+    if variables:
+        w.stream_changes(on_change, variables)
+    return activity, end_t
 
 
 def _bit_stats(changes: list, bit: int, end_t: int) -> dict:
-    """Return T0/T1/TX/TZ time-in-state and the TC toggle count for one bit.
+    """Return T0/T1/TX/TZ time-in-state and the TC toggle count for one bit of a change list.
 
     TC counts only 0<->1 transitions. Values are ints (binary) or strings (4-state).
     """
-    t0 = t1 = tx = tz = 0
-    tc = 0
-    prev_t = 0
-    prev_state: str | None = None
-
+    acc = _new_activity(1) if bit == 0 else _Activity(bit + 1)
     for t, val in changes:
-        dur = t - prev_t
-        if prev_state == "0":
-            t0 += dur
-        elif prev_state == "1":
-            t1 += dur
-        elif prev_state == "x":
-            tx += dur
-        elif prev_state == "z":
-            tz += dur
-
-        if isinstance(val, int):
-            state = "1" if ((val >> bit) & 1) else "0"
-        else:
-            s = str(val).lower()
-            idx = len(s) - 1 - bit
-            ch = s[idx] if 0 <= idx < len(s) else "x"
-            state = ch if ch in "01xz" else "x"
-
-        if prev_state is not None and state != prev_state:
-            if {prev_state, state} <= {"0", "1"}:
-                tc += 1
-        prev_state = state
-        prev_t = t
-
-    dur = end_t - prev_t
-    if prev_state == "0":
-        t0 += dur
-    elif prev_state == "1":
-        t1 += dur
-    elif prev_state == "x":
-        tx += dur
-    elif prev_state == "z":
-        tz += dur
-
-    return {"T0": t0, "T1": t1, "TX": tx, "TZ": tz, "TC": tc}
+        acc.change(t, val)
+    return acc.stats(bit, end_t)
 
 
 class _Skipped:
@@ -132,7 +278,9 @@ def _emit_net(out, indent: int, name: str, stats: dict) -> None:
     out.write(f"{pad})\n")
 
 
-def _emit_scope(out, scope, indent: int, end_t: int, skipped: _Skipped) -> None:
+def _emit_scope(
+    out, scope, indent: int, end_t: int, skipped: _Skipped, activity: dict
+) -> None:
     if not scope.name.strip():
         # pywellen's unnamed scope holding a VCD array's elements, which `_iter_vars` skips.
         return
@@ -169,13 +317,13 @@ def _emit_scope(out, scope, indent: int, end_t: int, skipped: _Skipped) -> None:
     if nets:
         out.write(f"{pad}  (NET\n")
         for v, bits in nets:
-            changes = v.signal[:]
+            acc = activity[_signal_key(v.signal_ref)]
             for written, b in bits:
-                _emit_net(out, indent + 2, written, _bit_stats(changes, b, end_t))
+                _emit_net(out, indent + 2, written, acc.stats(b, end_t))
         out.write(f"{pad}  )\n")
 
     for s in scope.scopes():
-        _emit_scope(out, s, indent + 1, end_t, skipped)
+        _emit_scope(out, s, indent + 1, end_t, skipped, activity)
 
     out.write(f"{pad})\n")
 
@@ -213,7 +361,7 @@ def convert(trace_path: Path, saif_path: Path) -> None:
         ts = w.timescale
         ts_value = int(ts.factor)
         ts_unit = str(ts.unit).lower()
-        end_t = _max_time(w)
+        activity, end_t = _read_activity(w, _all_vars(w))
     except Exception as e:
         log_event(
             logger,
@@ -241,7 +389,7 @@ def convert(trace_path: Path, saif_path: Path) -> None:
         out.write(f"  (TIMESCALE {ts_value} {ts_unit})\n")
         out.write(f"  (DURATION {end_t})\n")
         for s in w.scopes():
-            _emit_scope(out, s, 1, end_t, skipped)
+            _emit_scope(out, s, 1, end_t, skipped, activity)
         out.write(")\n")
 
     if skipped.nets or skipped.instances:

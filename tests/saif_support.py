@@ -113,3 +113,41 @@ def read_saif(tmp_path, saif) -> str:
         timeout=120,
     )
     return proc.stdout + proc.stderr
+
+
+def random_vcd(seed: int, signals: int = 40, steps: int = 60) -> str:
+    """A deterministic VCD of 1- to 33-bit signals with 0/1/x/z values, aliases and a nested scope.
+
+    For checking `rb saif`'s one-pass read against a per-variable scan of the same trace.
+    """
+    import random
+
+    rng = random.Random(seed)
+    lines = ["$timescale 1ns $end", "$scope module top $end"]
+    sigs = []
+    for i in range(signals):
+        width = rng.choice([1, 1, 1, 2, 5, 8, 33])
+        code = f"s{i}"
+        lines.append(f"$var wire {width} {code} v{i} $end")
+        sigs.append((code, width))
+        if i % 7 == 3:
+            # A second var on the same signal, as a port and its net are.
+            lines.append(f"$var wire {width} {code} alias{i} $end")
+    lines += ["$scope module sub $end", "$var wire 1 s0 clk_copy $end", "$upscope $end"]
+    lines += ["$upscope $end", "$enddefinitions $end"]
+    t = 0
+    for step in range(steps):
+        t += rng.choice([1, 3, 7])
+        lines.append(f"#{t}")
+        for code, width in sigs:
+            if step and rng.random() >= 0.3:
+                continue
+            if width == 1:
+                lines.append(rng.choice("01xz01") + code)
+            else:
+                value = "".join(rng.choice("0101010xz") for _ in range(width))
+                if rng.random() < 0.3:
+                    # A binary value, which pywellen hands over as an int.
+                    value = value.replace("x", "0").replace("z", "1")
+                lines.append(f"b{value} {code}")
+    return "\n".join(lines) + "\n"
