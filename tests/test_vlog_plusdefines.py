@@ -84,6 +84,13 @@ class _TestCfg:
         self.pd = plusdefines
         self.pa = None
         self.uvm = None
+        self.resolved_seed = None
+
+    def get_resolved_seed(self):
+        return self.resolved_seed
+
+    def ensure_resolved_seed_plusarg(self):
+        return None
 
     def get_name(self):
         return self.name
@@ -114,7 +121,9 @@ class _TestCfg:
 _PLUSDEFINES = {"FOO": 10, "BAR": None}
 
 
-def _make_sim(tmp_path, monkeypatch, *, family, exe, plusdefines=_PLUSDEFINES):
+def _make_sim(
+    tmp_path, monkeypatch, *, family, exe, plusdefines=_PLUSDEFINES, share_build=False
+):
     monkeypatch.chdir(tmp_path)
     return vlog_sim_module.VlogSim(
         name="rtl_buddy/vlog_sim",
@@ -122,6 +131,7 @@ def _make_sim(tmp_path, monkeypatch, *, family, exe, plusdefines=_PLUSDEFINES):
         test_cfg=_TestCfg(tmp_path / "models.yaml", plusdefines),
         rtl_builder_mode="sim",
         sim_mode={"sim_to_stdout": True},
+        share_build=share_build,
     )
 
 
@@ -173,7 +183,25 @@ def test_simulation_line_defines_are_unchanged(tmp_path, monkeypatch, family, ex
     # The simulation line still gets the `+define+` spelling, which a simulator
     # (including `vvp`) reads as an ignorable plusarg.
     sim = _make_sim(tmp_path, monkeypatch, family=family, exe=exe)
-    assert sim._get_plusdefines() == ["+define+FOO=10", "+define+BAR"]
+    launched = []
+
+    def _fake_run(cmd, cwd, stdout, stderr, timeout, terminate_signal, **kwargs):
+        launched.append(list(cmd))
+        stdout.write("PASS basic\n")
+        return ManagedProcessResult(returncode=0)
+
+    monkeypatch.setattr(
+        vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
+    )
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
+
+    assert sim.execute(run_id=1) == 0
+    [cmd] = launched
+    assert cmd[0] == sim._get_simv_path()
+    assert [a for a in cmd if a.startswith(("+define+", "-D"))] == [
+        "+define+FOO=10",
+        "+define+BAR",
+    ]
 
 
 def test_no_plusdefines_adds_nothing(tmp_path, monkeypatch):
@@ -186,11 +214,29 @@ def test_no_plusdefines_adds_nothing(tmp_path, monkeypatch):
 
 
 def test_icarus_compile_key_uses_the_compile_spelling(tmp_path, monkeypatch):
-    # The shared-build key is built from the plan's defines, so it names the
-    # arguments the compile actually passes.
-    sim = _make_sim(tmp_path, monkeypatch, family="icarus", exe="iverilog")
+    # With sharing on, the build key and its fingerprint carry the arguments the
+    # compile passes, and a test without the defines gets another build dir.
+    sim = _make_sim(
+        tmp_path, monkeypatch, family="icarus", exe="iverilog", share_build=True
+    )
     plan = sim._build_compile_plan()
     assert plan.plusdefines == ["-DFOO=10", "-DBAR"]
+    assert plan.key_cmd[-2:] == ["-DFOO=10", "-DBAR"]
+    assert [a for a in plan.fingerprint["cmd"] if a.startswith(("-D", "+define+"))] == [
+        "-DFOO=10",
+        "-DBAR",
+    ]
+    assert plan.shared_dir is not None
+
+    bare = _make_sim(
+        tmp_path,
+        monkeypatch,
+        family="icarus",
+        exe="iverilog",
+        plusdefines=None,
+        share_build=True,
+    )._build_compile_plan()
+    assert bare.shared_dir is not None and bare.shared_dir != plan.shared_dir
 
 
 @pytest.fixture
@@ -220,6 +266,7 @@ def test_iverilog_accepts_the_compile_spelling(tmp_path, monkeypatch, iverilog):
             [iverilog, "-g2012", "-o", str(out), *defines, str(src)],
             capture_output=True,
             text=True,
+            cwd=tmp_path,
             stdin=subprocess.DEVNULL,
             timeout=60,
             check=False,
