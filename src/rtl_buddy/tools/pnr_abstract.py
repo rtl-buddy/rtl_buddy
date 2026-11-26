@@ -999,11 +999,17 @@ def one_or_many(paths: list[str]) -> str | list[str]:
 
 
 def check_technology(
-    block: ResolvedBlock, *, liberty: list[str] | None, tech_lef: str | None
-) -> None:
+    block: ResolvedBlock,
+    *,
+    liberty: list[str] | None,
+    tech_lef: str | None,
+    interface_tech_lef: str | None = None,
+) -> str | None:
     """Raise unless the consumer's technology LEF and corner Liberty files match the block's.
 
     Files are compared by content, in order, not by path or platform name, so a block built on a block-level platform can go into a top on the full platform.
+
+    `interface_tech_lef` is for a consumer that reads the block's Liberty only as a cell interface, never its timing (Yosys `read_liberty -lib`). When it matches the block's recorded technology LEF by content, a corner Liberty mismatch is the same technology at another corner, which such a consumer cannot see: the mismatch is returned as a message instead of raised. Returns None otherwise.
     """
     recorded = block.manifest.get("technology") or {}
     for role, paths, what in (
@@ -1022,11 +1028,25 @@ def check_technology(
         actual = [(file_fingerprint(p, None) or {}).get("sha256") for p in paths]
         if actual != expected:
             hardened = [(r or {}).get("path") for r in records]
-            raise BlockResolutionError(
+            message = (
                 f"block {block.ref.name!r}: platform/corner mismatch — hardened "
                 f"against {what} {one_or_many(hardened)!r}, "
                 f"this run uses {one_or_many(list(paths))!r}"
             )
+            if role == "liberty" and _same_tech_lef(recorded, interface_tech_lef):
+                return message
+            raise BlockResolutionError(message)
+    return None
+
+
+def _same_tech_lef(recorded: dict, tech_lef: str | None) -> bool:
+    """Whether `tech_lef` has the content of the technology LEF a block's manifest records; False when either is missing."""
+    if not tech_lef:
+        return False
+    expected = [(r or {}).get("sha256") for r in _records(recorded.get("tech_lef"))]
+    if len(expected) != 1 or expected[0] is None:
+        return False
+    return (file_fingerprint(tech_lef, None) or {}).get("sha256") == expected[0]
 
 
 def resolve_blocks(refs: list[BlockRef], *, source=None) -> list[ResolvedBlock]:

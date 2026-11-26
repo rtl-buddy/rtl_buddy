@@ -102,7 +102,10 @@ class SynthRunner:
     def _resolve_blocks(self, backend) -> SynthFailResults | None:
         """Add each `blocks:` abstract's Liberty model and LEF to the backend's `lib-paths` / `lef-paths`.
 
-        Returns a failure for a block with no abstract or one built for another corner.
+        Returns a failure for a block with no abstract or one built for another technology.
+        A block hardened at another corner of the same technology (same technology LEF) is a
+        warning when the backend reads block Liberty only as a cell interface (Yosys), and a
+        failure when it times the block's model (the OpenROAD stage).
         The backend has already withdrawn its previous netlist by then, so `rb pnr` cannot pick up a stale one.
         """
         self._blocks = []
@@ -110,15 +113,27 @@ class SynthRunner:
         if not refs:
             return None
         platform = self.synth_cfg.get_platform()
-        liberty = (
-            self.root_cfg.get_synth_platform_cfg(platform).get_paths()
-            if platform
+        platform_cfg = (
+            self.root_cfg.get_synth_platform_cfg(platform) if platform else None
+        )
+        liberty = platform_cfg.get_paths() if platform_cfg else None
+        interface_tech_lef = (
+            platform_cfg.get_tech_lef()
+            if platform_cfg and not getattr(backend, "reads_block_timing", True)
             else None
         )
+        corner_mismatches: list[tuple[str, str]] = []
         try:
             resolved = pnr_abstract.resolve_blocks(refs, source=self.tag_inputs)
             for block in resolved:
-                pnr_abstract.check_technology(block, liberty=liberty, tech_lef=None)
+                mismatch = pnr_abstract.check_technology(
+                    block,
+                    liberty=liberty,
+                    tech_lef=None,
+                    interface_tech_lef=interface_tech_lef,
+                )
+                if mismatch:
+                    corner_mismatches.append((block.ref.name, mismatch))
             resolved = pnr_abstract.assess_blocks(
                 resolved, self.root_cfg, accept_stale=self.accept_stale
             )
@@ -137,6 +152,15 @@ class SynthRunner:
                 fail_stage="setup",
             )
         self._blocks = resolved
+        for name, mismatch in corner_mismatches:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.block_corner_mismatch",
+                synth=self.synth_cfg.get_name(),
+                block=name,
+                reason=mismatch,
+            )
         for block in resolved:
             if block.stale:
                 log_event(

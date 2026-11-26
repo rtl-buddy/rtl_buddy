@@ -1156,6 +1156,11 @@ def parse_gate_count(log_text: str, top: str | None = None) -> int | None:
 
 
 class YosysSynth:
+    # A `blocks:` abstract's Liberty is read only with `read_liberty -lib`, for the cell's
+    # interface; mapping, ABC and `stat` read the platform's cells alone. The block's corner
+    # cannot reach the netlist or the reported numbers (see `pnr_abstract.check_technology`).
+    reads_block_timing = False
+
     def __init__(
         self,
         name: str,

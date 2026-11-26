@@ -92,9 +92,8 @@ class SynthPlatformConfig:
         pdk = pdk_lookup(cfg.pdk)
         self._corner = cfg.corner or pdk.get_default_corner()
         self._lib_paths = pdk.get_corner_paths(self._corner)
-        self._lef_paths = [
-            p for p in (pdk.get_tech_lef(), *pdk.get_macro_lef_paths()) if p
-        ]
+        self._tech_lef = pdk.get_tech_lef() or ""
+        self._lef_paths = [p for p in (self._tech_lef, *pdk.get_macro_lef_paths()) if p]
         self._layer_rc_tcl = pdk.get_layer_rc_tcl()
         self._dont_use_cells = merge_dont_use_cells(
             pdk.get_dont_use_cells(),
@@ -123,6 +122,10 @@ class SynthPlatformConfig:
 
     def get_lef_paths(self) -> list[str]:
         return list(self._lef_paths)
+
+    def get_tech_lef(self) -> str:
+        """The PDK's technology LEF, or `""` when the PDK names none."""
+        return self._tech_lef
 
     def get_dont_use_cells(self) -> list[str]:
         """The PDK's excluded cells plus this platform's, PDK first."""
