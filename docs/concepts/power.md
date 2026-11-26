@@ -102,6 +102,25 @@ The converter accepts FST or VCD. If the trace starts at the testbench, set `act
 
 Names are written in the form OpenROAD's `read_saif` reads, so one name cannot fail the whole read. An escaped Verilog name loses its leading backslash: the trace's `\u_a.n1` is written `u_a.n1`, and a bracket in a name is written `\[`. A net or instance whose name has no readable form is left out, an instance with everything beneath it, and `rb saif` warns with the count (`saif.names_skipped`). See [Known Issues](../known-issues.md#rb-saif-leaves-out-names-read_saif-cannot-read).
 
+## Check how the trace was used
+
+OpenROAD can read a pin's value from the trace and still not use it in `report_power`. Its `Annotated N pin activities.` line and `report_activity_annotation` count the pins the trace named, not the activities the analysis used. So after the analysis, a SAIF or VCD run records both:
+
+- `activity_annotation`: the `report_activity_annotation` counts, such as `{"saif": 16, "unannotated": 0}`.
+- `activity_origins`: how many pins took their activity from each origin as `report_power` used it. The pins are the top-level ports and every leaf-instance pin except power and internal pins, the set `report_activity_annotation` counts. `saif` or `vcd` is the trace, `propagated` is derived from other pins, `clock` is the SDC clock's rate, `input` is the default input rate, and `unknown` is no activity at all, which counts as zero.
+- `activity_unused`: the pins the trace annotated whose activity came from elsewhere, other than the clock pins. It gives the count, the number annotated, the count per origin and the first five pin names.
+- `activity_annotated_clock`: the annotated pins that take the SDC clock's rate in place of the trace's.
+
+When `activity_unused` is not zero, the run warns (`power.trace_activity_unused`):
+
+```text
+power run "demo_power_saif": 4 of the 16 pins the SAIF annotated do not take that activity in report_power (unknown: 4) — m, um/Q, uo/A, uo/Y. ...
+```
+
+The usual cause is a cell with a clock-to-output timing arc and no `ff` or `latch` group in its Liberty, such as a RAM macro characterised with a `memory` group. The activity search does not cross a clock-to-output arc and seeds only the outputs of `ff` and `latch` cells, so the macro's outputs and the pins they drive keep activity 0. See [Quirks & Known Issues](../known-issues.md#annotated-activity-on-a-macros-outputs-is-not-used). The verdict does not change.
+
+The fields go in `--machine` output. `activity_annotation.rpt` holds the counts and the shorter of the annotated and unannotated pin listings. `activity_census.rpt` holds the per-origin counts and, for each pin whose activity is from neither the trace nor propagation, its origin, density and duty. The census costs one property lookup per pin, a few seconds per million pins. Set `activity.origin-census: false` to skip it and keep only the counts.
+
 ## Map renamed instances
 
 A netlist prepared for a simulator often renames instances, for example `u_a.u0` to `u_a__u0`, so the trace's instance names differ from the database's and their pins read no activity. Give `rb power` the pairs in a file and point `activity.instance-map` at it:
@@ -251,6 +270,7 @@ Outputs land under `<power-dir>/artefacts/<run>/`, or `<power-dir>/artefacts/.ru
 | `power_netlist.v` | This run's copy of the upstream netlist, the file OpenROAD reads |
 | `activity.mapped.saif` | The SAIF with [`activity.instance-map`](#map-renamed-instances) applied, the file OpenROAD reads; only with a map |
 | `power_instances.rpt` | Raw `report_power -instances`, one line per leaf instance |
+| `activity_annotation.rpt`, `activity_census.rpt` | How the trace's activity was used; SAIF and VCD runs only. See [Check how the trace was used](#check-how-the-trace-was-used) |
 | `phys-model.json`, `phys-manifest.json` | Physical model and its manifest; query with `rb phys` ([Physical Metrics](phys.md)) |
 
 With `phys-run` set, the model and manifest are written to the synthesis run's directory instead.
@@ -264,6 +284,7 @@ Read `power.log` for tool and input errors, then `power.rpt` for missing or malf
 - **`N instance(s) have no Liberty power data and report 0 W`:** see [Read the unpowered-cell warning](#read-the-unpowered-cell-warning).
 - **`N configured macro input(s) not on disk`:** the run stops. Fix the listed `lib-paths` or `lef-paths` on this entry or the upstream run.
 - **`Total line of report_power output is NaN/inf`:** OpenSTA converted an activity against a zero clock period. Check that every clock the SDC's I/O delays reference has a finite period; `create_generated_clock` clocks are derived before the activity is read.
+- **`N of the M pins the SAIF annotated do not take that activity`:** see [Check how the trace was used](#check-how-the-trace-was-used).
 - **`power.spef_rejected`:** the SPEF is unreadable or stale and the estimate was used. Rerun `rb pnr`, then the power run.
 - **`phys-model.json has no per-instance breakdown`:** the per-instance report was missing or unreadable. Totals are still recorded and the run passes, but `rb phys instance` has nothing for it.
 - **`phys-model.json was not written`:** publishing failed. Any model in the directory belongs to an earlier run.

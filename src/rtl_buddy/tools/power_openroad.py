@@ -39,7 +39,13 @@ from ..phys.publish import (
     withdrawal_failure_desc,
 )
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
-from . import block_params, openroad_corners, pnr_abstract, pnr_tag_inputs
+from . import (
+    block_params,
+    openroad_corners,
+    pnr_abstract,
+    pnr_tag_inputs,
+    power_activity,
+)
 from .artifact_paths import clear_stale_artefacts, run_artifact_root
 from .pnr_openroad import (
     PNR_SCRIPT_NAME,
@@ -292,6 +298,23 @@ class OpenRoadPower(BasePower):
         mapping here; without it the model's power rows cannot be joined to the synth half.
         """
         return os.path.join(self.artefact_dir, "power_instances.cells")
+
+    def _activity_annotation_path(self) -> str:
+        """`report_activity_annotation` output: the trace's annotated/unannotated counts, then the shorter pin listing."""
+        return os.path.join(self.artefact_dir, "activity_annotation.rpt")
+
+    def _activity_census_path(self) -> str:
+        """The effective-activity census `power_activity.census_tcl` writes."""
+        return os.path.join(self.artefact_dir, "activity_census.rpt")
+
+    def _trace_origin(self) -> str | None:
+        """The activity origin OpenSTA gives a pin this run's trace annotated; None without a trace."""
+        return power_activity.TRACE_ORIGINS.get(self.power_cfg.get_activity_source())
+
+    def _census_enabled(self) -> bool:
+        return self._trace_origin() is not None and bool(
+            self.power_cfg.get_activity().origin_census
+        )
 
     @staticmethod
     def _staging_path(published: str) -> str:
@@ -782,6 +805,69 @@ class OpenRoadPower(BasePower):
             f"catch {{file delete -force {instances_tmp}}}",
         ]
 
+    def _emit_activity_audit_cmds(self) -> list[str]:
+        """Return Tcl that records how the trace's activity was used; empty without a trace.
+
+        After the per-instance block, so it is a by-product too (past `_DETAIL_MARKER`, inside
+        `catch`, published by rename). `report_activity_annotation` costs nothing; the census is
+        one `get_property` per pin and `activity.origin-census: false` leaves it out, along with
+        the pin listing only it needs. See `power_activity`.
+        """
+        origin = self._trace_origin()
+        if origin is None:
+            return []
+        census = self._census_enabled()
+        annotation = self._activity_annotation_path()
+        lines = power_activity.annotation_tcl(
+            annotation, self._staging_path(annotation), list_pins=census
+        )
+        if census:
+            path = self._activity_census_path()
+            lines.extend(
+                power_activity.census_tcl(path, self._staging_path(path), origin)
+            )
+        return lines
+
+    def _activity_audit(self) -> dict:
+        """Read the audit files back into result fields, and warn when annotated pins went unused.
+
+        Never changes the verdict: the watts are what OpenSTA computed, and the warning says which
+        part of the trace they do not reflect.
+        """
+        origin = self._trace_origin()
+        if origin is None:
+            return {}
+        fields = power_activity.audit_activity(
+            self._activity_annotation_path(),
+            self._activity_census_path() if self._census_enabled() else None,
+            origin,
+        )
+        if "activity_annotation" in fields:
+            log_event(
+                logger,
+                logging.INFO,
+                "power.activity_annotation",
+                power=self.power_cfg.get_name(),
+                trace=origin,
+                counts=fields["activity_annotation"],
+                origins=fields.get("activity_origins"),
+            )
+        unused = fields.get("activity_unused")
+        if unused and unused["count"]:
+            log_event(
+                logger,
+                logging.WARNING,
+                "power.trace_activity_unused",
+                power=self.power_cfg.get_name(),
+                trace=origin,
+                count=unused["count"],
+                annotated=unused["annotated"],
+                by_origin=unused["by_origin"],
+                examples=unused["examples"],
+                report=self._activity_census_path(),
+            )
+        return fields
+
     def _write_script(self) -> str:
         # First: an unresolvable `phys-run:` is a config error, and the caller's withdrawal needs the publish directory.
         self._bind_phys_dir()
@@ -1013,6 +1099,7 @@ class OpenRoadPower(BasePower):
         else:
             lines.append(f"report_power > {self._report_path()}")
         lines.extend(self._emit_per_instance_cmds(multi_corner=bool(corner_libs)))
+        lines.extend(self._emit_activity_audit_cmds())
         lines.append("exit")
         lines.append("")
 
@@ -1148,6 +1235,11 @@ class OpenRoadPower(BasePower):
                 # Staging names the per-instance block writes under; an OpenROAD killed inside it leaves them behind.
                 self._staging_path(self._instances_report_path()),
                 self._staging_path(self._instances_cells_path()),
+                # The activity audit's reports and their staging names, which a run without a trace must not inherit either.
+                self._activity_annotation_path(),
+                self._activity_census_path(),
+                self._staging_path(self._activity_annotation_path()),
+                self._staging_path(self._activity_census_path()),
                 self._netlist_snapshot_path(),
                 # Not when `activity.saif` itself names it: that is this run's input.
                 *(
@@ -1484,6 +1576,9 @@ class OpenRoadPower(BasePower):
                 cells=unpowered["cells"],
             )
 
+        # Also before the pass, for the same reason; also verdict-neutral.
+        activity_fields = self._activity_audit()
+
         activity_source = self.power_cfg.get_activity_source()
         log_event(
             logger,
@@ -1521,6 +1616,7 @@ class OpenRoadPower(BasePower):
             corners=corner_fields.get("corners"),
         )
         passed.results.update(self._blocks_fields())
+        passed.results.update(activity_fields)
         return self._with_threads(passed)
 
     def _parse_corner_reports(self, log_text: str) -> tuple[dict, str | None]:
