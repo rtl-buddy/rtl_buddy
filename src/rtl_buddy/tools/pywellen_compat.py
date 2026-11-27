@@ -24,11 +24,19 @@ MIN_VERSION = "0.25.6"
 MAX_VERSION_EXCLUSIVE = "0.26"
 SUPPORTED_SPECIFIER = f">={MIN_VERSION},<{MAX_VERSION_EXCLUSIVE}"
 
-#: The pywellen surface the trace readers call, by class name.
+#: The random-access pywellen surface every trace reader calls, by class name.
 REQUIRED_API: dict[str, tuple[str, ...]] = {
     "Waveform": ("__getitem__", "scopes", "timescale"),
     "Var": ("signal", "name", "full_name", "var_type", "bitwidth"),
     "Signal": ("value_at", "__getitem__", "__len__"),
+}
+
+#: What `rb saif` needs on top of :data:`REQUIRED_API`: it reads changes with
+#: ``Waveform.stream_changes`` and matches them to vars by ``Var.signal_ref``. Kept apart so
+#: `rb wave`, which reads by random access only, does not require it.
+STREAMING_API: dict[str, tuple[str, ...]] = {
+    "Waveform": ("stream_changes",),
+    "Var": ("signal_ref",),
 }
 
 
@@ -40,13 +48,18 @@ def pywellen_version() -> str:
         return "unknown"
 
 
-def missing_api(module) -> list[str]:
+def missing_api(module, *, streaming: bool = False) -> list[str]:
     """Return the ``Class.attr`` names of :data:`REQUIRED_API` that *module* lacks.
 
-    A class that is missing entirely is reported as ``Class``.
+    With ``streaming``, :data:`STREAMING_API` is checked too. A class that is missing entirely is
+    reported as ``Class``.
     """
+    required = {cls: list(attrs) for cls, attrs in REQUIRED_API.items()}
+    if streaming:
+        for cls, attrs in STREAMING_API.items():
+            required.setdefault(cls, []).extend(attrs)
     missing: list[str] = []
-    for cls_name, attrs in REQUIRED_API.items():
+    for cls_name, attrs in required.items():
         cls = getattr(module, cls_name, None)
         if cls is None:
             missing.append(cls_name)
@@ -55,14 +68,15 @@ def missing_api(module) -> list[str]:
     return missing
 
 
-def require_random_access_api(tool: str) -> None:
+def require_random_access_api(tool: str, *, streaming: bool = False) -> None:
     """Raise FatalRtlBuddyError unless pywellen has the random-access API.
 
-    *tool* names the rb subcommand in the error message.
+    *tool* names the rb subcommand in the error message. ``streaming`` also requires
+    :data:`STREAMING_API`, which only `rb saif` uses.
     """
     import pywellen  # type: ignore[import-untyped]  # noqa: PLC0415
 
-    missing = missing_api(pywellen)
+    missing = missing_api(pywellen, streaming=streaming)
     if not missing:
         return
     version = pywellen_version()
