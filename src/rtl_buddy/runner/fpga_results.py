@@ -31,6 +31,9 @@ class FpgaPassResults(FpgaResults):
 
     ``failing_endpoints`` counts endpoints with negative slack; ``failing_paths`` lists the worst ones as
     ``{"slack_ns", "source", "destination", ...}`` dicts.
+
+    ``design_state`` is always present: ``"routed"``, or ``"synthesized"`` for an out-of-context
+    run, whose metrics are post-synthesis estimates comparable only with other such runs.
     """
 
     def __init__(
@@ -55,10 +58,16 @@ class FpgaPassResults(FpgaResults):
         drc_by_severity: dict | None = None,
         methodology_warnings: list | None = None,
         bitstream: str | None = None,
+        design_state: str = "routed",
     ):
         super().__init__(
             name=name,
-            results={"result": "PASS", "name": name, "desc": "FPGA flow passed"},
+            results={
+                "result": "PASS",
+                "name": name,
+                "desc": "FPGA flow passed",
+                "design_state": design_state,
+            },
         )
         if lut is not None:
             self.results["lut"] = lut

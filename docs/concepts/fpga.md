@@ -67,6 +67,28 @@ runs:
 
 `require-timing-met` defaults to false, so a completed route that misses timing passes while reporting `timing_met: false`, negative slack and failing paths. Set it to true to make timing closure a regression gate; the failing result still carries the timing metrics. A backend that reports no timing result is not failed by this option.
 
+## Measure a block out of context
+
+A block measured on its own, rather than inside a board design, often has more ports than the package has pins, and placement fails with `[Place 30-415] IO Placement failed due to overutilization`. Set `out-of-context: true` to synthesise it without I/O buffers and stop before placement:
+
+```yaml
+rtl-buddy-filetype: fpga_config
+
+runs:
+  - name: packet_filter_ooc
+    desc: Packet filter, out of context
+    model: packet_filter
+    model_path: ../src/models.yaml
+    part: xczu7ev-ffvc1156-2-e
+    xdc: [constraints/filter_clocks.xdc]
+    out-of-context: true
+    defines: {FILTER_STAGES: 4}
+```
+
+Vivado runs `synth_design -mode out_of_context` and writes the usual report set from the synthesised design, so the result carries utilization and post-synthesis timing, and `design_state: synthesized` instead of `routed`. Timing uses estimated wiring and unplaced ports: compare it with other out-of-context results, not with a routed run. Constrain the clocks in the XDC as for a routed run. `require-timing-met` gates this post-synthesis timing.
+
+Only Vivado has the mode. `out-of-context` with `tool: openxc7`, or a `--bitstream` request for an out-of-context run, is an exit-2 configuration error.
+
 ## Share parts with platforms
 
 `cfg-fpga-platforms` in `root_config.yaml` holds part and board constraints shared by several runs:
@@ -102,7 +124,7 @@ rb fpga --list
 rb fpga-regression -c ci/fpga_regression.yaml -l 1000
 ```
 
-Without `--bitstream`, the flow stops after routing and reports, and `bitstream` is `null`. When a bitstream is requested, Vivado downgrades the IP-oriented `NSTD-1` and `UCIO-1` bitgen blockers to warnings just before `write_bitstream`. `drc.rpt` keeps their original severities. Board projects should still constrain every pin.
+Without `--bitstream`, the flow stops after routing and reports (after synthesis and reports for an out-of-context run), and `bitstream` is `null`. When a bitstream is requested, Vivado downgrades the IP-oriented `NSTD-1` and `UCIO-1` bitgen blockers to warnings just before `write_bitstream`. `drc.rpt` keeps their original severities. Board projects should still constrain every pin.
 
 A regression manifest lists `fpga.yaml` suites:
 
@@ -118,6 +140,8 @@ Runs above `-l/--reg-level` are SKIP. Machine-mode regression results include th
 
 Filelist `+incdir+` entries reach both backends: Vivado's `synth_design` gets them as `-include_dirs` and openXC7's `read_verilog` as `-I`. Each directory resolves against the filelist that declared it.
 
+Filelist `+define+` entries and the run's `defines:` reach both backends too: Vivado's `synth_design` as `-verilog_define` and openXC7's `read_verilog` as `-D`. A run value wins over a filelist entry of the same name and logs `fpga.filelist_defines_overridden` naming both values; among filelist entries the last one wins. Booleans render as `1`/`0`; null defines only the name. A Yosys script line cannot carry whitespace or `;` in a macro value, so openXC7 refuses such a value as an exit-2 configuration error.
+
 ## Read timing and quality results
 
 Use machine mode for automation:
@@ -126,7 +150,7 @@ Use machine mode for automation:
 rb --machine fpga demo_fpga > result.json
 ```
 
-Vivado results can include LUT, FF, BRAM and DSP utilization; WNS, TNS and hold slack; timing status and failing paths; power; DRC counts; methodology warnings; and the bitstream path. openXC7 emits the smaller set described above.
+Every passing result carries `design_state`: `routed`, or `synthesized` for an out-of-context run. Vivado results can include LUT, FF, BRAM and DSP utilization; WNS, TNS and hold slack; timing status and failing paths; power; DRC counts; methodology warnings; and the bitstream path. openXC7 emits the smaller set described above.
 
 To close timing:
 

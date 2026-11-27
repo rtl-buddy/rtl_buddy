@@ -12023,6 +12023,7 @@ class RtlBuddy:
         if suite is not None:
             row["suite"] = suite
         for k in (
+            "design_state",
             "lut",
             "ff",
             "bram",

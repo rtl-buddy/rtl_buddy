@@ -54,10 +54,10 @@ reporting PPA.
 
 A failed gate deletes the netlist, so `rb pnr` and `rb power` cannot read it.
 
-A `synth.filelist_defines_overridden` warning means the `synth.yaml` entry's
-`defines:` set a macro that the model filelist also defines with a different
-value. Synthesis uses the `synth.yaml` value and simulation uses the
-filelist's. Drop one of the two if the flows should agree.
+A `synth.filelist_defines_overridden` or `fpga.filelist_defines_overridden`
+warning means the run's `defines:` set a macro that the model filelist also
+defines with a different value. The run uses its own value and simulation uses
+the filelist's. Drop one of the two if the flows should agree.
 
 ## FPGA timing closure
 
@@ -65,6 +65,10 @@ filelist's. Drop one of the two if the flows should agree.
 with the worst failing path and `wns_ns`, form one hypothesis, make one focused
 RTL or constraint change, rerun, and compare the same metrics. Do not paper over
 a CDC or quasi-static path by relaxing the clock.
+
+An `out-of-context: true` run stops after synthesis, so its timing is
+post-synthesis with estimated wiring and its ports are unplaced. Compare it
+only with other out-of-context results.
 
 Use `rb --machine docs show concepts/fpga` for the closure decision tree and
 `concepts/power` for completeness and coverage semantics.

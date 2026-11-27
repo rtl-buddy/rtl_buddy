@@ -615,6 +615,7 @@ Flows differ in which entries they honor:
 - Synthesis (`read_verilog -I` and `read_slang -I`, on both yosys backends), FPGA (openXC7's `read_verilog -I`, Vivado's `synth_design -include_dirs`), and the Vivado CDC tool forward every `+incdir+`, each directory resolved against the filelist that declared it.
 - `rb cdc` and the hub's domain-map build pass every `+incdir+` to rtl-buddy-cdc as `--incdir <dir>`, resolved the same way. An rtl-buddy-cdc whose `lint --help` does not list `--incdir` gets none; the run logs `cdc.filelist_incdirs_unsupported` naming the directories, and the analyzer's own `Cannot find include file` error follows if a header resolves only through them. See [Quirks & Known Issues](../known-issues.md#filelist-incdir-needs-rtl-buddy-cdc-07-or-later).
 - `rb synth` applies `+define+` entries. The `synth.yaml` entry's `defines:` win on conflict and log `synth.filelist_defines_overridden`.
+- `rb fpga` applies `+define+` entries on both backends. The `fpga.yaml` run's `defines:` win on conflict and log `fpga.filelist_defines_overridden`.
 - Renderer-only flows drop definitions.
 
 ### Elaboration profiles
@@ -1055,7 +1056,9 @@ runs:
 | `xdc` | Default empty | Run-specific constraint paths relative to `fpga.yaml` |
 | `reglvl` | Default 0 | Regression level |
 | `tool_overrides` | Optional map | Backend-specific overrides keyed by tool name |
-| `require-timing-met` | Default false | Fails a passing routed run when the backend explicitly reports timing unmet. No effect when timing status is unavailable |
+| `defines` | Empty map | Preprocessor macros, with the value rules of an elaboration profile's `defines`. A name the model filelist also defines with `+define+` takes this value and logs `fpga.filelist_defines_overridden` |
+| `out-of-context` | Default false | Vivado only: synthesise with `-mode out_of_context` and report the synthesised design, with no placement, routing or bitstream |
+| `require-timing-met` | Default false | Fails a passing run when the backend explicitly reports timing unmet: routed timing, or post-synthesis timing for an `out-of-context` run. No effect when timing status is unavailable |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 | `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 

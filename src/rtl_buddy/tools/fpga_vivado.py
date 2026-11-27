@@ -8,7 +8,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from ..config.fpga import FpgaConfig
-from ..errors import FilelistError
+from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
 from ..runner.fpga_results import (
@@ -37,7 +37,7 @@ class VivadoFpga(BaseFpga):
 
     Renders the batch Tcl flow from :mod:`.fpga_vivado_flow`, runs
     ``vivado -mode batch -source flow.tcl -nojournal -log vivado.log`` in
-    ``artefacts/<run>/`` and parses the post-route reports
+    ``artefacts/<run>/`` and parses the post-route (out of context: post-synthesis) reports
     (:mod:`.fpga_vivado_reports`) into the results.
     """
 
@@ -77,6 +77,8 @@ class VivadoFpga(BaseFpga):
             verilog_sources=self._source_files_from_filelist(fl_path),
             xdc_files=list(target.xdc_files),
             include_dirs=self._incdirs_from_filelist(fl_path),
+            defines=self._defines(fl_path),
+            out_of_context=self.fpga_cfg.is_out_of_context(),
             bitstream=f"{top}.bit",
             emit_bitstream=self.emit_bitstream,
         )
@@ -85,7 +87,7 @@ class VivadoFpga(BaseFpga):
         return script_path
 
     def _parse_reports(self) -> dict:
-        """Parse the post-route reports in the run dir.
+        """Parse the post-route (out of context: post-synthesis) reports in the run dir.
 
         Raises:
           RuntimeError: a report is missing or unparsable; the message becomes the FAIL desc.
@@ -148,6 +150,12 @@ class VivadoFpga(BaseFpga):
         # Config errors are raised before the Vivado availability skip and clear the old outputs.
         try:
             target = resolve_target(self.fpga_cfg, self.root_cfg)
+            if self.emit_bitstream and self.fpga_cfg.is_out_of_context():
+                raise FatalRtlBuddyError(
+                    f"fpga run '{self.fpga_cfg.get_name()}' is out-of-context: "
+                    "it stops after synthesis, so it cannot write a bitstream; "
+                    "drop --bitstream or out-of-context"
+                )
         except Exception:
             # Catch everything (FilelistError is not a FatalRtlBuddyError); re-raised.
             self._clear_managed_outputs()
@@ -161,6 +169,7 @@ class VivadoFpga(BaseFpga):
             tool=self.executable,
             top=self.fpga_cfg.get_top(),
             part=target.part,
+            out_of_context=self.fpga_cfg.is_out_of_context(),
             bitstream=self.emit_bitstream,
         )
 
@@ -328,4 +337,7 @@ class VivadoFpga(BaseFpga):
             drc_by_severity=drc.get("by_severity"),
             methodology_warnings=methodology.get("warnings"),
             bitstream=bitstream,
+            design_state=(
+                "synthesized" if self.fpga_cfg.is_out_of_context() else "routed"
+            ),
         )

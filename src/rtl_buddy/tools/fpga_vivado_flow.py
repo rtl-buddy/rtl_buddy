@@ -3,8 +3,10 @@
 :func:`render_flow_tcl` renders :data:`FLOW_TCL_TEMPLATE`, run as
 ``vivado -mode batch -source flow.tcl -nojournal -log <log>``. Stages: read sources and XDC,
 ``synth_design``, ``opt_design``, ``place_design``, ``route_design``, reports, ``write_bitstream``.
-:data:`FLOW_STAGES` and :data:`REPORT_FILES` are shared with the backend, the report
-parsers (:mod:`.fpga_vivado_reports`) and the tests. Placeholders use ``{{ key }}``.
+An out-of-context run (:data:`OOC_FLOW_TCL_TEMPLATE`) synthesises with ``-mode out_of_context``
+and goes straight to the reports. :data:`FLOW_STAGES` and :data:`REPORT_FILES` are shared with
+the backend, the report parsers (:mod:`.fpga_vivado_reports`) and the tests. Placeholders use
+``{{ key }}``.
 """
 
 from __future__ import annotations
@@ -13,11 +15,14 @@ import re
 
 # (stage_name, tcl_command) in execution order.
 FLOW_STAGES: tuple[tuple[str, str], ...] = (
-    ("synth", "synth_design -top {{ top }} -part {{ part }}{{ include_dirs }}"),
+    ("synth", "synth_design -top {{ top }} -part {{ part }}{{ synth_options }}"),
     ("opt", "opt_design"),
     ("place", "place_design"),
     ("route", "route_design"),
 )
+
+# An out-of-context run stops after synthesis: its ports have no package pins to place.
+OOC_FLOW_STAGES: tuple[tuple[str, str], ...] = FLOW_STAGES[:1]
 
 # Post-route reports: key -> filename under ``artefacts/<run>/``. Keys match the
 # ``parse_<key>`` functions in fpga_vivado_reports.
@@ -54,14 +59,15 @@ def report_tcl_commands(report_files: dict[str, str] | None = None) -> list[str]
     return commands
 
 
-def _build_template() -> str:
-    """Assemble the flow template from the stage and report tables."""
+def _build_template(stages: tuple[tuple[str, str], ...]) -> str:
+    """Assemble a flow template from a stage table and the report table."""
+    order = " -> ".join(stage for stage, _ in stages)
     lines: list[str] = [
         "# Vivado non-project batch flow -- templated by rb fpga.",
         "#",
         "# Placeholders are substituted by Python before invoking",
         "#   vivado -mode batch -source flow.tcl -nojournal -log <log>",
-        "# Stage order: read sources/XDC -> synth -> opt -> place -> route",
+        f"# Stage order: read sources/XDC -> {order}",
         "# -> reports -> bitstream.",
         "",
         'puts ">>> Reading sources"',
@@ -71,7 +77,7 @@ def _build_template() -> str:
         "{{ read_constraints }}",
         "",
     ]
-    for stage, command in FLOW_STAGES:
+    for stage, command in stages:
         lines.append(f'puts ">>> Stage: {stage}"')
         lines.append(command)
         lines.append("")
@@ -86,7 +92,10 @@ def _build_template() -> str:
     return "\n".join(lines)
 
 
-FLOW_TCL_TEMPLATE: str = _build_template()
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+
+FLOW_TCL_TEMPLATE: str = _build_template(FLOW_STAGES)
+OOC_FLOW_TCL_TEMPLATE: str = _build_template(OOC_FLOW_STAGES)
 
 
 def _read_source_commands(verilog_sources: list[str]) -> list[str]:
@@ -119,6 +128,21 @@ def include_dirs_arg(include_dirs: list[str]) -> str:
     return " -include_dirs [list " + " ".join(tcl_string(d) for d in include_dirs) + "]"
 
 
+def verilog_define_arg(defines: dict[str, str | None]) -> str:
+    """Return ``synth_design``'s ``-verilog_define`` option for `defines`, or ``""``.
+
+    A None value is a bare macro (``NAME``); others render ``NAME=VALUE``, quoted with
+    :func:`tcl_string`.
+    """
+    if not defines:
+        return ""
+    words = [
+        tcl_string(name if value is None else f"{name}={value}")
+        for name, value in defines.items()
+    ]
+    return " -verilog_define [list " + " ".join(words) + "]"
+
+
 def render_flow_tcl(
     *,
     top: str,
@@ -126,6 +150,8 @@ def render_flow_tcl(
     verilog_sources: list[str],
     xdc_files: list[str],
     include_dirs: list[str] | None = None,
+    defines: dict[str, str | None] | None = None,
+    out_of_context: bool = False,
     bitstream: str | None = None,
     emit_bitstream: bool = True,
     report_files: dict[str, str] | None = None,
@@ -139,6 +165,10 @@ def render_flow_tcl(
       xdc_files: Constraint files, read in order.
       include_dirs: `` `include `` search directories, passed to
         ``synth_design -include_dirs``.
+      defines: Preprocessor macros, passed to ``synth_design -verilog_define``;
+        a None value defines the name only.
+      out_of_context: Synthesise with ``-mode out_of_context`` and skip
+        opt/place/route; the reports describe the synthesised design.
       bitstream: Output bitstream filename. Defaults to ``<top>.bit``.
       emit_bitstream: When False, the ``write_bitstream`` stage is
         replaced with a comment.
@@ -154,6 +184,10 @@ def render_flow_tcl(
         raise RuntimeError("fpga flow: part name is required")
     if not verilog_sources:
         raise RuntimeError("fpga flow: at least one HDL source is required")
+    if out_of_context and emit_bitstream:
+        raise RuntimeError(
+            "fpga flow: an out-of-context run has no placed design to write a bitstream from"
+        )
 
     read_constraints = "\n".join(f"read_xdc {xdc}" for xdc in xdc_files)
     if not xdc_files:
@@ -177,18 +211,21 @@ def render_flow_tcl(
         "part": part,
         "read_sources": "\n".join(_read_source_commands(verilog_sources)),
         "read_constraints": read_constraints,
-        "include_dirs": include_dirs_arg(include_dirs or []),
+        "synth_options": include_dirs_arg(include_dirs or [])
+        + verilog_define_arg(defines or {})
+        + (" -mode out_of_context" if out_of_context else ""),
         "reports": "\n".join(report_tcl_commands(report_files)),
         "bitstream_cmd": bitstream_cmd,
     }
 
-    script = FLOW_TCL_TEMPLATE
-    for key, value in substitutions.items():
-        script = script.replace("{{ " + key + " }}", str(value))
-
-    leftover = re.findall(r"\{\{\s*[\w]+\s*\}\}", script)
-    if leftover:
+    template = OOC_FLOW_TCL_TEMPLATE if out_of_context else FLOW_TCL_TEMPLATE
+    unknown = [
+        key for key in _PLACEHOLDER_RE.findall(template) if key not in substitutions
+    ]
+    if unknown:
         raise RuntimeError(
-            f"fpga flow template has unsubstituted placeholders: {leftover}"
+            f"fpga flow template has unsubstituted placeholders: {unknown}"
         )
-    return script
+    # One pass over the template: substituted text, such as a macro value spelled
+    # `{{X}}`, is never read as a placeholder.
+    return _PLACEHOLDER_RE.sub(lambda m: str(substitutions[m.group(1)]), template)
