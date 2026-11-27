@@ -6,15 +6,20 @@ A backend subclasses `BaseFpga`, implements `run()` and is registered in
 
 from __future__ import annotations
 
+import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..config.fpga import FpgaConfig
+from ..config.model import define_value_text
 from ..errors import FatalRtlBuddyError
+from ..logging_utils import log_event
 from ..runner.fpga_results import FpgaResults
-from .vlog_filelist import VlogFilelist, incdirs_from_filelist
+from .vlog_filelist import VlogFilelist, defines_from_filelist, incdirs_from_filelist
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -112,6 +117,31 @@ class BaseFpga(ABC):
     def _incdirs_from_filelist(self, fl_path: str) -> list[str]:
         """The filelist's ``+incdir+`` directories, for the tool's include option."""
         return incdirs_from_filelist(fl_path)
+
+    def _defines(self, fl_path: str) -> dict[str, str | None]:
+        """The filelist's ``+define+`` macros overlaid with the run's ``defines:``; None is a bare macro.
+
+        Logs ``fpga.filelist_defines_overridden`` once when the run changes a filelist value.
+        """
+        merged = defines_from_filelist(fl_path)
+        overridden: list[str] = []
+        for name, raw in self.fpga_cfg.get_defines().items():
+            value = define_value_text(raw)
+            if name in merged and merged[name] != value:
+                overridden.append(
+                    f"{name} (filelist={merged[name]!r}, fpga.yaml={value!r})"
+                )
+            merged[name] = value
+        if overridden:
+            log_event(
+                logger,
+                logging.WARNING,
+                "fpga.filelist_defines_overridden",
+                fpga=self.fpga_cfg.get_name(),
+                count=len(overridden),
+                overridden=overridden,
+            )
+        return merged
 
     @abstractmethod
     def run(self) -> FpgaResults:  # pragma: no cover

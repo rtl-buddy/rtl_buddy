@@ -3226,6 +3226,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'fpga "{fields.get("fpga")}": {fields.get("count")} ERROR line(s)'
                 f"{where} — first: {fields.get('first')} (log: {fields.get('log')})"
             )
+        case "fpga.filelist_defines_overridden":
+            overridden = fields.get("overridden") or []
+            return (
+                f'fpga "{fields.get("fpga")}": {fields.get("count")} +define+ '
+                "entr(ies) in the generated filelist are overridden by the "
+                "fpga.yaml run's `defines:` — "
+                + ", ".join(str(o) for o in overridden)
+                + ". The FPGA run builds with the fpga.yaml value, simulation "
+                "with the filelist's; drop one of the two if they are meant to agree"
+            )
         case "fpga.timing_gate_failed":
             wns = fields.get("wns_ns")
             wns_text = f" (WNS={wns} ns)" if wns is not None else ""

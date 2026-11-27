@@ -126,6 +126,15 @@ class OpenXc7Fpga(BaseFpga):
         inc_flags = "".join(
             f" -I {shlex.quote(inc)}" for inc in self._incdirs_from_filelist(fl_path)
         )
+        # `-D NAME[=VALUE]`; a None value is a bare macro. Yosys keeps quote characters,
+        # so a value is quoted only when whitespace forces it.
+        for name, value in self._defines(fl_path).items():
+            if value is None:
+                inc_flags += f" -D {name}"
+            elif any(c.isspace() for c in value):
+                inc_flags += f" -D {name}={shlex.quote(value)}"
+            else:
+                inc_flags += f" -D {name}={value}"
         for src in self._source_files_from_filelist(fl_path):
             if src.lower().endswith(".sv"):
                 lines.append(f"read_verilog -sv{inc_flags} {src}")

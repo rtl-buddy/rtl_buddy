@@ -57,6 +57,29 @@ def incdirs_from_filelist(fl_path: str) -> list[str]:
     return incdirs
 
 
+def defines_from_filelist(fl_path: str) -> dict[str, str | None]:
+    """Return a generated filelist's ``+define+`` macros in order; a bare ``+define+X`` maps to None.
+
+    A later entry for the same name wins, as on a compile line.
+    """
+    defines: dict[str, str | None] = {}
+    try:
+        with open(fl_path) as f:
+            lines = f.readlines()
+    except OSError:
+        return defines
+    for line in lines:
+        line = line.strip()
+        if not line.startswith(_DEFINE_PREFIX):
+            continue
+        for entry in line[len(_DEFINE_PREFIX) :].split("+"):
+            name, sep, value = entry.partition("=")
+            if name:
+                defines.pop(name, None)
+                defines[name] = value if sep else None
+    return defines
+
+
 def apply_exclude_globs(
     files: list[str], patterns: list[str], project_root: str
 ) -> tuple[list[str], int]:

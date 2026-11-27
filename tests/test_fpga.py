@@ -111,6 +111,53 @@ def test_fpga_suite_require_timing_met_defaults_false_and_parses(tmp_path):
     assert suite.get_runs("demo_fpga")[0].get_require_timing_met() is True
 
 
+def test_fpga_suite_out_of_context_and_defines_default_off_and_parse(tmp_path):
+    run = FpgaSuiteConfig(str(_write_suite(tmp_path))).get_runs("demo_fpga")[0]
+    assert run.is_out_of_context() is False
+    assert run.get_defines() == {}
+
+    yaml = _FPGA_YAML.replace(
+        "    reglvl: 1000\n",
+        "    reglvl: 1000\n"
+        "    out-of-context: true\n"
+        "    defines: {WIDTH: 8, FAST: true, SLOW: false, BARE: null, MODE: fast}\n",
+    )
+    run = FpgaSuiteConfig(str(_write_suite(tmp_path, yaml))).get_runs("demo_fpga")[0]
+    assert run.is_out_of_context() is True
+    assert run.get_defines() == {
+        "WIDTH": 8,
+        "FAST": True,
+        "SLOW": False,
+        "BARE": None,
+        "MODE": "fast",
+    }
+
+
+@pytest.mark.parametrize(
+    "defines, match",
+    [
+        pytest.param("{1BAD: 1}", "not a simple identifier", id="bad-name"),
+        pytest.param("{W: [1, 2]}", "string, integer, boolean or null", id="list"),
+        pytest.param("{W: 'a b'}", "invalid value", id="whitespace"),
+        pytest.param("{W: 'a+b'}", "invalid value", id="plus"),
+    ],
+)
+def test_fpga_suite_rejects_bad_defines(tmp_path, defines, match):
+    yaml = _FPGA_YAML.replace(
+        "    reglvl: 1000\n", f"    reglvl: 1000\n    defines: {defines}\n"
+    )
+    with pytest.raises(FatalRtlBuddyError, match=match):
+        FpgaSuiteConfig(str(_write_suite(tmp_path, yaml)))
+
+
+def test_fpga_suite_out_of_context_needs_vivado(tmp_path):
+    yaml = _FPGA_YAML.replace('tool: "vivado"', 'tool: "openxc7"').replace(
+        "    reglvl: 1000\n", "    reglvl: 1000\n    out-of-context: true\n"
+    )
+    with pytest.raises(FatalRtlBuddyError, match="'out-of-context' needs tool vivado"):
+        FpgaSuiteConfig(str(_write_suite(tmp_path, yaml)))
+
+
 def test_fpga_suite_missing_part_raises(tmp_path):
     yaml = _FPGA_YAML.replace('    part: "xczu7ev-ffvc1156-2-e"\n', "")
     assert "part" not in yaml
@@ -162,6 +209,8 @@ def _make_fpga_cfg(
     filelist=None,
     xdc=None,
     require_timing_met=False,
+    defines=None,
+    out_of_context=False,
 ):
     model = ModelConfig(
         name="demo_top",
@@ -177,6 +226,8 @@ def _make_fpga_cfg(
         xdc_files=xdc or [],
         _reglvl=reglvl,
         tool_overrides=None,
+        defines=defines or {},
+        out_of_context=out_of_context,
         require_timing_met=require_timing_met,
     )
 
@@ -426,6 +477,15 @@ def test_fpga_require_timing_met_does_not_gate_unknown_timing(tmp_path):
             ["demo", "3 ERROR", "ERROR: x"],
         ),
         (
+            "fpga.filelist_defines_overridden",
+            {
+                "fpga": "demo",
+                "count": 1,
+                "overridden": ["W (filelist='8', fpga.yaml='16')"],
+            },
+            ["demo", "1 +define+", "W (filelist='8', fpga.yaml='16')", "defines:"],
+        ),
+        (
             "fpga.timing_gate_failed",
             {"fpga": "demo", "wns_ns": -1.25, "failing_endpoints": 4},
             ["demo", "timing not met", "-1.25", "require-timing-met"],
@@ -452,7 +512,9 @@ def test_fpga_cdc_human_messages_are_specific(event, fields, expected_substrings
         assert sub in msg, f"{event}: {sub!r} not in {msg!r}"
 
 
-def _make_backend(tmp_path, *, emit_bitstream=False):
+def _make_backend(
+    tmp_path, *, emit_bitstream=False, defines=None, out_of_context=False
+):
     """Backend over a real one-file design in tmp_path."""
     src_dir = tmp_path / "src"
     src_dir.mkdir(exist_ok=True)
@@ -465,6 +527,8 @@ def _make_backend(tmp_path, *, emit_bitstream=False):
         tmp_path,
         filelist=["src/demo_top.sv"],
         xdc=[str(tmp_path / "demo.xdc")],
+        defines=defines,
+        out_of_context=out_of_context,
     )
     (tmp_path / "demo.xdc").write_text("create_clock -period 10 [get_ports clk]\n")
     return VivadoFpga(
@@ -560,6 +624,106 @@ def test_vivado_fpga_forwards_filelist_incdirs(tmp_path, monkeypatch):
         "synth_design -top demo_top -part xczu7ev-ffvc1156-2-e "
         f'-include_dirs [list "{tmp_path / "inc"}"]\n' in script
     )
+
+
+def test_vivado_fpga_out_of_context_stops_after_synthesis(tmp_path, monkeypatch):
+    backend = _make_backend(tmp_path, out_of_context=True)
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+    monkeypatch.setattr(
+        fpga_vivado_module,
+        "run_managed_process",
+        _fake_vivado(drop_bitstream=False),
+    )
+
+    res = backend.run()
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    # The report set and its parsing are those of a routed run.
+    assert res.results["lut"]["used"] == 1
+    assert res.results["wns_ns"] == 8.452
+    assert res.results["bitstream"] is None
+
+    script = (Path(backend.artefact_dir) / "flow.tcl").read_text()
+    assert (
+        "synth_design -top demo_top -part xczu7ev-ffvc1156-2-e -mode out_of_context\n"
+        in script
+    )
+    for stage in ("opt_design", "place_design", "route_design", "write_bitstream"):
+        assert stage not in script
+    assert script.index("synth_design") < script.index("report_utilization")
+
+
+def test_vivado_fpga_out_of_context_refuses_a_bitstream(tmp_path, monkeypatch):
+    backend = _make_backend(tmp_path, out_of_context=True, emit_bitstream=True)
+    stale = Path(backend.artefact_dir) / "util.rpt"
+    stale.write_text("previous run")
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+    ran = MagicMock()
+    monkeypatch.setattr(fpga_vivado_module, "run_managed_process", ran)
+    with pytest.raises(FatalRtlBuddyError, match="cannot write a bitstream"):
+        backend.run()
+    ran.assert_not_called()
+    # A configuration error clears the previous run's outputs, as for a bad platform.
+    assert not stale.exists()
+
+
+def test_vivado_fpga_passes_filelist_and_run_defines(tmp_path, monkeypatch, caplog):
+    import logging
+
+    backend = _make_backend(tmp_path, defines={"WIDTH": 16, "FAST": True, "NEW": None})
+    backend.fpga_cfg.model.filelist = [
+        "+define+WIDTH=8+SIM_ONLY",
+        "+define+KEEP=a",
+        "src/demo_top.sv",
+    ]
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+    monkeypatch.setattr(fpga_vivado_module, "run_managed_process", _fake_vivado())
+    with caplog.at_level(logging.WARNING):
+        res = backend.run()
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+
+    script = (Path(backend.artefact_dir) / "flow.tcl").read_text()
+    assert (
+        "synth_design -top demo_top -part xczu7ev-ffvc1156-2-e -verilog_define "
+        '[list "WIDTH=16" "SIM_ONLY" "KEEP=a" "FAST=1" "NEW"]\n' in script
+    )
+    events = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", "") == "fpga.filelist_defines_overridden"
+    ]
+    assert len(events) == 1
+    assert events[0].rtl_fields["overridden"] == [
+        "WIDTH (filelist='8', fpga.yaml='16')"
+    ]
+
+
+def test_vivado_fpga_matching_run_define_logs_no_override(
+    tmp_path, monkeypatch, caplog
+):
+    import logging
+
+    backend = _make_backend(tmp_path, defines={"WIDTH": 8})
+    backend.fpga_cfg.model.filelist = ["+define+WIDTH=8", "src/demo_top.sv"]
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+    monkeypatch.setattr(fpga_vivado_module, "run_managed_process", _fake_vivado())
+    with caplog.at_level(logging.WARNING):
+        res = backend.run()
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    script = (Path(backend.artefact_dir) / "flow.tcl").read_text()
+    assert '-verilog_define [list "WIDTH=8"]' in script
+    assert not [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", "") == "fpga.filelist_defines_overridden"
+    ]
 
 
 def test_vivado_fpga_no_bitstream_flag_skips_bitgen(tmp_path, monkeypatch):

@@ -257,6 +257,23 @@ def test_parse_methodology_rejects_garbage():
         parse_methodology(_fixture("drc.rpt"))
 
 
+def test_parse_utilization_of_a_synthesised_design_drops_the_footnote_marker():
+    # An out-of-context run reports the synthesised design, which footnotes
+    # "Slice LUTs*" as an estimate.
+    text = _fixture("util_synth_ooc.rpt")
+    assert "Slice LUTs*" in text
+    util = parse_utilization(text)
+    assert util["lut"] == {
+        "used": 166,
+        "fixed": 0,
+        "available": 20800,
+        "util_pct": 0.8,
+    }
+    assert util["ff"]["used"] == 128
+    assert "Slice LUTs" in util["resources"]
+    assert "Slice LUTs*" not in util["resources"]
+
+
 def test_flow_template_stage_and_report_contract():
     # Stage order and the report set are keyed like the parser names and fixture
     # files.
@@ -305,6 +322,46 @@ def test_render_flow_tcl_full_script():
         script.index("write_bitstream"),
     ]
     assert positions == sorted(positions)
+
+
+def test_render_flow_tcl_out_of_context_script():
+    script = flow.render_flow_tcl(
+        top="t",
+        part="xczu7ev-ffvc1156-2-e",
+        verilog_sources=["a.sv"],
+        xdc_files=["clk.xdc"],
+        out_of_context=True,
+        emit_bitstream=False,
+    )
+    assert [stage for stage, _ in flow.OOC_FLOW_STAGES] == ["synth"]
+    assert (
+        "synth_design -top t -part xczu7ev-ffvc1156-2-e -mode out_of_context\n"
+        in script
+    )
+    assert "read_xdc clk.xdc" in script
+    for absent in ("opt_design", "place_design", "route_design", "write_bitstream"):
+        assert absent not in script
+    for command in flow.report_tcl_commands():
+        assert command in script
+    assert "{{" not in script
+
+
+def test_render_flow_tcl_out_of_context_refuses_a_bitstream():
+    with pytest.raises(RuntimeError, match="out-of-context run has no placed design"):
+        flow.render_flow_tcl(
+            top="t",
+            part="p",
+            verilog_sources=["a.v"],
+            xdc_files=[],
+            out_of_context=True,
+        )
+
+
+def test_verilog_define_arg_quotes_each_macro():
+    assert flow.verilog_define_arg({}) == ""
+    assert flow.verilog_define_arg({"A": "1", "B": None, "S": 'say "hi" $x'}) == (
+        ' -verilog_define [list "A=1" "B" "S=say \\"hi\\" \\$x"]'
+    )
 
 
 def test_render_flow_tcl_vhdl_and_no_xdc():

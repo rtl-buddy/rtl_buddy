@@ -182,6 +182,41 @@ class ElaborationProfile:
         return self.top or model.get_top()
 
 
+def validate_define_map(defines, prefix: str) -> None:
+    """Check a `defines:` map: identifier names; string, integer, boolean or null values.
+
+    Raises:
+      FatalRtlBuddyError: naming `prefix` and the offending entry.
+    """
+    if not isinstance(defines, dict):
+        raise FatalRtlBuddyError(f"{prefix} defines must be a mapping")
+    for key, value in defines.items():
+        if not isinstance(key, str) or not MODEL_TOP_RE.match(key):
+            raise FatalRtlBuddyError(
+                f"{prefix} define name {key!r} is not a simple identifier"
+            )
+        if value is not None and not isinstance(value, (str, int, bool)):
+            raise FatalRtlBuddyError(
+                f"{prefix} define {key!r} must be a string, integer, boolean or null"
+            )
+        if isinstance(value, str) and (
+            not value or "+" in value or any(char.isspace() for char in value)
+        ):
+            raise FatalRtlBuddyError(
+                f"{prefix} define {key!r} has an invalid value; string values "
+                "cannot be empty or contain whitespace or '+'"
+            )
+
+
+def define_value_text(value) -> str | None:
+    """Render a validated `defines:` value: booleans as `1`/`0`, null as None (name only)."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    return str(value)
+
+
 def _validate_elaboration_profile(
     profile: ElaborationProfile, model: "ModelConfig", path: str
 ) -> None:
@@ -238,24 +273,7 @@ def _validate_elaboration_profile(
             not isinstance(value, str) for value in values
         ):
             raise FatalRtlBuddyError(f"{prefix} {option} must be a list of strings")
-    if not isinstance(profile.defines, dict):
-        raise FatalRtlBuddyError(f"{prefix} defines must be a mapping")
-    for key, value in profile.defines.items():
-        if not isinstance(key, str) or not MODEL_TOP_RE.match(key):
-            raise FatalRtlBuddyError(
-                f"{prefix} define name {key!r} is not a simple identifier"
-            )
-        if value is not None and not isinstance(value, (str, int, bool)):
-            raise FatalRtlBuddyError(
-                f"{prefix} define {key!r} must be a string, integer, boolean or null"
-            )
-        if isinstance(value, str) and (
-            not value or "+" in value or any(char.isspace() for char in value)
-        ):
-            raise FatalRtlBuddyError(
-                f"{prefix} define {key!r} has an invalid value; string values "
-                "cannot be empty or contain whitespace or '+'"
-            )
+    validate_define_map(profile.defines, prefix)
     if not isinstance(profile.parameters, dict):
         raise FatalRtlBuddyError(f"{prefix} parameters must be a mapping")
     for key, value in profile.parameters.items():

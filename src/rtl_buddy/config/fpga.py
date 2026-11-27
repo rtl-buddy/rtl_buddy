@@ -10,7 +10,7 @@ from .yaml_loader import config_from_yaml
 from ..errors import FatalRtlBuddyError
 from ..runner.xfail import compile_xfail_match
 from ..logging_utils import log_event
-from .model import ModelConfig, ModelConfigLoader
+from .model import ModelConfig, ModelConfigLoader, validate_define_map
 from .toolpath import resolve_tool_path
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,10 @@ class FpgaConfigFile:
     xdc: list[str] = field(default_factory=list)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
+    # Preprocessor macros; a name also set by a filelist `+define+` takes this value.
+    defines: dict | None = None
+    # Synthesise without I/O buffers and stop before placement (Vivado only).
+    out_of_context: bool = field(rename="out-of-context", default=False)
     # When true, a routed run with negative slack FAILs instead of PASSing.
     # No effect when the backend reports no timing (timing_met None).
     require_timing_met: bool = field(rename="require-timing-met", default=False)
@@ -81,6 +85,13 @@ class FpgaConfigFile:
                 "(full device part name, e.g. xczu7ev-ffvc1156-2-e) "
                 "or 'platform' (name of a cfg-fpga-platforms entry)"
             )
+        if self.defines is not None:
+            validate_define_map(self.defines, f"fpga run '{self.name}':")
+        if self.out_of_context and self.tool != "vivado":
+            raise FatalRtlBuddyError(
+                f"fpga run '{self.name}': 'out-of-context' needs tool vivado; "
+                f"{self.tool!r} has no out-of-context mode"
+            )
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
             self.model
         )
@@ -95,6 +106,8 @@ class FpgaConfigFile:
             xdc_files=xdc_files,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
+            defines=dict(self.defines or {}),
+            out_of_context=self.out_of_context,
             require_timing_met=self.require_timing_met,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
@@ -113,10 +126,20 @@ class FpgaConfig:
     tool_overrides: dict | None
     xdc_files: list[str] = dc_field(default_factory=list)
     platform: str = ""
+    defines: dict = dc_field(default_factory=dict)
+    out_of_context: bool = False
     require_timing_met: bool = False
     xfail: bool = False
     xfail_strict: bool = False
     xfail_match: str | None = None
+
+    def get_defines(self) -> dict:
+        """The run's `defines:` map (validated; values not yet rendered)."""
+        return dict(self.defines)
+
+    def is_out_of_context(self) -> bool:
+        """Whether the run synthesises out of context and skips implementation."""
+        return self.out_of_context
 
     def get_require_timing_met(self) -> bool:
         """Whether an unmet-timing routed run should FAIL (vs PASS)."""

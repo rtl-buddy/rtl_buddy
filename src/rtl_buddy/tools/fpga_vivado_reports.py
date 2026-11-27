@@ -89,7 +89,8 @@ def parse_utilization(text: str) -> dict:
         }
 
     Every row of every ``Site Type`` table is captured; the first occurrence of a
-    repeated site type wins. Blank cells are ``None``.
+    repeated site type wins, and a footnote ``*`` is dropped from its name. Blank
+    cells are ``None``.
 
     Raises:
       ValueError: if the text is not a Vivado utilization report.
@@ -112,7 +113,8 @@ def parse_utilization(text: str) -> dict:
         for row in rows:
             if not row or not row[0]:
                 continue
-            site_type = row[0]
+            # A synthesised design's report footnotes estimated rows: "Slice LUTs*".
+            site_type = row[0].rstrip("*").rstrip()
             resources.setdefault(
                 site_type,
                 {

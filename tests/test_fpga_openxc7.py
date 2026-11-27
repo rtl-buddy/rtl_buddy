@@ -275,6 +275,20 @@ def test_openxc7_forwards_filelist_incdirs(tmp_path, monkeypatch):
     assert f"read_verilog -sv -I {tmp_path / 'inc'} " in script
 
 
+def test_openxc7_passes_filelist_and_run_defines(tmp_path, monkeypatch):
+    backend = _make_backend(tmp_path, tool_overrides=_CHIPDB_OVERRIDES)
+    backend.fpga_cfg.defines = {"WIDTH": 16, "FAST": False, "MSG": None}
+    backend.fpga_cfg.model.filelist = [
+        "+define+WIDTH=8+SIM_ONLY",
+        "src/demo_top.sv",
+    ]
+    _mock_toolchain(monkeypatch, _fake_pipeline())
+    res = backend.run()
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    script = (Path(backend.artefact_dir) / "synth.ys").read_text()
+    assert "read_verilog -sv -D WIDTH=16 -D SIM_ONLY -D FAST=0 -D MSG " in script
+
+
 def test_openxc7_chipdb_from_env_dir(tmp_path, monkeypatch):
     calls: list = []
     backend = _make_backend(tmp_path)
