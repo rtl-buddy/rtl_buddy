@@ -4056,7 +4056,7 @@ A top run names its blocks under `blocks:`, in `pnr.yaml` and in the `synth.yaml
 
 - Build blocks first. `rb pnr -c top/pnr.yaml --synth` builds every block, its synthesis and the top in order from a clean tree. `-j N` hardens independent blocks in parallel, each with its own `threads:`.
 - A run whose block failed is not attempted (`fail_stage: blocked`, with `blocked_by`).
-- The block must use the top's technology LEF and corner.
+- The block must use the top's technology LEF and corner. `rb synth` of the top on the Yosys backend also takes a block hardened at another corner of the same technology (a technology LEF of the same content), with a `synth.block_corner_mismatch` warning: Yosys reads the block's Liberty only for its pins and maps the top with the synth platform's cells, so the block's corner reaches neither the netlist nor the reported numbers, and its Liberty `time_unit` is not checked against the cells'. A synthesis with an OpenROAD stage (`openroad.run`) times the block's model and still needs the block's corner, as `rb pnr` does.
 - An abstract is refused, naming what changed, when its inputs changed since hardening or a major rb version with different built-in flow steps or defaults hardened it. Re-harden it, or pass `--accept-stale`.
 - A top whose blocks cover the core has no rows once rows are cut around them. With no standard cell left to place, rb skips global placement, resize, legalization, CTS and its repairs, the post-CTS and global-route timing repairs, antenna diode insertion and fill, routes the top-level nets, and qualifies the pass with `pnr.no_rows_skip_placement`. Clocks stay propagated, and the `after-timing-repair` hooks of a skipped repair do not run. A top with standard cells, such as port buffers (`buffer-ports`, on by default with `harden`), needs a strip of core rows for them; without one the floorplan stops with `no rows left for N standard cell(s)`.
 - A block hardened with `abstract: {gds: false}` has no GDS. A parent's `strict` stream-out (its own `harden` and `rb pnr-export --gds-mode strict` included) fails at setup naming it. A `preview` stream-out, `--png` included, leaves it out of the layout and names it, as in [Stream out GDS and PNG](#stream-out-gds-and-png).
@@ -4205,9 +4205,28 @@ rb saif verif/demo/artefacts/csr_smoke/dump.fst \
 rb power demo_power_saif -c power/demo/power.yaml -l 1000
 ```
 
-The converter accepts FST or VCD. If the trace starts at the testbench, set `activity.scope` to the design top.
+The converter accepts FST or VCD. If the trace starts at the testbench, set `activity.scope` to the design top. It reads the trace in one pass, so its run time grows with the number of value changes in the trace, not with the number of signals times the file size. Its memory grows with the number of time steps, which the trace reader holds as a table, and not with the number of value changes.
 
 Names are written in the form OpenROAD's `read_saif` reads, so one name cannot fail the whole read. An escaped Verilog name loses its leading backslash: the trace's `\u_a.n1` is written `u_a.n1`, and a bracket in a name is written `\[`. A net or instance whose name has no readable form is left out, an instance with everything beneath it, and `rb saif` warns with the count (`saif.names_skipped`). See [Known Issues](../known-issues.md#rb-saif-leaves-out-names-read_saif-cannot-read).
+
+## Check how the trace was used
+
+OpenROAD can read a pin's value from the trace and still not use it in `report_power`. Its `Annotated N pin activities.` line and `report_activity_annotation` count the pins the trace named, not the activities the analysis used. So after the analysis, a SAIF or VCD run records both:
+
+- `activity_annotation`: the `report_activity_annotation` counts, such as `{"saif": 16, "unannotated": 0}`.
+- `activity_origins`: how many pins took their activity from each origin as `report_power` used it. The pins are the top-level ports and every leaf-instance pin except power and internal pins, the set `report_activity_annotation` counts. `saif` or `vcd` is the trace, `propagated` is derived from other pins, `clock` is the SDC clock's rate, `input` is the default input rate, and `unknown` is no activity at all, which counts as zero.
+- `activity_unused`: the pins the trace annotated whose activity came from elsewhere, other than the clock pins. It gives the count, the number annotated, the count per origin and the first five pin names.
+- `activity_annotated_clock`: the annotated pins that take the SDC clock's rate in place of the trace's.
+
+When `activity_unused` is not zero, the run warns (`power.trace_activity_unused`):
+
+```text
+power run "demo_power_saif": 4 of the 16 pins the SAIF annotated do not take that activity in report_power (unknown: 4) — m, um/Q, uo/A, uo/Y. ...
+```
+
+The usual cause is a cell with a clock-to-output timing arc and no `ff` or `latch` group in its Liberty, such as a RAM macro characterised with a `memory` group. The activity search does not cross a clock-to-output arc and seeds only the outputs of `ff` and `latch` cells, so the macro's outputs and the pins they drive keep activity 0. See [Quirks & Known Issues](../known-issues.md#annotated-activity-on-a-macros-outputs-is-not-used). The verdict does not change.
+
+The fields go in `--machine` output. `activity_annotation.rpt` holds the counts and the shorter of the annotated and unannotated pin listings; when something other than the trace also annotated pins, such as `set_power_activity` in the SDC, it holds the annotated listing, which names each pin's source. `activity_census.rpt` holds the per-origin counts and, for each pin whose activity is from neither the trace nor propagation, its origin, density and duty. On a multi-corner platform the census reads the worst corner, the one the totals report. The census costs one property lookup per pin, a few seconds per million pins. Set `activity.origin-census: false` to skip it and keep only the counts.
 
 ## Map renamed instances
 
@@ -4358,6 +4377,7 @@ Outputs land under `<power-dir>/artefacts/<run>/`, or `<power-dir>/artefacts/.ru
 | `power_netlist.v` | This run's copy of the upstream netlist, the file OpenROAD reads |
 | `activity.mapped.saif` | The SAIF with [`activity.instance-map`](#map-renamed-instances) applied, the file OpenROAD reads; only with a map |
 | `power_instances.rpt` | Raw `report_power -instances`, one line per leaf instance |
+| `activity_annotation.rpt`, `activity_census.rpt` | How the trace's activity was used; SAIF and VCD runs only. See [Check how the trace was used](#check-how-the-trace-was-used) |
 | `phys-model.json`, `phys-manifest.json` | Physical model and its manifest; query with `rb phys` ([Physical Metrics](phys.md)) |
 
 With `phys-run` set, the model and manifest are written to the synthesis run's directory instead.
@@ -4371,6 +4391,7 @@ Read `power.log` for tool and input errors, then `power.rpt` for missing or malf
 - **`N instance(s) have no Liberty power data and report 0 W`:** see [Read the unpowered-cell warning](#read-the-unpowered-cell-warning).
 - **`N configured macro input(s) not on disk`:** the run stops. Fix the listed `lib-paths` or `lef-paths` on this entry or the upstream run.
 - **`Total line of report_power output is NaN/inf`:** OpenSTA converted an activity against a zero clock period. Check that every clock the SDC's I/O delays reference has a finite period; `create_generated_clock` clocks are derived before the activity is read.
+- **`N of the M pins the SAIF annotated do not take that activity`:** see [Check how the trace was used](#check-how-the-trace-was-used).
 - **`power.spef_rejected`:** the SPEF is unreadable or stale and the estimate was used. Rerun `rb pnr`, then the power run.
 - **`phys-model.json has no per-instance breakdown`:** the per-instance report was missing or unreadable. Totals are still recorded and the run passes, but `rb phys instance` has nothing for it.
 - **`phys-model.json was not written`:** publishing failed. Any model in the directory belongs to an earlier run.
@@ -7320,6 +7341,12 @@ Upgrade OpenROAD, or run each corner on a single-corner platform. See [Sign off 
 ## rb power times every corner in one SDC mode
 
 On a multi-corner platform `rb power` reads one SDC, by default the P&R run's `<top>.routed.sdc` (the primary corner's), and the routed SPEF once for all corners. Every corner then uses the primary corner's generated-clock latencies, and the corners after the first reuse the first corner's reduced parasitics. For one corner's own figures, run `rb power` on a single-corner platform of that corner with `constraints:` set to `<top>.<corner>.routed.sdc`.
+
+## Annotated activity on a macro's outputs is not used
+
+OpenSTA's `report_power` gives activity 0 to the output pins of a cell whose Liberty has a clock-to-output arc (`rising_edge`) but no `ff` or `latch` group, such as a RAM macro with a `memory` group, even when the SAIF or VCD annotates them. The pins those outputs drive get activity 0 too. The activity search does not cross a clock-to-output arc, and only `ff` and `latch` cells get their outputs seeded from the annotation. `report_activity_annotation` still counts the pins as annotated. `set_disable_timing` on the arcs does not change it.
+
+`rb power` warns with the count and names (`power.trace_activity_unused`) and records them in `activity_unused`; see [Check how the trace was used](concepts/power.md#check-how-the-trace-was-used). The switching power of those nets is missing from the totals; rb has no workaround, so weigh the named nets against the totals. The same mechanism makes a hardened block's abstract Liberty hide its outputs' activity; see [Give hard macros a library](concepts/power.md#give-hard-macros-a-library).
 
 ## rb saif leaves out names read_saif cannot read
 
@@ -11485,7 +11512,7 @@ Test fields:
 | `reglvl` | Optional | Regression level |
 | `builder` | Optional | Per-test builder override |
 | `plusargs` | Optional map | `KEY: VALUE` becomes `+KEY=VALUE`; a null value becomes `+KEY` |
-| `plusdefines` | Optional map | `KEY: VALUE` becomes `+define+KEY=VALUE`; a null value becomes `+define+KEY` |
+| `plusdefines` | Optional map | `KEY: VALUE` becomes `+define+KEY=VALUE` on the compile line; a null value becomes `+define+KEY`. Icarus gets `-DKEY=VALUE` / `-DKEY` instead, because `iverilog` reads `+define+` only inside a command file |
 | `sim_timeout` | Default 60 | Seconds per simulation run |
 | `sim-rand-seed` | Optional | Fixed runtime seed from 1 through 2147483647. Overrides `--master-seed`, `--rnd-new`, and `--rnd-last`; use it for timing or command-cycle stimulus that must not change |
 | `sim-rand-seed-plusarg` | Optional | Plusarg name that receives the fixed, master-derived, or builder-default seed before `preproc` runs. A hook reads it with `test_cfg.get_plusarg(NAME)` or `test_cfg.get_resolved_seed()`. With this field set, `--rnd-new` and `--rnd-last` require a fixed `sim-rand-seed`, because their seed is not available before preprocessing |
@@ -11572,7 +11599,7 @@ syntheses:
 | `defines` | Optional map | Verilog preprocessor definitions |
 | `platform` | Optional | `cfg-synth-platforms` entry; enables technology mapping |
 | `lef-paths` / `lib-paths` | Optional lists | Block-specific LEF and Liberty files, appended after platform data |
-| `blocks` | Optional list | Hardened blocks the design instances. Each has `name` (the module), `pnr` (a `harden: true` P&R run), and `pnr-path` (its `pnr.yaml`, relative to `synth.yaml`); all three are required. The abstract's `.lib` and `.lef` are appended to `lib-paths` and `lef-paths`. The model's filelist must still leave the module a blackbox. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
+| `blocks` | Optional list | Hardened blocks the design instances. Each has `name` (the module), `pnr` (a `harden: true` P&R run), and `pnr-path` (its `pnr.yaml`, relative to `synth.yaml`); all three are required. The abstract's `.lib` and `.lef` are appended to `lib-paths` and `lef-paths`. The model's filelist must still leave the module a blackbox. A block hardened at another corner of the synth platform's technology is a warning on the Yosys backend and an error with an OpenROAD stage. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `abc_script`, `strategy`, `frontend`, `plugin_path`, `single_unit`, `best_effort_hierarchy`, `static_functions`, `conflicting_drivers`, `unresolved_interfaces`, `clock_gating_min_flops` |
 | `effort` | Default `standard` | `cfg-synth-efforts` entry. CLI `--effort` wins |
@@ -11736,6 +11763,7 @@ runs:
 | `activity.saif` / `.vcd` | Mutually exclusive | Activity trace path |
 | `activity.scope` | Only with a trace | OpenROAD trace scope; invalid without SAIF or VCD |
 | `activity.instance-map` | Only with `activity.saif` | File of `<trace name> <database name>` instance pairs, relative to `power.yaml`, applied to the SAIF before OpenROAD reads it. See [Map renamed instances](../concepts/power.md#map-renamed-instances) |
+| `activity.origin-census` | Default true; read only with a trace | Count the activity origins `report_power` used and check which annotated pins it did not use. `false` keeps only the annotation counts. See [Check how the trace was used](../concepts/power.md#check-how-the-trace-was-used) |
 | `activity.default-toggle-rate` | Default 0.1 | Synthetic toggle rate for dynamic mode without a trace |
 | `activity.default-static-prob` | Default 0.5 | Synthetic static probability |
 | `reglvl` | Optional | Regression level |

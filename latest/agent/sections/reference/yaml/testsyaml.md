@@ -92,7 +92,7 @@ Test fields:
 | `reglvl` | Optional | Regression level |
 | `builder` | Optional | Per-test builder override |
 | `plusargs` | Optional map | `KEY: VALUE` becomes `+KEY=VALUE`; a null value becomes `+KEY` |
-| `plusdefines` | Optional map | `KEY: VALUE` becomes `+define+KEY=VALUE`; a null value becomes `+define+KEY` |
+| `plusdefines` | Optional map | `KEY: VALUE` becomes `+define+KEY=VALUE` on the compile line; a null value becomes `+define+KEY`. Icarus gets `-DKEY=VALUE` / `-DKEY` instead, because `iverilog` reads `+define+` only inside a command file |
 | `sim_timeout` | Default 60 | Seconds per simulation run |
 | `sim-rand-seed` | Optional | Fixed runtime seed from 1 through 2147483647. Overrides `--master-seed`, `--rnd-new`, and `--rnd-last`; use it for timing or command-cycle stimulus that must not change |
 | `sim-rand-seed-plusarg` | Optional | Plusarg name that receives the fixed, master-derived, or builder-default seed before `preproc` runs. A hook reads it with `test_cfg.get_plusarg(NAME)` or `test_cfg.get_resolved_seed()`. With this field set, `--rnd-new` and `--rnd-last` require a fixed `sim-rand-seed`, because their seed is not available before preprocessing |

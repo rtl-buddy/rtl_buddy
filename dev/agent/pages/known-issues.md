@@ -358,6 +358,12 @@ Upgrade OpenROAD, or run each corner on a single-corner platform. See [Sign off 
 
 On a multi-corner platform `rb power` reads one SDC, by default the P&R run's `<top>.routed.sdc` (the primary corner's), and the routed SPEF once for all corners. Every corner then uses the primary corner's generated-clock latencies, and the corners after the first reuse the first corner's reduced parasitics. For one corner's own figures, run `rb power` on a single-corner platform of that corner with `constraints:` set to `<top>.<corner>.routed.sdc`.
 
+## Annotated activity on a macro's outputs is not used
+
+OpenSTA's `report_power` gives activity 0 to the output pins of a cell whose Liberty has a clock-to-output arc (`rising_edge`) but no `ff` or `latch` group, such as a RAM macro with a `memory` group, even when the SAIF or VCD annotates them. The pins those outputs drive get activity 0 too. The activity search does not cross a clock-to-output arc, and only `ff` and `latch` cells get their outputs seeded from the annotation. `report_activity_annotation` still counts the pins as annotated. `set_disable_timing` on the arcs does not change it.
+
+`rb power` warns with the count and names (`power.trace_activity_unused`) and records them in `activity_unused`; see [Check how the trace was used](concepts/power.md#check-how-the-trace-was-used). The switching power of those nets is missing from the totals; rb has no workaround, so weigh the named nets against the totals. The same mechanism makes a hardened block's abstract Liberty hide its outputs' activity; see [Give hard macros a library](concepts/power.md#give-hard-macros-a-library).
+
 ## rb saif leaves out names read_saif cannot read
 
 OpenROAD's `read_saif` reads a name only if it starts with a letter or `_` and holds nothing but letters, digits and `_ $ . [ ]`; any other name fails the whole file. `rb saif` therefore leaves out a net or instance whose name, after dropping an escaped name's leading backslash, breaks that rule (`\a-b`, `\1x`), an instance with everything beneath it, and warns with the count. In a flattened netlist such a net is usually an internal wire, whose cell pins are annotated from their own instance's records, so little or nothing is lost. To keep such a record, give the signal a plain name in the netlist the simulator reads and map it back with [`activity.instance-map`](concepts/power.md#map-renamed-instances) if it is an instance. An instance named like a SAIF keyword (`NET`, `T0`) is left out too; a net gets a backslash the reader removes.

@@ -753,7 +753,7 @@ Test fields:
 | `reglvl` | Optional | Regression level |
 | `builder` | Optional | Per-test builder override |
 | `plusargs` | Optional map | `KEY: VALUE` becomes `+KEY=VALUE`; a null value becomes `+KEY` |
-| `plusdefines` | Optional map | `KEY: VALUE` becomes `+define+KEY=VALUE`; a null value becomes `+define+KEY` |
+| `plusdefines` | Optional map | `KEY: VALUE` becomes `+define+KEY=VALUE` on the compile line; a null value becomes `+define+KEY`. Icarus gets `-DKEY=VALUE` / `-DKEY` instead, because `iverilog` reads `+define+` only inside a command file |
 | `sim_timeout` | Default 60 | Seconds per simulation run |
 | `sim-rand-seed` | Optional | Fixed runtime seed from 1 through 2147483647. Overrides `--master-seed`, `--rnd-new`, and `--rnd-last`; use it for timing or command-cycle stimulus that must not change |
 | `sim-rand-seed-plusarg` | Optional | Plusarg name that receives the fixed, master-derived, or builder-default seed before `preproc` runs. A hook reads it with `test_cfg.get_plusarg(NAME)` or `test_cfg.get_resolved_seed()`. With this field set, `--rnd-new` and `--rnd-last` require a fixed `sim-rand-seed`, because their seed is not available before preprocessing |
@@ -840,7 +840,7 @@ syntheses:
 | `defines` | Optional map | Verilog preprocessor definitions |
 | `platform` | Optional | `cfg-synth-platforms` entry; enables technology mapping |
 | `lef-paths` / `lib-paths` | Optional lists | Block-specific LEF and Liberty files, appended after platform data |
-| `blocks` | Optional list | Hardened blocks the design instances. Each has `name` (the module), `pnr` (a `harden: true` P&R run), and `pnr-path` (its `pnr.yaml`, relative to `synth.yaml`); all three are required. The abstract's `.lib` and `.lef` are appended to `lib-paths` and `lef-paths`. The model's filelist must still leave the module a blackbox. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
+| `blocks` | Optional list | Hardened blocks the design instances. Each has `name` (the module), `pnr` (a `harden: true` P&R run), and `pnr-path` (its `pnr.yaml`, relative to `synth.yaml`); all three are required. The abstract's `.lib` and `.lef` are appended to `lib-paths` and `lef-paths`. The model's filelist must still leave the module a blackbox. A block hardened at another corner of the synth platform's technology is a warning on the Yosys backend and an error with an OpenROAD stage. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `abc_script`, `strategy`, `frontend`, `plugin_path`, `single_unit`, `best_effort_hierarchy`, `static_functions`, `conflicting_drivers`, `unresolved_interfaces`, `clock_gating_min_flops` |
 | `effort` | Default `standard` | `cfg-synth-efforts` entry. CLI `--effort` wins |
@@ -1004,6 +1004,7 @@ runs:
 | `activity.saif` / `.vcd` | Mutually exclusive | Activity trace path |
 | `activity.scope` | Only with a trace | OpenROAD trace scope; invalid without SAIF or VCD |
 | `activity.instance-map` | Only with `activity.saif` | File of `<trace name> <database name>` instance pairs, relative to `power.yaml`, applied to the SAIF before OpenROAD reads it. See [Map renamed instances](../concepts/power.md#map-renamed-instances) |
+| `activity.origin-census` | Default true; read only with a trace | Count the activity origins `report_power` used and check which annotated pins it did not use. `false` keeps only the annotation counts. See [Check how the trace was used](../concepts/power.md#check-how-the-trace-was-used) |
 | `activity.default-toggle-rate` | Default 0.1 | Synthetic toggle rate for dynamic mode without a trace |
 | `activity.default-static-prob` | Default 0.5 | Synthetic static probability |
 | `reglvl` | Optional | Regression level |

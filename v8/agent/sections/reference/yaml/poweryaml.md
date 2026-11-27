@@ -35,6 +35,7 @@ runs:
 | `activity.saif` / `.vcd` | Mutually exclusive | Activity trace path |
 | `activity.scope` | Only with a trace | OpenROAD trace scope; invalid without SAIF or VCD |
 | `activity.instance-map` | Only with `activity.saif` | File of `<trace name> <database name>` instance pairs, relative to `power.yaml`, applied to the SAIF before OpenROAD reads it. See [Map renamed instances](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/power/#map-renamed-instances) |
+| `activity.origin-census` | Default true; read only with a trace | Count the activity origins `report_power` used and check which annotated pins it did not use. `false` keeps only the annotation counts. See [Check how the trace was used](https://rtl-buddy.github.io/rtl_buddy/v8/concepts/power/#check-how-the-trace-was-used) |
 | `activity.default-toggle-rate` | Default 0.1 | Synthetic toggle rate for dynamic mode without a trace |
 | `activity.default-static-prob` | Default 0.5 | Synthetic static probability |
 | `reglvl` | Optional | Regression level |

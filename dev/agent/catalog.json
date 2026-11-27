@@ -1394,6 +1394,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/capture-saif-activity.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#check-how-the-trace-was-used",
+          "slug": "check-how-the-trace-was-used",
+          "title": "Check how the trace was used",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/check-how-the-trace-was-used.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#map-renamed-instances",
           "slug": "map-renamed-instances",
           "title": "Map renamed instances",
@@ -2841,6 +2847,12 @@
           "slug": "rb-power-times-every-corner-in-one-sdc-mode",
           "title": "rb power times every corner in one SDC mode",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/rb-power-times-every-corner-in-one-sdc-mode.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#annotated-activity-on-a-macros-outputs-is-not-used",
+          "slug": "annotated-activity-on-a-macros-outputs-is-not-used",
+          "title": "Annotated activity on a macro's outputs is not used",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/annotated-activity-on-a-macros-outputs-is-not-used.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#rb-saif-leaves-out-names-readsaif-cannot-read",

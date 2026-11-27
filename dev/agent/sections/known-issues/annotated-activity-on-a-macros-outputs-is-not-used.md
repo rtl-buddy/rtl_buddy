@@ -1,0 +1,5 @@
+## Annotated activity on a macro's outputs is not used
+
+OpenSTA's `report_power` gives activity 0 to the output pins of a cell whose Liberty has a clock-to-output arc (`rising_edge`) but no `ff` or `latch` group, such as a RAM macro with a `memory` group, even when the SAIF or VCD annotates them. The pins those outputs drive get activity 0 too. The activity search does not cross a clock-to-output arc, and only `ff` and `latch` cells get their outputs seeded from the annotation. `report_activity_annotation` still counts the pins as annotated. `set_disable_timing` on the arcs does not change it.
+
+`rb power` warns with the count and names (`power.trace_activity_unused`) and records them in `activity_unused`; see [Check how the trace was used](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#check-how-the-trace-was-used). The switching power of those nets is missing from the totals; rb has no workaround, so weigh the named nets against the totals. The same mechanism makes a hardened block's abstract Liberty hide its outputs' activity; see [Give hard macros a library](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#give-hard-macros-a-library).
