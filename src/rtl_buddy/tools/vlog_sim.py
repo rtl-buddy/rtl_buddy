@@ -263,6 +263,14 @@ _TOOLCHAIN_VERSION_ARGS = {
     "xezim": ("-V",),
 }
 
+# Compile-line spelling of a test's `plusdefines:` per simulator family; `+define+`
+# for any family not listed. `iverilog` reads `+define+` only inside a `-f`/`-c`
+# command file and takes any other bare argument as a source file name, so on its
+# command line a define is `-DNAME[=VALUE]`.
+_COMPILE_DEFINE_PREFIXES = {
+    "icarus": "-D",
+}
+
 # (resolved path, mtime_ns) -> version line; one probe per binary per process.
 _TOOLCHAIN_VERSION_CACHE: dict[tuple[str, int], str | None] = {}
 
@@ -2457,7 +2465,25 @@ class VlogSim:
                     pa_list += [f"+{plusarg}"]
         return pa_list
 
+    def _get_compile_defines(self):
+        """The test's ``plusdefines:`` in this builder's compile-line spelling.
+
+        ``+define+NAME[=VALUE]`` for most families; ``-DNAME[=VALUE]`` for Icarus,
+        whose ``iverilog`` takes a ``+define+`` argument as a source file name
+        outside a command file (see ``_COMPILE_DEFINE_PREFIXES``).
+        """
+        defines = self._get_plusdefines()
+        prefix = _COMPILE_DEFINE_PREFIXES.get(self._get_simulator_family())
+        if prefix is None:
+            return defines
+        return [prefix + define.removeprefix("+define+") for define in defines]
+
     def _get_plusdefines(self):
+        """The test's ``plusdefines:`` as ``+define+NAME[=VALUE]`` arguments.
+
+        The compile line uses :meth:`_get_compile_defines`; the simulation line
+        appends these as written, where a simulator reads them as plusargs.
+        """
         pd_list = []
         if self.test_cfg.pd is not None:
             plusdefines = self.test_cfg.get_plusdefines()
@@ -3598,7 +3624,7 @@ class VlogSim:
         # After the extra flags: the subclass that emits its own top flag emits it there
         # and this must see it.
         top_flags = self._get_top_module_flags(builder_opts, extra_compile_flags)
-        plusdefines = self._get_plusdefines()
+        plusdefines = self._get_compile_defines()
         is_verilator = os.path.basename(rtl_builder_cfg.get_exe()).startswith(
             "verilator"
         )
