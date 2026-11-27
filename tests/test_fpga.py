@@ -595,6 +595,7 @@ def test_vivado_fpga_pass_parses_fixture_reports(tmp_path, monkeypatch):
         "description": "Missing input or output delay",
     }
     assert res.results["bitstream"].endswith("demo_top.bit")
+    assert res.results["design_state"] == "routed"
 
     # The rendered flow.tcl carries the part, the XDC and the source.
     script = (Path(backend.artefact_dir) / "flow.tcl").read_text()
@@ -643,6 +644,7 @@ def test_vivado_fpga_out_of_context_stops_after_synthesis(tmp_path, monkeypatch)
     assert res.results["lut"]["used"] == 1
     assert res.results["wns_ns"] == 8.452
     assert res.results["bitstream"] is None
+    assert res.results["design_state"] == "synthesized"
 
     script = (Path(backend.artefact_dir) / "flow.tcl").read_text()
     assert (
@@ -701,6 +703,43 @@ def test_vivado_fpga_passes_filelist_and_run_defines(tmp_path, monkeypatch, capl
     assert events[0].rtl_fields["overridden"] == [
         "WIDTH (filelist='8', fpga.yaml='16')"
     ]
+
+
+def test_vivado_fpga_a_restored_define_keeps_its_last_value(tmp_path, monkeypatch):
+    # The model sets WIDTH=8, a nested filelist sets 16, and the model restores 8.
+    # Deduplicating the filelist must not drop the restoring line.
+    backend = _make_backend(tmp_path)
+    (tmp_path / "shared.f").write_text("+define+WIDTH=16\n")
+    backend.fpga_cfg.model.filelist = [
+        "+define+WIDTH=8",
+        "-F shared.f",
+        "+define+WIDTH=8",
+        "src/demo_top.sv",
+    ]
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+    monkeypatch.setattr(fpga_vivado_module, "run_managed_process", _fake_vivado())
+    res = backend.run()
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    script = (Path(backend.artefact_dir) / "flow.tcl").read_text()
+    assert '-verilog_define [list "WIDTH=8"]' in script
+    fl = (Path(backend.artefact_dir) / "fpga.f").read_text()
+    assert fl.index("+define+WIDTH=16") < fl.index("+define+WIDTH=8")
+
+
+def test_vivado_fpga_passes_a_macro_spelled_like_a_placeholder(tmp_path, monkeypatch):
+    backend = _make_backend(
+        tmp_path, defines={"LABEL": '"{{VERSION}}"', "ECHO": "{{top}}"}
+    )
+    monkeypatch.setattr(
+        fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
+    )
+    monkeypatch.setattr(fpga_vivado_module, "run_managed_process", _fake_vivado())
+    res = backend.run()
+    assert isinstance(res, FpgaPassResults), res.results["desc"]
+    script = (Path(backend.artefact_dir) / "flow.tcl").read_text()
+    assert '"LABEL=\\"{{VERSION}}\\"" "ECHO={{top}}"' in script
 
 
 def test_vivado_fpga_matching_run_define_logs_no_override(

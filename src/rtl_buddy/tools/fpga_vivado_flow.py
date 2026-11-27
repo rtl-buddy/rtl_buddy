@@ -92,6 +92,8 @@ def _build_template(stages: tuple[tuple[str, str], ...]) -> str:
     return "\n".join(lines)
 
 
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+
 FLOW_TCL_TEMPLATE: str = _build_template(FLOW_STAGES)
 OOC_FLOW_TCL_TEMPLATE: str = _build_template(OOC_FLOW_STAGES)
 
@@ -216,13 +218,14 @@ def render_flow_tcl(
         "bitstream_cmd": bitstream_cmd,
     }
 
-    script = OOC_FLOW_TCL_TEMPLATE if out_of_context else FLOW_TCL_TEMPLATE
-    for key, value in substitutions.items():
-        script = script.replace("{{ " + key + " }}", str(value))
-
-    leftover = re.findall(r"\{\{\s*[\w]+\s*\}\}", script)
-    if leftover:
+    template = OOC_FLOW_TCL_TEMPLATE if out_of_context else FLOW_TCL_TEMPLATE
+    unknown = [
+        key for key in _PLACEHOLDER_RE.findall(template) if key not in substitutions
+    ]
+    if unknown:
         raise RuntimeError(
-            f"fpga flow template has unsubstituted placeholders: {leftover}"
+            f"fpga flow template has unsubstituted placeholders: {unknown}"
         )
-    return script
+    # One pass over the template: substituted text, such as a macro value spelled
+    # `{{X}}`, is never read as a placeholder.
+    return _PLACEHOLDER_RE.sub(lambda m: str(substitutions[m.group(1)]), template)

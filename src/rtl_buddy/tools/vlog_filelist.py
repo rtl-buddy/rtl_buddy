@@ -251,8 +251,11 @@ class VlogFilelist:
                 if strip:
                     continue
                 line = f"{_DEFINE_PREFIX}{line_path}\n"
-                if not (deduplicate and line in out_lines):
-                    out_lines.append(line)
+                # A repeated define keeps its last position: the last value of a name wins,
+                # so dropping a later copy would let an intervening value take effect.
+                if deduplicate and line in out_lines:
+                    out_lines.remove(line)
+                out_lines.append(line)
                 continue
             resolved_line_path = os.path.normpath(os.path.join(output_dir, line_path))
             relative_line_path = os.path.relpath(resolved_line_path, start=output_dir)

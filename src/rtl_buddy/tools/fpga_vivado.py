@@ -337,4 +337,7 @@ class VivadoFpga(BaseFpga):
             drc_by_severity=drc.get("by_severity"),
             methodology_warnings=methodology.get("warnings"),
             bitstream=bitstream,
+            design_state=(
+                "synthesized" if self.fpga_cfg.is_out_of_context() else "routed"
+            ),
         )

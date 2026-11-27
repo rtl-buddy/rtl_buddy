@@ -289,6 +289,25 @@ def test_openxc7_passes_filelist_and_run_defines(tmp_path, monkeypatch):
     assert "read_verilog -sv -D WIDTH=16 -D SIM_ONLY -D FAST=0 -D MSG " in script
 
 
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param('+define+LABEL="a b"', id="whitespace"),
+        pytest.param("+define+RESET=state<=0;", id="semicolon"),
+    ],
+)
+def test_openxc7_refuses_a_macro_a_yosys_script_cannot_carry(
+    tmp_path, monkeypatch, entry
+):
+    backend = _make_backend(tmp_path, tool_overrides=_CHIPDB_OVERRIDES)
+    backend.fpga_cfg.model.filelist = [entry, "src/demo_top.sv"]
+    calls: list = []
+    _mock_toolchain(monkeypatch, _fake_pipeline(calls=calls))
+    with pytest.raises(FatalRtlBuddyError, match="whitespace or ';'"):
+        backend.run()
+    assert calls == []
+
+
 def test_openxc7_chipdb_from_env_dir(tmp_path, monkeypatch):
     calls: list = []
     backend = _make_backend(tmp_path)

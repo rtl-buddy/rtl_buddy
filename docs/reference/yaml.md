@@ -1058,7 +1058,7 @@ runs:
 | `tool_overrides` | Optional map | Backend-specific overrides keyed by tool name |
 | `defines` | Empty map | Preprocessor macros, with the value rules of an elaboration profile's `defines`. A name the model filelist also defines with `+define+` takes this value and logs `fpga.filelist_defines_overridden` |
 | `out-of-context` | Default false | Vivado only: synthesise with `-mode out_of_context` and report the synthesised design, with no placement, routing or bitstream |
-| `require-timing-met` | Default false | Fails a passing routed run when the backend explicitly reports timing unmet. No effect when timing status is unavailable |
+| `require-timing-met` | Default false | Fails a passing run when the backend explicitly reports timing unmet: routed timing, or post-synthesis timing for an `out-of-context` run. No effect when timing status is unavailable |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 | `xfail_match` | Optional regex | The failure an `xfail`/`xfail_strict` marker expects; a `FAIL` that does not match stays `FAIL`. Requires a marker |
 

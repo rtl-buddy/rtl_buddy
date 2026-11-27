@@ -126,15 +126,19 @@ class OpenXc7Fpga(BaseFpga):
         inc_flags = "".join(
             f" -I {shlex.quote(inc)}" for inc in self._incdirs_from_filelist(fl_path)
         )
-        # `-D NAME[=VALUE]`; a None value is a bare macro. Yosys keeps quote characters,
-        # so a value is quoted only when whitespace forces it.
+        # `-D NAME[=VALUE]`; a None value is a bare macro. A Yosys script line splits a
+        # value at whitespace and ends the command at a `;`, and no quoting survives.
         for name, value in self._defines(fl_path).items():
             if value is None:
                 inc_flags += f" -D {name}"
-            elif any(c.isspace() for c in value):
-                inc_flags += f" -D {name}={shlex.quote(value)}"
-            else:
-                inc_flags += f" -D {name}={value}"
+                continue
+            if ";" in value or any(c.isspace() for c in value):
+                raise FatalRtlBuddyError(
+                    f"fpga run '{self.fpga_cfg.get_name()}': macro {name}={value!r} "
+                    "contains whitespace or ';', which a Yosys script cannot pass "
+                    "to read_verilog; openXC7 cannot build it"
+                )
+            inc_flags += f" -D {name}={value}"
         for src in self._source_files_from_filelist(fl_path):
             if src.lower().endswith(".sv"):
                 lines.append(f"read_verilog -sv{inc_flags} {src}")
