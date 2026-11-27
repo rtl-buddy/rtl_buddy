@@ -93,6 +93,10 @@ from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResu
 class OpenRoadSynth:
     """Two-stage synthesis: Yosys maps RTL to a gate-level netlist, then OpenROAD applies the SDC and reports area, WNS and TNS."""
 
+    # Stage 2 reads each `blocks:` abstract's Liberty as a timing model (STA, repair), so the
+    # block's corner must be this run's (see `pnr_abstract.check_technology`).
+    reads_block_timing = True
+
     def __init__(
         self,
         name: str,

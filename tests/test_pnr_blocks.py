@@ -253,6 +253,64 @@ def test_technology_is_compared_by_content(tmp_path):
         pnr_abstract.check_technology(block, liberty=[str(other)], tech_lef=None)
 
 
+def test_an_interface_only_consumer_gets_a_corner_mismatch_back(tmp_path):
+    """Same technology LEF, other corner Liberty: returned to an interface-only consumer, raised otherwise."""
+    block = resolve_block(_ref(_block_suite(tmp_path)))
+    ff = _write(tmp_path / "top/pdk/ff.lib", "library (ff) {}\n")
+    tech = _write(tmp_path / "top/pdk/tech.lef", _TECH)
+
+    message = pnr_abstract.check_technology(
+        block, liberty=[str(ff)], tech_lef=None, interface_tech_lef=str(tech)
+    )
+    assert message is not None
+    assert "platform/corner mismatch" in message and str(ff) in message
+    # A matching corner returns nothing, interface-only or not.
+    same = _write(tmp_path / "top/pdk/typ.lib", _CORNER)
+    assert (
+        pnr_abstract.check_technology(
+            block, liberty=[str(same)], tech_lef=None, interface_tech_lef=str(tech)
+        )
+        is None
+    )
+    # P&R passes no interface LEF and is still refused.
+    with pytest.raises(BlockResolutionError, match="platform/corner mismatch"):
+        pnr_abstract.check_technology(block, liberty=[str(ff)], tech_lef=str(tech))
+
+
+def test_a_corner_mismatch_never_hides_a_strict_tech_lef_mismatch(tmp_path):
+    """With both LEF arguments, a differing `tech_lef` raises even when the corner mismatch alone would be returned."""
+    block = resolve_block(_ref(_block_suite(tmp_path)))
+    ff = _write(tmp_path / "top/pdk/ff.lib", "library (ff) {}\n")
+    tech = _write(tmp_path / "top/pdk/tech.lef", _TECH)
+    other = _write(tmp_path / "top/pdk/other.lef", "OTHER TECH LEF\n")
+    with pytest.raises(BlockResolutionError, match="technology LEF"):
+        pnr_abstract.check_technology(
+            block, liberty=[str(ff)], tech_lef=str(other), interface_tech_lef=str(tech)
+        )
+    assert "corner Liberty" in pnr_abstract.check_technology(
+        block, liberty=[str(ff)], tech_lef=str(tech), interface_tech_lef=str(tech)
+    )
+
+
+@pytest.mark.parametrize(
+    "tech_text,drop_record",
+    [("OTHER TECH LEF\n", False), (None, False), (_TECH, True)],
+    ids=["other-technology", "no-platform-tech-lef", "abstract-records-none"],
+)
+def test_a_corner_mismatch_without_a_proven_technology_is_still_refused(
+    tmp_path, tech_text, drop_record
+):
+    block = resolve_block(_ref(_block_suite(tmp_path)))
+    if drop_record:
+        del block.manifest["technology"]["tech_lef"]
+    ff = _write(tmp_path / "top/pdk/ff.lib", "library (ff) {}\n")
+    tech = None if tech_text is None else str(_write(tmp_path / "top/t.lef", tech_text))
+    with pytest.raises(BlockResolutionError, match="platform/corner mismatch"):
+        pnr_abstract.check_technology(
+            block, liberty=[str(ff)], tech_lef=None, interface_tech_lef=tech
+        )
+
+
 def test_an_abstract_that_records_no_technology_is_refused(tmp_path):
     block = resolve_block(_ref(_block_suite(tmp_path)))
     del block.manifest["technology"]
@@ -603,6 +661,110 @@ def test_synthesis_refuses_a_stale_block_unless_accepted(tmp_path, monkeypatch):
     accepted = runner.run()
     assert accepted.results["desc"] == "ok; stale block abstract(s) accepted: blk_top"
     assert accepted.results["blocks"][0]["stale"] is True
+
+
+class _SynthPlatform:
+    """The two things `rb synth` reads from a synth platform to check a block: corner Liberty and technology LEF."""
+
+    def __init__(self, liberty, tech_lef):
+        self._liberty = [str(liberty)]
+        self._tech_lef = str(tech_lef) if tech_lef else ""
+
+    def get_paths(self):
+        return list(self._liberty)
+
+    def get_tech_lef(self):
+        return self._tech_lef
+
+
+def _platform_synth_runner(tmp_path, *, corner_text, tech_text, openroad=False):
+    """A `rb synth` runner for a top with one block, on a synth platform at `corner_text`."""
+    from rtl_buddy.runner.synth_runner import SynthRunner
+
+    blocks_yaml = (
+        "    platform: syn_p\n"
+        "    blocks:\n      - {name: blk_top, pnr: blk_pnr, pnr-path: ../blk/pnr.yaml}\n"
+    )
+    path = _synth_suite(tmp_path, blocks_yaml)
+    if openroad:
+        path.write_text(path.read_text().replace("tool: yosys", "tool: openroad"))
+    synth_cfg = SynthSuiteConfig(str(path)).get_syntheses("top_synth")[0]
+    lib = _write(tmp_path / "syn_pdk/corner.lib", corner_text)
+    tech = _write(tmp_path / "syn_pdk/tech.lef", tech_text) if tech_text else None
+    root_cfg = MagicMock()
+    root_cfg.get_synth_effort_cfg.return_value.get_openroad_run.return_value = openroad
+    root_cfg.get_pnr_platform_cfg.return_value = _block_platform(tmp_path)
+    root_cfg.get_synth_platform_cfg.return_value = _SynthPlatform(lib, tech)
+    return SynthRunner(
+        name="top_synth",
+        root_cfg=root_cfg,
+        synth_cfg=synth_cfg,
+        suite_dir=str(path.parent),
+    )
+
+
+def test_yosys_synthesis_takes_a_block_hardened_at_another_corner(
+    tmp_path, monkeypatch, caplog
+):
+    """Yosys reads a block's Liberty only for its pins, so another corner of the same technology is a warning."""
+    from rtl_buddy.tools import synth_yosys
+
+    _block_suite(tmp_path)
+    ran = []
+    monkeypatch.setattr(
+        synth_yosys.YosysSynth,
+        "run",
+        lambda self: (
+            ran.append(self.synth_cfg.get_lib_paths())
+            or MagicMock(results={"result": "PASS", "desc": None})
+        ),
+    )
+    runner = _platform_synth_runner(
+        tmp_path, corner_text="library (ff) {}\n", tech_text=_TECH
+    )
+
+    with caplog.at_level("WARNING"):
+        res = runner.run()
+
+    out = tmp_path / "blk/artefacts/blk_pnr/abstract"
+    assert ran == [[str(out / "blk_top.lib")]]
+    assert res.results["result"] == "PASS"
+    assert res.results["blocks"][0]["name"] == "blk_top"
+    [warning] = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "synth.block_corner_mismatch"
+    ]
+    assert warning.rtl_fields["block"] == "blk_top"
+    assert "platform/corner mismatch" in warning.rtl_fields["reason"]
+    assert "rb pnr of the top still needs" in warning.getMessage()
+
+
+@pytest.mark.parametrize(
+    "tech_text,openroad",
+    [("OTHER TECH LEF\n", False), (None, False), (_TECH, True)],
+    ids=["yosys-other-technology", "yosys-no-tech-lef", "openroad-stage"],
+)
+def test_synthesis_still_refuses_a_corner_mismatch_it_cannot_ignore(
+    tmp_path, monkeypatch, tech_text, openroad
+):
+    """Another technology, an unprovable one, or an OpenROAD stage that times the block's model: refused at setup."""
+    from rtl_buddy.tools import synth_openroad, synth_yosys
+
+    _block_suite(tmp_path)
+    for cls in (synth_yosys.YosysSynth, synth_openroad.OpenRoadSynth):
+        monkeypatch.setattr(cls, "run", lambda self: pytest.fail("synthesis ran"))
+    runner = _platform_synth_runner(
+        tmp_path,
+        corner_text="library (ff) {}\n",
+        tech_text=tech_text,
+        openroad=openroad,
+    )
+
+    res = runner.run()
+
+    assert res.results["fail_stage"] == "setup"
+    assert "platform/corner mismatch" in res.results["desc"]
 
 
 def test_rb_pnr_and_rb_synth_take_accept_stale():

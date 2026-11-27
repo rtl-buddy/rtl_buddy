@@ -2351,6 +2351,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"not run pnr run {fields.get('pnr_run')}, so this run reads a copy "
                 f"of its untagged abstract ({fields.get('source')})"
             )
+        case "synth.block_corner_mismatch":
+            return (
+                f'synthesis "{fields.get("synth")}": {fields.get("reason")}; the '
+                "technology LEF matches and Yosys reads the block's Liberty only for "
+                "its pins, so synthesis continues. rb pnr of the top still needs the "
+                "block's corner"
+            )
         case "pnr.block_stale_accepted" | "synth.block_stale_accepted":
             flow = "P&R" if event.startswith("pnr") else "synthesis"
             run = fields.get("pnr") or fields.get("synth")
