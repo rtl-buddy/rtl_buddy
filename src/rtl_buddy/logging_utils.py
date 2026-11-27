@@ -2832,6 +2832,24 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "cell's Liberty through the referenced pnr/synth run's "
                 "lib-paths, or through lib-paths on this power.yaml entry"
             )
+        case "power.trace_activity_unused":
+            examples = list(fields.get("examples") or [])
+            count = fields.get("count") or 0
+            listed = ", ".join(str(e) for e in examples)
+            if count > len(examples):
+                listed += f", +{count - len(examples)} more"
+            by_origin = fields.get("by_origin") or {}
+            origins = ", ".join(f"{k}: {v}" for k, v in by_origin.items())
+            trace = str(fields.get("trace") or "trace").upper()
+            return (
+                f'power run "{fields.get("power")}": {count} of the '
+                f"{fields.get('annotated')} pins the {trace} annotated do not take "
+                f"that activity in report_power ({origins}) — {listed}. A pin "
+                "OpenSTA's activity search never reaches keeps activity 0, such as "
+                "the outputs of a cell with a clock-to-output arc but no ff or latch "
+                "group, and the pins they drive; see "
+                f"{fields.get('report')}"
+            )
         case "power.phys_half_stale":
             return (
                 f'power run "{fields.get("power")}": the previous run\'s '

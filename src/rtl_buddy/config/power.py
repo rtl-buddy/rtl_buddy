@@ -54,6 +54,8 @@ class PowerActivityFile:
     instance_map: str | None = field(rename="instance-map", default=None)
     default_toggle_rate: float = field(rename="default-toggle-rate", default=0.1)
     default_static_prob: float = field(rename="default-static-prob", default=0.5)
+    # With a trace: walk every pin once after `report_power` for the effective-activity census and the unused-annotation check. `false` keeps only the annotation counts.
+    origin_census: bool = field(rename="origin-census", default=True)
 
 
 @dataclass
@@ -65,6 +67,8 @@ class PowerActivity:
     default_static_prob: float
     # Resolved `activity.instance-map`; only with `saif`.
     instance_map: str | None = None
+    # `activity.origin-census`; read only with a trace.
+    origin_census: bool = True
 
     def has_trace(self) -> bool:
         return bool(self.saif) or bool(self.vcd)
@@ -188,6 +192,7 @@ class PowerConfigFile:
             default_toggle_rate=self.activity.default_toggle_rate,
             default_static_prob=self.activity.default_static_prob,
             instance_map=_resolve(self.activity.instance_map),
+            origin_census=self.activity.origin_census,
         )
 
         return PowerConfig(
